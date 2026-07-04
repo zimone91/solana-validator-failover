@@ -1,0 +1,13 @@
+# Live config holds secrets (TG_BOT_TOKEN, paid-RPC key, webhook URL). Commit only *.example.
+*.env
+!*.env.example
+
+# Runtime / logs
+*.log
+/opt/
+
+# Editor / OS / Python cruft
+__pycache__/
+*.pyc
+.DS_Store
+*.swp
