@@ -1,6 +1,6 @@
 # Solana Validator Failover System v0.6.9 — Deployment Manual
 
-> **v0.6.9 changes (vs v0.6.8) — WIP, DO NOT merge/tag; `DRY_RUN=true` default unchanged.**
+> **v0.6.9 changes (vs v0.6.8) — `DRY_RUN=true` default unchanged.**
 > **"Post-failover symmetry" hardening** — the protection the PRIMARY demote path already had is
 > evened out across the states the system lives in *after* a failover. **H1 (the big one):** the
 > PRIMARY self-fence is **ported into the promoted STANDBY's STAKED branch** (same signals, same
@@ -26,7 +26,7 @@
 > lab only). **M10:** role-specific state files (`state-primary` / `state-standby`, one-time
 > migration). All new knobs are safe-by-default; see **"v0.6.9 — post-failover symmetry knobs"**.
 
-> **v0.6.8 changes (vs v0.6.7) — WIP, DO NOT merge/tag; `DRY_RUN=true` default unchanged.** Takeover
+> **v0.6.8 changes (vs v0.6.7) — `DRY_RUN=true` default unchanged.** Takeover
 > **speedup + hardening**, all safe-by-default. **B1 (primary):** the demote `set-identity` /
 > `authorized-voter` calls are bounded by `SETIDENTITY_TIMEOUT` (default 15s, `timeout -k 5` so a
 > SIGTERM-ignoring CLI is SIGKILL'd rather than wedging the single-threaded loop); on a wedged admin socket

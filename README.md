@@ -90,7 +90,7 @@ See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 ```bash
 cd tests && bash run_all.sh
 ```
-37 suites, parse-clean on bash 3.2+. They drive the real self-fence / takeover / timing functions with
+36 suites, parse-clean on bash 3.2+. They drive the real self-fence / takeover / timing functions with
 mocked I/O, and each safety fix ships with a control that fails when the fix is reverted.
 
 ## ⚠️ Before you point this at a mainnet identity
