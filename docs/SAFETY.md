@@ -53,10 +53,45 @@ also outwait the STANDBY's takeover becoming externally visible.
 
 ## Residual risks (be honest with yourself)
 
-- The system trades availability for safety: a genuine failover has a voting gap of roughly one takeover
-  delay. That is intentional.
+### The big one: liveness is evidence, not a fence
+
+The spare decides the old holder is gone by observing that its **vote account stopped advancing**.
+That is *corroboration*, not proof of incapacity. A holder can stop being seen to vote and still be
+able to vote:
+
+- wedged on its admin RPC while the validator process keeps running;
+- partitioned onto a minority fork whose votes you don't observe;
+- votes not reaching the specific RPC providers you polled;
+- paused and then recovering.
+
+The mitigation stack (holder self-fence, cross-node margin, hard-stop escalation, re-take lockout)
+covers the cases the **holder can detect about itself**. It cannot cover a holder that detects nothing
+and later resumes. Closing that requires **external fencing (STONITH)** — a *confirmed* power-off or
+network fence of the old host, verified to a terminal state — which this release does not perform.
+
+**Consequence:** fully unattended mainnet failover is not yet a property of this tool. Run it in
+`DRY_RUN`, on testnet, or in **assisted production** (human/automation fences the old node before the
+spare is promoted). See [SPLIT-BRAIN-RESIDUAL.md](SPLIT-BRAIN-RESIDUAL.md) for the full analysis.
+
+### Known hardening items (tracked)
+
+- **Fencing protocol** (v0.8): graceful path = verified demote + relinquish receipt with a generation;
+  ungraceful path = external STONITH confirmed to a terminal OFF, before any promotion.
+- **Evidence quality** (v0.7): bind `VOTE_PUBKEY` to `STAKED_PUBKEY` via `getVoteAccounts`
+  (`nodePubkey`) before acting; pin the RPC provider across a paired liveness sample; treat *any*
+  forward movement of `lastVote` as "alive" (`VOTE_LIVENESS_EPSILON=0`).
+- **Failure handling** (v0.7): escalate on *any* unverified demote postcondition, not only on
+  command timeouts; atomic state writes; monotonic (boot-time) safety timers.
+
+### Other standing notes
+
+- The system trades availability for safety: a genuine failover has a voting gap of roughly one
+  takeover delay. That is intentional.
 - The gossip **fast-path** (Option A, off by default) is a conservative, fail-closed optimization that
   in practice rarely fires; the proven path is the timer + vote-liveness fence.
+- Tests are function-level with mocked I/O: they exercise the real decision functions, but do **not**
+  prove cross-process ordering between two live systemd services. A chaos/E2E gate on real nodes is
+  required before unattended operation.
 - On-chain slashing for double-signing is not (yet) enforced by the Solana network, but this system is
   built as if it were — do not weaken the fences.
 - Always test on testnet, and roll to mainnet one node at a time.
