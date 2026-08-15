@@ -1,7 +1,14 @@
 #!/bin/bash
 
+# bash 5.2+ made "&" special in ${var//pat/replacement} (patsub_replacement, ON by default): the
+# replacement's "&" expands to the matched text, which silently corrupts _html_escape's "&lt;"/"&gt;"
+# on Ubuntu 24.04 / Debian 12 — broken Telegram HTML = CRITICAL alerts silently failing to send.
+# This codebase is written against bash-3.2 substitution semantics; restore them everywhere.
+# (No-op error on bash < 5.2, hence the || true.)
+shopt -u patsub_replacement 2>/dev/null || true
+
 # ============================================================================
-# Solana STANDBY Node Failover Protection v0.6.9 (THREE-TIER RPC)
+# Solana STANDBY Node Failover Protection v0.6.10 (THREE-TIER RPC)
 # Runs on HOT SPARE node. Monitors via 3-tier RPC.
 #
 # THREE-TIER (STANDBY perspective):
@@ -2047,7 +2054,7 @@ enforce_crossnode_timing_safety() {
 
 startup_checks() {
     echo "============================================="
-    echo " Solana STANDBY Failover v0.6.9 (3-TIER RPC)"
+    echo " Solana STANDBY Failover v0.6.10 (3-TIER RPC)"
     echo "============================================="
 
     if [[ "$VALIDATOR_TYPE" == "frankendancer" ]]; then

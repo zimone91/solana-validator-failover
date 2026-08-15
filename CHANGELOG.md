@@ -3,6 +3,27 @@
 All notable changes are documented here. Versions follow the project's internal `v0.6.x` line;
 `v0.6.9` is the first public release.
 
+## v0.6.10 — hotfix: alert delivery broken on bash 5.2 hosts (Ubuntu 24.04 / Debian 12)
+
+**One-line fix per script, zero logic changes.** bash 5.2 enables `patsub_replacement` by default,
+which makes `&` (and `\`) special in the replacement side of `${var//pat/repl}`. On bash 5.2 hosts
+two alert surfaces were affected:
+
+- **Telegram — broken.** `_html_escape` emitted `<lt;`/`>gt;` instead of `&lt;`/`&gt;`; Telegram
+  rejects the malformed HTML, so CRITICAL pages (demote/takeover/self-fence/hard-stop) silently
+  failed to send and the pending-alert retry could never succeed.
+- **Custom `WEBHOOK_BODY` templates — mangled.** A `&` in a substituted value became the literal
+  placeholder text and `\\` collapsed to `\`, corrupting the payload (possibly into invalid JSON).
+
+**Not affected:** ntfy.sh push (HTTP headers + raw body via `_header_sanitize`) and the default
+JSON webhook (built with `jq -nc --arg`). Failover logic, timers, fences, and the installers'
+generated config (`printf '%q'`) are entirely untouched.
+
+The fix — `shopt -u patsub_replacement` at the top of all four scripts — restores the bash-3.2
+substitution semantics this codebase is written against, and is a no-op on bash ≤ 5.1 (which is why
+the bug never surfaced on the live-test stack). Found by running the full suite under both
+interpreters (macOS bash 3.2 **and** Ubuntu 24.04 bash 5.2); both now pass 36/36.
+
 ## v0.6.9 — first public release
 
 Automatic double-sign-safe failover for Solana validators, hardened across multiple internal audit

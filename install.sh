@@ -1,7 +1,7 @@
 #!/bin/sh
 # Solana Validator Failover — bootstrap installer.
 #
-#   sh -c "$(curl -sSfL https://zim.one/failover/v0.6.9)"   # pinned (recommended)
+#   sh -c "$(curl -sSfL https://zim.one/failover/v0.6.10)"   # pinned (recommended)
 #   sh -c "$(curl -sSfL https://zim.one/failover)"          # latest
 #
 # Downloads the deploy wizard + its daemon for the requested version, then runs the wizard.
@@ -13,7 +13,7 @@
 set -eu
 
 REPO="https://raw.githubusercontent.com/zimone91/solana-validator-failover"
-VERSION="${FAILOVER_VERSION:-v0.6.9}"   # the Cloudflare route injects the version from the URL path
+VERSION="${FAILOVER_VERSION:-v0.6.10}"   # the Cloudflare route injects the version from the URL path
 ROLE="${FAILOVER_ROLE:-}"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }

@@ -66,13 +66,13 @@ Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 ## Install (one command)
 
 ```bash
-sh -c "$(curl -sSfL https://zim.one/failover/v0.6.9)"
+sh -c "$(curl -sSfL https://zim.one/failover/v0.6.10)"
 ```
 Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, and runs the installer (interactive; starts in DRY_RUN). This tool hot-swaps your staked identity — read `install.sh` before running it.
 
 Or from source:
 ```bash
-git clone --branch v0.6.9 https://github.com/zimone91/solana-validator-failover
+git clone --branch v0.6.10 https://github.com/zimone91/solana-validator-failover
 cd solana-validator-failover
 sudo bash deploy-failover.sh          # deploy-failover-standby.sh on the spare
 ```
