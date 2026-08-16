@@ -68,7 +68,12 @@ Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 ```bash
 sh -c "$(curl -sSfL https://zim.one/failover/v0.6.10)"
 ```
-Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, and runs the installer (interactive; starts in DRY_RUN). This tool hot-swaps your staked identity — read `install.sh` before running it.
+Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, verifies them against the version's `SHA256SUMS` manifest (fail-closed), and runs the installer (interactive; starts in DRY_RUN). This tool hot-swaps your staked identity — read `install.sh` before running it. The paranoid path (recommended for a root-level tool):
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.6.10/install.sh
+```
+read it, then run `sh install.sh`. **What checksums honestly buy you:** protection against a corrupted or tampered download — not against a compromise of this repository or zim.one (the manifest travels through the same channel). Details, scope, and disclosure: [SECURITY.md](SECURITY.md).
 
 Or from source:
 ```bash
@@ -140,6 +145,13 @@ systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
   chaos/E2E gate on real nodes.
 - **v0.8** — optional external fence providers (cloud API / IPMI / PDU) on the same interface, for
   operators who want a second, out-of-band guarantee.
+
+## Verify the claims, not the adjectives
+
+- [SECURITY.md](SECURITY.md) — disclosure contact; what runs as root; what verification does and does not give you.
+- [docs/audits/](docs/audits/) — every audit round, including the one that made us retract a public overclaim and the NO-GO verdict. Each finding shipped with a control test that fails if the fix is reverted.
+- [docs/evidence/](docs/evidence/) — armed-production evidence: a real unplanned mainnet failover (2026-08-10, every gate logged) *and* the incident from the same fleet, because evidence cuts both ways.
+- [CI](.github/workflows/ci.yml) runs the full suite on bash 3.2 **and** 5.2 on every push — the 5.2 job exists because a real interpreter bug shipped and was invisible to a single-interpreter suite.
 
 ## License
 
