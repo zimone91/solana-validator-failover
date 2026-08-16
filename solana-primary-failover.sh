@@ -226,6 +226,8 @@ _current_interval=$CHECK_INTERVAL
 
 _standby_alert_sent=""
 _pending_alert=""
+_unknown_identity_since=0                 # unknown-identity episode start (0 = classified)
+_last_unknown_alert=0                     # re-page throttle inside an unknown-identity episode
 _last_recovery_log=0
 _recovery_confirm_count=0
 _running=true
@@ -1885,6 +1887,12 @@ while $_running; do
     fi
     _last_known_identity="$CURRENT_IDENTITY"
 
+    # Recovery from an UNKNOWN-identity episode (paged below): announce once, re-arm the episode.
+    if [[ $_unknown_identity_since -gt 0 && ( "$CURRENT_IDENTITY" == "$UNSTAKED_PUBKEY" || "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ) ]]; then
+        alert_info "✅ Identity classified again after $(( $(date +%s) - _unknown_identity_since ))s UNKNOWN — protection active"
+        _unknown_identity_since=0; _last_unknown_alert=0
+    fi
+
     # ---- Internet check → immediate switch if down ----
     if ! check_internet; then
         CONNECTIVITY_FAIL_COUNT=$((CONNECTIVITY_FAIL_COUNT + 1))
@@ -1983,7 +1991,7 @@ while $_running; do
             fi
         fi
 
-    else
+    elif [[ "$CURRENT_IDENTITY" == "$UNSTAKED_PUBKEY" ]]; then
         # ======== UNSTAKED: recovery ========
         latency_str="UNSTK"
         if [[ "$RECOVERY_MODE" == "manual" ]]; then
@@ -1997,6 +2005,33 @@ while $_running; do
         elif [[ "$RECOVERY_MODE" == "rpc" ]]; then
             attempt_safe_recovery
         fi
+
+    else
+        # An identity that is neither the STAKED key nor this node's configured UNSTAKED key means we
+        # do not understand this node's state. The binary dispatch used to classify this as UNSTAKED,
+        # which is the DANGEROUS direction on the primary: (a) if the env/keypair drifted while the
+        # validator actually holds the real staked key, the self-fence (STAKED-branch-only) never
+        # arms — the ~30s relinquish timer every spare's 60s floor is budgeted against silently does
+        # not exist; (b) under RECOVERY_MODE=rpc an unclassified node could attempt to TAKE the
+        # staked identity. Same class as the 2026-08-10 standby incident (manual failback on a
+        # different key). Rule here mirrors the standby: DO NOTHING (no recovery, no take) and PAGE
+        # like the emergency it is — immediately on entry, re-paged through ALERT_THROTTLE while it
+        # persists, with a recovery notice when the identity classifies again (above). Whether an
+        # unclassified holder should self-fence is a v0.7 design question — acting on a node we do
+        # not understand needs the observation seam, not a hotfix.
+        latency_str="UNKNOWN"
+        now_unk=$(date +%s)
+        if [[ $_unknown_identity_since -eq 0 ]]; then
+            _unknown_identity_since=$now_unk
+            _last_unknown_alert=$now_unk
+            alert "UNKNOWN IDENTITY — this node's failover protection is INERT (no self-fence, no recovery) until the identity matches its configured keys" "$CURRENT_IDENTITY" "🚨 PROTECTION OFFLINE"
+        elif [[ $(( now_unk - _last_unknown_alert )) -ge $ALERT_THROTTLE ]]; then
+            _last_unknown_alert=$now_unk
+            alert "UNKNOWN IDENTITY persists ($(( (now_unk - _unknown_identity_since) / 60 ))m) — failover protection still INERT" "$CURRENT_IDENTITY" "🚨 PROTECTION OFFLINE"
+        else
+            log_warn "Unknown identity: $CURRENT_IDENTITY (protection inert — paged)"
+        fi
+        display_status "UNKNOWN"
     fi
 
     # --- Heartbeat: periodic status log ---
