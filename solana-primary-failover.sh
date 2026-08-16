@@ -286,9 +286,15 @@ _last_known_identity=""                   # detect manual identity changes
 # Vote-liveness sampling for rpc-recovery (v0.6.3 Block 2): first lastVote sample + its cluster-wide
 # freshness reference (max lastVote from the same payload) + wall-clock timestamp. Mirrors the standby
 # fence; reset on every switch / manual identity change / before recovery is eligible.
+# v0.7 (Block 3, slice 2 / AUDIT-5 A2): also remember WHICH provider tier ("T2"/"T3") served each
+# sample — a liveness pair is only comparable same-vantage (a lagging fallback provider can fake a
+# FROZEN reading against a live holder). _liveness_first_provider pins the pair's vantage;
+# _liveness_sample_provider is the sampler's per-call answer (mirrors the standby twin).
 _liveness_first_vote=""
 _liveness_first_tip=""
 _liveness_first_ts=0
+_liveness_first_provider=""
+_liveness_sample_provider=""
 
 # Self-fence "vote lease" tracker (v0.6.3 Block 3): last LOCAL confirmed slot + the wall-clock time
 # it last advanced. LOCAL signals only. Reset (re-armed) on every switch / manual identity change.
@@ -1024,13 +1030,23 @@ check_standby_has_identity() {
 # now? Topology-independent — it does not care which IP/port holds the identity, only whether
 # SOMEONE is voting it. PRIMARY re-takes only when this says "frozen" (nobody voting).
 
-# Echo "<lastVote> <tip>" for the staked vote account AND the answering RPC's own cluster tip,
-# both from the SAME external RPC (Tier2 → Tier3) at commitment=processed. The tip is an
-# RPC-freshness reference (a stalled/cached RPC returns a frozen tip → cannot determine).
+# Echo "<lastVote> <tip> <tier>" for the staked vote account AND the answering RPC's own cluster tip,
+# both from the SAME external RPC (Tier2 → Tier3) at commitment=processed, plus the tier label
+# ("T2"/"T3") of the provider that answered (v0.7 Block 3 slice 2 — see below). The tip is an
+# RPC-freshness reference (a stalled/cached RPC returns a frozen tip → cannot determine). Fields
+# 1–2 are unchanged from v0.6.3, so two-field consumers keep working.
 get_staked_liveness_sample() {
-    local rpc vote_result lv ref
+    local rpc vote_result lv ref tier
+    # v0.7 (Block 3, slice 2 / AUDIT-5 A2): label WHICH tier answered. A liveness pair is only
+    # comparable same-vantage (a lagging fallback provider can collapse a live holder's advance to
+    # ≤ EPSILON → false FROZEN), so the verdict logic must know when a pair mixed providers. The
+    # label travels two ways: the global _liveness_sample_provider (set on every successful return)
+    # and a THIRD stdout field after "<lastVote> <ref>" — $() callers run this function in a
+    # subshell, so they re-derive the global from that field.
+    _liveness_sample_provider=""
     for rpc in "$TIER2_RPC" "$TIER3_RPC"; do
         [[ -z "$rpc" ]] && continue
+        tier="T3"; [[ "$rpc" == "$TIER2_RPC" ]] && tier="T2"
         vote_result=$(curl -s -m 10 "$rpc" -X POST \
             -H "Content-Type: application/json" -H "Cache-Control: no-cache" \
             -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts","params":[{"commitment":"processed"}]}' 2>/dev/null) || continue
@@ -1045,7 +1061,8 @@ get_staked_liveness_sample() {
         ref=$(echo "$vote_result" | jq -r \
             '[(.result.current + .result.delinquent)[]? | .lastVote] | map(numbers) | max // empty' 2>/dev/null)
         [[ -n "$ref" && "$ref" =~ ^[0-9]+$ ]] || continue
-        printf '%s %s\n' "$lv" "$ref"
+        _liveness_sample_provider="$tier"
+        printf '%s %s %s\n' "$lv" "$ref" "$tier"
         return 0
     done
     return 1
@@ -1054,12 +1071,19 @@ get_staked_liveness_sample() {
 # Compare two lastVote samples separated by real time (>= VOTE_LIVENESS_MIN_INTERVAL).
 # Returns: 0 = actively voting (advanced > epsilon)        → BLOCK recovery
 #          1 = not voting (frozen across the interval)      → recovery may proceed
-#          2 = cannot determine (externals down / too soon / backwards / RPC view stale) → BLOCK
+#          2 = cannot determine (externals down / too soon / backwards / RPC view stale /
+#              provider flip across the pair — re-pins, see below) → BLOCK
 staked_is_actively_voting() {
-    local now2 sample cur tip elapsed delta tip_delta
+    local now2 sample rest cur tip prov elapsed delta tip_delta
     now2=$(mono_now)   # v0.7 (Block 3): SAFETY clock — the recovery fence's sample interval must not be steppable
     sample=$(get_staked_liveness_sample) || sample=""
-    cur="${sample%% *}"; tip="${sample##* }"   # tip = cluster-wide max lastVote (freshness reference)
+    cur="${sample%% *}"; rest="${sample#* }"; tip="${rest%% *}"   # tip = cluster-wide max lastVote (freshness reference)
+    # v0.7 (Block 3, slice 2 / AUDIT-5 A2): third field = the answering tier ("T2"/"T3"). $() ran
+    # the sampler in a subshell, so re-derive _liveness_sample_provider here; a two-field sample
+    # (old mocks/consumers) yields an empty label and every pin comparison below degrades to
+    # always-equal (pre-pinning behavior).
+    prov=""; [[ "$rest" == *" "* ]] && prov="${rest##* }"
+    _liveness_sample_provider="$prov"
     if [[ -z "$sample" || ! "$cur" =~ ^[0-9]+$ || ! "$tip" =~ ^[0-9]+$ ]]; then
         log_warn "[liveness] staked lastVote/reference unavailable (externals down) — cannot determine"
         return 2
@@ -1067,7 +1091,8 @@ staked_is_actively_voting() {
 
     if [[ -z "$_liveness_first_vote" ]]; then
         _liveness_first_vote="$cur"; _liveness_first_tip="$tip"; _liveness_first_ts="$now2"
-        log_info "[liveness] first sample lastVote=$cur tip=$tip — need a second sample (~${VOTE_LIVENESS_MIN_INTERVAL}s)"
+        _liveness_first_provider="$prov"   # v0.7 (Block 3, slice 2): pin the pair to this vantage
+        log_info "[liveness] first sample lastVote=$cur tip=$tip provider=${prov:-unknown} — need a second sample (~${VOTE_LIVENESS_MIN_INTERVAL}s)"
         return 2
     fi
 
@@ -1084,28 +1109,54 @@ staked_is_actively_voting() {
     tip_delta=$(( tip - _liveness_first_tip ))
     if [[ $tip_delta -le 0 ]]; then
         log_warn "[liveness] cluster reference (max lastVote) did NOT advance (Δref=${tip_delta} in ${elapsed}s) — RPC view stale/lagging, cannot determine → BLOCK"
-        _liveness_first_vote="$cur"; _liveness_first_tip="$tip"; _liveness_first_ts="$now2"
+        # v0.7 (Block 3, slice 2 / AUDIT-5 A2): the re-base here is LOWER-ONLY for the vote baseline.
+        # A provider flip can land on this path (a second vantage lagging ≥ the cluster's advance
+        # reads ITS tip ≤ the pinned tip) while cur already carries a burst the old baseline
+        # predates; adopting the higher cur would forget that burst — the same reopened-B2 hole the
+        # provider re-pin's min rule closes below. Tip/clock/pin still re-base → next interval fresh.
+        [[ $cur -lt $_liveness_first_vote ]] && _liveness_first_vote="$cur"
+        _liveness_first_tip="$tip"; _liveness_first_ts="$now2"; _liveness_first_provider="$prov"
         return 2
     fi
 
     delta=$(( cur - _liveness_first_vote ))
     if [[ $delta -gt $VOTE_LIVENESS_EPSILON ]]; then
         log_warn "[liveness] staked vote ADVANCED ${delta} slots in ${elapsed}s (tip +${tip_delta}) — holder is VOTING → BLOCK"
-        _liveness_first_vote="$cur"; _liveness_first_tip="$tip"; _liveness_first_ts="$now2"
+        _liveness_first_vote="$cur"; _liveness_first_tip="$tip"; _liveness_first_ts="$now2"; _liveness_first_provider="$prov"   # re-base for the next interval (pin follows)
         return 0
     fi
     if [[ $delta -lt 0 ]]; then
         log_warn "[liveness] lastVote went backwards (Δ${delta}) — inconsistent RPC view, cannot determine"
-        _liveness_first_vote="$cur"; _liveness_first_tip="$tip"; _liveness_first_ts="$now2"
+        _liveness_first_vote="$cur"; _liveness_first_tip="$tip"; _liveness_first_ts="$now2"; _liveness_first_provider="$prov"
         return 2
     fi
 
+    # v0.7 (Block 3, slice 2 / AUDIT-5 A2): PROVIDER PIN — a FROZEN verdict is valid only when both
+    # samples of the pair came from the SAME vantage. A lagging fallback provider can UNDERCOUNT the
+    # holder's votes (fresh-T2 first sample, T3 second sample ~29 slots behind → a live holder's
+    # advance collapses to ≤ EPSILON) but can never INVENT them — so ONLY the frozen path needs this
+    # check; the ADVANCED verdict above stands on any provider mix (life signs are evaluated BEFORE
+    # this comparison). On a mismatch: re-pin the pair to the CURRENT vantage — LOWER-ONLY vote
+    # baseline (min(old, cur): a burst observed before the flip must stay remembered), tip baseline
+    # := the current tip (provider-coherent freshness guard going forward), interval clock restarted
+    # — and return "cannot determine". NOT a permanent block: the next same-provider pair renders a
+    # verdict; worst case one extra VOTE_LIVENESS_MIN_INTERVAL per provider flip.
+    if [[ "$prov" != "$_liveness_first_provider" ]]; then
+        log_warn "[liveness] provider flipped ${_liveness_first_provider:-unknown}→${prov:-unknown} across the pair — frozen reading not comparable, cannot determine → BLOCK; re-pinning to ${prov:-unknown}"
+        [[ $cur -lt $_liveness_first_vote ]] && _liveness_first_vote="$cur"
+        _liveness_first_tip="$tip"; _liveness_first_ts="$now2"; _liveness_first_provider="$prov"
+        return 2
+    fi
+
+    # INVARIANT(baseline-rises-only-on-voting): the episode vote baseline may RISE only on a
+    # VOTING verdict; every other re-base (tip-guard, backwards, provider re-pin) may only LOWER it.
+    # Full statement + the structural soundness argument: the standby twin's frozen path.
     log_info "[liveness] staked vote frozen (Δ${delta} slots, tip +${tip_delta}, in ${elapsed}s) — holder not voting → clear"
     return 1
 }
 
 # Drop the recovery vote-liveness samples so the next recovery episode starts fresh.
-reset_recovery_liveness() { _liveness_first_vote=""; _liveness_first_tip=""; _liveness_first_ts=0; }
+reset_recovery_liveness() { _liveness_first_vote=""; _liveness_first_tip=""; _liveness_first_ts=0; _liveness_first_provider=""; }
 
 attempt_safe_recovery() {
     local now elapsed
