@@ -1,0 +1,89 @@
+# Why this exact matrix exists (kept in the file — it is the workflow's justification):
+#
+#   In Aug 2026, the first-ever run of this suite under Ubuntu 24.04's bash 5.2 caught a LIVE bug
+#   in the shipped v0.6.9: bash 5.2 enables `patsub_replacement` by default, which makes `&`
+#   special in the replacement side of ${var//pat/repl}. That silently corrupted _html_escape's
+#   `&lt;`/`&gt;` -> Telegram rejected the HTML -> CRITICAL failover pages (demote / takeover /
+#   self-fence / hard-stop) were never delivered on Ubuntu 24.04 / Debian 12 hosts, and custom
+#   WEBHOOK_BODY templates were mangled. The suite had always been green — but only on bash <= 5.1
+#   and macOS bash 3.2. One interpreter cannot see this class of bug at all: the code must run,
+#   green, on BOTH ends of the bash spectrum it ships to. Hence the two-job matrix, both required.
+#   (Fixed in v0.6.10 by `shopt -u patsub_replacement`.)
+#
+#   CI is deliberately the FIRST item of this repo's trust work (before SECURITY.md, signed
+#   releases, and the published audit trail): this exact workflow, had it existed, would have
+#   caught the bash-5.2 alert-death bug BEFORE v0.6.9 shipped it to every Ubuntu 24.04 /
+#   Debian 12 install. That is the badge's meaning.
+#
+# Job summary:
+#   linux-bash52  — the deploy target (Ubuntu 24.04, /bin/bash 5.2): full suite.
+#   macos-bash32  — the compatibility floor (macOS, pinned /bin/bash 3.2.57): full suite.
+#                   Pinning /bin/bash matters: bare `bash` on a macOS runner may resolve to a newer
+#                   Homebrew bash, which would silently re-open the class where a bash-4-only
+#                   construct parses "green" while the 3.2 interpreter never runs the suite.
+#   shellcheck    — `-S error` on the four shipped scripts (the same bar every change has met).
+#   facts         — claims-vs-reality: the suite count stated in README and pinned in run_all.sh
+#                   must equal the actual number of test files. Exists because a frozen published
+#                   claim drifted from reality three separate times in this project's history
+#                   (a stale suite count, a nonexistent "tested on" tag, and release bodies
+#                   carrying retracted wording). Numbers in public claims are now checked
+#                   mechanically, not remembered.
+
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-bash52:
+    name: tests · ubuntu 24.04 · bash 5.2 (deploy target)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: interpreter fingerprint
+        run: /bin/bash --version | head -1
+      - name: deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+      - name: full suite (parse gate + run gate + suite-count manifest)
+        run: cd tests && /bin/bash run_all.sh
+
+  macos-bash32:
+    name: tests · macOS · /bin/bash 3.2.57 (compatibility floor)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: interpreter fingerprint (must be 3.2.x — fail loudly if the runner ever changes it)
+        run: |
+          /bin/bash --version | head -1
+          /bin/bash --version | head -1 | grep -q "version 3\.2" || { echo "runner /bin/bash is not 3.2 — pin a 3.2 interpreter or update this gate consciously"; exit 1; }
+      - name: deps
+        run: which jq || brew install jq
+      - name: full suite under the PINNED interpreter
+        run: cd tests && /bin/bash run_all.sh
+
+  shellcheck:
+    name: shellcheck -S error · four shipped scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S error solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh
+
+  facts:
+    name: claims match reality (suite count)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: suite count — files vs run_all.sh manifest vs README claim
+        run: |
+          actual=$(ls tests/test_*.sh | wc -l | tr -d ' ')
+          manifest=$(sed -n 's/^EXPECTED_SUITES=\([0-9]*\).*/\1/p' tests/run_all.sh)
+          echo "actual=$actual manifest=$manifest"
+          [ "$actual" = "$manifest" ] || { echo "run_all.sh EXPECTED_SUITES=$manifest but $actual test files exist"; exit 1; }
+          grep -q "${actual} suites" README.md || { echo "README does not state the actual suite count (${actual})"; exit 1; }

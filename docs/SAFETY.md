@@ -65,6 +65,16 @@ overlap** — at no point did two nodes hold the staked identity:
 | Promoted spare isolated | same cut applied to the node that had just taken over | it self-fenced too, and refused to re-take for the 600s lockout |
 | Holder daemon restart | `systemctl restart` while staked, with a stale persisted baseline | no false demote; the node kept voting |
 
+**Beyond the staged scenarios, the system has one real, unplanned activation on record.** On
+2026-08-10 at 08:45:52 the armed mainnet standby detected its primary gone (the host had been
+powered off), walked every gate — local health, a 10/10 delinquency window, external confirmation,
+advisory gossip, a frozen vote-liveness read — and took the staked identity exactly 60 s after the
+anchor; the validator picked up voting on the new host. Every gate decision is in the log.
+
+**Measured loop cadence** (four armed nodes, two of them mainnet, ~3.2 h windows each): 3.12–3.33 s
+per cycle at `CHECK_INTERVAL=3` — mainnet load does not inflate the loop (per-cycle overhead
+0.1–0.3 s over the sleep).
+
 Automated suites additionally drive the real decision functions (self-fence, takeover gating,
 cross-node timing) with mocked I/O, and every safety fix ships with a control that fails when the fix
 is reverted. **Known limit:** these are function-level — they do not prove cross-process ordering
