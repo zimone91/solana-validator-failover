@@ -255,6 +255,45 @@ case "$d_out" in
 esac
 
 echo ""
+echo "─── (e) rollback safety by construction: legacy keys carry WALL values ───"
+# A daemon <= v0.6.10 reading a v0.7 state file uses wall arithmetic on the LEGACY keys. Dual-write
+# must therefore keep those keys wall-recent: for a lockout stamped "now", an old daemon computes
+# (wall_now - legacy) ~ 0 << 600 => lockout ACTIVE after a rollback, with NO operator step.
+# Control: revert dual-write (legacy key = raw mono) => on a real-uptime host the legacy value is
+# tiny => (wall_now - legacy) = huge => lockout read as long-expired => (e1) fails.
+_e=$(
+  set +e
+  SRC_E=$(mktemp); sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC_E"; source "$SRC_E"; rm -f "$SRC_E"
+  log_info(){ :; }; log_warn(){ :; }; log_error(){ :; }
+  TMPD=$(mktemp -d); STATE_DIR="$TMPD"; STATE_FILE="$TMPD/state-standby"
+  STAKED_PUBKEY="S"; CURRENT_IDENTITY="U"
+  SELF_FENCE_DEMOTE_TIME=$(mono_now)          # lockout stamped "now" in the daemon's own clock
+  LAST_TAKEOVER_TIME=$(mono_now)
+  save_state
+  _w=$(date +%s)
+  _leg=$(grep '^SELF_FENCE_DEMOTE_TIME=' "$STATE_FILE" | cut -d= -f2)
+  _mono=$(grep '^SELF_FENCE_DEMOTE_MONO=' "$STATE_FILE" | cut -d= -f2)
+  _legt=$(grep '^LAST_TAKEOVER_TIME=' "$STATE_FILE" | cut -d= -f2)
+  # zero must survive the conversion (0 = "no lockout" — an invented cooldown would block a first take)
+  SELF_FENCE_DEMOTE_TIME=0; LAST_TAKEOVER_TIME=0
+  save_state
+  _leg0=$(grep '^SELF_FENCE_DEMOTE_TIME=' "$STATE_FILE" | cut -d= -f2)
+  rm -rf "$TMPD"
+  printf 'age=%s tage=%s mono=%s zero=%s' "$(( _w - _leg ))" "$(( _w - _legt ))" "$_mono" "$_leg0"
+)
+_age=${_e#age=}; _age=${_age%% *}
+_tage=${_e#*tage=}; _tage=${_tage%% *}
+_zero=${_e##*zero=}
+if [[ "$_age" -ge 0 && "$_age" -lt 60 && "$_tage" -ge 0 && "$_tage" -lt 60 ]]; then
+  ok "(e1) legacy lockout/cooldown keys are wall-recent (old-daemon view: elapsed ${_age}s < 600s => ACTIVE) [$_e]"
+else
+  bad "(e1) legacy keys not wall-recent — a rolled-back daemon would misread the lockout ($_e)"
+fi
+[[ "$_zero" == "0" ]] \
+  && ok "(e2) zero stamp survives the wall conversion (no invented cooldown)" \
+  || bad "(e2) zero became '$_zero' — an invented cooldown would block a legitimate first takeover"
+
+echo ""
 echo "============================================="
 echo "  RESULTS: $PASS passed, $FAIL failed"
 echo "============================================="

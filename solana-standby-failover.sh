@@ -38,6 +38,22 @@ boot_id() {
     printf '%s' "$b"
 }
 
+# Rollback safety (dual-write): the LEGACY state keys keep WALL-clock values so a daemon <= v0.6.10
+# reading this file after a rollback computes correct elapsed times with its wall arithmetic — no
+# "delete the state files first" operator step on the one path where nobody reads instructions.
+# The *_MONO twins carry the authoritative monotonic stamps this daemon uses; load_state prefers
+# them and never does arithmetic on the legacy keys. Derived per save as (wall_now - mono_elapsed),
+# which self-corrects for wall steps between the event and the save. 0 stays 0 ("unset" must
+# survive the conversion). _SAVE_W/_SAVE_M are sampled once per save_state call.
+_m2w() {
+    local m="$1"
+    if [[ "$m" =~ ^[0-9]+$ ]] && [[ $m -gt 0 ]]; then
+        printf '%s' $(( _SAVE_W - _SAVE_M + m ))
+    else
+        printf '0'
+    fi
+}
+
 # ============================================================================
 # Solana STANDBY Node Failover Protection v0.6.10 (THREE-TIER RPC)
 # Runs on HOT SPARE node. Monitors via 3-tier RPC.
@@ -640,7 +656,11 @@ load_state() {
         fi
     fi
     local v
-    v=$(_state_get LAST_TAKEOVER_TIME)
+    # v0.7 (Block 3, dual-write): prefer the *_MONO twin; the legacy key now carries a WALL value
+    # for rollback compatibility and is never used in mono arithmetic — on an old-format file
+    # (no twin) it serves only as a >0 signal and the stamp re-holds from now.
+    v=$(_state_get LAST_TAKEOVER_MONO)
+    [[ -z "$v" ]] && { v=$(_state_get LAST_TAKEOVER_TIME); [[ -n "$v" && $v -gt 0 ]] && v=$_mono_now; }
     if [[ -n "$v" ]]; then
         # v0.7 (Block 3): different boot + a real (>0) stamp → cooldown re-held in full from now (see
         # above). A 0 stamp ("no takeover yet") restores as 0 — never invent a cooldown that would
@@ -652,7 +672,8 @@ load_state() {
     # a stale value is benign: the cooldown has long expired; a fresh one MUST survive Restart=always,
     # else the monitor restart re-opens the take-back-what-we-just-fenced hazard). FAILURE DIRECTION:
     # restoring can only ever BLOCK a take, never cause one.
-    v=$(_state_get SELF_FENCE_DEMOTE_TIME)
+    v=$(_state_get SELF_FENCE_DEMOTE_MONO)
+    [[ -z "$v" ]] && { v=$(_state_get SELF_FENCE_DEMOTE_TIME); [[ -n "$v" && $v -gt 0 ]] && v=$_mono_now; }
     if [[ -n "$v" && $v -gt 0 ]]; then
         [[ $_same_boot -eq 0 ]] && v=$_mono_now   # v0.7 (Block 3): reboot → the FULL lockout re-elapses (fail toward HELD)
         SELF_FENCE_DEMOTE_TIME="$v"; log_info "State restored: SELF_FENCE_DEMOTE_TIME=$SELF_FENCE_DEMOTE_TIME (re-take lockout survives the restart)"
@@ -679,8 +700,13 @@ load_state() {
     fi
     if [[ "$STANDBY_SELF_FENCE" == "true" ]]; then
         local ps pa pn pv pb ph
-        ps=$(_state_get SF_LAST_CONFIRMED_SLOT); pa=$(_state_get SF_LAST_CONFIRMED_ADVANCE_TS)
-        pn=$(_state_get SF_NOANSWER_SINCE);      pv=$(_state_get SF_VOTELAG_SINCE)
+        ps=$(_state_get SF_LAST_CONFIRMED_SLOT); pa=$(_state_get SF_ADVANCE_MONO)
+        pn=$(_state_get SF_NOANSWER_MONO);       pv=$(_state_get SF_VOTELAG_MONO)
+        # Old-format fallback (no *_MONO twins): the legacy wall clocks cannot join mono arithmetic;
+        # leave the pendings unarmed (timers restart fresh — can delay a demote, never invent one).
+        [[ -z "$pa" ]] && pa=""
+        [[ -z "$pn" ]] && pn=0
+        [[ -z "$pv" ]] && pv=0
         pb=$(_state_get SF_VOTELAG_BASELINE);    ph=$(_state_get SF_VOTELAG_HEALTHY)
         # v0.7 (Block 3): the persisted stall/silence/lag clocks are mono_now stamps — the backdate
         # pendings arm ONLY within the same boot ($_same_boot). Across a reboot the stamps are from a
@@ -711,13 +737,20 @@ save_state() {
     # per main-loop cycle (plain overwrite — no fsync storm).
     local _role="unstaked"
     [[ -n "$STAKED_PUBKEY" && "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]] && _role="staked"
+    local _SAVE_W _SAVE_M
+    _SAVE_W=$(date +%s); _SAVE_M=$(mono_now)
     {
-        printf 'LAST_TAKEOVER_TIME=%s\n'            "$LAST_TAKEOVER_TIME"
-        printf 'SELF_FENCE_DEMOTE_TIME=%s\n'        "${SELF_FENCE_DEMOTE_TIME:-0}"
+        printf 'LAST_TAKEOVER_TIME=%s\n'            "$(_m2w "$LAST_TAKEOVER_TIME")"
+        printf 'LAST_TAKEOVER_MONO=%s\n'            "${LAST_TAKEOVER_TIME:-0}"
+        printf 'SELF_FENCE_DEMOTE_TIME=%s\n'        "$(_m2w "${SELF_FENCE_DEMOTE_TIME:-0}")"
+        printf 'SELF_FENCE_DEMOTE_MONO=%s\n'        "${SELF_FENCE_DEMOTE_TIME:-0}"
         printf 'SF_LAST_CONFIRMED_SLOT=%s\n'        "${_last_confirmed_slot:-}"
-        printf 'SF_LAST_CONFIRMED_ADVANCE_TS=%s\n'  "${_last_confirmed_advance_ts:-0}"
-        printf 'SF_NOANSWER_SINCE=%s\n'             "${_selffence_noanswer_since:-0}"
-        printf 'SF_VOTELAG_SINCE=%s\n'              "${_selffence_votelag_since:-0}"
+        printf 'SF_LAST_CONFIRMED_ADVANCE_TS=%s\n'  "$(_m2w "${_last_confirmed_advance_ts:-0}")"
+        printf 'SF_ADVANCE_MONO=%s\n'               "${_last_confirmed_advance_ts:-0}"
+        printf 'SF_NOANSWER_SINCE=%s\n'             "$(_m2w "${_selffence_noanswer_since:-0}")"
+        printf 'SF_NOANSWER_MONO=%s\n'              "${_selffence_noanswer_since:-0}"
+        printf 'SF_VOTELAG_SINCE=%s\n'              "$(_m2w "${_selffence_votelag_since:-0}")"
+        printf 'SF_VOTELAG_MONO=%s\n'               "${_selffence_votelag_since:-0}"
         printf 'SF_VOTELAG_BASELINE=%s\n'           "${_selffence_votelag_baseline:-0}"
         printf 'SF_VOTELAG_HEALTHY=%s\n'            "${_selffence_votelag_healthy:-0}"
         printf 'ROLE_AT_SAVE=%s\n'                  "$_role"
