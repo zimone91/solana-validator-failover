@@ -333,9 +333,27 @@ rotate_log() {
 # field (NODE_NAME, switch reason, identity, status) could otherwise break Telegram HTML parsing,
 # split an HTTP header, or emit invalid webhook JSON → a CRITICAL alert SILENTLY fails to send.
 _html_escape() { local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"; }
-# v0.6.9 (Phase A): strip HTML tags for PLAINTEXT sinks (the log). Telegram (parse_mode=HTML) still
-# gets the tagged form; this keeps <code>/<b> markup out of the log line. No-op on tagless messages.
-_strip_html() { local s="$1"; while [[ "$s" == *"<"*">"* ]]; do s="${s%%<*}${s#*>}"; done; printf '%s' "$s"; }
+# Strip <tag> markup for PLAINTEXT sinks (the log); Telegram (parse_mode=HTML) still gets the tagged
+# form. Single left-to-right pass: a "<" opens a tag only when a ">" follows with no other "<" in
+# between, so comparison text like "lag (> 32)" or "delta < 5" passes through verbatim. The previous
+# strip-and-rejoin loop DIVERGED when a bare ">" preceded a real <tag> (the string GREW each round and
+# the monitor hung inside a log call — and a hung monitor never self-fences). This form provably
+# terminates: every iteration consumes at least one character of the remainder.
+_strip_html() {
+    local rest="$1" out="" seg body
+    while [[ "$rest" == *"<"*">"* ]]; do
+        seg="${rest%%<*}"          # text before the next "<"
+        rest="${rest#*<}"          # consume that "<"
+        body="${rest%%>*}"         # candidate tag body, up to the next ">"
+        if [[ "$body" == *"<"* ]]; then
+            out="$out$seg<"        # another "<" arrives before any ">": that "<" was literal text
+        else
+            rest="${rest#*>}"      # real tag: drop its body and the closing ">"
+            out="$out$seg"
+        fi
+    done
+    printf '%s' "$out$rest"
+}
 _header_sanitize() { printf '%s' "$1" | tr -d '\000-\037\177'; }   # strip CR/LF/control for HTTP headers
 _json_escape_inner() {   # value escaped for embedding INSIDE a JSON string (no surrounding quotes)
     local q; q=$(printf '%s' "$1" | jq -Rsa .); q="${q%\"}"; q="${q#\"}"; printf '%s' "$q"

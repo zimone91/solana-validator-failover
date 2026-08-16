@@ -311,6 +311,8 @@ _fastpath_disabled=""                     # non-empty reason ⇒ fast-path is fa
 _last_heartbeat=0
 _last_hb_ping=0                           # v0.6.4: last external watchdog ping (own timer)
 _pending_alert=""                         # v0.6.1 (N3): retry a critical alert if Telegram blips
+_unknown_identity_since=0                 # unknown-identity episode start (0 = classified)
+_last_unknown_alert=0                     # re-page throttle inside an unknown-identity episode
 
 STAT_CHECKS=0
 STAT_DELINQUENT_SEEN=0
@@ -359,9 +361,27 @@ rotate_log() {
 # field (NODE_NAME, switch reason, identity, status) could otherwise break Telegram HTML parsing,
 # split an HTTP header, or emit invalid webhook JSON → a CRITICAL alert SILENTLY fails to send.
 _html_escape() { local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"; }
-# v0.6.9 (Phase A): strip HTML tags for PLAINTEXT sinks (the log). Telegram (parse_mode=HTML) still
-# gets the tagged form; this keeps <code>/<b> markup out of the log line. No-op on tagless messages.
-_strip_html() { local s="$1"; while [[ "$s" == *"<"*">"* ]]; do s="${s%%<*}${s#*>}"; done; printf '%s' "$s"; }
+# Strip <tag> markup for PLAINTEXT sinks (the log); Telegram (parse_mode=HTML) still gets the tagged
+# form. Single left-to-right pass: a "<" opens a tag only when a ">" follows with no other "<" in
+# between, so comparison text like "lag (> 32)" or "delta < 5" passes through verbatim. The previous
+# strip-and-rejoin loop DIVERGED when a bare ">" preceded a real <tag> (the string GREW each round and
+# the monitor hung inside a log call — and a hung monitor never self-fences). This form provably
+# terminates: every iteration consumes at least one character of the remainder.
+_strip_html() {
+    local rest="$1" out="" seg body
+    while [[ "$rest" == *"<"*">"* ]]; do
+        seg="${rest%%<*}"          # text before the next "<"
+        rest="${rest#*<}"          # consume that "<"
+        body="${rest%%>*}"         # candidate tag body, up to the next ">"
+        if [[ "$body" == *"<"* ]]; then
+            out="$out$seg<"        # another "<" arrives before any ">": that "<" was literal text
+        else
+            rest="${rest#*>}"      # real tag: drop its body and the closing ">"
+            out="$out$seg"
+        fi
+    done
+    printf '%s' "$out$rest"
+}
 _header_sanitize() { printf '%s' "$1" | tr -d '\000-\037\177'; }   # strip CR/LF/control for HTTP headers
 _json_escape_inner() {   # value escaped for embedding INSIDE a JSON string (no surrounding quotes)
     local q; q=$(printf '%s' "$1" | jq -Rsa .); q="${q%\"}"; q="${q#\"}"; printf '%s' "$q"
@@ -2325,6 +2345,11 @@ while $_running; do
     _last_known_identity="$CURRENT_IDENTITY"   # v0.6.9 (H1): remembered for the staked-unreachable URGENT page above
     flush_pending_alerts   # v0.6.1 (N3): retry any alert that failed to send earlier
 
+    # Recovery from an UNKNOWN-identity episode (paged below): announce once, re-arm the episode.
+    if [[ $_unknown_identity_since -gt 0 && ( "$CURRENT_IDENTITY" == "$UNSTAKED_PUBKEY" || "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ) ]]; then
+        alert_info "✅ Identity classified again after $(( $(date +%s) - _unknown_identity_since ))s UNKNOWN — protection active"
+        _unknown_identity_since=0; _last_unknown_alert=0
+    fi
     if [[ "$CURRENT_IDENTITY" == "$UNSTAKED_PUBKEY" ]]; then
         # ======== UNSTAKED (normal): 3-tier monitoring for takeover ========
 
@@ -2425,7 +2450,24 @@ while $_running; do
         display_status "ACTIVE"
 
     else
-        log_warn "Unknown identity: $CURRENT_IDENTITY"
+        # An identity that is neither this node's UNSTAKED key nor the STAKED key means the ENTIRE
+        # protection stack is inert — no takeover logic, no self-fence, no collision detector — while
+        # the operator most likely believes this spare is armed. Confirmed in production 2026-08-10:
+        # a manual failback briefly brought the validator up on a different unstaked key and the
+        # mainnet standby sat dark behind a WARN, during the exact operation where it mattered most.
+        # This pages like the emergency it is: immediately on entry, re-paged through ALERT_THROTTLE
+        # while it persists, with a recovery notice when the identity classifies again (above).
+        now_unk=$(date +%s)
+        if [[ $_unknown_identity_since -eq 0 ]]; then
+            _unknown_identity_since=$now_unk
+            _last_unknown_alert=$now_unk
+            alert "UNKNOWN IDENTITY — this node's failover protection is INERT (no takeover, no self-fence) until the identity matches its configured keys" "$CURRENT_IDENTITY" "🚨 PROTECTION OFFLINE"
+        elif [[ $(( now_unk - _last_unknown_alert )) -ge $ALERT_THROTTLE ]]; then
+            _last_unknown_alert=$now_unk
+            alert "UNKNOWN IDENTITY persists ($(( (now_unk - _unknown_identity_since) / 60 ))m) — failover protection still INERT" "$CURRENT_IDENTITY" "🚨 PROTECTION OFFLINE"
+        else
+            log_warn "Unknown identity: $CURRENT_IDENTITY (protection inert — paged)"
+        fi
         display_status "UNKNOWN"
     fi
 
