@@ -42,6 +42,7 @@ fi
 # ── Harness: mock time + sinks, drive the seam like the main loop would ──
 _SIM_NOW=1000000
 date() { [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
 ALERTS=0; LAST_ALERT_REASON=""; LAST_ALERT_STATUS=""
 alert() { ALERTS=$((ALERTS+1)); LAST_ALERT_REASON="$1"; LAST_ALERT_STATUS="$3"; }
 INFOS=0; alert_info() { INFOS=$((INFOS+1)); }
@@ -121,6 +122,7 @@ fi
 _SIM_NOW=2000000
 ALERTS=0; WARNS=0; INFOS=0; LAST_ALERT_STATUS=""
 date() { [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
 _unknown_identity_since=0; _last_unknown_alert=0
 CURRENT_IDENTITY="2MXepp63arq2AZmCv2dKSmB4ytZTJPyrKgt8HSKRUDES"
 # shellcheck disable=SC1090

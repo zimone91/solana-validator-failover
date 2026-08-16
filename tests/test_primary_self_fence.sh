@@ -34,6 +34,7 @@ SRC=$(mktemp)
 sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
 # shellcheck disable=SC1090
 source "$SRC"
+mono_now() { date +%s; }   # v0.7 (Block 3): tests prime timers via `date +%s` — keep the mono helper on the same clock
 rm -f "$SRC"
 
 STAKED_PUBKEY="StakedPubkey111111111111111111111111111111"
@@ -179,6 +180,7 @@ echo ""; echo "─── (N2) no-answer branch: demote BEFORE external alert (no
 _n2=$(
   set +e
   SRC2=$(mktemp); sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC2"; source "$SRC2"; rm -f "$SRC2"
+  mono_now() { date +%s; }   # v0.7 (Block 3): re-sourced daemon redefines the helper — re-shim to the scenario clock
   STAKED_PUBKEY="StakedPubkey111111111111111111111111111111"
   UNSTAKED_PUBKEY="UnstakedPubkey1111111111111111111111111111"
   LOCAL_RPC="http://mock-local"; DRY_RUN=false; CURRENT_IDENTITY="$STAKED_PUBKEY"

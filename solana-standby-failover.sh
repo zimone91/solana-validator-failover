@@ -7,6 +7,37 @@
 # (No-op error on bash < 5.2, hence the || true.)
 shopt -u patsub_replacement 2>/dev/null || true
 
+# Monotonic clock for every SAFETY duration. Wall clock (`date +%s`) is steppable — a single NTP
+# makestep during an incident was measured to instantly mature the takeover delay, defeat the
+# vote-liveness fence, and disarm the self-fence timers. /proc/uptime cannot step. Wall clock
+# remains for logging/display only; no safety decision may compare wall-clock values.
+# The test harness fallback (no /proc/uptime, e.g. the macOS test box) uses `date +%s`, which the
+# suites already mock — a fake-clock suite therefore drives this helper through its `date` mock by
+# shadowing `mono_now` (see tests). On the Linux deploy target /proc/uptime always exists.
+mono_now() {
+    local up
+    if [[ -r /proc/uptime ]]; then
+        read -r up _ < /proc/uptime
+        up=${up%%.*}
+        [[ $up -lt 1 ]] && up=1   # never emit 0: a 0 stamp means "unset" to the lockout/cooldown gates
+        printf '%s' "$up"
+    else
+        date +%s
+    fi
+}
+
+# Boot identity for the cross-reboot state semantics (see load_state): mono_now stamps are only
+# comparable within the boot that wrote them. save_state records BOOT_ID next to every persisted
+# safety stamp; load_state compares it to the current boot and fails restored lockouts/cooldowns
+# toward HELD on any mismatch. Empty when unreadable (e.g. the macOS test harness).
+boot_id() {
+    local b=""
+    if [[ -r /proc/sys/kernel/random/boot_id ]]; then
+        read -r b _ < /proc/sys/kernel/random/boot_id
+    fi
+    printf '%s' "$b"
+}
+
 # ============================================================================
 # Solana STANDBY Node Failover Protection v0.6.10 (THREE-TIER RPC)
 # Runs on HOT SPARE node. Monitors via 3-tier RPC.
@@ -584,15 +615,48 @@ load_state() {
         fi
     fi
     [[ -r "$STATE_FILE" ]] || return 0
+    # v0.7 (Block 3): cross-reboot semantics for the persisted MONOTONIC safety stamps. mono_now
+    # values are only comparable within the boot that wrote them, so save_state records BOOT_ID and
+    # this compares it to the current boot:
+    #   - SAME boot (daemon restart): the restored stamps are valid — use them verbatim (as before).
+    #   - DIFFERENT boot / no BOOT_ID line (pre-v0.7 state file): a LOCKOUT/COOLDOWN must fail
+    #     toward HELD, never toward expired → re-stamp to mono_now so the FULL window re-elapses
+    #     from this restore; the H3 stall-clock backdates are NOT armed (fresh timers — a fresh
+    #     timer can only DELAY a demote, never fabricate one).
+    #   - Harness fallback (BOTH boot-ids empty AND no /proc/uptime → mono_now IS `date +%s`):
+    #     stamps stay comparable across restarts exactly as pre-v0.7 → treat as same-boot.
+    local _mono_now _same_boot=0 _cur_boot _saved_boot
+    _mono_now=$(mono_now)
+    _cur_boot=$(boot_id)
+    if [[ -z "$_cur_boot" && -r /proc/uptime ]]; then
+        log_warn "boot_id unreadable on a monotonic host — cross-restart timer continuity is disabled: lockouts/cooldowns re-hold in full on every monitor restart (safe direction, but persistent)"
+    fi
+    if grep -q '^BOOT_ID=' "$STATE_FILE" 2>/dev/null; then
+        _saved_boot=$(grep '^BOOT_ID=' "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
+        if [[ -n "$_cur_boot" && "$_saved_boot" == "$_cur_boot" ]]; then
+            _same_boot=1
+        elif [[ -z "$_saved_boot" && -z "$_cur_boot" && ! -r /proc/uptime ]]; then
+            _same_boot=1   # harness fallback: mono_now == wall clock → values comparable
+        fi
+    fi
     local v
     v=$(_state_get LAST_TAKEOVER_TIME)
-    [[ -n "$v" ]] && { LAST_TAKEOVER_TIME="$v"; log_info "State restored: LAST_TAKEOVER_TIME=$LAST_TAKEOVER_TIME"; }
+    if [[ -n "$v" ]]; then
+        # v0.7 (Block 3): different boot + a real (>0) stamp → cooldown re-held in full from now (see
+        # above). A 0 stamp ("no takeover yet") restores as 0 — never invent a cooldown that would
+        # block a legitimate FIRST takeover during an incident (the original F7 rule).
+        [[ $_same_boot -eq 0 && $v -gt 0 ]] && v=$_mono_now
+        LAST_TAKEOVER_TIME="$v"; log_info "State restored: LAST_TAKEOVER_TIME=$LAST_TAKEOVER_TIME"
+    fi
     # v0.6.9 (H1.3): restore the self-fence re-take lockout UNCONDITIONALLY (like LAST_TAKEOVER_TIME —
     # a stale value is benign: the cooldown has long expired; a fresh one MUST survive Restart=always,
     # else the monitor restart re-opens the take-back-what-we-just-fenced hazard). FAILURE DIRECTION:
     # restoring can only ever BLOCK a take, never cause one.
     v=$(_state_get SELF_FENCE_DEMOTE_TIME)
-    [[ -n "$v" && $v -gt 0 ]] && { SELF_FENCE_DEMOTE_TIME="$v"; log_info "State restored: SELF_FENCE_DEMOTE_TIME=$SELF_FENCE_DEMOTE_TIME (re-take lockout survives the restart)"; }
+    if [[ -n "$v" && $v -gt 0 ]]; then
+        [[ $_same_boot -eq 0 ]] && v=$_mono_now   # v0.7 (Block 3): reboot → the FULL lockout re-elapses (fail toward HELD)
+        SELF_FENCE_DEMOTE_TIME="$v"; log_info "State restored: SELF_FENCE_DEMOTE_TIME=$SELF_FENCE_DEMOTE_TIME (re-take lockout survives the restart)"
+    fi
 
     # v0.6.9 (H3): promoted-holder self-fence baseline continuity across a monitor restart. Freshness-
     # gated (a save older than STATE_MAX_AGE_SECS is discarded — a stale baseline must not fire an
@@ -618,21 +682,24 @@ load_state() {
         ps=$(_state_get SF_LAST_CONFIRMED_SLOT); pa=$(_state_get SF_LAST_CONFIRMED_ADVANCE_TS)
         pn=$(_state_get SF_NOANSWER_SINCE);      pv=$(_state_get SF_VOTELAG_SINCE)
         pb=$(_state_get SF_VOTELAG_BASELINE);    ph=$(_state_get SF_VOTELAG_HEALTHY)
+        # v0.7 (Block 3): the persisted stall/silence/lag clocks are mono_now stamps — the backdate
+        # pendings arm ONLY within the same boot ($_same_boot). Across a reboot the stamps are from a
+        # dead clock: timers restart fresh (a fresh timer can only DELAY a demote, never invent one).
         if [[ -n "$ps" ]]; then
-            _last_confirmed_slot="$ps"; _last_confirmed_advance_ts=$now   # slot verbatim, timer restarts
-            if [[ "$role" == "staked" && -n "$pa" && $(( now - pa )) -ge $SELF_FENCE_ISOLATION_SECS ]]; then
+            _last_confirmed_slot="$ps"; _last_confirmed_advance_ts=$_mono_now   # slot verbatim, timer restarts
+            if [[ $_same_boot -eq 1 && "$role" == "staked" && -n "$pa" && $(( _mono_now - pa )) -ge $SELF_FENCE_ISOLATION_SECS ]]; then
                 _selffence_restore_pending=1; _selffence_restored_advance_ts="$pa"
             fi
         fi
-        if [[ "$role" == "staked" && -n "$pn" && $pn -gt 0 ]]; then
+        if [[ $_same_boot -eq 1 && "$role" == "staked" && -n "$pn" && $pn -gt 0 ]]; then
             _selffence_noanswer_restore_pending=1; _selffence_restored_noanswer_since="$pn"
         fi
         [[ "$pb" == "1" ]] && _selffence_votelag_baseline=1
         [[ -n "$ph" ]] && _selffence_votelag_healthy=$((10#$ph))
-        if [[ "$role" == "staked" && -n "$pv" && $pv -gt 0 ]]; then
+        if [[ $_same_boot -eq 1 && "$role" == "staked" && -n "$pv" && $pv -gt 0 ]]; then
             _selffence_votelag_restore_pending=1; _selffence_restored_votelag_since="$pv"
         fi
-        log_info "State restored (age ${age}s <= ${STATE_MAX_AGE_SECS}s): self-fence baseline slot=${ps:-none} role=${role:-unknown} noanswer_since=${pn:-0} votelag_since=${pv:-0}"
+        log_info "State restored (age ${age}s <= ${STATE_MAX_AGE_SECS}s): self-fence baseline slot=${ps:-none} role=${role:-unknown} noanswer_since=${pn:-0} votelag_since=${pv:-0} same_boot=${_same_boot}"
     fi
     return 0
 }
@@ -654,6 +721,7 @@ save_state() {
         printf 'SF_VOTELAG_BASELINE=%s\n'           "${_selffence_votelag_baseline:-0}"
         printf 'SF_VOTELAG_HEALTHY=%s\n'            "${_selffence_votelag_healthy:-0}"
         printf 'ROLE_AT_SAVE=%s\n'                  "$_role"
+        printf 'BOOT_ID=%s\n'                       "$(boot_id)"   # v0.7 (Block 3): the persisted stamps above are mono_now values — only comparable within this boot (see load_state)
         printf 'SAVE_TS=%s\n'                       "$(date +%s)"
     } > "$STATE_FILE" 2>/dev/null \
         || { log_warn "Cannot write $STATE_FILE — state not persisted"; return 0; }
@@ -928,7 +996,7 @@ peer_has_relinquished() {
 
 # --- Full takeover attempt (gates: window → delay → external confirm → gossip → take) ---
 attempt_takeover() {
-    now=$(date +%s)
+    now=$(mono_now)   # v0.7 (Block 3): SAFETY clock — feeds the H1.3 lockout, the N3 anchor, the cooldown and the confirm throttle
     # v0.6.9 (H1.3): post-self-fence RE-TAKE LOCKOUT — checked before everything else. After a
     # self-fence demote the staked vote account WILL look delinquent+frozen (WE were the voter and we
     # stopped): external-confirm and vote-liveness would both pass and this node would take back the
@@ -1068,7 +1136,7 @@ attempt_takeover() {
             # delay must re-elapse from this observation before STANDBY may take (see attempt_takeover
             # head). Only set on an "active" verdict — "frozen"/"cannot determine" must NOT push the
             # anchor, or the takeover could never fire.
-            LAST_LIVENESS_ACTIVE_TIME=$(date +%s)
+            LAST_LIVENESS_ACTIVE_TIME=$(mono_now)
         elif [[ $liveness -eq 2 ]]; then
             fence_reason="cannot determine vote-liveness yet"
         fi
@@ -1326,7 +1394,7 @@ get_staked_liveness_sample() {
 # blocking forever.
 staked_is_actively_voting() {
     local now2 sample cur tip elapsed delta tip_delta
-    now2=$(date +%s)
+    now2=$(mono_now)   # v0.7 (Block 3): SAFETY clock — the authoritative fence's sample interval must not be steppable
     sample=$(get_staked_liveness_sample) || sample=""
     cur="${sample%% *}"; tip="${sample##* }"   # tip = cluster-wide max lastVote (freshness reference)
     if [[ -z "$sample" || ! "$cur" =~ ^[0-9]+$ || ! "$tip" =~ ^[0-9]+$ ]]; then
@@ -1393,7 +1461,7 @@ take_staked_identity() {
         log_warn "[DRY RUN] Would TAKE staked — $reason"
         alert "$reason" "$STAKED_PUBKEY" "[DRY RUN] WOULD TAKE STAKED"
         # v0.5.9: reset window + set cooldown to prevent alert spam every cycle
-        LAST_TAKEOVER_TIME=$(date +%s); save_state   # v0.6.1 (F7)
+        LAST_TAKEOVER_TIME=$(mono_now); save_state   # v0.6.1 (F7)
         window_reset
         return 0
     fi
@@ -1432,7 +1500,7 @@ take_staked_identity() {
     sleep 1    # v0.5.9: reduced from 2s (agave-validator updates instantly)
     CURRENT_IDENTITY=$(get_local_identity) || true
     if [[ "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]]; then
-        LAST_TAKEOVER_TIME=$(date +%s); STAT_TAKEOVERS=$((STAT_TAKEOVERS + 1)); save_state   # v0.6.1 (F7)
+        LAST_TAKEOVER_TIME=$(mono_now); STAT_TAKEOVERS=$((STAT_TAKEOVERS + 1)); save_state   # v0.6.1 (F7)
         window_reset
         _selffence_reset   # v0.6.9 (B1): a FRESH staked tenure must start the self-fence trackers from
                            # scratch, mirroring the primary's switch_to_staked. Otherwise stale H3
@@ -1452,7 +1520,7 @@ take_staked_identity() {
         # N9 discipline: the cooldown is set (anti alert-storm) but the takeover EPISODE state (window /
         # N3 anchors / liveness samples) is deliberately NOT reset, so the retry discipline still
         # applies. NEVER a hard-stop here — the spare's take path fails toward availability loss.
-        LAST_TAKEOVER_TIME=$(date +%s); save_state   # v0.6.0: cooldown even on failure; v0.6.1 (F7): persist
+        LAST_TAKEOVER_TIME=$(mono_now); save_state   # v0.6.0: cooldown even on failure; v0.6.1 (F7): persist
         alert "$reason" "${CURRENT_IDENTITY:-unknown}" "TAKEOVER FAILED ❌"; return 1
     fi
 }
@@ -1631,7 +1699,7 @@ _selffence_hard_stop() {
 # Re-arm the self-fence tracker (after any demote / identity change / startup). Same fields as the
 # primary, incl. the v0.6.9 (H3) pending-restore flags (a post-demote tenure must not inherit
 # pre-restart clocks).
-_selffence_reset() { _last_confirmed_slot=""; _last_confirmed_advance_ts=$(date +%s); _selffence_noanswer_since=0; _selffence_votelag_since=0; _selffence_votelag_baseline=""; _selffence_votelag_healthy=0; _selffence_restore_pending=0; _selffence_noanswer_restore_pending=0; _selffence_votelag_restore_pending=0; _collision_strikes=0; _last_collision_check=0; }   # v0.6.9 (B1/S-6): also clear the collision-detector flap streak so each staked tenure debounces fresh
+_selffence_reset() { _last_confirmed_slot=""; _last_confirmed_advance_ts=$(mono_now); _selffence_noanswer_since=0; _selffence_votelag_since=0; _selffence_votelag_baseline=""; _selffence_votelag_healthy=0; _selffence_restore_pending=0; _selffence_noanswer_restore_pending=0; _selffence_votelag_restore_pending=0; _collision_strikes=0; _last_collision_check=0; }   # v0.6.9 (B1/S-6): also clear the collision-detector flap streak so each staked tenure debounces fresh
 
 # v0.6.9 (H1.3): the ONE demote path for every standby self-fence signal. Order per N2: safety action
 # FIRST (give_back_identity — which itself pages GAVE BACK ✅ / FAILED / escalates via the hard stop),
@@ -1651,7 +1719,7 @@ _selffence_demote() {
     local reason="$1"
     if give_back_identity "$reason"; then
         _selffence_reset
-        SELF_FENCE_DEMOTE_TIME=$(date +%s)
+        SELF_FENCE_DEMOTE_TIME=$(mono_now)
         window_reset            # fresh takeover episode: window + N3 anchors + fast-path + liveness samples + confirm throttle
         _takeover_alert_sent=""
         save_state              # persist the lockout — a Restart=always monitor restart must not clear it
@@ -1668,7 +1736,7 @@ _selffence_demote() {
 # N6/N8 own-vote-lag, B2 hysteresis).
 check_self_fence_isolation() {
     local now slot frozen health_result behind silent own_sample own_lv cluster_max vlag vlsust
-    now=$(date +%s)
+    now=$(mono_now)   # v0.7 (Block 3): SAFETY clock — a backward wall step must not disarm the fence timers
 
     # (1) LOCAL confirmed-slot advancement — the authoritative isolation signal.
     slot=$(curl -s -m 5 "$LOCAL_RPC" -X POST \
@@ -2375,7 +2443,7 @@ while $_running; do
             # DELINQUENT detected by LOCAL RPC
             STAT_DELINQUENT_SEEN=$((STAT_DELINQUENT_SEEN + 1))
             window_push 1
-            [[ $FIRST_DELINQUENT_TIME -eq 0 ]] && FIRST_DELINQUENT_TIME=$(date +%s)
+            [[ $FIRST_DELINQUENT_TIME -eq 0 ]] && FIRST_DELINQUENT_TIME=$(mono_now)   # v0.7 (Block 3): SAFETY clock (N3 anchor input)
 
             # Enter turbo mode on first delinquent
             if [[ "$_turbo_mode" != "true" ]]; then
@@ -2384,7 +2452,7 @@ while $_running; do
                 log_info "⚡ TURBO MODE: check interval ${CHECK_INTERVAL}s → ${TURBO_INTERVAL}s"
             fi
 
-            now=$(date +%s)
+            now=$(mono_now)   # v0.7 (Block 3): display elapsed, but it reads the MONO stamp — same clock or the number is garbage
             elapsed_since_first=$(( now - FIRST_DELINQUENT_TIME ))
             w_count=$(window_count)
             w_total=${#_delinq_window}

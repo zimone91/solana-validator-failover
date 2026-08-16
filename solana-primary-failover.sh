@@ -7,6 +7,37 @@
 # (No-op error on bash < 5.2, hence the || true.)
 shopt -u patsub_replacement 2>/dev/null || true
 
+# Monotonic clock for every SAFETY duration. Wall clock (`date +%s`) is steppable — a single NTP
+# makestep during an incident was measured to instantly mature the takeover delay, defeat the
+# vote-liveness fence, and disarm the self-fence timers. /proc/uptime cannot step. Wall clock
+# remains for logging/display only; no safety decision may compare wall-clock values.
+# The test harness fallback (no /proc/uptime, e.g. the macOS test box) uses `date +%s`, which the
+# suites already mock — a fake-clock suite therefore drives this helper through its `date` mock by
+# shadowing `mono_now` (see tests). On the Linux deploy target /proc/uptime always exists.
+mono_now() {
+    local up
+    if [[ -r /proc/uptime ]]; then
+        read -r up _ < /proc/uptime
+        up=${up%%.*}
+        [[ $up -lt 1 ]] && up=1   # never emit 0: a 0 stamp means "unset" to the lockout/cooldown gates
+        printf '%s' "$up"
+    else
+        date +%s
+    fi
+}
+
+# Boot identity for the cross-reboot state semantics (see load_state): mono_now stamps are only
+# comparable within the boot that wrote them. save_state records BOOT_ID next to every persisted
+# safety stamp; load_state compares it to the current boot and fails restored lockouts/cooldowns
+# toward HELD on any mismatch. Empty when unreadable (e.g. the macOS test harness).
+boot_id() {
+    local b=""
+    if [[ -r /proc/sys/kernel/random/boot_id ]]; then
+        read -r b _ < /proc/sys/kernel/random/boot_id
+    fi
+    printf '%s' "$b"
+}
+
 # ============================================================================
 # Solana Primary Node Failover Protection v0.6.10 (THREE-TIER RPC)
 # Combines: internet monitoring + 3-tier delinquency verification + safe recovery
@@ -593,9 +624,39 @@ load_state() {
         fi
     fi
     [[ -r "$STATE_FILE" ]] || return 0
+    # v0.7 (Block 3): cross-reboot semantics for the persisted MONOTONIC safety stamps. mono_now
+    # values are only comparable within the boot that wrote them, so save_state records BOOT_ID and
+    # this compares it to the current boot:
+    #   - SAME boot (daemon restart): the restored stamps are valid — use them verbatim (as before).
+    #   - DIFFERENT boot / no BOOT_ID line (pre-v0.7 state file): a LOCKOUT/COOLDOWN must fail
+    #     toward HELD, never toward expired → re-stamp to mono_now so the FULL window re-elapses
+    #     from this restore; the H3 stall-clock backdates are NOT armed (fresh timers — a fresh
+    #     timer can only DELAY a demote, never fabricate one).
+    #   - Harness fallback (BOTH boot-ids empty AND no /proc/uptime → mono_now IS `date +%s`):
+    #     stamps stay comparable across restarts exactly as pre-v0.7 → treat as same-boot.
+    local _mono_now _same_boot=0 _cur_boot _saved_boot
+    _mono_now=$(mono_now)
+    _cur_boot=$(boot_id)
+    if [[ -z "$_cur_boot" && -r /proc/uptime ]]; then
+        log_warn "boot_id unreadable on a monotonic host — cross-restart timer continuity is disabled: lockouts/cooldowns re-hold in full on every monitor restart (safe direction, but persistent)"
+    fi
+    if grep -q '^BOOT_ID=' "$STATE_FILE" 2>/dev/null; then
+        _saved_boot=$(grep '^BOOT_ID=' "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
+        if [[ -n "$_cur_boot" && "$_saved_boot" == "$_cur_boot" ]]; then
+            _same_boot=1
+        elif [[ -z "$_saved_boot" && -z "$_cur_boot" && ! -r /proc/uptime ]]; then
+            _same_boot=1   # harness fallback: mono_now == wall clock → values comparable
+        fi
+    fi
     local v
     v=$(_state_get LAST_SWITCH_TIME)
-    [[ -n "$v" ]] && { LAST_SWITCH_TIME="$v"; log_info "State restored: LAST_SWITCH_TIME=$LAST_SWITCH_TIME"; }
+    if [[ -n "$v" ]]; then
+        # v0.7 (Block 3): different boot + a real (>0) stamp → the recovery delay/cooldown re-held in
+        # full from now (see above). A 0 stamp ("no switch yet") restores as 0 — never invent a
+        # cooldown that would block a legitimate first switch (the original F7 rule).
+        [[ $_same_boot -eq 0 && $v -gt 0 ]] && v=$_mono_now
+        LAST_SWITCH_TIME="$v"; log_info "State restored: LAST_SWITCH_TIME=$LAST_SWITCH_TIME"
+    fi
 
     # v0.6.9 (H3): self-fence baseline continuity across a monitor restart. Restore-only-genuine +
     # FRESHNESS-GATED: a save older than STATE_MAX_AGE_SECS is discarded wholesale (a stale baseline
@@ -623,28 +684,31 @@ load_state() {
         ps=$(_state_get SF_LAST_CONFIRMED_SLOT); pa=$(_state_get SF_LAST_CONFIRMED_ADVANCE_TS)
         pn=$(_state_get SF_NOANSWER_SINCE);      pv=$(_state_get SF_VOTELAG_SINCE)
         pb=$(_state_get SF_VOTELAG_BASELINE);    ph=$(_state_get SF_VOTELAG_HEALTHY)
+        # v0.7 (Block 3): the persisted stall/silence/lag clocks are mono_now stamps — the backdate
+        # pendings arm ONLY within the same boot ($_same_boot). Across a reboot the stamps are from a
+        # dead clock: timers restart fresh (a fresh timer can only DELAY a demote, never invent one).
         if [[ -n "$ps" ]]; then
-            _last_confirmed_slot="$ps"; _last_confirmed_advance_ts=$now   # slot verbatim, timer restarts
+            _last_confirmed_slot="$ps"; _last_confirmed_advance_ts=$_mono_now   # slot verbatim, timer restarts
             # Persisted-STAKED + the stall already older than the window → arm the backdate: if the
             # first post-restart read shows the slot STILL not past the baseline, the stall is
             # continuous and inherits the persisted clock (fence can fire immediately).
-            if [[ "$role" == "staked" && -n "$pa" && $(( now - pa )) -ge $SELF_FENCE_ISOLATION_SECS ]]; then
+            if [[ $_same_boot -eq 1 && "$role" == "staked" && -n "$pa" && $(( _mono_now - pa )) -ge $SELF_FENCE_ISOLATION_SECS ]]; then
                 _selffence_restore_pending=1; _selffence_restored_advance_ts="$pa"
             fi
         fi
         # Same principle for the no-answer timer: we were STAKED and already silent at save → if the
         # LOCAL RPC is STILL silent at the first post-restart check, inherit the silence clock.
-        if [[ "$role" == "staked" && -n "$pn" && $pn -gt 0 ]]; then
+        if [[ $_same_boot -eq 1 && "$role" == "staked" && -n "$pn" && $pn -gt 0 ]]; then
             _selffence_noanswer_restore_pending=1; _selffence_restored_noanswer_since="$pn"
         fi
         # N6 own-vote-lag: the healthy-baseline latch + hysteresis streak restore verbatim; the sustain
         # timer restarts EXCEPT via the same evidence-gated backdate (still over threshold on first read).
         [[ "$pb" == "1" ]] && _selffence_votelag_baseline=1
         [[ -n "$ph" ]] && _selffence_votelag_healthy=$((10#$ph))
-        if [[ "$role" == "staked" && -n "$pv" && $pv -gt 0 ]]; then
+        if [[ $_same_boot -eq 1 && "$role" == "staked" && -n "$pv" && $pv -gt 0 ]]; then
             _selffence_votelag_restore_pending=1; _selffence_restored_votelag_since="$pv"
         fi
-        log_info "State restored (age ${age}s <= ${STATE_MAX_AGE_SECS}s): self-fence baseline slot=${ps:-none} role=${role:-unknown} noanswer_since=${pn:-0} votelag_since=${pv:-0}"
+        log_info "State restored (age ${age}s <= ${STATE_MAX_AGE_SECS}s): self-fence baseline slot=${ps:-none} role=${role:-unknown} noanswer_since=${pn:-0} votelag_since=${pv:-0} same_boot=${_same_boot}"
     fi
     return 0
 }
@@ -665,6 +729,7 @@ save_state() {
         printf 'SF_VOTELAG_BASELINE=%s\n'           "${_selffence_votelag_baseline:-0}"
         printf 'SF_VOTELAG_HEALTHY=%s\n'            "${_selffence_votelag_healthy:-0}"
         printf 'ROLE_AT_SAVE=%s\n'                  "$_role"
+        printf 'BOOT_ID=%s\n'                       "$(boot_id)"   # v0.7 (Block 3): the persisted stamps above are mono_now values — only comparable within this boot (see load_state)
         printf 'SAVE_TS=%s\n'                       "$(date +%s)"
     } > "$STATE_FILE" 2>/dev/null \
         || { log_warn "Cannot write $STATE_FILE — state not persisted"; return 0; }
@@ -963,7 +1028,7 @@ get_staked_liveness_sample() {
 #          2 = cannot determine (externals down / too soon / backwards / RPC view stale) → BLOCK
 staked_is_actively_voting() {
     local now2 sample cur tip elapsed delta tip_delta
-    now2=$(date +%s)
+    now2=$(mono_now)   # v0.7 (Block 3): SAFETY clock — the recovery fence's sample interval must not be steppable
     sample=$(get_staked_liveness_sample) || sample=""
     cur="${sample%% *}"; tip="${sample##* }"   # tip = cluster-wide max lastVote (freshness reference)
     if [[ -z "$sample" || ! "$cur" =~ ^[0-9]+$ || ! "$tip" =~ ^[0-9]+$ ]]; then
@@ -1015,7 +1080,7 @@ reset_recovery_liveness() { _liveness_first_vote=""; _liveness_first_tip=""; _li
 
 attempt_safe_recovery() {
     local now elapsed
-    now=$(date +%s); elapsed=$(( now - LAST_SWITCH_TIME ))
+    now=$(mono_now); elapsed=$(( now - LAST_SWITCH_TIME ))   # v0.7 (Block 3): SAFETY clock (RECOVERY_DELAY gate)
 
     if [[ $elapsed -lt $RECOVERY_DELAY ]]; then
         if [[ $(( now - _last_recovery_log )) -ge 60 ]]; then
@@ -1209,7 +1274,7 @@ switch_to_unstaked() {
     sleep 1    # v0.5.9: reduced from 2s
     CURRENT_IDENTITY=$(get_local_identity) || true
     if [[ "$CURRENT_IDENTITY" == "$UNSTAKED_PUBKEY" ]]; then
-        LAST_SWITCH_TIME=$(date +%s); STAT_SWITCHES=$((STAT_SWITCHES + 1)); save_state   # v0.6.1 (F7)
+        LAST_SWITCH_TIME=$(mono_now); STAT_SWITCHES=$((STAT_SWITCHES + 1)); save_state   # v0.6.1 (F7)
         _recovery_confirm_count=0; _standby_alert_sent=""; _last_switch_fail_alert=0; window_reset
         reset_recovery_liveness; _selffence_reset   # v0.6.3 (Block 2/3): fresh trackers after the switch
         alert "$reason" "$UNSTAKED_PUBKEY" "SWITCHED TO UNSTAKED ✅"; return 0
@@ -1228,7 +1293,7 @@ switch_to_unstaked() {
 
 switch_to_staked() {
     local reason="$1"
-    local now; now=$(date +%s)
+    local now; now=$(mono_now)   # v0.7 (Block 3): SAFETY clock (RECOVERY_COOLDOWN gate)
     local elapsed=$(( now - LAST_SWITCH_TIME ))
     [[ $elapsed -lt $RECOVERY_COOLDOWN ]] && { log_info "Cooldown: $(( RECOVERY_COOLDOWN - elapsed ))s remaining"; return 1; }
 
@@ -1265,7 +1330,7 @@ switch_to_staked() {
     sleep 1    # v0.5.9: reduced from 2s
     CURRENT_IDENTITY=$(get_local_identity) || true
     if [[ "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]]; then
-        LAST_SWITCH_TIME=$(date +%s); STAT_SWITCHES=$((STAT_SWITCHES + 1)); save_state   # v0.6.1 (F7)
+        LAST_SWITCH_TIME=$(mono_now); STAT_SWITCHES=$((STAT_SWITCHES + 1)); save_state   # v0.6.1 (F7)
         _recovery_confirm_count=0; window_reset; reset_recovery_liveness; _selffence_reset   # v0.6.3 (Block 2/3)
         alert "$reason" "$STAKED_PUBKEY" "RECOVERED TO STAKED ✅"; return 0
     else
@@ -1291,11 +1356,11 @@ switch_to_staked() {
 # v0.6.9 (H3): also drop any pending restart-continuity restore — after a switch/identity change the
 # persisted pre-restart clocks are no longer about the CURRENT staked tenure (stale inheritance could
 # fire a false demote on the next tenure).
-_selffence_reset() { _last_confirmed_slot=""; _last_confirmed_advance_ts=$(date +%s); _selffence_noanswer_since=0; _selffence_votelag_since=0; _selffence_votelag_baseline=""; _selffence_votelag_healthy=0; _selffence_restore_pending=0; _selffence_noanswer_restore_pending=0; _selffence_votelag_restore_pending=0; _collision_strikes=0; _last_collision_check=0; }   # v0.6.7 (N6) + v0.6.8 (B2): re-arm the own-vote-lag tracker incl. the hysteresis counter; v0.6.9 (S-6): also clear the collision-detector flap streak per staked tenure
+_selffence_reset() { _last_confirmed_slot=""; _last_confirmed_advance_ts=$(mono_now); _selffence_noanswer_since=0; _selffence_votelag_since=0; _selffence_votelag_baseline=""; _selffence_votelag_healthy=0; _selffence_restore_pending=0; _selffence_noanswer_restore_pending=0; _selffence_votelag_restore_pending=0; _collision_strikes=0; _last_collision_check=0; }   # v0.6.7 (N6) + v0.6.8 (B2): re-arm the own-vote-lag tracker incl. the hysteresis counter; v0.6.9 (S-6): also clear the collision-detector flap streak per staked tenure
 
 check_self_fence_isolation() {
     local now slot frozen health_result behind silent own_sample own_lv cluster_max vlag vlsust
-    now=$(date +%s)
+    now=$(mono_now)   # v0.7 (Block 3): SAFETY clock — a backward wall step must not disarm the fence timers
 
     # (1) LOCAL confirmed-slot advancement — the authoritative isolation signal.
     slot=$(curl -s -m 5 "$LOCAL_RPC" -X POST \
@@ -1865,7 +1930,7 @@ while $_running; do
     # ---- Detect manual identity changes (not by this script) ----
     if [[ -n "$_last_known_identity" && "$CURRENT_IDENTITY" != "$_last_known_identity" ]]; then
         # Identity changed since last check — was it us?
-        now_manual=$(date +%s)
+        now_manual=$(mono_now)   # v0.7 (Block 3): compared against LAST_SWITCH_TIME (a mono stamp) — a wall step must not mis-attribute a switch
         if [[ $(( now_manual - LAST_SWITCH_TIME )) -gt 10 ]]; then
             # Not our switch (too long ago) → someone did it manually
             log_warn "⚠️ Identity changed externally: ${_last_known_identity:0:8}→${CURRENT_IDENTITY:0:8} — resetting + grace"

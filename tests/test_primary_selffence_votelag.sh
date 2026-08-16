@@ -29,6 +29,7 @@ PRIMARY="$DIR/solana-primary-failover.sh"
 SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
 # shellcheck disable=SC1090
 source "$SRC"; rm -f "$SRC"
+mono_now() { date +%s; }   # v0.7 (Block 3): tests prime timers via `date +%s` — keep the mono helper on the same clock
 
 STAKED_PUBKEY="StakedPubkey111111111111111111111111111111"
 UNSTAKED_PUBKEY="UnstakedPubkey1111111111111111111111111111"
@@ -164,6 +165,7 @@ old_lag=$(( _LOCAL_SLOT - _OWN_LV ))   # what the rc.2 (confirmed-tip vs own) co
 _n8rev=$(
   set +e
   SRC2=$(mktemp); sed -n '1,/MAIN LOOP/p' "$PRIMARY" | sed 's/cluster_max - own_lv/slot - own_lv/' > "$SRC2"; source "$SRC2"; rm -f "$SRC2"
+  mono_now() { date +%s; }   # v0.7 (Block 3): re-sourced daemon redefines the helper — re-shim to the scenario clock
   STAKED_PUBKEY="S"; UNSTAKED_PUBKEY="U"; VOTE_PUBKEY="VotePubkey1111111111111111111111111111111"
   LOCAL_RPC="http://mock"; DRY_RUN=false; CURRENT_IDENTITY="$STAKED_PUBKEY"; TG_ENABLED=false
   SELF_FENCE_ISOLATION_SECS=30; SELF_FENCE_MAX_BEHIND=0; SELF_FENCE_NOANSWER_SECS=0

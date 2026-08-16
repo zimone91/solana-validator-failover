@@ -3,6 +3,15 @@
 All notable changes are documented here. Versions follow the project's internal `v0.6.x` line;
 `v0.6.9` is the first public release.
 
+## Unreleased (v0.7 line)
+
+- **Safety timers are monotonic** (`/proc/uptime`); the state file gains a `BOOT_ID` line and
+  persisted safety stamps are now monotonic values. **Rollback note:** a daemon ≤ v0.6.10 reading a
+  v0.7-format state file would misread the small monotonic stamps as long-expired wall times —
+  including the post-self-fence re-take lockout. **If you roll back, delete
+  `/opt/solana-failover/state*` first.** Upgrading forward needs nothing: old files are detected
+  and lockouts re-hold in full (fail toward held).
+
 ## v0.6.10 — hotfix: alert delivery broken on bash 5.2 hosts (Ubuntu 24.04 / Debian 12)
 
 **One-line fix per script, zero logic changes.** bash 5.2 enables `patsub_replacement` by default,

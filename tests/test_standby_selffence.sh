@@ -53,6 +53,7 @@ save_state(){ :; }   # persistence exercised in test_baseline_persistence.sh
 sleep(){ :; }        # simulated clock only (see date below)
 _SIM_NOW=1700000000
 date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
 
 # alert capture (all pages routed here)
 _alert_log=""

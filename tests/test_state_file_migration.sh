@@ -54,7 +54,10 @@ for SCRIPT in "$PRIMARY" "$STANDBY"; do
   NEWF="$TMPD/state-$ROLE"; LEGACY="$TMPD/state"
 
   echo ""; echo "─── [$NAME] (S-a) legacy migrates once ───"
-  printf '%s=4242\n' "$KEY" > "$LEGACY"
+  # v0.7 (Block 3): stamp the fixture with the CURRENT boot id (empty on the macOS harness — the
+  # no-/proc/uptime fallback then reads it as same-boot) so the persisted value restores VERBATIM;
+  # cross-boot re-stamping is covered by test_monotonic_timers.sh, this suite tests the M10 migration.
+  printf '%s=4242\nBOOT_ID=%s\n' "$KEY" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" > "$LEGACY"
   out=$(run_load "$SCRIPT" "$NEWF" "$KEY")
   if [[ "$out" == "val=4242" && -f "$NEWF" && ! -e "$LEGACY" ]]; then
       ok "[$NAME] (S-a) legacy → $(basename "$NEWF") migrated (mv), value restored (4242), legacy gone"

@@ -53,6 +53,7 @@ run_b1() {   # $1=script
     get_local_identity(){ cat "$ID_FILE"; }
     _SIM_NOW=1700000000
     date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+    mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
     # admin-socket mock: set-identity applies the matching pubkey (take → S1, give-back → U1) so the
     # demote's REAL give_back_identity can complete when the (control) misfire path exercises it.
     timeout(){
