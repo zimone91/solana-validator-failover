@@ -74,7 +74,7 @@ done
 # --- verify against the version's SHA256SUMS manifest (fail-closed) ---
 if curl -sSfL "$REPO/$VERSION/SHA256SUMS" -o "$DIR/SHA256SUMS" 2>/dev/null && [ -s "$DIR/SHA256SUMS" ]; then
   for f in "$DEPLOY" "$DAEMON"; do
-    want=$(grep "  $f\$" "$DIR/SHA256SUMS" | cut -d' ' -f1)
+    want=$(awk -v f="$f" '$2 == f { print $1; exit }' "$DIR/SHA256SUMS")
     [ -n "$want" ] || die "SHA256SUMS for $VERSION does not list $f — refusing to install"
     got=$(sha256_of "$DIR/$f")
     if [ "$got" != "$want" ]; then
