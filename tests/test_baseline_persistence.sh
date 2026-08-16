@@ -43,6 +43,7 @@ phase1() {
     send_telegram(){ return 0; }; send_webhook(){ :; }; alert(){ :; }; alert_warn(){ :; }; alert_info(){ :; }
     _SIM_NOW=$T0
     date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+    mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
     _M="slot"
     curl(){ local d=""; while [[ $# -gt 0 ]]; do [[ "$1" == "-d" ]] && { d="$2"; shift 2; continue; }; shift; done
             case "$d" in *getSlot*) [[ "$_M" == "noanswer" ]] && return 7; printf '{"result":100000}'; return 0 ;;
@@ -78,6 +79,7 @@ phase2() {
     send_telegram(){ return 0; }; send_webhook(){ :; }; alert(){ :; }; alert_warn(){ :; }; alert_info(){ :; }
     _SIM_NOW=$(( T0 + now_off ))
     date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+    mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
     _M="$mode"; _SLOT="$slotval"
     curl(){ local d=""; while [[ $# -gt 0 ]]; do [[ "$1" == "-d" ]] && { d="$2"; shift 2; continue; }; shift; done
             case "$d" in *getSlot*) [[ "$_M" == "noanswer" ]] && return 7; printf '{"result":%s}' "$_SLOT"; return 0 ;;
@@ -193,6 +195,7 @@ run_waitloop() {   # $1=script $2=persisted_role → echoes "alerts=<n>|pings=<n
     log_info(){ :; }; log_warn(){ :; }
     _SIM_NOW=1700000000
     date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+    mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
     _ALERTS=0; alert(){ [[ "$3" == *"UNREACHABLE WHILE STAKED"* ]] && _ALERTS=$((_ALERTS+1)); }
     _PINGS=0; heartbeat_ping(){ _PINGS=$((_PINGS+1)); }
     # NOTE: get_local_identity is called inside $(...) — a counter there would be lost in the subshell.

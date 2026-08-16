@@ -27,6 +27,7 @@ STANDBY="$DIR/solana-standby-failover.sh"
 SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
 # shellcheck disable=SC1090
 source "$SRC"; rm -f "$SRC"
+mono_now() { date +%s; }   # v0.7 (Block 3): tests prime timers via `date +%s` — keep the mono helper on the same clock
 
 STAKED_PUBKEY="StakedPubkey111111111111111111111111111111"
 UNSTAKED_PUBKEY="UnstakedPubkey1111111111111111111111111111"

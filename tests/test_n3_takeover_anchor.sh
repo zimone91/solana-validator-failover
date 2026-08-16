@@ -45,6 +45,7 @@ sim() {
   VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_MIN_INTERVAL=10; VOTE_LIVENESS_EPSILON=2
   GOSSIP_VERIFY=false; DRY_RUN=false
   date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+  mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
   log(){ :;}; log_info(){ :;}; log_warn(){ :;}; log_error(){ :;}
   alert(){ :;}; alert_info(){ :;}; alert_warn(){ :;}; send_telegram(){ return 0;}; send_webhook(){ :;}
   confirm_delinquency_external(){ return 0; }                 # externally CONFIRMED delinquent

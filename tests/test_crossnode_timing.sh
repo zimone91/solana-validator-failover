@@ -36,6 +36,7 @@ sim_primary() { (
   STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; LOCAL_RPC="http://mock"
   PRIMARY_SELF_FENCE=true; DRY_RUN=false; TG_ENABLED=false; SELF_FENCE_MAX_BEHIND=0
   date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+  mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
   log(){ :;}; log_info(){ :;}; log_warn(){ :;}; log_error(){ :;}; alert(){ :;}; send_telegram(){ return 0;}; send_webhook(){ :;}
   fired=-1
   switch_to_unstaked(){ fired=$(( _SIM_NOW - T0 )); CURRENT_IDENTITY="$UNSTAKED_PUBKEY"; return 0; }
@@ -60,6 +61,7 @@ sim_standby() {  # $1 = TAKEOVER_DELAY to use ; $2 = delinquency-detection onset
   TAKEOVER_DELAY="$1"; TAKEOVER_COOLDOWN=0; EXTERNAL_CONFIRM_THROTTLE=0
   GOSSIP_VERIFY=false; DRY_RUN=false
   date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+  mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
   log(){ :;}; log_info(){ :;}; log_warn(){ :;}; log_error(){ :;}; alert(){ :;}; alert_info(){ :;}; alert_warn(){ :;}; send_telegram(){ return 0;}; send_webhook(){ :;}
   confirm_delinquency_external(){ return 0; }                              # externally CONFIRMED delinquent
   get_staked_liveness_sample(){ echo "5000 $(( 100000 + _SIM_NOW - T0 ))"; }  # staked vote FROZEN, cluster tip ADVANCING
@@ -149,6 +151,7 @@ sim_primary_egress() {  # $1 = SELF_FENCE_VOTE_LAG_SLOTS (0 = N6 disabled, for t
   SELF_FENCE_ISOLATION_SECS=30; SELF_FENCE_MAX_BEHIND=0; SELF_FENCE_NOANSWER_SECS=0
   SELF_FENCE_VOTE_LAG_SLOTS="$1"; SELF_FENCE_VOTE_LAG_SECS="$SF_SECS"
   date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+  mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
   log(){ :;}; log_info(){ :;}; log_warn(){ :;}; log_error(){ :;}; alert(){ :;}; send_telegram(){ return 0;}; send_webhook(){ :;}
   S0=100000; OWN_LV=$(( S0 - 2 ))   # our own vote FROZEN at the last landed slot; the cluster advances from S0
   # v0.6.7 (N8): getVoteAccounts {processed} returns the cluster-max (another voter, ADVANCING) + our own

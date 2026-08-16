@@ -42,6 +42,7 @@ for SCRIPT in "$PRIMARY" "$STANDBY"; do
     send_telegram(){ return 0; }; send_webhook(){ :; }; save_state(){ :; }; sleep(){ :; }
     _SIM_NOW=1700000000
     date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
+    mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
     _PAGES=0; _PAGE_TXT=""
     alert(){ _PAGES=$((_PAGES+1)); _PAGE_TXT="$1 :: $3"; }
     alert_warn(){ :; }; alert_info(){ :; }
