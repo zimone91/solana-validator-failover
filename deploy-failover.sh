@@ -423,7 +423,12 @@ echo -e "  ${DIM}A private channel will be auto-generated for you.${NC}"
 sleep 1
 echo ""
 
-ask_choice "Enable ntfy.sh push (optional)" "true" "true" "false"
+# Re-run safety: if a CUSTOM (non-ntfy) webhook is already configured, default this to "false" so
+# one Enter cannot replace a working Slack/Discord webhook with a fresh, unsubscribed ntfy channel
+# (that would silently send every alert into the void — alerting is the system's own safety net).
+_ntfy_default="true"
+[[ -n "${WEBHOOK_URL:-}" && "$WEBHOOK_URL" != *"ntfy.sh"* ]] && _ntfy_default="false"
+ask_choice "Enable ntfy.sh push (optional)" "$_ntfy_default" "true" "false"
 CFG_NTFY_ENABLED="$REPLY"
 
 if [[ "$CFG_NTFY_ENABLED" == "true" ]]; then

@@ -243,7 +243,12 @@ echo -e "     ${DIM}                                                  (only if S
 echo -e "     ${DIM}                                                   is also down)${NC}"
 echo ""
 
-ask_choice "Server role" "STANDBY" "STANDBY" "BACKUP"
+# Re-run safety: when an existing env was loaded above, FAILOVER_ROLE holds this node's real role.
+# The default must follow it — a hard-coded "STANDBY" here would let one Enter on the documented
+# upgrade path silently convert a BACKUP into a second STANDBY (two spares taking at the same time).
+# ≤v0.6.8 envs never wrote FAILOVER_ROLE — for those, hint the role from the loaded TAKEOVER_DELAY
+# (a BACKUP ships with 120+). Only the VISIBLE [default]; the operator confirms.
+ask_choice "Server role" "${FAILOVER_ROLE:-$( [[ "${TAKEOVER_DELAY:-0}" =~ ^[0-9]+$ ]] && [[ $((10#${TAKEOVER_DELAY:-0})) -ge 120 ]] && echo BACKUP || echo STANDBY )}" "STANDBY" "BACKUP"
 CFG_ROLE="$REPLY"
 
 # v0.6.9 (Phase A): Simple vs Advanced install mode. Simple uses the verified-safe defaults and
@@ -537,8 +542,20 @@ fi
 # rather than emit an unsafe config; the daemon also refuses to start below the floor.
 # v0.6.7: derive from the REC_* single source of truth so the prompt note/warning above and this
 # clamp use one set of numbers (REC_TAKEOVER_DELAY == EXPECTED + MARGIN).
-CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS=$REC_EXPECTED_PRIMARY_SELF_FENCE_SECS
-CFG_SELF_FENCE_MARGIN_SECS=$REC_SELF_FENCE_MARGIN_SECS
+# Re-run safety: a lock-step-tuned deployment (operator raised the PRIMARY self-fence AND every
+# spare's EXPECTED in tandem) must survive a wizard re-run — a hard REC_* reset would silently
+# lower this spare's cross-node floor and the daemon's startup timing assertion. Stay sticky.
+CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS=${EXPECTED_PRIMARY_SELF_FENCE_SECS:-$REC_EXPECTED_PRIMARY_SELF_FENCE_SECS}
+CFG_SELF_FENCE_MARGIN_SECS=${SELF_FENCE_MARGIN_SECS:-$REC_SELF_FENCE_MARGIN_SECS}
+# Sticky must not be SILENT about a lowered value: below the shipped safe numbers the cross-node
+# floor (and the daemon's startup timing assertion) shrink with them. Non-numeric garbage resets to
+# the safe value; numeric-but-low is kept (lowered lock-step tuning is legitimate) but warned in RED.
+[[ "$CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS" =~ ^[0-9]+$ ]] || CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS=$REC_EXPECTED_PRIMARY_SELF_FENCE_SECS
+[[ "$CFG_SELF_FENCE_MARGIN_SECS" =~ ^[0-9]+$ ]] || CFG_SELF_FENCE_MARGIN_SECS=$REC_SELF_FENCE_MARGIN_SECS
+if [[ $CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS -lt $REC_EXPECTED_PRIMARY_SELF_FENCE_SECS || $CFG_SELF_FENCE_MARGIN_SECS -lt $REC_SELF_FENCE_MARGIN_SECS ]]; then
+    echo -e "  ${RED}⚠ EXPECTED_PRIMARY_SELF_FENCE_SECS=${CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS} / SELF_FENCE_MARGIN_SECS=${CFG_SELF_FENCE_MARGIN_SECS} are BELOW the shipped safe values (${REC_EXPECTED_PRIMARY_SELF_FENCE_SECS}/${REC_SELF_FENCE_MARGIN_SECS}) — the spare's floor shrinks with them.${NC}"
+    echo -e "  ${RED}  Keep this ONLY if the PRIMARY's self-fence timers were lowered in lock-step; otherwise the spare may take while the holder still holds staked (double-sign).${NC}"
+fi
 # v0.6.9 (Phase-B2): a BACKUP's cross-node floor AND its Option-A stagger both need the STANDBY's
 # TAKEOVER_DELAY. The daemon now REFUSES to start when a BACKUP has no positive STANDBY_TAKEOVER_DELAY
 # (it cannot compute the take-visibility floor), so collect it in ALL modes — not only under Option A.
@@ -547,7 +564,10 @@ if [[ "$CFG_ROLE" == "BACKUP" ]]; then
     echo -e "  ${YELLOW}A BACKUP takes over only AFTER the STANDBY has. Enter the STANDBY's TAKEOVER_DELAY${NC}"
     echo -e "  ${YELLOW}(NOT this BACKUP's) so this node waits until the STANDBY's take is externally visible${NC}"
     echo -e "  ${YELLOW}before it may take — otherwise two spares could take at once (double-sign).${NC}"
-    ask_numeric "STANDBY's TAKEOVER_DELAY (seconds)" "60" 1
+    # Re-run safety: an existing env holds this BACKUP's configured STANDBY_TAKEOVER_DELAY — the
+    # default must follow it (a hard-coded 60 here would let one Enter lower the take-visibility
+    # floor this node's cross-node timing is computed from).
+    ask_numeric "STANDBY's TAKEOVER_DELAY (seconds)" "${STANDBY_TAKEOVER_DELAY:-60}" 1
     CFG_STANDBY_TAKEOVER_DELAY="$REPLY"
 fi
 # The floor is ROLE-AWARE, mirroring the daemon's check_crossnode_timing_safety:
@@ -648,7 +668,12 @@ echo -e "  ${DIM}Use the same channel as PRIMARY for unified alerts.${NC}"
 sleep 1
 echo ""
 
-ask_choice "Enable ntfy.sh push (optional)" "true" "true" "false"
+# Re-run safety: if a CUSTOM (non-ntfy) webhook is already configured, default this to "false" so
+# one Enter cannot replace a working Slack/Discord webhook with a fresh, unsubscribed ntfy channel
+# (that would silently send every alert into the void — alerting is the system's own safety net).
+_ntfy_default="true"
+[[ -n "${WEBHOOK_URL:-}" && "$WEBHOOK_URL" != *"ntfy.sh"* ]] && _ntfy_default="false"
+ask_choice "Enable ntfy.sh push (optional)" "$_ntfy_default" "true" "false"
 CFG_NTFY_ENABLED="$REPLY"
 
 if [[ "$CFG_NTFY_ENABLED" == "true" ]]; then

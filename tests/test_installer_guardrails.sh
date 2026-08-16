@@ -194,6 +194,132 @@ grep -q '_norm_rpc_url "$CFG_TIER2_RPC"' "$DEPLOY_PRIMARY" && grep -qE 'while .*
   || bad "(19) primary wizard missing the M8 loop"
 
 echo ""
+echo "─── re-run keeps the configured role (sticky FAILOVER_ROLE default) ───"
+# BEHAVIORAL via the ask_choice seam + the SHIPPED role-prompt line. On a re-run the wizard sources
+# the existing env first, so FAILOVER_ROLE holds this node's real role; pressing Enter must keep it.
+# A hard-coded "STANDBY" default converted a BACKUP into a second STANDBY on the documented upgrade
+# path — both spares then take in the same second (double-sign). Control: revert the role prompt's
+# default to a bare "STANDBY" → (20) fails.
+s2_drive() {  # $1 = FAILOVER_ROLE as loaded from an existing env ('' = fresh install)
+  set +e
+  SEAM=$(mktemp)
+  sed -n '/^ask_choice() {/,/^}$/p' "$DEPLOY_STANDBY" > "$SEAM"
+  grep '^ask_choice "Server role"' "$DEPLOY_STANDBY" >> "$SEAM"
+  BOLD=""; NC=""
+  warn(){ :; }
+  FAILOVER_ROLE="$1"
+  TAKEOVER_DELAY="$2"
+  # shellcheck disable=SC1090
+  source "$SEAM" <<< "" >/dev/null    # simulated operator: press Enter (accept the default)
+  rm -f "$SEAM"
+  printf 'role=%s' "$REPLY"
+}
+s2_backup=$(s2_drive "BACKUP" "")
+[[ "$s2_backup" == "role=BACKUP" ]] \
+  && ok "(20) re-run on a BACKUP: Enter keeps BACKUP ($s2_backup)" \
+  || bad "(20) re-run on a BACKUP: Enter changed the role ($s2_backup)"
+s2_fresh=$(s2_drive "" "")
+[[ "$s2_fresh" == "role=STANDBY" ]] \
+  && ok "(21) fresh install (no existing env): Enter defaults to STANDBY ($s2_fresh)" \
+  || bad "(21) fresh install default wrong ($s2_fresh)"
+# ≤v0.6.8 envs never wrote FAILOVER_ROLE — the role hint must fall back to the loaded
+# TAKEOVER_DELAY (120+ ⇒ BACKUP). Control: revert the hint to a bare STANDBY → (21b) fails.
+s2_hint=$(s2_drive "" "120")
+[[ "$s2_hint" == "role=BACKUP" ]] \
+  && ok "(21b) ≤0.6.8 BACKUP env (no FAILOVER_ROLE, delay 120): Enter keeps BACKUP ($s2_hint)" \
+  || bad "(21b) ≤0.6.8 BACKUP env: hint wrong ($s2_hint)"
+s2_hint60=$(s2_drive "" "60")
+[[ "$s2_hint60" == "role=STANDBY" ]] \
+  && ok "(21c) ≤0.6.8 STANDBY env (delay 60): Enter keeps STANDBY ($s2_hint60)" \
+  || bad "(21c) ≤0.6.8 STANDBY env: hint wrong ($s2_hint60)"
+
+# Same hazard class, one prompt later: a BACKUP re-run must keep its configured
+# STANDBY_TAKEOVER_DELAY (it feeds the take-visibility floor). Control: revert the prompt's
+# default to a bare "60" -> (22) fails.
+s2b_drive() {  # $1 = STANDBY_TAKEOVER_DELAY as loaded from an existing env
+  set +e
+  SEAM=$(mktemp)
+  sed -n '/^ask() {/,/^}$/p' "$DEPLOY_STANDBY" > "$SEAM"
+  sed -n '/^ask_numeric() {/,/^}$/p' "$DEPLOY_STANDBY" >> "$SEAM"
+  grep 'ask_numeric "STANDBY.s TAKEOVER_DELAY' "$DEPLOY_STANDBY" >> "$SEAM"
+  BOLD=""; NC=""
+  warn(){ :; }
+  STANDBY_TAKEOVER_DELAY="$1"
+  # shellcheck disable=SC1090
+  source "$SEAM" <<< "" >/dev/null
+  rm -f "$SEAM"
+  printf 'std=%s' "$REPLY"
+}
+s2b_keep=$(s2b_drive "90")
+[[ "$s2b_keep" == "std=90" ]] \
+  && ok "(22) BACKUP re-run: Enter keeps STANDBY_TAKEOVER_DELAY=90 ($s2b_keep)" \
+  || bad "(22) BACKUP re-run: Enter changed STANDBY_TAKEOVER_DELAY ($s2b_keep)"
+s2b_fresh=$(s2b_drive "")
+[[ "$s2b_fresh" == "std=60" ]] \
+  && ok "(23) fresh BACKUP (no existing env): Enter defaults to 60 ($s2b_fresh)" \
+  || bad "(23) fresh BACKUP default wrong ($s2b_fresh)"
+
+echo ""
+echo "─── re-run keeps a custom (non-ntfy) webhook (H-B sticky ntfy default) ───"
+# The ntfy-enable prompt must default to "false" when a custom Slack/Discord webhook is already
+# configured, so one Enter can't replace it with a fresh unsubscribed ntfy channel (alerts to the
+# void). Control: revert the default to a bare "true" -> (24) fails.
+_hb_default() {  # mirrors the shipped default computation for a given WEBHOOK_URL ($1)
+  local d="true"
+  WEBHOOK_URL="$1"
+  [[ -n "${WEBHOOK_URL:-}" && "$WEBHOOK_URL" != *"ntfy.sh"* ]] && d="false"
+  printf '%s' "$d"
+}
+for SC in "$DEPLOY_STANDBY" "$DEPLOY_PRIMARY"; do
+  L=$(basename "$SC")
+  # the shipped line must compute the default from WEBHOOK_URL, not hard-code "true"
+  if grep -qF 'ask_choice "Enable ntfy.sh push (optional)" "$_ntfy_default"' "$SC"      && grep -qF '[[ -n "${WEBHOOK_URL:-}" && "$WEBHOOK_URL" != *"ntfy.sh"* ]] && _ntfy_default="false"' "$SC"; then
+    d_custom=$(_hb_default "https://hooks.slack.com/x" "$SC")
+    d_fresh=$(_hb_default "" "$SC")
+    d_ntfy=$(_hb_default "https://ntfy.sh/chan" "$SC")
+    [[ "$d_custom" == "false" && "$d_fresh" == "true" && "$d_ntfy" == "true" ]]       && ok "(24 $L) ntfy default: custom webhook->false, fresh->true, ntfy->true"       || bad "(24 $L) ntfy default logic wrong (custom=$d_custom fresh=$d_fresh ntfy=$d_ntfy)"
+  else
+    bad "(24 $L) ntfy-enable prompt is not sticky against a custom webhook (hard-coded default)"
+  fi
+done
+
+echo ""
+echo "─── re-run keeps lock-step-tuned EXPECTED/MARGIN (H-A sticky) ───"
+# A deployment that raised the PRIMARY self-fence and every spare's EXPECTED in lock-step must not have
+# EXPECTED/MARGIN silently reset to REC_*=30 on a wizard re-run. Control: revert to =$REC_* -> (25) fails.
+grep -qF 'CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS=${EXPECTED_PRIMARY_SELF_FENCE_SECS:-$REC_EXPECTED_PRIMARY_SELF_FENCE_SECS}' "$DEPLOY_STANDBY"   && grep -qF 'CFG_SELF_FENCE_MARGIN_SECS=${SELF_FENCE_MARGIN_SECS:-$REC_SELF_FENCE_MARGIN_SECS}' "$DEPLOY_STANDBY"   && ok "(25) standby: EXPECTED/MARGIN sticky from loaded env (lock-step tuning survives re-run)"   || bad "(25) standby: EXPECTED/MARGIN hard-reset to REC_* on re-run (sticky bug)"
+
+# Sticky must not be silent about BELOW-safe values: drive the shipped sticky+warn seam with a
+# hand-lowered env and assert the RED warning fires while the values are preserved; with values
+# at/above REC assert silence. Control: revert the warning block → (26a) fails.
+ha_drive() {  # $1=EXPECTED $2=MARGIN from a loaded env
+  set +e
+  SEAM=$(mktemp)
+  sed -n '/^CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS=/,/^fi$/p' "$DEPLOY_STANDBY" > "$SEAM"
+  RED=""; NC=""
+  REC_EXPECTED_PRIMARY_SELF_FENCE_SECS=30; REC_SELF_FENCE_MARGIN_SECS=30
+  EXPECTED_PRIMARY_SELF_FENCE_SECS="$1"; SELF_FENCE_MARGIN_SECS="$2"
+  CAP=$(mktemp)
+  # shellcheck disable=SC1090
+  source "$SEAM" > "$CAP" 2>&1      # in THIS shell so CFG_* survive; warning text captured to CAP
+  out=$(cat "$CAP")
+  rm -f "$SEAM" "$CAP"
+  printf 'exp=%s|marg=%s|warned=%s' "$CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS" "$CFG_SELF_FENCE_MARGIN_SECS" "$([[ "$out" == *"BELOW the shipped safe values"* ]] && echo yes || echo no)"
+}
+ha_low=$(ha_drive "20" "10")
+[[ "$ha_low" == "exp=20|marg=10|warned=yes" ]] \
+  && ok "(26a) lowered EXPECTED/MARGIN kept but warned in RED ($ha_low)" \
+  || bad "(26a) lowered EXPECTED/MARGIN not warned or not preserved ($ha_low)"
+ha_ok=$(ha_drive "45" "30")
+[[ "$ha_ok" == "exp=45|marg=30|warned=no" ]] \
+  && ok "(26b) raised EXPECTED kept, no warning ($ha_ok)" \
+  || bad "(26b) raised values mishandled ($ha_ok)"
+ha_junk=$(ha_drive "abc" "10")
+[[ "$ha_junk" == "exp=30|marg=10|warned=yes" ]] \
+  && ok "(26c) non-numeric EXPECTED reset to safe 30; low MARGIN still warned ($ha_junk)" \
+  || bad "(26c) non-numeric handling wrong ($ha_junk)"
+
+echo ""
 echo "============================================="
 echo "  RESULTS: $PASS passed, $FAIL failed"
 echo "============================================="

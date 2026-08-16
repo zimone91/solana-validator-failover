@@ -70,6 +70,38 @@ run_suite() {
     [[ "$titleline" == *'NNINJECT'* ]] && ok "$LABEL ntfy: NODE_NAME newline stripped from Title header" \
         || bad "$LABEL ntfy: Title header not sanitized -> $titleline"
 
+    # ---- 4. _strip_html: terminates and strips correctly when a bare '>' precedes a real <tag> ----
+    # The pre-fix strip-and-rejoin loop DIVERGED on exactly this shape: each round re-glued a longer
+    # string (measured: 41k chars in 13 rounds) and the monitor hung inside a log call — a hung
+    # monitor never self-fences. Run under a kill-deadline so a regression FAILS instead of hanging
+    # the suite. Control: revert _strip_html to the one-line strip-and-rejoin loop → (4a) fails.
+    local SHCAP; SHCAP=$(mktemp)
+    (
+      {
+        _strip_html 'lag (> 32) <code>x</code>'; printf '\n'
+        _strip_html '<b>bold</b> plain';         printf '\n'
+        _strip_html 'delta < 5';                 printf '\n'
+        _strip_html 'x < 5 <b>bold</b>';         printf '\n'
+      } > "$SHCAP"
+    ) &
+    local SHPID=$! SHTICKS=0
+    while kill -0 "$SHPID" 2>/dev/null && [[ $SHTICKS -lt 50 ]]; do sleep 0.1; SHTICKS=$((SHTICKS+1)); done
+    if kill -0 "$SHPID" 2>/dev/null; then
+        kill -9 "$SHPID" 2>/dev/null; wait "$SHPID" 2>/dev/null
+        bad "$LABEL _strip_html: DIVERGED (still running after 5s) on \"lag (> 32) <code>x</code>\""
+    else
+        wait "$SHPID" 2>/dev/null
+        local sh1 sh2 sh3 sh4
+        { read -r sh1; read -r sh2; read -r sh3; read -r sh4; } < "$SHCAP"
+        [[ "$sh1" == 'lag (> 32) x' ]] && ok "$LABEL _strip_html (4a): '>' before tag terminates, tag stripped ('$sh1')" \
+            || bad "$LABEL _strip_html (4a): wrong output for '>' before tag ('$sh1')"
+        [[ "$sh2" == 'bold plain' ]] && ok "$LABEL _strip_html (4b): plain tags stripped" \
+            || bad "$LABEL _strip_html (4b): plain tag strip broken ('$sh2')"
+        [[ "$sh3" == 'delta < 5' && "$sh4" == 'x < 5 bold' ]] && ok "$LABEL _strip_html (4c): unmatched '<' kept as literal text" \
+            || bad "$LABEL _strip_html (4c): literal '<' handling wrong ('$sh3' / '$sh4')"
+    fi
+    rm -f "$SHCAP"
+
     rm -f "$TGCAP" "$WHCAP"
     unset -f curl
 }
