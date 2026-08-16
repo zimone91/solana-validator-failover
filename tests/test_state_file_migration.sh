@@ -57,7 +57,11 @@ for SCRIPT in "$PRIMARY" "$STANDBY"; do
   # v0.7 (Block 3): stamp the fixture with the CURRENT boot id (empty on the macOS harness — the
   # no-/proc/uptime fallback then reads it as same-boot) so the persisted value restores VERBATIM;
   # cross-boot re-stamping is covered by test_monotonic_timers.sh, this suite tests the M10 migration.
-  printf '%s=4242\nBOOT_ID=%s\n' "$KEY" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" > "$LEGACY"
+  MKEY=LAST_TAKEOVER_MONO; [[ "$KEY" == "LAST_SWITCH_TIME" ]] && MKEY=LAST_SWITCH_MONO
+  # v0.7 (Block 3 dual-write): the *_MONO twin makes the probe value restore verbatim (same-boot);
+  # this suite tests the M10 MIGRATION mechanics — old-format re-hold semantics live in
+  # test_monotonic_timers.sh, not here.
+  printf '%s=4242\n%s=4242\nBOOT_ID=%s\n' "$KEY" "$MKEY" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" > "$LEGACY"
   out=$(run_load "$SCRIPT" "$NEWF" "$KEY")
   if [[ "$out" == "val=4242" && -f "$NEWF" && ! -e "$LEGACY" ]]; then
       ok "[$NAME] (S-a) legacy → $(basename "$NEWF") migrated (mv), value restored (4242), legacy gone"

@@ -38,6 +38,22 @@ boot_id() {
     printf '%s' "$b"
 }
 
+# Rollback safety (dual-write): the LEGACY state keys keep WALL-clock values so a daemon <= v0.6.10
+# reading this file after a rollback computes correct elapsed times with its wall arithmetic — no
+# "delete the state files first" operator step on the one path where nobody reads instructions.
+# The *_MONO twins carry the authoritative monotonic stamps this daemon uses; load_state prefers
+# them and never does arithmetic on the legacy keys. Derived per save as (wall_now - mono_elapsed),
+# which self-corrects for wall steps between the event and the save. 0 stays 0 ("unset" must
+# survive the conversion). _SAVE_W/_SAVE_M are sampled once per save_state call.
+_m2w() {
+    local m="$1"
+    if [[ "$m" =~ ^[0-9]+$ ]] && [[ $m -gt 0 ]]; then
+        printf '%s' $(( _SAVE_W - _SAVE_M + m ))
+    else
+        printf '0'
+    fi
+}
+
 # ============================================================================
 # Solana Primary Node Failover Protection v0.6.10 (THREE-TIER RPC)
 # Combines: internet monitoring + 3-tier delinquency verification + safe recovery
@@ -649,7 +665,9 @@ load_state() {
         fi
     fi
     local v
-    v=$(_state_get LAST_SWITCH_TIME)
+    # v0.7 (Block 3, dual-write): prefer the *_MONO twin; legacy = wall for rollback, >0-signal only.
+    v=$(_state_get LAST_SWITCH_MONO)
+    [[ -z "$v" ]] && { v=$(_state_get LAST_SWITCH_TIME); [[ -n "$v" && $v -gt 0 ]] && v=$_mono_now; }
     if [[ -n "$v" ]]; then
         # v0.7 (Block 3): different boot + a real (>0) stamp → the recovery delay/cooldown re-held in
         # full from now (see above). A 0 stamp ("no switch yet") restores as 0 — never invent a
@@ -681,8 +699,13 @@ load_state() {
     fi
     if [[ "$PRIMARY_SELF_FENCE" == "true" ]]; then
         local ps pa pn pv pb ph
-        ps=$(_state_get SF_LAST_CONFIRMED_SLOT); pa=$(_state_get SF_LAST_CONFIRMED_ADVANCE_TS)
-        pn=$(_state_get SF_NOANSWER_SINCE);      pv=$(_state_get SF_VOTELAG_SINCE)
+        ps=$(_state_get SF_LAST_CONFIRMED_SLOT); pa=$(_state_get SF_ADVANCE_MONO)
+        pn=$(_state_get SF_NOANSWER_MONO);       pv=$(_state_get SF_VOTELAG_MONO)
+        # Old-format fallback (no *_MONO twins): the legacy wall clocks cannot join mono arithmetic;
+        # leave the pendings unarmed (timers restart fresh — can delay a demote, never invent one).
+        [[ -z "$pa" ]] && pa=""
+        [[ -z "$pn" ]] && pn=0
+        [[ -z "$pv" ]] && pv=0
         pb=$(_state_get SF_VOTELAG_BASELINE);    ph=$(_state_get SF_VOTELAG_HEALTHY)
         # v0.7 (Block 3): the persisted stall/silence/lag clocks are mono_now stamps — the backdate
         # pendings arm ONLY within the same boot ($_same_boot). Across a reboot the stamps are from a
@@ -720,12 +743,18 @@ save_state() {
     # atomic-enough overwrite — no fsync storm; the freshness gate tolerates a torn last write).
     local _role="unstaked"
     [[ -n "$STAKED_PUBKEY" && "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]] && _role="staked"
+    local _SAVE_W _SAVE_M
+    _SAVE_W=$(date +%s); _SAVE_M=$(mono_now)
     {
-        printf 'LAST_SWITCH_TIME=%s\n'              "$LAST_SWITCH_TIME"
+        printf 'LAST_SWITCH_TIME=%s\n'              "$(_m2w "$LAST_SWITCH_TIME")"
+        printf 'LAST_SWITCH_MONO=%s\n'              "${LAST_SWITCH_TIME:-0}"
         printf 'SF_LAST_CONFIRMED_SLOT=%s\n'        "${_last_confirmed_slot:-}"
-        printf 'SF_LAST_CONFIRMED_ADVANCE_TS=%s\n'  "${_last_confirmed_advance_ts:-0}"
-        printf 'SF_NOANSWER_SINCE=%s\n'             "${_selffence_noanswer_since:-0}"
-        printf 'SF_VOTELAG_SINCE=%s\n'              "${_selffence_votelag_since:-0}"
+        printf 'SF_LAST_CONFIRMED_ADVANCE_TS=%s\n'  "$(_m2w "${_last_confirmed_advance_ts:-0}")"
+        printf 'SF_ADVANCE_MONO=%s\n'               "${_last_confirmed_advance_ts:-0}"
+        printf 'SF_NOANSWER_SINCE=%s\n'             "$(_m2w "${_selffence_noanswer_since:-0}")"
+        printf 'SF_NOANSWER_MONO=%s\n'              "${_selffence_noanswer_since:-0}"
+        printf 'SF_VOTELAG_SINCE=%s\n'              "$(_m2w "${_selffence_votelag_since:-0}")"
+        printf 'SF_VOTELAG_MONO=%s\n'               "${_selffence_votelag_since:-0}"
         printf 'SF_VOTELAG_BASELINE=%s\n'           "${_selffence_votelag_baseline:-0}"
         printf 'SF_VOTELAG_HEALTHY=%s\n'            "${_selffence_votelag_healthy:-0}"
         printf 'ROLE_AT_SAVE=%s\n'                  "$_role"

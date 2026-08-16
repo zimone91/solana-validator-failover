@@ -6,11 +6,11 @@ All notable changes are documented here. Versions follow the project's internal 
 ## Unreleased (v0.7 line)
 
 - **Safety timers are monotonic** (`/proc/uptime`); the state file gains a `BOOT_ID` line and
-  persisted safety stamps are now monotonic values. **Rollback note:** a daemon ≤ v0.6.10 reading a
-  v0.7-format state file would misread the small monotonic stamps as long-expired wall times —
-  including the post-self-fence re-take lockout. **If you roll back, delete
-  `/opt/solana-failover/state*` first.** Upgrading forward needs nothing: old files are detected
-  and lockouts re-hold in full (fail toward held).
+  `*_MONO` twins for every persisted safety stamp. **Rollback is safe by construction:** the legacy
+  keys keep wall-clock values (derived at each save), so a daemon ≤ v0.6.10 reading a v0.7-format
+  file computes correct elapsed times — including the post-self-fence re-take lockout — with no
+  operator steps. Upgrading forward needs nothing either: on an old-format file, lockouts and
+  cooldowns re-hold in full (fail toward held).
 
 ## v0.6.10 — hotfix: alert delivery broken on bash 5.2 hosts (Ubuntu 24.04 / Debian 12)
 
