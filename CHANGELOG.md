@@ -26,7 +26,8 @@ interpreters (macOS bash 3.2 **and** Ubuntu 24.04 bash 5.2); both now pass 36/36
 
 ## v0.6.9 — first public release
 
-Automatic double-sign-safe failover for Solana validators, hardened across multiple internal audit
+Automatic staked-identity failover for Solana validators — the holder steps down before a spare
+steps up, and ambiguity resolves toward nobody voting. Hardened across multiple internal audit
 rounds and validated with live failover tests on a testnet stack (isolation, egress-only partition,
 promoted-standby self-fence, holder restart).
 
@@ -48,4 +49,4 @@ promoted-standby self-fence, holder restart).
 - Telegram + ntfy.sh push + external dead-man's-switch watchdog.
 
 **Testing**
-- 37 test suites (parse-clean on bash 3.2+); each safety fix ships with a non-vacuous control.
+- 36 test suites (parse-clean on bash 3.2+); each safety fix ships with a non-vacuous control.

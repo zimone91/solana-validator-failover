@@ -51,6 +51,25 @@ also outwait the STANDBY's takeover becoming externally visible.
 - **Egress-only partition** — the node still reaches the internet and its RPC answers, but its *own*
   votes stop landing on-chain; detected by comparing its own last vote against the cluster max.
 
+## What has been tested
+
+Beyond the 36 automated suites, the release was validated by **live failovers on a real two-node
+testnet stack** (agave, systemd, real `set-identity`), with a 1 Hz on-chain observer recording the
+vote account throughout. Each scenario below was run end to end and the observer confirmed **no
+overlap** — at no point did two nodes hold the staked identity:
+
+| Scenario | What was induced | Observed |
+|---|---|---|
+| Local RPC isolation | holder's local JSON-RPC blocked | holder self-fenced to unstaked at ~31s → spare took over on the timer |
+| Egress-only partition | holder's outbound UDP dropped (it still received blocks) | holder detected its own votes weren't landing (lag 82-98 slots) and self-fenced at ~20-23s |
+| Promoted spare isolated | same cut applied to the node that had just taken over | it self-fenced too, and refused to re-take for the 600s lockout |
+| Holder daemon restart | `systemctl restart` while staked, with a stale persisted baseline | no false demote; the node kept voting |
+
+Automated suites additionally drive the real decision functions (self-fence, takeover gating,
+cross-node timing) with mocked I/O, and every safety fix ships with a control that fails when the fix
+is reverted. **Known limit:** these are function-level — they do not prove cross-process ordering
+between two live systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
+
 ## Residual risks (be honest with yourself)
 
 ### The big one: liveness is evidence, not a fence
@@ -70,13 +89,14 @@ and later resumes. Closing that requires **external fencing (STONITH)** — a *c
 network fence of the old host, verified to a terminal state — which this release does not perform.
 
 **Consequence:** fully unattended mainnet failover is not yet a property of this tool. Run it in
-`DRY_RUN`, on testnet, or in **assisted production** (human/automation fences the old node before the
-spare is promoted). See [SPLIT-BRAIN-RESIDUAL.md](SPLIT-BRAIN-RESIDUAL.md) for the full analysis.
+`DRY_RUN`, on testnet, or with a human in the loop who fences the old node before the spare is
+promoted (there is no built-in assisted mode). See [SPLIT-BRAIN-RESIDUAL.md](SPLIT-BRAIN-RESIDUAL.md) for the full analysis.
 
 ### Known hardening items (tracked)
 
-- **Fencing protocol** (v0.8): graceful path = verified demote + relinquish receipt with a generation;
-  ungraceful path = external STONITH confirmed to a terminal OFF, before any promotion.
+- **Fencing** (v0.7): watchdog self-fence on the holder + a relinquish proof on the spare (verified
+  demote / watchdog-elapsed); external fence providers (STONITH-style, cloud/IPMI) remain v0.8 options
+  on the same interface.
 - **Evidence quality** (v0.7): bind `VOTE_PUBKEY` to `STAKED_PUBKEY` via `getVoteAccounts`
   (`nodePubkey`) before acting; pin the RPC provider across a paired liveness sample; treat *any*
   forward movement of `lastVote` as "alive" (`VOTE_LIVENESS_EPSILON=0`).

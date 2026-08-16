@@ -1,27 +1,24 @@
 # Solana Validator Failover
 
-Automatic failover for Solana validators. When your staked node fails or is isolated, it hot-swaps the
-staked identity to a healthy spare via `agave-validator set-identity` — no restart — with layered
-fences whose every ambiguous case resolves toward *unstaked / stop / page the operator*.
+Automatic staked-identity failover for Solana validators. If your staked node dies or goes silent, a
+spare picks the identity up via `agave-validator set-identity` — no restart, no manual steps, ~60s.
 
-**Author:** [zim.one](https://zim.one) · **Tested on:** agave & Jito-Solana `3.1.18` / `4.0.1` / `4.1.0` · **Networks:** testnet + mainnet
+Built safety-first: the failing node **steps down before** the spare steps up, and every ambiguous
+state resolves toward *nobody holds the stake* rather than two nodes holding it.
 
-> ### ⚠️ Status: not yet for unattended mainnet
->
-> Read this before pointing it at a staked mainnet identity.
->
-> The spare decides the old holder is gone by observing that **its vote account stopped advancing**.
-> That is strong *corroboration* — it is **not proof** that the old node is incapable of voting again.
-> A wedged-but-alive validator, a node on a minority fork, or one whose votes simply aren't reaching
-> the RPCs you polled can, in principle, resume. Closing that gap requires **external fencing
-> (STONITH)** — a confirmed power-off / network fence of the old host — which this tool does **not**
-> yet perform.
->
-> **Therefore:** use it in `DRY_RUN`, on testnet, or in **assisted production** — where a human or an
-> external automation fences the old node before the spare is promoted. Fully unattended mainnet
-> failover is the goal of the fencing work tracked for v0.8, not a property of this release.
->
-> Full analysis: [docs/SAFETY.md](docs/SAFETY.md) · [docs/SPLIT-BRAIN-RESIDUAL.md](docs/SPLIT-BRAIN-RESIDUAL.md)
+**Author:** [zim.one](https://zim.one) · **Tested on:** agave & Jito-Solana `3.1.x` / `4.0.1` / `4.1.0` · **Networks:** testnet · mainnet
+
+#### How safe is it — honestly
+
+The failing node fences **itself** (dead RPC, frozen slot, or its own votes not landing) and drops to an
+unstaked identity within ~30s. Only then, after a 60s floor plus an on-chain check that the vote account
+really stopped, does the spare take over. Live-tested end to end on testnet: [test evidence](docs/SAFETY.md#what-has-been-tested).
+
+The honest limit: a node that has gone **completely silent** cannot be proven incapable of voting — it
+might be wedged, or partitioned and still signing where you can't see it. Detecting that from the
+outside is impossible in principle; it has to be *made* true by fencing the old host. That fence lands
+in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
+[docs/SAFETY.md](docs/SAFETY.md) before pointing this at a mainnet identity you care about.
 
 ---
 
@@ -46,10 +43,11 @@ fences whose every ambiguous case resolves toward *unstaked / stop / page the op
   advancing. A hand-edited delay below the safe floor **refuses to start**.
 - A promoted STANDBY that later isolates self-fences too, with a 600s re-take lockout.
 
-**What this does not prove.** Vote-liveness is *evidence*, not a fence: a holder that is wedged,
-partitioned onto a minority fork, or invisible to the RPCs you polled may still be able to sign. Until
-external fencing lands (v0.8), the guarantee holds for the failure modes the holder can self-detect —
-and for the rest you need a human or an external fence in the loop.
+**Where the strength comes from.** The protection is strongest where the failing node can detect its
+own trouble and step down — which covers dead RPC, a stalled slot, and an egress-only partition where
+its votes stop landing. For a node that has gone *completely* silent, "stopped voting" is evidence
+rather than proof; v0.7 adds a watchdog so a node that can no longer confirm it owns the identity
+stops itself. Detail: [docs/SAFETY.md](docs/SAFETY.md) · [docs/SPLIT-BRAIN-RESIDUAL.md](docs/SPLIT-BRAIN-RESIDUAL.md).
 
 ```
 PRIMARY ──self-fence ~30s──►  STANDBY ──takes at 60s──►  BACKUP
@@ -116,12 +114,12 @@ cd tests && bash run_all.sh
 36 suites, parse-clean on bash 3.2+. They drive the real self-fence / takeover / timing functions with
 mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Note the
 limit: these are function-level tests — they do **not** prove cross-process ordering between two live
-systemd services. A chaos/E2E gate on real nodes is part of the v0.8 work.
+systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
 
 ## ⚠️ Before you point this at a mainnet identity
 
-- **Not for unattended mainnet yet** — see the status note at the top. Until external fencing lands,
-  run `DRY_RUN`, testnet, or assisted production with a human/automation fencing the old node.
+- **Not for unattended mainnet yet** — see “How safe is it — honestly” above. Until the v0.7 fence
+  lands, run `DRY_RUN`, testnet, or keep a human in the loop to fence the old node before promotion.
 - **Test on testnet first** — DRY_RUN soak, then a live failover on a testnet stack.
 - This tool **moves your staked identity between machines.** Never aim `STAKED_KEYPAIR` at an identity
   you can't afford to have hot-swapped.
@@ -133,10 +131,13 @@ systemd services. A chaos/E2E gate on real nodes is part of the v0.8 work.
 
 ## Roadmap
 
-- **v0.7** — evidence hardening: bind vote account ↔ identity, provider-pinned liveness samples,
-  `EPSILON=0`, escalate on any unverified demote, atomic state, monotonic timers.
-- **v0.8** — fencing: generation + verified relinquish (graceful) / external STONITH confirmed to a
-  terminal state (ungraceful); no promotion without one of them. Plus a chaos/E2E gate on real nodes.
+- **v0.7** — the fence: a node that can no longer confirm it owns the identity is stopped by a
+  watchdog, and the spare takes over only on positive proof the old holder was stopped or stepped
+  down — never on inference alone. Ships alongside evidence fixes (vote account ↔ identity binding,
+  atomic state, escalation on an unverified demote), a simpler installer, a status dashboard, and a
+  chaos/E2E gate on real nodes.
+- **v0.8** — optional external fence providers (cloud API / IPMI / PDU) on the same interface, for
+  operators who want a second, out-of-band guarantee.
 
 ## License
 

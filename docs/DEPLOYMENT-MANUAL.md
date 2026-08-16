@@ -1,5 +1,8 @@
 # Solana Validator Failover System v0.6.9 — Deployment Manual
 
+> **Status:** read the honest-limits note in the [README](../README.md) and the safety model in
+> [SAFETY.md](SAFETY.md) before arming anything. `DRY_RUN=true` is the shipped default everywhere.
+
 > **v0.6.9 changes (vs v0.6.8) — `DRY_RUN=true` default unchanged.**
 > **"Post-failover symmetry" hardening** — the protection the PRIMARY demote path already had is
 > evened out across the states the system lives in *after* a failover. **H1 (the big one):** the
@@ -58,7 +61,7 @@
 > place); the four hardcoded self-fence values stay hardcoded with a "don't tune in isolation" comment.
 > No fence/liveness/window/switch/takeover body changed (byte-identical vs v0.6.6, incl.
 > `staked_is_actively_voting`); `DRY_RUN=true` default unchanged; **deploy-prompt UX only** (no daemon
-> behavior change). Built on the unmerged v0.6.6; the off-prod **`TESTNET-RUNBOOK.md`** still gates
+> behavior change). Built on the unmerged v0.6.6; the off-prod the internal testnet runbook still gates
 > `DRY_RUN=false` and must now include the **N3 composed scenario** (delinquent-but-voting → silent) in
 > the recorded **zero-overlap** result.
 
@@ -74,7 +77,7 @@
 > safety action never waits on notification I/O). The anti-double-sign margin is **unchanged** — only
 > availability is traded (faster PRIMARY relinquish). No fence/liveness/window/switch/takeover body
 > changed (byte-identical vs v0.6.5); `DRY_RUN=true` default unchanged. Built on the unmerged v0.6.5;
-> the off-prod **`TESTNET-RUNBOOK.md` (now with scenario C3 measuring the real cross-node overlap)**
+> the off-prod **`the internal testnet runbook` (now with scenario C3 measuring the real cross-node overlap)**
 > still gates `DRY_RUN=false`, which requires a recorded **zero-overlap** result.
 >
 > **30s no-answer caveat:** lowering `SELF_FENCE_NOANSWER_SECS` to 30s is more false-fire-prone than
@@ -93,7 +96,7 @@
 
 > **v0.6.3 changes (vs v0.6.2):** acts on the agave-v4 behavior research. Same files, same flow,
 > `DRY_RUN=true` default. ⚠️ Like v0.6.2, v0.6.3 changes the safety fence and **must pass the
-> off-prod TESTNET-RUNBOOK (extended with isolation/flap scenarios) on a non-mainnet cluster
+> internal testnet runbook (extended with isolation/flap scenarios) on a non-mainnet cluster
 > before going live.** Highlights:
 > - **Vote-liveness is now the single AUTHORITATIVE fence; gossip is advisory.** A *staked*
 >   pubkey's gossip entry persists ~48 h in CRDS, so a stale "dropped-but-present" entry can't be
@@ -160,8 +163,8 @@ Normal operation: **0 external RPC calls**. Everything via LOCAL RPC.
 
 ### Split-brain fence (v0.6.3 — vote-liveness authoritative, gossip advisory)
 
-Taking the staked identity is the one dangerous action (two nodes voting it = double-sign =
-real fund loss). **Vote-liveness is the single authoritative gate**; gossip is advisory.
+Taking the staked identity is the one dangerous action (two nodes voting it = double-sign — today a
+consensus/reputation hit and, once on-chain slashing detection activates, a permanent record). **Vote-liveness is the single authoritative gate**; gossip is advisory.
 
 - **Vote-liveness (AUTHORITATIVE, REQUIRED, all roles incl. BACKUP).** Is the staked **vote
   account** producing votes right now? The daemon samples `lastVote` twice across `TAKEOVER_DELAY`
@@ -215,9 +218,9 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
     persistent page is the safer choice.
   - **Recommended fix — the Anza `identity.json` symlink.** Point `solana.service`'s startup
     `--identity` at a soft link (e.g. `identity.json`) that targets the **unstaked** keypair, and
-    repoint it on each transition. A restart then always fails safe to unstaked. Because the
-    validator's `validator.sh` / `solana.service` is **DeePloy-managed**, make that startup-flag
-    change through DeePloy, not in this repo.
+    repoint it on each transition. A restart then always fails safe to unstaked. If your
+    validator's unit is managed by your own deployment tooling, make that startup-flag change
+    through that tooling so it survives redeploys.
 - **`staked ≠ unstaked`.** Each node has a unique unstaked keypair; the staked keypair is
   shared. The scripts refuse to start (and deploy refuses to finish) if the two are equal,
   or if either pubkey cannot be derived.
@@ -245,7 +248,8 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
     vote account** (`initialize_lockouts_from_bank`), i.e. the vote account's *last landed* vote.
     That floor is a real safety net, but it lags **in-flight votes** (submitted but not yet landed),
     so a no-tower takeover is double-sign-safe **only while the previous holder is genuinely not
-    voting** — which is exactly what the delinquency-confirm + vote-liveness fences guarantee. This
+    voting** — which is exactly what the delinquency-confirm + vote-liveness fences are built to ensure
+    (they are strong evidence, not proof — see SPLIT-BRAIN-RESIDUAL.md). This
     is why vote-liveness is mandatory and `TAKEOVER_DELAY` covers the in-flight-vote window. A
     *corrupt/wrong* tower does not silently fall back — agave exits; only a truly-missing/too-old
     tower rebuilds from the bank.
@@ -278,7 +282,7 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   remains recommended because automatic re-take is inherently riskier than a human deciding. The
   daemon logs a startup notice when `rpc` is selected. `auto` is reserved/disabled.
 
-- **PRIMARY self-fence / "vote lease" (`PRIMARY_SELF_FENCE`, v0.6.3):** closes the residual
+- **PRIMARY self-fence / "vote lease" (`PRIMARY_SELF_FENCE`, v0.6.3):** mitigates the residual
   partition case — a PRIMARY that is alive but **isolated from the supermajority** (partition /
   severe DDoS) looks dead to the cluster yet keeps voting, then heals into a double-sign. While
   STAKED, the daemon watches its **LOCAL** `getSlot(commitment=confirmed)`; if that confirmed slot
@@ -471,7 +475,9 @@ startup banner prints the live fast-path state (`ARMED` / `DISABLED (fail-closed
 > BACKUP to fast-take in normal operation; its value is the stagger-protected last line of defense.
 
 > **Phase 3 (NOT in this release).** Lowering `TAKEOVER_DELAY` (60→~50) / `EXPECTED`/`MARGIN` is gated on an
-> armed soak. The cross-node timing guardrail stays warn-only and the timer stays 60/30/30. Do not lower it.
+> armed soak. The timer stays 60/30/30 — do not lower it. (Historical note: the cross-node timing
+> guardrail was warn-only when this was written; **since v0.6.9 it is FATAL at startup** unless
+> `ALLOW_UNSAFE_TIMING=true`.)
 
 ---
 
@@ -603,7 +609,8 @@ PRIMARY t=~30s:   isolated-but-voting → SELF-FENCE → SWITCHED TO UNSTAKED (d
 STANDBY t=~12s:   lastVote 15+ slots behind → TURBO MODE (1s checks)   [FIRST_DELINQUENT_TIME]
 STANDBY t=~20s:   Window 7/10 → external confirm + vote-liveness 1st sample
 STANDBY t=~72s:   TAKEOVER_DELAY (60s from first-delinquent) elapsed + liveness frozen → TOOK STAKED
-# ⇒ STANDBY takes ~72s, ALWAYS after the PRIMARY relinquished (≤30s) — ≥30s margin, ZERO overlap.
+# ⇒ STANDBY takes ~72s, after the PRIMARY's worst-case self-fence (~30s) plus margin — no overlap
+#   observed in any live test (this is the designed ordering, not an unconditional guarantee).
 ```
 
 ### BACKUP — shipped v0.6.6 (TAKEOVER_DELAY=120), only if STANDBY also failed
@@ -681,7 +688,8 @@ agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/m
 
 ## Emergency: Split-Brain
 
-If both nodes claim staked identity (should never happen with the vote-liveness fence):
+If both nodes claim staked identity (not expected with the vote-liveness fence, but possible in the
+residual partition case — see SPLIT-BRAIN-RESIDUAL.md):
 
 ```bash
 # Step 1: STANDBY → force unstaked
