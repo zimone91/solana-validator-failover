@@ -76,8 +76,8 @@ o60=$(warn_if_below_rec_takeover_delay 60 60); r60=$?
 echo ""
 echo "─── calm why-notes present (standby deploy prompts) ───"
 # (7) TAKEOVER_DELAY why-note
-grep -qF "lets the PRIMARY step down before a spare takes over" "$DEPLOY_STANDBY" \
-  && ok "(7) TAKEOVER_DELAY why-note present" \
+grep -qF "gives the PRIMARY its worst-case self-fence time plus a cross-node margin" "$DEPLOY_STANDBY" \
+  && ok "(7) TAKEOVER_DELAY why-note present (timing-based wording)" \
   || bad "(7) TAKEOVER_DELAY why-note missing"
 
 # (8) MAX_DELINQUENT_SLOTS why-note — and it carries NO danger framing (speed, not a double-sign value).

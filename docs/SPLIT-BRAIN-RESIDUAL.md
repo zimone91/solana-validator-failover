@@ -100,7 +100,7 @@ closure options below.
   with the give-back demote bounded (H4), the B1/H2 hard-stop escalation, and a 600s post-fence
   **re-take lockout**. The holder-relinquishes-first invariant now covers the STANDBY→BACKUP hop
   (worst-case 30s + margin ≤ 120s); 3-node mode is no longer degraded after a failover.
-  *Pending live validation on the 2-node stack before the tag (see the release gate).*
+  *Validated live on the 2-node stack before the tag — see [SAFETY.md](SAFETY.md#what-has-been-tested).*
 - ~~**Monitor restart during a validator stall disarms the no-answer fence.**~~ **Closed in v0.6.9
   (H3):** the self-fence baseline (frozen-slot / no-answer / vote-lag clocks + role) is persisted
   every cycle and restored on startup — freshness-gated (`STATE_MAX_AGE_SECS`) and
@@ -110,7 +110,7 @@ closure options below.
 - **A fully-wedged validator** (admin socket dead too) cannot be demoted by software — the daemon
   pages URGENT (incl., since v0.6.9, at monitor startup and from the promoted standby) and the
   hard-stop path covers the wedged-but-killable case; a truly unkillable process needs option #3
-  (witness/STONITH, v0.7).
+  (an external fence provider — v0.8 option).
 - The frozen-slot sub-check has been proven by unit tests and its no-answer sibling live, but has
   not itself been isolated in a live test (low residual).
 - **Adversarial timing remains the structural residual:** the stack is still two independent,
@@ -118,7 +118,8 @@ closure options below.
   guarantee") — a sufficiently adversarial partition timing, a mis-tuned or disabled self-fence,
   or a dishonest LOCAL RPC could still leave a narrow overlap. The v0.6.9 collision detector (M5)
   makes the resulting two-holder state *visible* (🚨 page) but deliberately does not auto-resolve
-  it; the real closure is option #2/#3 (v0.7).
+  it; the v0.7 watchdog fence + relinquish proof narrows this further, and external providers (#3)
+  remain v0.8 options.
 
 ## The three closure options
 
@@ -144,7 +145,8 @@ closure options below.
 
 These are complementary: #1 is the layered local fail-safe shipped now; #2 adds a positive
 hand-off; #3 adds an external enforcer. A production "no double-sign under partition" guarantee
-typically wants **#1 + (#2 or #3)**. Target: **v0.7**.
+typically wants **#1 + (#2 or #3)**. The watchdog half of this ships in **v0.7**; external
+providers (#3) are **v0.8** options on the same interface.
 
 ## When this MUST be fully closed
 
@@ -159,7 +161,8 @@ slashing. The residual above is exactly a vote-equivocation event.
 > **Trigger:** the split-brain residual must be closed **fully** (option #1 plus a positive
 > hand-off, #2 or #3) **before post-Alpenglow vote-equivocation slashing goes live**. Until then,
 > the layered self-fence + N3-anchored `TAKEOVER_DELAY` + multi-confirmation is the operating
-> mitigation, and the TESTNET-RUNBOOK isolation/flap/egress-only scenarios are the validation gate.
+> mitigation, and the isolation/flap/egress-only testnet scenarios ([SAFETY.md](SAFETY.md#what-has-been-tested))
+> are the validation gate.
 
 > **Alpenglow note (research pending):** Alpenglow replaces TowerBFT (and the tower file) with
 > Votor/BLS certificates. This design deliberately never transfers tower files, which ages well —

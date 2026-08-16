@@ -177,7 +177,7 @@ echo -e "  Automatic staked-identity hot-swap for Solana validators"
 echo ""
 echo -e "  ${DIM}Author:${NC}     zim.one  ·  https://zim.one"
 echo -e "  ${DIM}Validator:${NC}  ${CYAN}2zykwzzo1pd3H2oSj5j5SRLTvmpa9Nr2S2Bh8tTVd5Tq${NC}"
-echo -e "  ${DIM}Tested on:${NC}  agave & Jito-Solana  3.1.18 / 4.0.1 / 4.1.0"
+echo -e "  ${DIM}Tested on:${NC}  agave & Jito-Solana  3.1.x / 4.0.1 / 4.1.0"
 echo -e "  ${DIM}Networks:${NC}   testnet · mainnet"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
 sleep 2
@@ -432,7 +432,7 @@ ask_numeric "Delinquency retries (legacy confirm count)" "${DELINQUENCY_RETRIES:
 CFG_DELINQ_RETRIES="$REPLY"
 
 # v0.6.7: calm one-line "why" + a RED nudge if the operator goes below the cross-node-safe floor.
-echo -e "  ${CYAN}Recommended ${REC_TAKEOVER_DELAY}s — it lets the PRIMARY step down before a spare takes over, so two nodes never vote the same identity (double-sign).${NC}"
+echo -e "  ${CYAN}Recommended ${REC_TAKEOVER_DELAY}s — it gives the PRIMARY its worst-case self-fence time plus a cross-node margin to step down BEFORE this spare may take.${NC}"
 ask_numeric "Takeover delay (seconds of sustained delinquency)" "${TAKEOVER_DELAY:-$ROLE_TAKEOVER_DELAY}" 1
 CFG_TAKEOVER_DELAY="$REPLY"
 warn_if_below_rec_takeover_delay "$CFG_TAKEOVER_DELAY" "$REC_TAKEOVER_DELAY" || true   # nudge only (N1 clamp below enforces the floor)

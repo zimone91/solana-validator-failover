@@ -24,15 +24,34 @@ done
 
 echo ""
 echo "═══ (2) RUN gate: execute every suite ═══"
+# A vanished/misnamed suite must FAIL this gate, not silently shrink it (bump when adding a suite).
+EXPECTED_SUITES=37
 run_pass=0; run_fail=0; failed=""
+_suite_out=$(mktemp)
 for t in test_*.sh; do
-    if bash "$t" >/dev/null 2>&1; then run_pass=$((run_pass+1)); else run_fail=$((run_fail+1)); failed="$failed $t"; fi
+    # Cross-check printed FAILs against the exit code: a suite that prints ❌ but exits 0 (a broken
+    # tail, a stray exit 0) must count as FAILED, not pass silently.
+    if bash "$t" > "$_suite_out" 2>&1; then
+        if grep -q "❌ FAIL" "$_suite_out"; then
+            run_fail=$((run_fail+1)); failed="$failed $t(printed-FAIL-but-exit-0)"
+        else
+            run_pass=$((run_pass+1))
+        fi
+    else
+        run_fail=$((run_fail+1)); failed="$failed $t"
+    fi
 done
+rm -f "$_suite_out"
 echo "  suites: $run_pass passed, $run_fail failed"
 [[ -n "$failed" ]] && echo "  FAILED:$failed"
+count_fail=0
+if [[ $(( run_pass + run_fail )) -ne $EXPECTED_SUITES ]]; then
+    echo "  SUITE COUNT MISMATCH: ran $(( run_pass + run_fail )), manifest says $EXPECTED_SUITES — a suite is missing or unregistered"
+    count_fail=1
+fi
 
 echo ""
-total=$(( parse_fail + run_fail ))
+total=$(( parse_fail + run_fail + count_fail ))
 if [[ $total -eq 0 ]]; then
     echo "═══ GREEN — $run_pass/$run_pass suites, parse-clean on $(bash --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1) ═══"
     exit 0
