@@ -43,7 +43,7 @@ jobs:
     name: tests · ubuntu 24.04 · bash 5.2 (deploy target)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: interpreter fingerprint
         run: /bin/bash --version | head -1
       - name: deps
@@ -55,7 +55,7 @@ jobs:
     name: tests · macOS · /bin/bash 3.2.57 (compatibility floor)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: interpreter fingerprint (must be 3.2.x — fail loudly if the runner ever changes it)
         run: |
           /bin/bash --version | head -1
@@ -69,7 +69,7 @@ jobs:
     name: shellcheck -S error · four shipped scripts
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
@@ -79,7 +79,7 @@ jobs:
     name: claims match reality (suite count)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: suite count — files vs run_all.sh manifest vs README claim
         run: |
           actual=$(ls tests/test_*.sh | wc -l | tr -d ' ')
@@ -87,3 +87,5 @@ jobs:
           echo "actual=$actual manifest=$manifest"
           [ "$actual" = "$manifest" ] || { echo "run_all.sh EXPECTED_SUITES=$manifest but $actual test files exist"; exit 1; }
           grep -q "${actual} suites" README.md || { echo "README does not state the actual suite count (${actual})"; exit 1; }
+      - name: SHA256SUMS manifest matches the tree (regen — sha256sum <files> > SHA256SUMS)
+        run: sha256sum -c SHA256SUMS
