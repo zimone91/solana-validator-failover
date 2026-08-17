@@ -388,6 +388,28 @@ echo "    floor=100, blind [65,70): take t0+${J_TOOK}s"
     && ok "(j1) take at exactly t0+170s = post-blind obs re-pin(70) + floor(100) — blindness restarts the observed span itself" \
     || bad "(j1) take t0+${J_TOOK}s (want 170; 129 = the span bridged the blind gap — the _note_blind_cycle obs_since reset is gone)"
 
+
+# ── (k) obs_since-on-VOTING (slice 5 nit): observed LIFE restarts the observed-silence span ─────
+#    Holder votes once at t0+30 (lastVote 5000→5001), observed at the first Gate-3 sample t0+60 →
+#    VOTING verdict, N3 re-anchor. Under VOTE_LIVENESS_MIN_SPAN=100 (bigfloor) the floor outlives
+#    the re-anchored countdown, so whether obs_since re-pins at the VOTING verdict is OBSERVABLE:
+#    WITH the nit the frozen-based take waits span >= 100 measured from the VOTING verdict (60) →
+#    take at t0+160; WITHOUT it the span is measured from the t0 pin and silently BRIDGES the
+#    observed life → take at t0+120 (the floor claims 120s of observed silence over a stretch
+#    that contained a vote). At the shipped default SPAN=40 the nit is INERT (the N3 re-anchor's
+#    DELAY 60 > floor 40): take at t0+120 with and without it. Revert-control = delete the
+#    VOTING-path `_liveness_obs_since` line in staked_is_actively_voting → (k1) reads 120.
+echo ""; echo "─── (k) floor 100 + one observed vote at t0+30: VOTING re-pins the observed span ───"
+read -r K_TOOK _ K_LA _ _ _   <<<"$(sim bigfloor -1 -1 0 30 400 -1 0)"
+read -r K40_TOOK _ _ _ _ _    <<<"$(sim fix      -1 -1 0 30 400 -1 0)"
+echo "    floor=100 burst@30: take t0+${K_TOOK}s (VOTING seen t0+${K_LA}s) | floor=40 (default): take t0+${K40_TOOK}s"
+[[ $K_TOOK -eq 160 ]] \
+    && ok "(k1) take at exactly t0+160s = VOTING verdict(60) + floor(100) — obs_since re-pinned at the observed life, the floor's claim is self-contained at ANY config" \
+    || bad "(k1) take t0+${K_TOOK}s (want 160; 120 = the floor's span claim silently bridged the observed life — the VOTING-path obs_since re-pin is gone)"
+[[ $K40_TOOK -eq 120 ]] \
+    && ok "(k2) inert at defaults: SPAN=40 takes at t0+120s with the nit exactly as without (DELAY 60 > floor 40)" \
+    || bad "(k2) default-floor take t0+${K40_TOOK}s (want 120) — the nit changed default-config timing"
+
 echo ""
 echo "============================================="
 echo "  RESULTS: $PASS passed, $FAIL failed"

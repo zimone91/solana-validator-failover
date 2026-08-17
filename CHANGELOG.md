@@ -5,6 +5,36 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Act-then-alert (A8) + fresh-proof re-check** (both daemons): the pre-take 🔍 alert is deleted —
+  a network call between the verdict and the mutation (the tier summary is not lost: it travels
+  verbatim inside the reason of the TOOK STAKED ✅ / WOULD TAKE / TAKEOVER FAILED alert) — and the
+  alert now strictly follows the action. Accepted tradeoff, not a free win: the first page about a
+  take now follows the mutation, so a process death in the fraction of a second between them leaves
+  the take only in the local log (unsent); accepted because the alternative held ~10 s of blocking
+  network before a safety-critical mutation on a ~20 s-stale proof, and a dead monitor is covered
+  by the dead-man's switch. Immediately before `set-identity`, a **fresh-proof
+  re-check** (one fresh sample compared against the episode's pinned baseline — sound because the
+  frozen path never re-bases the pin, so the pair interval is pin→now) must re-confirm FROZEN:
+  VOTING or cannot-determine **aborts** the take, and **zero network calls** sit between the
+  re-check and `set-identity`. An abort is a withdrawn verdict, not a failed take: **no cooldown is
+  set**, no episode state is dropped — the re-check leaves exactly the state the normal fence paths
+  would, and pacing comes from the normal re-anchor/re-pin (on the PRIMARY a VOTING abort is paced
+  by the observed-span floor + recovery ladder — its recovery anchor never read the liveness
+  re-anchor, same as the in-gate design). Abort pages throttle per `ALERT_THROTTLE` (first page
+  immediate — a flipping vantage would otherwise page every ~20 s indefinitely); the per-event log
+  lines are never throttled. DRY_RUN mirrors the live decision (an aborted take reports the abort,
+  never "WOULD TAKE"). Extends the demote path's "safety action FIRST" rule (N2) to the take path.
+
+- **Observed life restarts the observed span**: `_liveness_obs_since` now re-pins at every VOTING
+  verdict, so the observation-span floor's claim is self-contained at any config (measured:
+  `VOTE_LIVENESS_MIN_SPAN=100` with one observed vote, take moved t0+120 → t0+160; inert at the
+  shipped defaults — the N3 re-anchor's 60s exceeds the 40s floor).
+
+- **Docs honesty**: README / SAFETY / SPLIT-BRAIN-RESIDUAL now name the availability-side outcome
+  explicitly — with blind or flapping externals the takeover holds **indefinitely** (a measured
+  outcome, not a theoretical one) and the operator is paged (`TAKEOVER_STARVATION_ALERT_SECS`);
+  "fails safe" there means "does not act, loudly".
+
 - **Blindness counts as life**: any interval in which no external provider yields an observation
   restarts the takeover countdown in full — the 60 s window can no longer collapse to ~15 s across
   an external-RPC outage. A new `VOTE_LIVENESS_MIN_SPAN` floor (default 40 s, 0 = off) additionally

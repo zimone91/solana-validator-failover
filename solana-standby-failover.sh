@@ -373,14 +373,20 @@ _liveness_sample_provider=""
 _last_blind_end=0
 # v0.7 (Block 3, slice-4 rework): mono time of the EPISODE's first successful external observation
 # (0 = none yet). Pinned by _note_observation on every successful sampler observation; reset ONLY
-# by episode resets (every _last_blind_end=0 site) and by blind cycles (_note_blind_cycle) —
-# NEVER by pair re-bases. The observation-span floor measures from this, not the pair pin.
+# by episode resets (every _last_blind_end=0 site), by blind cycles (_note_blind_cycle), and by
+# the VOTING re-base (slice 5: staked_is_actively_voting's ADVANCED path and the fresh-proof
+# re-check re-pin it to the verdict instant — observed LIFE restarts the observed-silence span) —
+# NEVER by the non-verdict pair re-bases (tip-stall / backwards / provider flip). The
+# observation-span floor measures from this, not the pair pin.
 _liveness_obs_since=0
 # v0.7 (Block 3, slice-4 rework): per-episode hold diagnostics for the starvation page — reset at
 # every _last_blind_end=0 site (episode boundaries), incremented in the byte-identical helpers.
 _ep_blind_cycles=0
 _ep_provider_flips=0
 _ep_floor_holds=0
+# v0.7 (Block 3, slice 5): mono time of the last re-check abort page (0 = none yet). GLOBAL
+# storm guard for _recheck_abort_alert — not episode state, never reset with the episode.
+_recheck_abort_alert_ts=0
 
 _running=true
 _last_status_log=0
@@ -1145,14 +1151,12 @@ _note_observation() {
 # and lastVote is monotonic on-chain — FROZEN therefore proves the holder never exceeded that
 # minimum over that whole stretch — up to the last sample's snapshot staleness (an external
 # view that ADVANCES but LAGS compresses the observed tail; the tip-guard checks advance, not
-# rate — a pre-existing exposure the floor narrows but does not close). With no in-episode
-# VOTING verdict that stretch is exactly
-# [obs_since, now] — the claimed span is real, and STRONGER than the replaced version ("since the
-# last re-pin"). Across an in-episode VOTING verdict obs_since is OLDER than the proven stretch:
-# harmless on the STANDBY (every VOTING verdict re-anchors the FULL countdown — DELAY > floor —
-# and the pair re-based at that verdict spans it), and on the PRIMARY the voting→frozen
-# transition is guarded by the recovery ladder instead (RECOVERY_CHECKS rungs x
-# RECOVERY_CHECK_INTERVAL, liveness re-verified each rung, any vote resets the count).
+# rate — a pre-existing exposure the floor narrows but does not close). obs_since re-pins at
+# every VOTING verdict (the ADVANCED path and the fresh-proof re-check both stamp it — v0.7
+# slice 5), so [obs_since, now] IS the proven stretch at ANY config (the snapshot-staleness
+# qualifier above stays). The prior caveat — "across an in-episode VOTING verdict obs_since is
+# OLDER than the proven stretch" — is HISTORY (measured: SPAN=100 with one observed vote took at
+# t0+120 before the re-pin, t0+160 after; inert at the shipped defaults, DELAY 60 > floor 40).
 # CONVERGENCE: inside an unblinded stretch obs_since stays PINNED while the SPAN grows
 # monotonically, so the floor is always eventually met; residual flip cost returns to the accepted "+1 MIN_INTERVAL per flip".
 # HISTORY: the first cut measured span from the re-basable pair pin and did NOT converge under
@@ -1178,6 +1182,109 @@ _liveness_span_short() {
         return 0
     fi
     return 1
+}
+
+# ── v0.7 (Block 3, slice 5) — ACT-THEN-ALERT FRESH-PROOF RE-CHECK (BYTE-IDENTICAL in both
+# daemons). The reviewer's pre-registered conditions (pre-registered at slice 3.5, binding):
+#   (1) immediately before set-identity — a FRESH re-check = arithmetic on existing data PLUS one
+#       short re-sample, NOT a full gate-cycle re-run;
+#   (2) a re-check yielding VOTING or cannot-determine → ABORT, not proceed;
+#   (3) between the re-check and set-identity — ZERO network calls (no alert, no network log, no
+#       gossip advisory).
+# This extends the demote path's existing "safety action FIRST" rule (N2) to the take path: the
+# gate verdict's proof was ~20s stale at the mutation (two curl -m 10 inside the sampler), and the
+# pre-take 🔍 alert added more network latency AFTER the verdict, BEFORE the action.
+# WHY ARITHMETIC-ON-PIN IS SOUND: the B2 invariant (the frozen path never re-bases —
+# INVARIANT(baseline-rises-only-on-voting)) means _liveness_first_vote is the episode's min-rule
+# baseline; one fresh cur against that pin is a valid verdict refresh REGARDLESS of the pin's age
+# (a re-pinned pair can be as young as MIN_INTERVAL): lastVote is monotonic on-chain, so an
+# advance past the min-rule baseline is always real, and a frozen read against it under-
+# approximates the same-vantage delta — no MIN_INTERVAL wait is needed because the PAIR interval
+# here is pin→now, not sample→sample. No confirm re-run, no gossip. Life signs are checked BEFORE
+# the tip-freshness guard (deliberately inverted vs the fence's order): an advance cannot be
+# invented even by a stale view, and both orders fail toward NOT taking on such a reading — this
+# one re-anchors off a genuinely-observed on-chain value instead of discarding it.
+# ABORT = VERDICT WITHDRAWN, NOT A FAILED TAKE: no cooldown is set, no episode state is dropped;
+# the per-branch re-bases below leave exactly the state the corresponding
+# staked_is_actively_voting paths would (including the flip diagnostics counter); pacing comes
+# from the re-anchor (VOTING/blind) or the MIN_INTERVAL re-pin (flip/backwards/stale). On the
+# PRIMARY the VOTING re-anchor variable is a dead store (that daemon's recovery anchor never
+# reads it — same as its in-gate design): a VOTING abort there is paced by the observed-span
+# floor + the recovery ladder (measured ~41s to a legitimate re-take); a BLIND abort re-anchors
+# the FULL delay on both daemons. FAILURE DIRECTION: toward NOT taking.
+# ZERO NETWORK AFTER A RETURN-0: the caller places this IMMEDIATELY before the mutation — nothing
+# that touches the network may run between the "return 0" here and set-identity (condition 3).
+# ABORT PAGES THROTTLE (storm guard): a vantage flipping at every re-check aborts every
+# ~2×MIN_INTERVAL indefinitely (measured: 147 pages over 2000s unthrottled) — abort pages go
+# through _recheck_abort_alert (first page immediate, repeats per ALERT_THROTTLE; the per-event
+# log_warn lines are never throttled). The starvation page covers episode-level silence on its own.
+# Branch ordering (a read-after-write bug in the spec's sketch, fixed here): decide → state writes
+# (old values captured FIRST where the message needs them — the flip log must name OLD→NEW) →
+# log_warn → alert_warn → return 1.
+# NO 0-SENTINEL ARITHMETIC (the reviewer's Block-3 class note): now_r is only ever ASSIGNED into
+# state here; no `now - 0`-style arithmetic on a 0-initialized mono timestamp is introduced.
+# Returns 0 = proof refreshed → the mutation may proceed; 1 = ABORT.
+# Storm guard for the abort pages (BYTE-IDENTICAL in both daemons): first page immediate — the
+# throttle gates REPEATS only (the 0-sentinel/monotonic-clock lesson: a freshly booted host must
+# never wait out the throttle for its FIRST page). Deliberately GLOBAL, not per-episode: it guards
+# the operator channel, not episode state.
+_recheck_abort_alert() {
+    if [[ ${_recheck_abort_alert_ts:-0} -gt 0 ]]; then
+        [[ $(( $(mono_now) - _recheck_abort_alert_ts )) -ge ${ALERT_THROTTLE:-600} ]] || return 0
+    fi
+    _recheck_abort_alert_ts=$(mono_now)
+    alert_warn "$1"
+}
+_fresh_proof_recheck() {
+    # Fence off (explicit operator override at startup) → nothing to re-check against.
+    [[ "$VOTE_LIVENESS_VERIFY" == "true" ]] || return 0
+    # No pinned baseline: a real FROZEN verdict structurally implies the pin (same carve-out and
+    # justification as _liveness_span_short) — only harnesses that mock the fence reach here bare.
+    [[ -n "$_liveness_first_vote" ]] || return 0
+    local s rest cur tip prov now_r delta old_prov
+    s=$(get_staked_liveness_sample) || s=""
+    now_r=$(mono_now)
+    cur="${s%% *}"; rest="${s#* }"; tip="${rest%% *}"
+    prov=""; [[ "$rest" == *" "* ]] && prov="${rest##* }"
+    if [[ -z "$s" || ! "$cur" =~ ^[0-9]+$ || ! "$tip" =~ ^[0-9]+$ ]]; then
+        _note_blind_cycle "$now_r"
+        log_warn "[act-then-alert] fresh re-check: no usable sample — cannot determine → ABORT (the blind stamp above re-anchors the countdown)"
+        _recheck_abort_alert "⚠️ Take ABORTED at the final re-check: externals gave no usable sample (cannot determine). No action taken; the countdown re-anchored."
+        return 1
+    fi
+    _note_observation "$now_r"
+    delta=$(( cur - _liveness_first_vote ))
+    if [[ $delta -gt ${VOTE_LIVENESS_EPSILON:-0} ]]; then
+        LAST_LIVENESS_ACTIVE_TIME=$now_r   # STANDBY: N3 re-anchor input. PRIMARY: a DEAD STORE — its recovery anchor never reads this (kept for helper byte-identity; do NOT believe the primary re-anchors here — pacing there is the obs-floor + recovery ladder)
+        _liveness_first_vote="$cur"; _liveness_first_tip="$tip"; _liveness_first_ts="$now_r"; _liveness_first_provider="$prov"
+        _liveness_obs_since="$now_r"
+        log_warn "[act-then-alert] fresh re-check: staked vote ADVANCED ${delta} slots since the pin — holder is VOTING → ABORT"
+        _recheck_abort_alert "⚠️ Take ABORTED at the final re-check: the holder VOTED (+${delta} slots) between the verdict and the action. No action taken; the take must re-qualify from this observation (STANDBY: the full delay re-elapses; PRIMARY: the observed-span floor + recovery ladder)."
+        return 1
+    fi
+    if [[ $delta -lt 0 ]]; then
+        _liveness_first_vote="$cur"; _liveness_first_tip="$tip"; _liveness_first_ts="$now_r"; _liveness_first_provider="$prov"
+        log_warn "[act-then-alert] fresh re-check: lastVote went backwards (Δ${delta}) — inconsistent view, cannot determine → ABORT"
+        _recheck_abort_alert "⚠️ Take ABORTED at the final re-check: inconsistent external view (lastVote went backwards). No action taken."
+        return 1
+    fi
+    if [[ "$prov" != "$_liveness_first_provider" ]]; then
+        old_prov="$_liveness_first_provider"   # captured BEFORE the min-rule re-pin below overwrites it
+        _ep_provider_flips=$((_ep_provider_flips + 1))   # episode diagnostics — same as the fence's flip path (starvation-page counter)
+        [[ $cur -lt $_liveness_first_vote ]] && _liveness_first_vote="$cur"
+        _liveness_first_tip="$tip"; _liveness_first_ts="$now_r"; _liveness_first_provider="$prov"
+        log_warn "[act-then-alert] fresh re-check: provider flipped ${old_prov:-unknown}→${prov:-unknown} at the re-check — frozen reading not comparable → ABORT"
+        _recheck_abort_alert "⚠️ Take ABORTED at the final re-check: the answering RPC vantage flipped (${old_prov:-unknown}→${prov:-unknown}); the frozen reading is not same-vantage comparable. No action taken."
+        return 1
+    fi
+    if [[ $tip -le $_liveness_first_tip ]]; then
+        [[ $cur -lt $_liveness_first_vote ]] && _liveness_first_vote="$cur"
+        _liveness_first_tip="$tip"; _liveness_first_ts="$now_r"; _liveness_first_provider="$prov"
+        log_warn "[act-then-alert] fresh re-check: cluster reference did not advance since the pin — view stale → ABORT"
+        _recheck_abort_alert "⚠️ Take ABORTED at the final re-check: the external view is stale (cluster reference frozen since the pin). No action taken."
+        return 1
+    fi
+    return 0
 }
 
 # ── v0.7 (Block 3, slice-4 rework) — TAKEOVER STARVATION PAGE (STANDBY ONLY; page-only) ────────
@@ -1448,7 +1555,16 @@ attempt_takeover() {
     if [[ "$VOTE_LIVENESS_VERIFY" == "true" ]]; then tier_summary+=" liveness:frozen✅"; else tier_summary+=" liveness:OFF⚠️"; fi
     [[ "$_turbo_mode" == "true" ]] && tier_summary+=" ⚡turbo"
 
-    alert_info "🔍 Takeover: $tier_summary"
+    # v0.7 (Block 3, slice 5 / A8): the pre-take `alert_info "🔍 Takeover: $tier_summary"` that
+    # stood here is DELETED — a network call between the verdict and the mutation was exactly the
+    # act-then-alert half the reviewer pre-registered against. The tier summary is NOT lost: it
+    # travels verbatim inside `reason` ("Delinquent ${elapsed_since_first}s ($tier_summary)") into
+    # the TOOK STAKED ✅ / WOULD TAKE / TAKEOVER FAILED alert.
+    # ACCEPTED TRADEOFF (reviewer, 2026-08-18), a tradeoff and not a free win: the FIRST page about
+    # a take now follows the mutation — a process death in the fraction of a second between them
+    # leaves the take recorded only in the local log, unsent. Accepted because the alternative held
+    # ~10s of blocking network BEFORE a safety-critical mutation on a proof already ~20s stale, and
+    # a dead monitor is covered by the dead-man's switch.
     take_staked_identity "Delinquent ${elapsed_since_first}s ($tier_summary)" || true
     return 0
 }
@@ -1743,6 +1859,7 @@ staked_is_actively_voting() {
     if [[ $delta -gt $VOTE_LIVENESS_EPSILON ]]; then
         log_warn "[liveness] staked vote ADVANCED ${delta} slots in ${elapsed}s (tip +${tip_delta}) — holder is VOTING → BLOCK"
         _liveness_first_vote="$cur"; _liveness_first_tip="$tip"; _liveness_first_ts="$now2"; _liveness_first_provider="$prov"   # re-base for the next interval (pin follows)
+        _liveness_obs_since="$now2"   # observed LIFE restarts the observed-silence span — the floor's claim becomes self-contained at ANY config (inert at defaults: the N3 re-anchor's DELAY 60 > floor 40)
         return 0
     fi
     if [[ $delta -lt 0 ]]; then
@@ -1799,6 +1916,13 @@ staked_is_actively_voting() {
 # ========================= IDENTITY SWITCHING =================================
 
 take_staked_identity() {
+    # v0.7 (Block 3, slice 5 / A8): FRESH-PROOF RE-CHECK — the FIRST statement, before even the
+    # DRY_RUN branch, so DRY_RUN mirrors the live decision (a DRY_RUN "WOULD TAKE" that a live
+    # daemon would have aborted is a false report). After a return-0 here, the existing sequence
+    # below — DRY_RUN branch / keypair `-s` test / `log_warn ">>> TAKING…"` / set-identity —
+    # contains ZERO network calls before the mutation: condition (3) of the pre-registered
+    # act-then-alert rule holds by construction.
+    _fresh_proof_recheck || return 1
     local reason="$1"
 
     if [[ "$DRY_RUN" == "true" ]]; then

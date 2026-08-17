@@ -113,6 +113,14 @@ closure options below.
   (an external fence provider — v0.8 option).
 - The frozen-slot sub-check has been proven by unit tests and its no-answer sibling live, but has
   not itself been isolated in a live test (low residual).
+- **Blinking externals starve the takeover — an availability gap, not a split-brain one:** while
+  both external RPCs are unobservable or flapping, blindness-is-life restarts the countdown in
+  full on every blind cycle, so the takeover holds **indefinitely** for as long as the outage
+  lasts — a real, measured outcome (externals blinking one cycle per <60s = no take across the
+  whole outage), not a theoretical one. The daemon does not guess: it pages
+  (`TAKEOVER_STARVATION_ALERT_SECS=300`, repeating per `ALERT_THROTTLE`) with per-episode hold
+  diagnostics and sends a resolution notice at episode close. The remedy is operational — restore
+  a stable external vantage — by design.
 - **Adversarial timing remains the structural residual:** the stack is still two independent,
   well-tuned timers rather than a coordinated lease hand-off (see "Why this is still not a hard
   guarantee") — a sufficiently adversarial partition timing, a mis-tuned or disabled self-fence,
