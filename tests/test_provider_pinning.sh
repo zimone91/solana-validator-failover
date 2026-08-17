@@ -24,6 +24,17 @@
 #   (f)  PRIMARY twin: the rpc-recovery fence re-pins/converges identically; reset_recovery_liveness
 #        clears the pin
 #   (g)  twin parity: the new pinning hunks are BYTE-IDENTICAL across both daemons
+#
+# v0.7 (Block 3, slice 3 / AUDIT-5 A3) — ε=0 on the now-pinned pair (this suite hosts the cases that
+# need the fake mono clock + the real attempt_takeover):
+#   (h)  THE MEASURED COST CASE: dead holder fixed at slot X, one stray +1 burst observed exactly at
+#        decision time → VOTING verdict + N3 re-anchor; the pair re-renders FROZEN and the take
+#        COMPLETES at anchor+TAKEOVER_DELAY — cost vs the no-burst baseline within the AUDIT-5
+#        "≈ +70 s" envelope [TAKEOVER_DELAY, TAKEOVER_DELAY+VOTE_LIVENESS_MIN_INTERVAL]; no deadlock
+#   (h5) the "+ one VOTE_LIVENESS_MIN_INTERVAL" component made visible: after a VOTING re-base the
+#        pair re-renders FROZEN in EXACTLY one interval (rc 0 → 2(too-soon) → 1)
+#   (i)  convergence sanity at ε=0: a dead node's lastVote is a FIXED NUMBER every provider
+#        converges to → FROZEN renders normally, even across a provider flip (one extra interval)
 
 set +e
 PASS=0; FAIL=0
@@ -47,6 +58,10 @@ mono_now() { echo "$_SIM_NOW"; }
 
 VOTE_PUBKEY="VotePubkey1111111111111111111111111111111"
 TIER2_RPC="http://mock-t2"; TIER3_RPC="http://mock-t3"
+# v0.7 (Block 3, slice 3): ε=2 here is EXPLICIT, not the shipped default (now 0 — asserted in
+# test_vote_liveness). The A2 scenarios below need Δ1 ≤ ε to be a frozen-candidate so the pair
+# actually reaches the pin comparison; at the shipped ε=0 the same Δ1 is already VOTING — that
+# closure is section (h)/(i)'s and test_vote_liveness 2b–2d's subject.
 VOTE_LIVENESS_EPSILON=2
 VOTE_LIVENESS_MIN_INTERVAL=10
 log_info()  { :; }
@@ -307,6 +322,102 @@ if [[ -n "$P_MIN" && "$P_MIN" == "$S_MIN" ]]; then
 else
     bad "(g2) tip-guard lower-only hunk missing or DIVERGED between the daemons"
 fi
+
+# ── (h) v0.7 slice 3 (AUDIT-5 A3): ε=0 — THE MEASURED COST CASE, on the real attempt_takeover ───
+# Dead holder fixed at slot X; ONE stray +1 burst lands so it is first OBSERVED exactly at decision
+# time (a vote in flight when the node died — a dead node's lastVote then stays fixed at X+1). At
+# ε=0 that observation is a VOTING verdict → N3 re-anchor; the pair (re-based by the VOTING path)
+# re-renders FROZEN and the take COMPLETES at exactly anchor+TAKEOVER_DELAY. Cost vs the no-burst
+# baseline: within the AUDIT-5 "≈ +70 s" envelope — one N3 re-anchor (TAKEOVER_DELAY) plus at most
+# one VOTE_LIVENESS_MIN_INTERVAL (on the clean simulated clock the interval component is absorbed
+# inside the re-elapsed delay, so the cost realizes as exactly +TAKEOVER_DELAY; a real-world
+# boundary interleave pushes it toward the +70 ceiling — measured, accepted, do NOT "fix"). Both
+# bounds are asserted so neither a deadlock (no take) nor a cheaper-than-delay take (re-anchor
+# bypassed) can pass.
+echo ""; echo "─── (h) slice 3: dead holder + stray +1 burst at decision time → +[60,70]s, take completes ───"
+VOTE_LIVENESS_EPSILON=0   # the slice-3 shipped default (this suite overrode it above for the A2 scenarios)
+TAKEOVER_DELAY=60         # shipped default — the "≈ +70" magnitude is 60 (re-anchor) + 10 (interval)
+_B_X=9000                 # the dead holder's fixed lastVote
+b_sim() {   # $1 = "burst" | "clean"; echoes "<take_offset_from_T0> <anchor_offset_or_-1>"
+  local mode="$1" t anchor_off
+  reset_ep
+  _B_T0=800000; FIRST_DELINQUENT_TIME=$_B_T0
+  LAST_TAKEOVER_TIME=0; _last_confirm_attempt=0; _takeover_alert_sent=""; _gossip_prefetched=false
+  LAST_LIVENESS_ACTIVE_TIME=0; _delinq_window="1111111111"; _turbo_mode=true
+  _T2_UP=1; _T3_UP=1
+  _b_took=-1
+  take_staked_identity() { _b_took=$(( _SIM_NOW - _B_T0 )); return 0; }
+  for (( t=_B_T0; t<=_B_T0+300; t++ )); do
+    _SIM_NOW=$t
+    _T2_LV=$_B_X
+    [[ "$mode" == "burst" && $t -ge $(( _B_T0 + TAKEOVER_DELAY )) ]] && _T2_LV=$(( _B_X + 1 ))
+    _T2_TIP=$(( 900000 + t - _B_T0 ))    # cluster tip advances 1/s — fresh provider view throughout
+    _T3_LV=$_T2_LV; _T3_TIP=$_T2_TIP     # (not consulted while T2 answers — same-provider run)
+    attempt_takeover >/dev/null
+    [[ $_b_took -ge 0 ]] && break
+  done
+  anchor_off=-1
+  [[ ${LAST_LIVENESS_ACTIVE_TIME:-0} -gt 0 ]] && anchor_off=$(( LAST_LIVENESS_ACTIVE_TIME - _B_T0 ))
+  echo "$_b_took $anchor_off"
+}
+read -r H_CLEAN H_CLEAN_A <<<"$(b_sim clean)"
+read -r H_BURST H_BURST_A <<<"$(b_sim burst)"
+H_COST=$(( H_BURST - H_CLEAN ))
+echo "    timeline: no-burst take t0+${H_CLEAN}s (anchor ${H_CLEAN_A}) | burst take t0+${H_BURST}s (anchor t0+${H_BURST_A}s) | cost +${H_COST}s"
+[[ $H_CLEAN -eq $TAKEOVER_DELAY && $H_CLEAN_A -eq -1 ]] \
+    && ok "(h1) no-burst baseline: take at exactly first-delinquent+${TAKEOVER_DELAY}s, N3 anchor inert" \
+    || bad "(h1) baseline drifted (take=${H_CLEAN} anchor=${H_CLEAN_A}, want ${TAKEOVER_DELAY}/-1)"
+[[ $H_BURST_A -eq $TAKEOVER_DELAY ]] \
+    && ok "(h2) the +1 burst observed at decision time is a VOTING verdict → N3 re-anchored to the observation instant (t0+${H_BURST_A}s)" \
+    || bad "(h2) N3 not re-anchored at the burst observation (anchor=${H_BURST_A}, want ${TAKEOVER_DELAY}) — ε=0 missed a life sign"
+[[ $H_BURST -ge 0 && $H_BURST -eq $(( H_BURST_A + TAKEOVER_DELAY )) ]] \
+    && ok "(h3) take COMPLETES at exactly anchor+TAKEOVER_DELAY (t0+${H_BURST}s) — the pair re-rendered FROZEN; no deadlock" \
+    || bad "(h3) take=${H_BURST} (want anchor+delay=$(( H_BURST_A + TAKEOVER_DELAY ))) — deadlock or premature take"
+[[ $H_COST -ge $TAKEOVER_DELAY && $H_COST -le $(( TAKEOVER_DELAY + VOTE_LIVENESS_MIN_INTERVAL )) ]] \
+    && ok "(h4) measured cost +${H_COST}s ∈ [${TAKEOVER_DELAY}, $(( TAKEOVER_DELAY + VOTE_LIVENESS_MIN_INTERVAL ))] — the AUDIT-5 ≈+70s envelope (one re-anchor + ≤ one interval)" \
+    || bad "(h4) cost +${H_COST}s outside [${TAKEOVER_DELAY}, $(( TAKEOVER_DELAY + VOTE_LIVENESS_MIN_INTERVAL ))] — cheaper than one re-anchor (hole) or dearer than the measured expectation"
+
+# (h5) the "+ one VOTE_LIVENESS_MIN_INTERVAL" component, made visible at the fence: after the
+# VOTING re-base the pair re-renders its verdict in EXACTLY one interval (rc 0 → 2 too-soon → 1
+# FROZEN) — this is the interval term of the measured +70, and (with (i)'s convergence) why a
+# stray burst delays the take but can never wedge it.
+echo ""; echo "─── (h5) after a VOTING re-base the pair re-renders FROZEN in exactly one MIN_INTERVAL ───"
+reset_ep
+_SIM_NOW=850000; _T2_UP=1; _T3_UP=1; _T2_LV=5000; _T2_TIP=910000
+staked_is_actively_voting >/dev/null                      # first sample, pin T2
+_SIM_NOW=850012; _T2_LV=5001; _T2_TIP=910012              # the stray burst: +1
+staked_is_actively_voting >/dev/null; p0=$?
+_SIM_NOW=850021; _T2_LV=5001; _T2_TIP=910021              # 9s after the re-base: too soon
+staked_is_actively_voting >/dev/null; p1=$?
+_SIM_NOW=850022; _T2_LV=5001; _T2_TIP=910022              # exactly MIN_INTERVAL after the re-base
+staked_is_actively_voting >/dev/null; p2=$?
+[[ $p0 -eq 0 && $p1 -eq 2 && $p2 -eq 1 ]] \
+    && ok "(h5) rc sequence 0(VOTING re-base) → 2(9s: too soon) → 1(FROZEN at +${VOTE_LIVENESS_MIN_INTERVAL}s) — one interval, no wedge" \
+    || bad "(h5) rc sequence $p0,$p1,$p2 (want 0,2,1) — the pair did not re-render in one MIN_INTERVAL"
+
+# ── (i) slice 3 convergence sanity at ε=0: a dead node's lastVote is a FIXED NUMBER every provider
+#       converges to — FROZEN renders normally, even across a provider flip (the flip costs one
+#       extra interval via the re-pin, then the same fixed number renders the verdict; no deadlock).
+echo ""; echo "─── (i) ε=0 convergence: all providers on the same fixed lastVote → FROZEN renders ───"
+reset_ep
+_SIM_NOW=870000; _T2_UP=1; _T3_UP=1
+_T2_LV=7777; _T2_TIP=910000; _T3_LV=7777; _T3_TIP=909990   # both vantages: the SAME fixed number
+staked_is_actively_voting >/dev/null                       # first sample, pin T2
+_SIM_NOW=870012; _T2_LV=7777; _T2_TIP=910012
+staked_is_actively_voting >/dev/null; c0=$?
+[[ $c0 -eq 1 ]] \
+    && ok "(i1) same-provider pair on the fixed number: Δ0 at ε=0 → FROZEN renders normally (rc=1)" \
+    || bad "(i1) rc=$c0 (want 1) — ε=0 broke the plain frozen verdict"
+_SIM_NOW=870024; _T2_UP=0; _T3_LV=7777; _T3_TIP=910020     # T2 dies; T3 reports the SAME fixed number
+staked_is_actively_voting >/dev/null; c1=$?
+[[ $c1 -eq 2 && "$_liveness_first_provider" == "T3" && "$_liveness_first_vote" == "7777" ]] \
+    && ok "(i2) provider flip re-pins (rc=2, pin=T3) and the min-rule baseline stays the fixed 7777" \
+    || bad "(i2) rc=$c1 pin='$_liveness_first_provider' base='$_liveness_first_vote' (want 2/T3/7777)"
+_SIM_NOW=870034; _T3_LV=7777; _T3_TIP=910030               # one interval after the re-pin
+staked_is_actively_voting >/dev/null; c2=$?
+[[ $c2 -eq 1 ]] \
+    && ok "(i3) re-pinned T3/T3 pair converges on the SAME number → FROZEN (rc=1) — ε=0 cannot deadlock" \
+    || bad "(i3) rc=$c2 (want 1) — the fixed-number convergence argument failed"
 
 echo ""
 echo "============================================="

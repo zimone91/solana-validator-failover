@@ -169,7 +169,25 @@ COLLISION_CHECK_INTERVAL=60
 # the SINGLE authoritative gate (gossip is advisory only — a staked pubkey's gossip entry persists
 # ~48h in CRDS, so a stale entry must not block a takeover that liveness has cleared).
 VOTE_LIVENESS_VERIFY=true
-VOTE_LIVENESS_EPSILON=2                   # lastVote must advance > this many slots to count as "voting"
+# v0.7 (Block 3, slice 3 / AUDIT-5 A3): EPSILON 2 → 0 — ANY forward movement of lastVote is life.
+# Measured: at ε=2 a still-voting holder advancing +1..+2 slots over the window read FROZEN and the
+# spare TOOK under a live holder (single honest RPC, zero clock skew); at ε=0 it never took.
+# DEPENDENCY: ε=0 PRESUMES the provider-pinned pair (slice 2, staked_is_actively_voting) — only a
+# same-vantage pair may render FROZEN, so cross-provider lag can no longer be absorbed by (or read
+# as) vote movement. Do NOT raise ε to "fix" provider flapping: unpinned, ε=0 converts absorbed
+# skew into false VOTING at one re-anchored TAKEOVER_DELAY per event (under strict provider
+# alternation: 0 ALLOW verdicts out of 10) — fix the provider, not the constant. Accepted cost
+# The same starvation regime exists INSIDE one pinned URL: a load-balanced pool alternating a
+# fresh backend with one wedged pre-burst loops VOTING/rc2 forever at eps=0 (the pin cannot see
+# intra-URL backends) — availability-only, pages, and the fix is the same: a stable vantage.
+# Cost bounds, honestly: +[60,70]s is PER OBSERVATION (one converged flip); an unconverged flip
+# can cost ~2x TAKEOVER_DELAY. The no-deadlock claim is the load-bearing one and holds
+# universally: a dead node's lastVote is a fixed number every vantage converges to.
+# (measured, AUDIT-5): a DEAD holder with one stray +1 burst observed at decision time takes
+# ≈ +70s longer (one N3 re-anchor + one VOTE_LIVENESS_MIN_INTERVAL) and the takeover still
+# completes — a dead node's lastVote is a fixed number every provider converges to, so ε=0 cannot
+# deadlock.
+VOTE_LIVENESS_EPSILON=0                   # lastVote must advance > this many slots to count as "voting" (0 = ANY advance)
 VOTE_LIVENESS_MIN_INTERVAL=10             # min seconds between the two lastVote samples for a valid delta
 
 # v0.6.3 (Block 1): vote-liveness is REQUIRED. With VOTE_LIVENESS_VERIFY=false the daemon refuses

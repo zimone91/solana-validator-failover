@@ -135,7 +135,11 @@ RECOVERY_CHECK_INTERVAL=30                # seconds between recovery checks
 # (lastVote frozen over the interval, with the external cluster tip advancing), NOT gossip-IP
 # inference. If the identity is being voted (the STANDBY holds it) recovery is refused. These
 # knobs match the standby defaults; they are only consulted in rpc mode.
-VOTE_LIVENESS_EPSILON=2                   # lastVote must advance > this many slots to count as "voting"
+# v0.7 (Block 3, slice 3 / AUDIT-5 A3): EPSILON 2 → 0 — ANY forward movement of lastVote is life.
+# DEPENDENCY: ε=0 PRESUMES the provider-pinned pair (slice 2) — only a same-vantage pair may render
+# FROZEN. Do NOT raise ε to "fix" provider flapping — fix the provider, not the constant. Full
+# rationale + measured cost (≈ +70s on a stray burst; no deadlock): the STANDBY twin's definition site.
+VOTE_LIVENESS_EPSILON=0                   # lastVote must advance > this many slots to count as "voting" (0 = ANY advance)
 VOTE_LIVENESS_MIN_INTERVAL=10             # min seconds between the two lastVote samples for a valid delta
 
 # --- PRIMARY self-fence / "vote lease" (v0.6.3 Block 3) ---

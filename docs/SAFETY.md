@@ -108,8 +108,9 @@ promoted (there is no built-in assisted mode). See [SPLIT-BRAIN-RESIDUAL.md](SPL
   demote / watchdog-elapsed); external fence providers (STONITH-style, cloud/IPMI) remain v0.8 options
   on the same interface.
 - **Evidence quality** (v0.7): bind `VOTE_PUBKEY` to `STAKED_PUBKEY` via `getVoteAccounts`
-  (`nodePubkey`) before acting; pin the RPC provider across a paired liveness sample; treat *any*
-  forward movement of `lastVote` as "alive" (`VOTE_LIVENESS_EPSILON=0`).
+  (`nodePubkey`) before acting. Landed in v0.7: the paired liveness sample is provider-pinned, and
+  *any* forward movement of `lastVote` now counts as "alive" (`VOTE_LIVENESS_EPSILON=0`, which
+  presumes that pinned pair).
 - **Failure handling** (v0.7): escalate on *any* unverified demote postcondition, not only on
   command timeouts; atomic state writes; monotonic (boot-time) safety timers.
 
