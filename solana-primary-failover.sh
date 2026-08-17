@@ -1779,6 +1779,74 @@ validate_numeric_config() {
 # v0.6.9 (M8): normalize an RPC URL for the vantage-independence comparison (trim trailing slashes).
 _norm_rpc_url() { local u="$1"; while [[ "$u" == */ ]]; do u="${u%/}"; done; printf '%s' "$u"; }
 
+# ========================= SAFETY-CONFIG DRIFT ANNOUNCEMENT (v0.7 Block 3, slice 3.5) ==========
+# "We shipped ε=0" and "the fleet runs ε=0" are DIFFERENT claims: an env written by an older
+# installer (installers ≤ v0.6.10 wrote VOTE_LIVENESS_EPSILON=2) silently overrides a newer
+# daemon's stricter default after an in-place upgrade — the same class as the Unknown-identity and
+# sticky-default incidents: config silently diverging from THIS version's intent. The fix is
+# VISIBILITY, not force: at every startup, compare the critical safety knobs' EFFECTIVE values
+# against THIS version's shipped defaults and, when the env overrides one in the LESS STRICT
+# direction, say so — one log_warn per drifted knob, naming the knob, the env value, this
+# version's default, and how to align. NEVER fatal, NEVER silently overriding, just never
+# invisible. Equal-to-default or STRICTER: silent. Unset: silent (after sourcing, "env set the
+# default" and "env didn't set it" are indistinguishable — by design that doesn't matter here:
+# equal is silent either way, and silence is the healthy state — no drift, no startup noise).
+# INVARIANT(announce-only): this section may ONLY log_warn — it must never mutate a knob, never
+# exit, and never gate a code path (forcing would silently break rollback and operator intent).
+# EXCLUDED (already fatal-or-page elsewhere — do NOT duplicate): PRIMARY_SELF_FENCE /
+# STANDBY_SELF_FENCE=false (loud unfenced warnings + banner) and VOTE_LIVENESS_VERIFY=false
+# (refuses to start unless ALLOW_UNFENCED_TAKEOVER=true explicitly accepts it).
+#
+# One knob: $1=name, $2=THIS version's shipped default, $3=strictness direction, $4=one-line
+# consequence of running laxer. Directions (bash-3.2-safe: NO associative arrays — a flat
+# per-daemon call table below drives this): low = lower-is-stricter (laxer when value > default);
+# high = higher-is-stricter (laxer when value < default); low0 = lower-is-stricter BUT 0 disables
+# the sub-check entirely, so 0 is the LAXEST value (distinct wording); bool = true-is-stricter
+# (laxer when set non-empty and not "true" — the runtime gates read ${KNOB:-true}, so an EMPTY
+# value behaves as true = strict = silent). Numeric-safe: a non-numeric value is SKIPPED here
+# (startup validation elsewhere owns rejection — this must never add a second failure mode), and
+# compared via 10# so a leading-zero value can't read as octal.
+_drift_check() {
+    local name="$1" def="$2" dir="$3" why="$4" val="${!1}" lax=0
+    if [[ "$dir" == "bool" ]]; then
+        [[ -n "$val" && "$val" != "true" ]] && lax=1
+    else
+        [[ "$val" =~ ^[0-9]+$ ]] || return 0
+        val=$((10#$val))
+        case "$dir" in
+            low)  [[ $val -gt $((10#$def)) ]] && lax=1 ;;
+            high) [[ $val -lt $((10#$def)) ]] && lax=1 ;;
+            low0) if [[ $val -eq 0 ]]; then lax=2; elif [[ $val -gt $((10#$def)) ]]; then lax=1; fi ;;
+            high0) if [[ $val -eq 0 ]]; then lax=2; elif [[ $val -lt $((10#$def)) ]]; then lax=1; fi ;;
+        esac
+    fi
+    if [[ $lax -eq 2 ]]; then
+        log_warn "[config-drift] ${name}=0 DISABLES this sub-check entirely — the LAXEST possible setting (this version's default: ${def}) — ${why}; align: set ${name}=${def} in ${CONFIG_FILE} (or delete the line) and restart"
+    elif [[ $lax -eq 1 ]]; then
+        log_warn "[config-drift] ${name}=${val} is laxer than this version's default ${def} — ${why}; align: set ${name}=${def} in ${CONFIG_FILE} (or delete the line) and restart"
+    fi
+    return 0
+}
+
+# Called ONCE from startup_checks — AFTER the env is sourced and the numeric validation/
+# normalization passes ran (a knob those passes reject never reaches here) and BEFORE any later
+# startup gate can exit (e.g. the STANDBY's M9 cross-node timing enforcement): a laxer knob is
+# announced even on a boot that then refuses, so the operator sees the drift next to the refusal.
+announce_config_drift() {
+    # ── [config-drift] shared safety-knob table — BYTE-IDENTICAL in both daemons (test_config_drift) ──
+    _drift_check VOTE_LIVENESS_EPSILON 0 low "a still-voting holder advancing 1..ε slots reads FROZEN → a spare can take under a LIVE holder (double-sign)"
+    _drift_check VOTE_LIVENESS_MIN_INTERVAL 10 high "a shorter sample pair gives a slow voter less time to show life → false FROZEN reads"
+    _drift_check SELF_FENCE_ISOLATION_SECS 30 low "an isolated holder keeps voting longer before self-fencing → erodes the relinquish-before-takeover margin"
+    _drift_check SELF_FENCE_NOANSWER_SECS 30 low0 "a silent LOCAL RPC leaves the staked identity voting longer before the demote"
+    _drift_check SELF_FENCE_VOTE_LAG_SLOTS 32 low0 "an egress-partitioned holder demotes later and can lose the relinquish-first race against a spare's takeover"
+    _drift_check SELF_FENCE_VOTE_LAG_SECS 20 low0 "an egress-partitioned holder demotes later and can lose the relinquish-first race against a spare's takeover"
+    _drift_check SELF_FENCE_MAX_BEHIND 150 low0 "a far-behind holder keeps its staked identity longer before the getHealth demote fires"
+    _drift_check SELF_FENCE_HARD_STOP true bool "a wedged demote becomes alert-only — the staked identity can keep voting through it (the exact double-sign gap the hard-stop closes)"
+    # ── [config-drift] end shared table ──
+    # ── [config-drift] role-specific safety knobs ──
+    _drift_check RECOVERY_DELAY 300 high "rpc-mode recovery re-takes the staked identity sooner after going unstaked — less settle time before an automatic re-take"
+}
+
 # ========================= STARTUP ============================================
 
 startup_checks() {
@@ -1884,6 +1952,8 @@ startup_checks() {
     DELINQUENCY_WINDOW_SIZE=$((10#$DELINQUENCY_WINDOW_SIZE)); DELINQUENCY_WINDOW_THRESHOLD=$((10#$DELINQUENCY_WINDOW_THRESHOLD))
 
     validate_numeric_config   # v0.6.5 (F4): reject/normalize all remaining numeric knobs
+
+    announce_config_drift     # v0.7 (Block 3, slice 3.5): env safety knobs laxer than THIS version's defaults — one line each (visibility, never force)
 
     # v0.6.9 (M8): TIER2/TIER3 vantage-independence. Identical URLs silently void every "two vantages"
     # assumption (A6, the liveness fence's fallback independence, the tiered confirmations). Warn loudly
