@@ -118,7 +118,7 @@ See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 ```bash
 cd tests && bash run_all.sh
 ```
-40 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
+42 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
 mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Note the
 limit: these are function-level tests — they do **not** prove cross-process ordering between two live
 systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.

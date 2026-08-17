@@ -205,8 +205,8 @@ grep -A4 'config-drift\] role-specific' "$PRIMARY" | grep -q 'RECOVERY_DELAY 300
     && ok "(f7) PRIMARY role table carries RECOVERY_DELAY (default 300, higher-stricter)" \
     || bad "(f7) PRIMARY role table lacks RECOVERY_DELAY"
 S_ROLE=$(grep -A4 'config-drift\] role-specific' "$STANDBY")
-if [[ "$S_ROLE" == *"SELF_FENCE_RETAKE_COOLDOWN 600 high"* && "$S_ROLE" == *"EXPECTED_PRIMARY_SELF_FENCE_SECS 30 high"* && "$S_ROLE" == *"SELF_FENCE_MARGIN_SECS 30 high"* ]]; then
-    ok "(f8) STANDBY role table carries RETAKE_COOLDOWN/EXPECTED/MARGIN (all higher-stricter)"
+if [[ "$S_ROLE" == *"SELF_FENCE_RETAKE_COOLDOWN 600 high"* && "$S_ROLE" == *"EXPECTED_PRIMARY_SELF_FENCE_SECS 30 high"* && "$S_ROLE" == *"SELF_FENCE_MARGIN_SECS 30 high"* && "$S_ROLE" == *"TAKEOVER_STARVATION_ALERT_SECS 300 low0"* ]]; then
+    ok "(f8) STANDBY role table carries RETAKE_COOLDOWN/EXPECTED/MARGIN (higher-stricter) + STARVATION_ALERT (lower-stricter, 0 disables)"
 else
     bad "(f8) STANDBY role table incomplete"
 fi
