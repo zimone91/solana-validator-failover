@@ -4,6 +4,9 @@
 
 Automatic staked-identity failover for Solana validators. If your staked node dies or goes silent, a
 spare picks the identity up via `agave-validator set-identity` — no restart, no manual steps, ~60s.
+The ~60s holds while the external RPCs are observable — when they are not, the takeover holds for as
+long as the blindness lasts (by design: unobservable time counts as life) and the operator is paged
+(`TAKEOVER_STARVATION_ALERT_SECS`, default 300s).
 
 Built safety-first: the failing node **steps down before** the spare steps up, and every ambiguous
 state resolves toward *nobody holds the stake* rather than two nodes holding it.
@@ -118,7 +121,7 @@ See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 ```bash
 cd tests && bash run_all.sh
 ```
-42 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
+43 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
 mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Note the
 limit: these are function-level tests — they do **not** prove cross-process ordering between two live
 systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.

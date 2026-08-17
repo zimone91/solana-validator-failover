@@ -43,6 +43,7 @@ also outwait the STANDBY's takeover becoming externally visible.
 | A demote (`set-identity`) wedges | escalate to stop the validator + page |
 | Timing config unsafe | refuse to start |
 | Both external RPCs unreachable | cannot confirm → **hold**, do not take |
+| External RPCs stay down or flap | the hold is **indefinite** while blindness/flapping persists — a real, measured outcome (externals blinking one cycle per <60s starve the takeover for the whole outage) — and **paged** via `TAKEOVER_STARVATION_ALERT_SECS=300`, with a resolution notice at episode close |
 
 ## Detection
 
@@ -113,6 +114,15 @@ promoted (there is no built-in assisted mode). See [SPLIT-BRAIN-RESIDUAL.md](SPL
   presumes that pinned pair).
 - **Failure handling** (v0.7): escalate on *any* unverified demote postcondition, not only on
   command timeouts; atomic state writes; monotonic (boot-time) safety timers.
+
+### Availability-side starvation (blind or flapping externals)
+
+While the external RPCs are unobservable — hard-down or blinking — the takeover holds
+**indefinitely**: unobservable time counts as life, and every blind cycle restarts the countdown in
+full. This is a real, measured outcome (externals blinking one cycle per <60s starved the takeover
+for the whole outage), not a theoretical corner. "Fails safe" here means **does not act, loudly**:
+the daemon pages rather than guesses (`TAKEOVER_STARVATION_ALERT_SECS`, default 300s, repeating per
+`ALERT_THROTTLE`, with per-episode hold diagnostics and a resolution notice at episode close).
 
 ### Other standing notes
 

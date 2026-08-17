@@ -132,7 +132,8 @@ echo "============================================="
 
 # ── (1)+(3) the measured silence scenario: blink forever, 3600s ─────────────────────────────────
 echo ""; echo "─── (1) blink 1 cycle/50s over a dead holder, 3600s: no take, pages every ALERT_THROTTLE ───"
-IFS='|' read -r R_TOOK R_OFFS R_FENCE R_RESOLVE R_PAGED R_LASTAL R_TEXT <<<"$(sim 3600 -1 -1 0 0 '')"
+_simout=$(sim 3600 -1 -1 0 0 '')   # captured FIRST: a here-string $(…) would run the sourced daemon under IFS='|'
+IFS='|' read -r R_TOOK R_OFFS R_FENCE R_RESOLVE R_PAGED R_LASTAL R_TEXT <<<"$_simout"
 echo "    took=${R_TOOK} pages=[${R_OFFS} ] fence_alerts=${R_FENCE}"
 [[ "$R_TOOK" == "-1" ]] \
     && ok "(1a) NO take over 3600s — the anchor moves every blink (elapsed never reaches TAKEOVER_DELAY)" \
@@ -146,7 +147,8 @@ echo "    took=${R_TOOK} pages=[${R_OFFS} ] fence_alerts=${R_FENCE}"
 
 # ── (2) not gated by the fence-alert latch ──────────────────────────────────────────────────────
 echo ""; echo "─── (2) _takeover_alert_sent preset to 1: the starvation page still fires ───"
-IFS='|' read -r L_TOOK L_OFFS _ _ _ _ _ <<<"$(sim 350 -1 -1 1 0 '')"
+_simout=$(sim 350 -1 -1 1 0 '')   # captured FIRST: a here-string $(…) would run the sourced daemon under IFS='|'
+IFS='|' read -r L_TOOK L_OFFS _ _ _ _ _ <<<"$_simout"
 [[ "$L_OFFS" == " 300" ]] \
     && ok "(2) with the fence latch preset, the t0+300 page still fires — starvation is NOT gated by _takeover_alert_sent" \
     || bad "(2) preset latch suppressed/moved the page (offs=[${L_OFFS} ], want [ 300])"
@@ -159,7 +161,8 @@ echo ""; echo "─── (3) fence alert at most once while starvation repeats (
 
 # ── (4) resolution: false positive ends the episode via window_reset ────────────────────────────
 echo ""; echo "─── (4) after a page, externals recover + confirm says NOT delinquent → resolution notice ───"
-IFS='|' read -r S_TOOK S_OFFS _ S_RESOLVE S_PAGED S_LASTAL _ <<<"$(sim 450 350 400 0 0 '')"
+_simout=$(sim 450 350 400 0 0 '')   # captured FIRST: a here-string $(…) would run the sourced daemon under IFS='|'
+IFS='|' read -r S_TOOK S_OFFS _ S_RESOLVE S_PAGED S_LASTAL _ <<<"$_simout"
 echo "    took=${S_TOOK} pages=[${S_OFFS} ] resolve_notices=${S_RESOLVE} paged='${S_PAGED}' last_alert=${S_LASTAL}"
 [[ "$S_RESOLVE" == "1" && "$S_OFFS" == " 300" ]] \
     && ok "(4a) exactly one 'starvation over' alert_info after the false-positive window_reset (paged once at t0+300 first)" \
@@ -175,14 +178,16 @@ sed -n '/MAIN LOOP/,$p' "$STANDBY" | grep -q '_starvation_note_close "delinquenc
 
 # ── (5) permanent revert-control: the parent's silence ──────────────────────────────────────────
 echo ""; echo "─── (5) _maybe_starvation_page neutered (the pre-rework parent): zero pages in 3600s ───"
-IFS='|' read -r N_TOOK N_OFFS _ _ _ _ _ <<<"$(sim 3600 -1 -1 0 1 '')"
+_simout=$(sim 3600 -1 -1 0 1 '')   # captured FIRST: a here-string $(…) would run the sourced daemon under IFS='|'
+IFS='|' read -r N_TOOK N_OFFS _ _ _ _ _ <<<"$_simout"
 [[ "$N_TOOK" == "-1" && -z "$N_OFFS" ]] \
     && ok "(5) CONTROL: neutered page path → no take AND zero pages over the full hour — the parent's measured silence; (1)'s assertions bite" \
     || bad "(5) control broke (took=${N_TOOK}, offs=[${N_OFFS} ]) — the scenario no longer documents the silence"
 
 # ── (6) knob off + drift announcer ──────────────────────────────────────────────────────────────
 echo ""; echo "─── (6) TAKEOVER_STARVATION_ALERT_SECS=0 disables; the drift announcer says so ───"
-IFS='|' read -r K_TOOK K_OFFS _ _ _ _ _ <<<"$(sim 900 -1 -1 0 0 0)"
+_simout=$(sim 900 -1 -1 0 0 0)   # captured FIRST: a here-string $(…) would run the sourced daemon under IFS='|'
+IFS='|' read -r K_TOOK K_OFFS _ _ _ _ _ <<<"$_simout"
 [[ "$K_TOOK" == "-1" && -z "$K_OFFS" ]] \
     && ok "(6a) knob 0 → zero pages (starvation paging off; the hold itself is unchanged)" \
     || bad "(6a) knob 0 still paged (took=${K_TOOK}, offs=[${K_OFFS} ])"
@@ -208,7 +213,8 @@ out=$(drift_out "$STANDBY")
 #    hits 300 at uptime 350, but 350-0 < 600 → first page slips to uptime 600 (t0+550). The
 #    throttle must gate REPEATS only. T0=50 override simulates the freshly booted host.
 echo ""; echo "─── (7) episode starts at uptime 50s: first page at t0+300, not delayed by the throttle ───"
-IFS='|' read -r F_TOOK F_OFFS _ _ _ _ _ <<<"$(T0=50 sim 600 -1 -1 0 0 '')"
+_simout=$(T0=50 sim 600 -1 -1 0 0 '')   # captured FIRST: a here-string $(…) would run the sourced daemon under IFS='|'
+IFS='|' read -r F_TOOK F_OFFS _ _ _ _ _ <<<"$_simout"
 echo "    took=${F_TOOK} pages=[${F_OFFS} ]"
 [[ "$F_OFFS" == " 300" ]] \
     && ok "(7) fresh-boot first page at exactly t0+300 (held>=threshold alone gates the FIRST page; the throttle gates repeats)" \

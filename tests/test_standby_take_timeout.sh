@@ -48,6 +48,14 @@ scenario() {
     KILLS=0; kill(){ KILLS=$((KILLS+1)); PROC=0; return 0; }
     PROC=1; pgrep(){ [[ $PROC -eq 1 ]] && echo 4242; return 0; }
     get_local_identity(){ cat "$ID_FILE"; }
+    # v0.7 (slice 5): take_staked_identity now OPENS with _fresh_proof_recheck, and this harness
+    # primes a pin (_liveness_first_vote=9000 below, for the N9 episode-state assertions) — so the
+    # re-check really runs here. Mock the sampler frozen-consistent with that pin (same lastVote,
+    # fresh tip, two-field sample = provider comparisons degrade to always-equal, exactly like the
+    # pre-slice-2 mocks) so the proof refreshes and the H4 wedge scenarios under test stay
+    # reachable. No assertion weakened — T-b still requires lfv=9000 (the frozen re-check must not
+    # re-base the pin).
+    get_staked_liveness_sample(){ echo "9000 99999"; }
     _RC_SETID="$rc_setid"; _RC_ADD="$rc_add"; _RC_REMOVE="$rc_remove"; _APPLIED="$applied"
     timeout(){
         case "$*" in
