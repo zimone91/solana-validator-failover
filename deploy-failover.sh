@@ -291,6 +291,8 @@ echo ""
 ask "Tier 1 — Local RPC" "${LOCAL_RPC:-http://127.0.0.1:8899}"
 CFG_LOCAL_RPC="$REPLY"
 
+echo -e "  ${DIM}Prefer a STABLE single-backend endpoint (dedicated key). A load-balanced pool that${NC}"
+echo -e "  ${DIM}alternates backends can starve the vote-liveness verdict (delays failover; pages).${NC}"
 ask "Tier 2 — Paid RPC — any provider (e.g. Alchemy / Helius / Triton / QuikNode)" "${TIER2_RPC:-}"
 CFG_TIER2_RPC="$REPLY"
 
@@ -556,7 +558,9 @@ RECOVERY_CHECK_INTERVAL=30
 
 # v0.6.3 (Block 2): rpc-recovery vote-liveness fence (re-take only if nobody is voting the
 # staked identity). Only consulted in RECOVERY_MODE="rpc".
-VOTE_LIVENESS_EPSILON=2
+# v0.7 (A3): EPSILON 2 → 0 — ANY forward lastVote movement counts as "voting"; presumes the
+# provider-pinned sample pair. Do NOT raise it to mask provider flapping — fix the provider.
+VOTE_LIVENESS_EPSILON=0
 VOTE_LIVENESS_MIN_INTERVAL=10
 
 # --- PRIMARY self-fence / "vote lease" (v0.6.3 Block 3) ---
