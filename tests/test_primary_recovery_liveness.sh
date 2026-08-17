@@ -82,7 +82,12 @@ check_standby_has_identity() { return $_GOSSIP_ABORT; }
 _switched=0
 switch_to_staked() { _switched=1; return 0; }
 
-prep() { _recovery_confirm_count=0; _standby_alert_sent=""; _switched=0; }
+# v0.7 (B3 s4): the fence is MOCKED here, so no real pair exists — zero the first-sample stamp
+# and the blind anchor (Part 1 state must not re-anchor Part 2's RECOVERY_DELAY). v0.7 (B3 s4
+# rework): the span floor now skips on _liveness_obs_since=0 (the harness-mocked-fence carve-out)
+# — zero that too (Part 1's REAL fence pinned it via _note_observation). The floor/blindness
+# themselves are tested in test_blindness_is_life.
+prep() { _recovery_confirm_count=0; _standby_alert_sent=""; _switched=0; _liveness_first_ts=0; _last_blind_end=0; _liveness_obs_since=0; }
 
 # A. liveness ADVANCING + gossip CLEAR → must NOT re-take (the headline acceptance).
 prep; _LIVENESS_RC=0; _GOSSIP_ABORT=1

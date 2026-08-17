@@ -73,6 +73,13 @@ tier3_confirm_delinquency()      { return $_T3RC; }
 check_primary_dropped_identity() { _gossip_calls=$((_gossip_calls+1)); return $_GOSSIPRC; }
 staked_is_actively_voting()      { return 1; }   # v0.6.2: neutralize the liveness fence (clear) — this test exercises the F2 throttle/window, not the fence
 take_staked_identity()           { _took=1; return 0; }
+# v0.7 (Block 3, slice 4): this section tests the F2 throttle/window mechanics in ISOLATION. The
+# slice-4 blindness-is-life rule (a could-not-confirm cycle re-anchors the takeover countdown) and
+# the observation-span floor would otherwise dominate these timelines — both have their own suite
+# (test_blindness_is_life.sh). Neuter them here so the F2 assertions keep testing the throttle.
+get_staked_liveness_sample()     { echo "100 200"; }   # the hoisted A9a capture always samples → never a blind cycle
+_note_blind_cycle()              { :; }                # blind stamps off (pre-slice-4 anchor behavior)
+VOTE_LIVENESS_MIN_SPAN=0                               # span floor off (episode spans here are synthetic)
 
 DELINQUENCY_WINDOW_SIZE=10; DELINQUENCY_WINDOW_THRESHOLD=7
 EXTERNAL_CONFIRM_THROTTLE=12; TAKEOVER_DELAY=60; TAKEOVER_COOLDOWN=120

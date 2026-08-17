@@ -116,6 +116,11 @@ MAX_DELINQUENT_SLOTS=0
 # v0.5.9: DRY_RUN=true is the safe default. Live mode requires explicit DRY_RUN=false in env.
 DRY_RUN=true
 TAKEOVER_DELAY=60                         # seconds of confirmed delinquency before takeover
+# v0.7 (Block 3, slice 4): page when a delinquency episode has been held >= this many seconds with
+# no takeover (blindness re-anchors, provider flips and span-floor holds can hold the take
+# SILENTLY — see _maybe_starvation_page). Repeats per ALERT_THROTTLE; 0 = off. Observability only —
+# changes no verdict, triggers no action.
+TAKEOVER_STARVATION_ALERT_SECS=300
 GOSSIP_VERIFY=true                        # verify PRIMARY dropped via gossip
 GIVE_BACK_MODE="manual"                   # "manual" = never auto give-back (the only implemented mode — v0.6.9 M6: "auto" is coerced to manual with a warning)
 
@@ -189,6 +194,24 @@ VOTE_LIVENESS_VERIFY=true
 # deadlock.
 VOTE_LIVENESS_EPSILON=0                   # lastVote must advance > this many slots to count as "voting" (0 = ANY advance)
 VOTE_LIVENESS_MIN_INTERVAL=10             # min seconds between the two lastVote samples for a valid delta
+# ── v0.7 (Block 3, slice 4) — OBSERVATION-SPAN FLOOR (RATIFIED by the reviewer, 2026-08-17) ────
+# A FROZEN-based take must rest on at least this many seconds of OBSERVED span since the EPISODE's
+# first successful external observation (or since the end of the last blind cycle) — measured from
+# _liveness_obs_since, NOT the re-basable pair pin (see _liveness_span_short for the correctness
+# argument and the non-convergent first cut's history). Closes the residual A9a/S-3 tail: a
+# late-observed episode (first sample only pinned after the delay already elapsed) could otherwise
+# reach the frozen verdict on a pair just VOTE_LIVENESS_MIN_INTERVAL (~10s) apart — violating the
+# documented claim "only a holder landing ZERO votes for the ENTIRE delay reads frozen" (measured:
+# take at t0+10s). 40 makes the NORMAL live-tested path a strict no-op (first sample ≈ window
+# trigger t+15, take at t+66 → span ≈ 51s > 40) — only late-observation episodes wait. Floor not
+# met → "cannot determine yet" (never a verdict). 0 = disabled (the config-drift table announces
+# it). Revert = delete this knob + _liveness_span_short + its call-site hunks.
+VOTE_LIVENESS_MIN_SPAN=40                 # min OBSERVED seconds this episode behind a FROZEN-based take (0 = off)
+# Honest cost enumeration (verifier, slice 4): the "strict no-op" holds when the episode's first
+# observation lands within ~20s of first-delinquency (live-tested ~15s; a slow window fill pays the
+# difference, capped +30s). Pair re-bases (tip-stall, backwards, provider flip) do NOT restart the
+# span — only blindness does (and blindness already re-anchors the whole countdown, so the floor is
+# a strict no-op after it). All of it fails toward NOT taking.
 
 # v0.6.3 (Block 1): vote-liveness is REQUIRED. With VOTE_LIVENESS_VERIFY=false the daemon refuses
 # to start (and never takes over) UNLESS this dangerous override is explicitly set — there is then
@@ -342,10 +365,31 @@ _liveness_first_tip=""
 _liveness_first_ts=0
 _liveness_first_provider=""
 _liveness_sample_provider=""
+# v0.7 (Block 3, slice 4 / AUDIT-5 S-3): mono time of the last take-path cycle on which NO external
+# provider yielded a usable observation of the holder (liveness sampler empty on both tiers, or
+# external confirm returned "cannot confirm"). Third input to the N3 takeover anchor — see
+# INVARIANT(blindness-is-life) in attempt_takeover. 0 = no blind cycle observed this episode;
+# reset with the episode (window_reset / the main-loop delinquency-cleared reset).
+_last_blind_end=0
+# v0.7 (Block 3, slice-4 rework): mono time of the EPISODE's first successful external observation
+# (0 = none yet). Pinned by _note_observation on every successful sampler observation; reset ONLY
+# by episode resets (every _last_blind_end=0 site) and by blind cycles (_note_blind_cycle) —
+# NEVER by pair re-bases. The observation-span floor measures from this, not the pair pin.
+_liveness_obs_since=0
+# v0.7 (Block 3, slice-4 rework): per-episode hold diagnostics for the starvation page — reset at
+# every _last_blind_end=0 site (episode boundaries), incremented in the byte-identical helpers.
+_ep_blind_cycles=0
+_ep_provider_flips=0
+_ep_floor_holds=0
 
 _running=true
 _last_status_log=0
 _takeover_alert_sent=""
+# v0.7 (Block 3, slice-4 rework): takeover-starvation paging state (see _maybe_starvation_page).
+# Deliberately SEPARATE from _takeover_alert_sent — that latch covers the one-shot fence alert;
+# starvation must keep paging (throttled by ALERT_THROTTLE).
+_last_starvation_alert=0                  # mono time of the last starvation page (0 = none)
+_starvation_paged=""                      # non-empty = this episode paged starvation (close notice on episode end)
 # v0.6.9 (H1): promoted-holder self-fence trackers (byte-for-byte semantics of the PRIMARY's; see the
 # STANDBY SELF-FENCE section). All re-armed by _selffence_reset (demote / manual change / startup).
 _last_confirmed_slot=""
@@ -607,6 +651,7 @@ window_triggered() {
 }
 
 window_reset() {
+    _starvation_note_close "window reset"   # v0.7 (B3 s4 rework): FIRST — reads FIRST_DELINQUENT_TIME before it is zeroed below
     _delinq_window=""
     FIRST_DELINQUENT_TIME=0
     LAST_LIVENESS_ACTIVE_TIME=0            # v0.6.7 (N3): reset with FIRST_DELINQUENT_TIME — fresh episode
@@ -619,6 +664,9 @@ window_reset() {
     _liveness_first_tip=""                # v0.6.3 (Block 1): drop stale RPC-freshness reference tip
     _liveness_first_ts=0
     _liveness_first_provider=""           # v0.7 (Block 3, slice 2): drop the provider pin with the sample
+    _last_blind_end=0                     # v0.7 (Block 3, slice 4): fresh episode — no observed blind cycle yet
+    _liveness_obs_since=0                 # v0.7 (B3 s4 rework): fresh episode — the observed span restarts
+    _ep_blind_cycles=0; _ep_provider_flips=0; _ep_floor_holds=0   # v0.7 (B3 s4 rework): episode diagnostics reset with the episode
     _fastpath_absent_seen=0               # v0.6.8 (Option A, A5): fresh fast-path state per episode
     _fastpath_confirm=0                   # v0.6.8 (Option A): so a stale unstaked remnant cannot latch
 }
@@ -1053,9 +1101,136 @@ peer_has_relinquished() {
     return 1
 }
 
+# ── v0.7 (Block 3, slice 4 / AUDIT-5 S-3) — blind-cycle stamp (BYTE-IDENTICAL in both daemons) ──
+# A BLIND cycle = an ACTIVE-episode cycle in which an external observation of the holder was
+# ATTEMPTED and NO provider yielded a usable one: (a) the liveness sampler returned nothing usable
+# (both tiers failed/invalid), or (b) external confirm returned 2 (cannot confirm — both externals
+# down/invalid). Callers stamp it through this seam (tests neuter it to simulate the pre-slice-4
+# daemon). A cycle that attempts no observation (e.g. deep inside the countdown) is NOT blind — a
+# pinned pair spanning such a stretch still proves silence, because lastVote is monotonic on-chain.
+# INVARIANT(blindness-is-life): time we could not observe the holder counts as if the holder was
+# voting; the countdown only counts OBSERVED silence. The takeover/recovery anchor takes
+# max(..., _last_blind_end), so the FULL countdown re-elapses from the END of the last observed
+# blind cycle. Blindness that began BEFORE the first sample was ever pinned is the same rule with
+# zero prior observations: nothing to "restart" — the full countdown starts over from the end of
+# blindness. A VOTING observation still re-anchors exactly as before — blindness never delays the
+# LIVE verdict, only the take.
+_note_blind_cycle() {
+    _last_blind_end="$1"
+    _liveness_obs_since=0   # blindness = no observation — the episode's observed span re-pins at the next successful sample
+    _ep_blind_cycles=$((_ep_blind_cycles + 1))   # episode diagnostics (starvation page)
+    log_info "[blindness-is-life] no usable external observation this cycle — countdown re-anchored to the end of blindness (mono ${1})"
+}
+
+# ── v0.7 (Block 3, slice-4 rework) — first-observation pin (BYTE-IDENTICAL in both daemons) ────
+# Pins the EPISODE's first successful external observation (mono time; only if currently 0).
+# Re-pinned after blindness (_note_blind_cycle resets it to 0, so the next successful sample
+# re-pins); NEVER touched by the pair re-bases (tip-stall, backwards, provider flip) — those
+# re-base the PAIR's comparability, not "how long we have been observing".
+_note_observation() {
+    [[ ${_liveness_obs_since:-0} -gt 0 ]] || _liveness_obs_since="$1"
+}
+
+# ── v0.7 (Block 3, slice 4) — OBSERVATION-SPAN FLOOR (RATIFIED by the reviewer, 2026-08-17;
+# BYTE-IDENTICAL in both daemons; revert = delete this function, its two one-line call-site hunks,
+# the VOTE_LIVENESS_MIN_SPAN knob and its validation/drift-table lines).
+# SEMANTICS: a FROZEN-based take must rest on >= VOTE_LIVENESS_MIN_SPAN seconds of OBSERVED span
+# since the EPISODE's first successful observation (or since the end of the last blind cycle):
+# span = mono_now - _liveness_obs_since — NOT the re-basable pair pin. Returns 0 (SHORT) → the
+# caller demotes the FROZEN verdict to "cannot determine yet" (never a verdict). Floor 0 disables
+# (the config-drift table announces it).
+# CORRECTNESS (the reviewer's argument, stated exactly): INVARIANT(baseline-rises-only-on-voting)
+# means every non-VOTING re-base only LOWERS _liveness_first_vote; so on a FROZEN verdict the
+# baseline <= the minimum lastVote observed since the last VOTING verdict (episode start if none),
+# and lastVote is monotonic on-chain — FROZEN therefore proves the holder never exceeded that
+# minimum over that whole stretch — up to the last sample's snapshot staleness (an external
+# view that ADVANCES but LAGS compresses the observed tail; the tip-guard checks advance, not
+# rate — a pre-existing exposure the floor narrows but does not close). With no in-episode
+# VOTING verdict that stretch is exactly
+# [obs_since, now] — the claimed span is real, and STRONGER than the replaced version ("since the
+# last re-pin"). Across an in-episode VOTING verdict obs_since is OLDER than the proven stretch:
+# harmless on the STANDBY (every VOTING verdict re-anchors the FULL countdown — DELAY > floor —
+# and the pair re-based at that verdict spans it), and on the PRIMARY the voting→frozen
+# transition is guarded by the recovery ladder instead (RECOVERY_CHECKS rungs x
+# RECOVERY_CHECK_INTERVAL, liveness re-verified each rung, any vote resets the count).
+# CONVERGENCE: inside an unblinded stretch obs_since stays PINNED while the SPAN grows
+# monotonically, so the floor is always eventually met; residual flip cost returns to the accepted "+1 MIN_INTERVAL per flip".
+# HISTORY: the first cut measured span from the re-basable pair pin and did NOT converge under
+# provider-flip periods inside (MIN_INTERVAL, MIN_SPAN) — measured flip 20s/35s: NO take in 3600s
+# (reviewer, 2026-08-17; never shipped).
+# SIDE EFFECT: obs_since resets on blind cycles, so after ANY blindness the floor is a strict
+# no-op (the re-anchored countdown 60s > floor 40s and obs_since re-pins ~one cycle after
+# blindness ends) — the floor bites exactly where it was built for (the late-observed A9a
+# episode) and nowhere else.
+# A zero obs_since returns 1 (not short): a real FROZEN verdict structurally implies a successful
+# sample THIS cycle, which pinned obs_since via _note_observation — that state only occurs in
+# harnesses that mock the fence, never in the shipped daemons.
+_liveness_span_short() {
+    local floor="${VOTE_LIVENESS_MIN_SPAN:-40}" span
+    [[ "$floor" =~ ^[0-9]+$ ]] || floor=40
+    floor=$((10#$floor))
+    [[ $floor -gt 0 ]] || return 1
+    [[ ${_liveness_obs_since:-0} -gt 0 ]] || return 1
+    span=$(( $(mono_now) - _liveness_obs_since ))
+    if [[ $span -lt $floor ]]; then
+        _ep_floor_holds=$((_ep_floor_holds + 1))   # episode diagnostics (starvation page)
+        log_info "[liveness] FROZEN pair but only ${span}s observed this episode (< span floor ${floor}s) — cannot determine yet"
+        return 0
+    fi
+    return 1
+}
+
+# ── v0.7 (Block 3, slice-4 rework) — TAKEOVER STARVATION PAGE (STANDBY ONLY; page-only) ────────
+# A starving episode is SILENT: every hold path that moves the anchor (blindness re-anchor,
+# provider flip, span-floor hold) keeps elapsed < TAKEOVER_DELAY, and the delay-branch early
+# return in attempt_takeover fires BEFORE the single alert_warn in the fence_reason block —
+# measured (reviewer, 2026-08-17): dead holder + both externals blinking one cycle every <=55s =
+# NO take in an hour and ZERO pages. Called as the FIRST statement of attempt_takeover (before
+# the H1.3 lockout), so it is reachable from EVERY hold path — the delay-branch early return
+# included (that is where the measured silence lives).
+# THE ANCHOR TRAP: held-time is measured from FIRST_DELINQUENT_TIME, NEVER from takeover_anchor —
+# the anchor is exactly what starvation moves; an alarm anchored to it starves with the takeover.
+# NOT gated by _takeover_alert_sent (that latch covers the one-shot fence alert; starvation must
+# keep paging, throttled by ALERT_THROTTLE). Page-only: changes no verdict, triggers no action.
+# Deliberately NOT on the primary's recovery path: post-failover the old primary sits unstaked
+# indefinitely while the standby legitimately votes staked (manual switch-back is the documented
+# path) — a symmetric recovery-starvation page would page forever in that healthy steady state.
+_maybe_starvation_page() {
+    local thr="${TAKEOVER_STARVATION_ALERT_SECS:-300}" now_s held
+    [[ "$thr" =~ ^[0-9]+$ ]] || thr=300
+    thr=$((10#$thr))
+    [[ $thr -gt 0 ]] || return 0
+    [[ ${FIRST_DELINQUENT_TIME:-0} -gt 0 ]] || return 0
+    now_s=$(mono_now)
+    held=$(( now_s - FIRST_DELINQUENT_TIME ))
+    [[ $held -ge $thr ]] || return 0
+    # The throttle gates REPEATS only. mono_now is boot-relative: on a freshly booted host
+    # (uptime < ALERT_THROTTLE) an unguarded "now - 0" would silently delay the FIRST page
+    # (measured: episode at uptime 50s → first page at held=550s instead of 300s).
+    if [[ ${_last_starvation_alert:-0} -gt 0 ]]; then
+        [[ $(( now_s - _last_starvation_alert )) -ge ${ALERT_THROTTLE:-600} ]] || return 0
+    fi
+    _last_starvation_alert=$now_s
+    _starvation_paged=1
+    alert_warn "⚠️ TAKEOVER STARVATION: holder delinquent ${held}s and the takeover is still held. This episode: blind cycles=${_ep_blind_cycles:-0}, provider flips=${_ep_provider_flips:-0}, span-floor holds=${_ep_floor_holds:-0}. Blindness re-anchors the countdown (blindness-is-life) — check TIER2/TIER3 RPC health and rate limits, and the holder itself; a post-self-fence re-take lockout also holds here (and is right to). Page-only: no action was taken."
+}
+
+# ── v0.7 (Block 3, slice-4 rework) — starvation resolution notice (STANDBY ONLY) ───────────────
+# Called at every episode close — FIRST statement of window_reset (before FIRST_DELINQUENT_TIME is
+# zeroed) and in the main-loop delinquency-cleared branch (which does not call window_reset): if
+# this episode paged starvation, say it is over and how it ended; always drop the paging state.
+_starvation_note_close() {
+    if [[ -n "$_starvation_paged" && ${FIRST_DELINQUENT_TIME:-0} -gt 0 ]]; then
+        alert_info "✅ Takeover starvation over — episode closed (${1}) after $(( $(mono_now) - FIRST_DELINQUENT_TIME ))s (blind=${_ep_blind_cycles:-0} flips=${_ep_provider_flips:-0} floor-holds=${_ep_floor_holds:-0})"
+    fi
+    _starvation_paged=""
+    _last_starvation_alert=0
+}
+
 # --- Full takeover attempt (gates: window → delay → external confirm → gossip → take) ---
 attempt_takeover() {
     now=$(mono_now)   # v0.7 (Block 3): SAFETY clock — feeds the H1.3 lockout, the N3 anchor, the cooldown and the confirm throttle
+    _maybe_starvation_page   # v0.7 (B3 s4 rework): FIRST — before the H1.3 lockout, reachable from EVERY hold path (the delay-branch early return included: that is where the measured silence lives)
     # v0.6.9 (H1.3): post-self-fence RE-TAKE LOCKOUT — checked before everything else. After a
     # self-fence demote the staked vote account WILL look delinquent+frozen (WE were the voter and we
     # stopped): external-confirm and vote-liveness would both pass and this node would take back the
@@ -1069,6 +1244,41 @@ attempt_takeover() {
         fi
         return 1
     fi
+    # v0.7 (Block 3, slice 4 / AUDIT-5 A9a): capture the vote-liveness FIRST sample on EVERY
+    # take-path cycle where it is missing — not only inside the delay branch below (where it lived
+    # through slice 3). A late-triggering episode (elapsed already >= TAKEOVER_DELAY on the very
+    # first call — a flaky LOCAL RPC delaying the window fill reaches this with stock config) must
+    # still build a real observation span; pinned only by the fence's own first-sample path, the
+    # verdict pair ended up just VOTE_LIVENESS_MIN_INTERVAL apart (measured: take at t0+10s).
+    # A cycle whose sampler yields nothing usable is a BLIND cycle (AUDIT-5 S-3) — stamped BEFORE
+    # the anchor below is computed, so this very cycle's blindness already re-anchors. Once ANY
+    # blind cycle was observed this episode (_last_blind_end > 0), keep probing even after the pin
+    # (success leaves the pinned pair untouched — only the blind stamps stop), so the observed end
+    # of blindness tracks the real one at take-path-cycle granularity.
+    if [[ "$VOTE_LIVENESS_VERIFY" == "true" && ( -z "$_liveness_first_vote" || ${_last_blind_end:-0} -gt 0 ) ]]; then
+        # Known cost (verifier, slice 4): once any blind cycle is seen this probe runs EVERY
+        # take-path cycle — in turbo ~1 getVoteAccounts/s against Tier-2, and a rate-limited tier's
+        # 429s parse as blind (mild self-reinforcement, mitigated by the T3 fallback). Safety does
+        # not need per-cycle granularity (the pinned pair's monotonicity covers unprobed stretches);
+        # a probe throttle here is sanctioned future work — reduce load, never weaken the stamps.
+        local s0 s0rest; s0=$(get_staked_liveness_sample) || s0=""
+        if [[ -z "$s0" ]]; then
+            _note_blind_cycle "$now"   # v0.7 (B3 s4 / S-3): no provider yielded a sample — blind cycle
+        else
+            _note_observation "$now"   # v0.7 (B3 s4 rework): a successful sample with the pair already pinned must still note the observation (the episodic span floor measures from it)
+            if [[ -z "$_liveness_first_vote" ]]; then
+                # v0.7 (Block 3, slice 2 / AUDIT-5 A2): the sample is "<lastVote> <ref> <tier>"; $()
+                # ran the sampler in a subshell, so re-derive _liveness_sample_provider from the
+                # third field and PIN the pair to that vantage alongside the vote/tip capture (a
+                # two-field sample — old mocks/consumers — yields an empty label).
+                s0rest="${s0#* }"
+                _liveness_first_vote="${s0%% *}"; _liveness_first_tip="${s0rest%% *}"; _liveness_first_ts="$now"
+                _liveness_sample_provider=""; [[ "$s0rest" == *" "* ]] && _liveness_sample_provider="${s0rest##* }"
+                _liveness_first_provider="$_liveness_sample_provider"
+                log_info "[liveness prefetch] first sample lastVote=${_liveness_first_vote} tip=${_liveness_first_tip} provider=${_liveness_first_provider:-unknown}"
+            fi
+        fi
+    fi
     # v0.6.7 (N3): anchor the takeover delay to the LATER of first-delinquent and last-seen-voting.
     # While a holder is delinquent BUT still voting, the liveness fence below records
     # LAST_LIVENESS_ACTIVE_TIME; measuring elapsed from max(FIRST_DELINQUENT_TIME, that) makes the
@@ -1080,6 +1290,19 @@ attempt_takeover() {
     takeover_anchor=$FIRST_DELINQUENT_TIME
     if [[ $LAST_LIVENESS_ACTIVE_TIME -gt $takeover_anchor ]]; then
         takeover_anchor=$LAST_LIVENESS_ACTIVE_TIME
+    fi
+    # v0.7 (Block 3, slice 4 / AUDIT-5 S-3): third anchor input — the END of the last observed
+    # BLIND cycle. INVARIANT(blindness-is-life): time we could not observe the holder counts as if
+    # the holder was voting; the countdown only counts OBSERVED silence. Both externals down across
+    # the delay used to leave this anchor untouched: on recovery the pair rendered FROZEN just one
+    # VOTE_LIVENESS_MIN_INTERVAL after the first post-recovery sample and the take fired ~15s after
+    # the holder's last (unobservable) vote — the 60s liveness window collapsed to ~15s (measured).
+    # This restarts the N3 ANCHOR, not merely the sample pair; blindness that began BEFORE the
+    # first sample is the same rule with zero prior observations — the FULL countdown starts over
+    # from the end of blindness. Never touched by a mere delay cycle (no observation attempted —
+    # see _note_blind_cycle), so a blindness-free episode is byte-identical to the parent.
+    if [[ ${_last_blind_end:-0} -gt $takeover_anchor ]]; then
+        takeover_anchor=$_last_blind_end
     fi
     elapsed_since_first=$(( now - takeover_anchor ))
     w_count=$(window_count)
@@ -1116,22 +1339,9 @@ attempt_takeover() {
             [[ -z "$_gossip_result" ]] && log_info "[gossip prefetch] Staked NOT in gossip" \
                 || log_info "[gossip prefetch] Staked on $_gossip_result"
         fi
-        # v0.6.2 (C1/C2): capture the vote-liveness FIRST sample at delay start (all roles).
-        # v0.6.3 (Block 1): capture the RPC-freshness reference tip alongside lastVote.
-        if [[ "$VOTE_LIVENESS_VERIFY" == "true" && -z "$_liveness_first_vote" ]]; then
-            local s0 s0rest; s0=$(get_staked_liveness_sample) || s0=""
-            if [[ -n "$s0" ]]; then
-                # v0.7 (Block 3, slice 2 / AUDIT-5 A2): the sample is "<lastVote> <ref> <tier>"; $()
-                # ran the sampler in a subshell, so re-derive _liveness_sample_provider from the
-                # third field and PIN the pair to that vantage alongside the vote/tip capture (a
-                # two-field sample — old mocks/consumers — yields an empty label).
-                s0rest="${s0#* }"
-                _liveness_first_vote="${s0%% *}"; _liveness_first_tip="${s0rest%% *}"; _liveness_first_ts="$now"
-                _liveness_sample_provider=""; [[ "$s0rest" == *" "* ]] && _liveness_sample_provider="${s0rest##* }"
-                _liveness_first_provider="$_liveness_sample_provider"
-                log_info "[liveness prefetch] first sample lastVote=${_liveness_first_vote} tip=${_liveness_first_tip} provider=${_liveness_first_provider:-unknown}"
-            fi
-        fi
+        # v0.6.2 (C1/C2) → v0.7 (Block 3, slice 4 / AUDIT-5 A9a): the vote-liveness FIRST-sample
+        # capture that lived here moved ABOVE the anchor computation, so it runs on EVERY take-path
+        # cycle (a late-triggering episode skips this delay branch entirely and still must pin).
         # v0.6.8 (Option A): fast-path early-exit. If we POSITIVELY observe the holder relinquished (its
         # KNOWN unstaked identity freshly advertised on >=2 vantage points — peer_has_relinquished, A2/A4/A6)
         # AND we are past THIS node's stagger floor (A3), SKIP the remaining timer and fall through to the
@@ -1168,6 +1378,7 @@ attempt_takeover() {
         return 1
     elif [[ $confirm_result -eq 2 ]]; then
         _last_confirm_attempt=$now   # arm throttle only for the both-RPC-down HOLD
+        _note_blind_cycle "$now"     # v0.7 (B3 s4 / S-3): cannot confirm = no usable observation — blind cycle, the countdown re-anchors (INVARIANT(blindness-is-life))
         log_info "External RPC could not confirm — holding window (${w_count}/${DELINQUENCY_WINDOW_SIZE}), will retry"
         return 1
     fi
@@ -1196,6 +1407,13 @@ attempt_takeover() {
     # (b) Vote-liveness — the authoritative, REQUIRED fence (all roles).
     if [[ "$VOTE_LIVENESS_VERIFY" == "true" ]]; then
         staked_is_actively_voting; local liveness=$?
+        # ── v0.7 (Block 3, slice 4) hunk (RATIFIED, 2026-08-17) — observation-span floor: a
+        # FROZEN verdict resting on < VOTE_LIVENESS_MIN_SPAN seconds of the EPISODE's observed
+        # span is demoted to "cannot determine yet" (see _liveness_span_short). Strict no-op on
+        # the normal live-tested path (span ≈ 51s at the take) and after any blindness; only
+        # late-observation episodes wait. Revert = delete this hunk (one line + comment).
+        if [[ $liveness -eq 1 ]] && _liveness_span_short; then liveness=2; fi
+        # ── end slice-4 floor hunk ──
         if [[ $liveness -eq 0 ]]; then
             fence_reason="staked identity is actively voting"
             # v0.6.7 (N3): holder is STILL voting → re-anchor the takeover delay to now, so the full
@@ -1483,8 +1701,10 @@ staked_is_actively_voting() {
     _liveness_sample_provider="$prov"
     if [[ -z "$sample" || ! "$cur" =~ ^[0-9]+$ || ! "$tip" =~ ^[0-9]+$ ]]; then
         log_warn "[liveness] staked lastVote/reference unavailable (externals down) — cannot determine"
+        _note_blind_cycle "$now2"   # v0.7 (B3 s4 / S-3): blind cycle — INVARIANT(blindness-is-life) re-anchors the countdown
         return 2
     fi
+    _note_observation "$now2"   # v0.7 (B3 s4 rework): successful observation — pin the episode's observed-span start (no-op once pinned; re-pins after blindness)
 
     # First sample not captured yet → record lastVote + reference tip and wait for a real interval.
     if [[ -z "$_liveness_first_vote" ]]; then
@@ -1543,6 +1763,7 @@ staked_is_actively_voting() {
     # verdict; worst case one extra VOTE_LIVENESS_MIN_INTERVAL per provider flip.
     if [[ "$prov" != "$_liveness_first_provider" ]]; then
         log_warn "[liveness] provider flipped ${_liveness_first_provider:-unknown}→${prov:-unknown} across the pair — frozen reading not comparable, cannot determine → BLOCK; re-pinning to ${prov:-unknown}"
+        _ep_provider_flips=$((_ep_provider_flips + 1))   # v0.7 (B3 s4 rework): episode diagnostics (starvation page); the re-pin does NOT touch _liveness_obs_since
         [[ $cur -lt $_liveness_first_vote ]] && _liveness_first_vote="$cur"
         _liveness_first_tip="$tip"; _liveness_first_ts="$now2"; _liveness_first_provider="$prov"
         return 2
@@ -1550,9 +1771,9 @@ staked_is_actively_voting() {
 
     # v0.6.8 (B2): DOUBLE-SIGN-SAFETY INVARIANT — the FROZEN path deliberately does NOT re-base
     # _liveness_first_vote (only the ADVANCED/return-0 and backwards/return-2 paths above do). The first
-    # sample stays PINNED for the whole takeover episode, so `delta` is measured against the episode start
+    # sample stays PINNED for the whole episode, so `delta` is measured against the episode start
     # over an ever-growing window: ANY vote burst that lifts the holder's lastVote > EPSILON above that pin
-    # — at any point in the delay — trips return 0 (VOTING → BLOCK) and re-anchors the N3 countdown. This is
+    # — at any point in the delay — trips return 0 (VOTING → BLOCK) and re-anchors the countdown. This is
     # exactly what protects against the intermittent/flapping "wedged-but-alive" holder (Audit-1 B7): only a
     # holder that lands ZERO qualifying votes for the ENTIRE delay reads frozen. DO NOT refactor this to
     # re-base on the frozen path — a sliding per-interval window would re-open that double-sign hole.
@@ -2114,6 +2335,7 @@ validate_numeric_config() {
     _validate_numeric DELINQUENCY_RETRIES 1
     _validate_numeric TAKEOVER_DELAY 0
     _validate_numeric TAKEOVER_COOLDOWN 0
+    _validate_numeric TAKEOVER_STARVATION_ALERT_SECS 0     # v0.7 (B3 s4 rework): starvation-page threshold (0 = off, drift-announced)
     _validate_numeric EXTERNAL_CONFIRM_THROTTLE 0
     _validate_numeric MAX_DELINQUENT_SLOTS 0
     _validate_numeric LOCAL_HEALTH_MAX_BEHIND 0
@@ -2122,6 +2344,7 @@ validate_numeric_config() {
     _validate_numeric EXPECTED_PRIMARY_VOTE_LAG_SLOTS 0    # v0.6.8 (B2): reference for the EPSILON<<band assert
     _validate_numeric FASTPATH_CONFIRM_SAMPLES 1           # v0.6.8 (Option A): consecutive corroborated cycles
     _validate_numeric FASTPATH_STAGGER_SECS 0              # v0.6.8 (Option A): per-node stagger floor
+    _validate_numeric VOTE_LIVENESS_MIN_SPAN 0             # v0.7 (B3 s4, ratified): episodic observation-span floor behind a FROZEN take (0 = disabled, drift-announced)
     _validate_numeric HEARTBEAT_INTERVAL 1
     _validate_numeric HEARTBEAT_PING_INTERVAL 1
     _validate_numeric LOG_MAX_SIZE 1
@@ -2224,6 +2447,7 @@ announce_config_drift() {
     # ── [config-drift] shared safety-knob table — BYTE-IDENTICAL in both daemons (test_config_drift) ──
     _drift_check VOTE_LIVENESS_EPSILON 0 low "a still-voting holder advancing 1..ε slots reads FROZEN → a spare can take under a LIVE holder (double-sign)"
     _drift_check VOTE_LIVENESS_MIN_INTERVAL 10 high "a shorter sample pair gives a slow voter less time to show life → false FROZEN reads"
+    _drift_check VOTE_LIVENESS_MIN_SPAN 40 high0 "a FROZEN-based take can rest on a shorter observed span this episode — a late-observed episode can take on ~one sample interval of observed silence"
     _drift_check SELF_FENCE_ISOLATION_SECS 30 low "an isolated holder keeps voting longer before self-fencing → erodes the relinquish-before-takeover margin"
     _drift_check SELF_FENCE_NOANSWER_SECS 30 low0 "a silent LOCAL RPC leaves the staked identity voting longer before the demote"
     _drift_check SELF_FENCE_VOTE_LAG_SLOTS 32 low0 "an egress-partitioned holder demotes later and can lose the relinquish-first race against a spare's takeover"
@@ -2235,6 +2459,7 @@ announce_config_drift() {
     _drift_check SELF_FENCE_RETAKE_COOLDOWN 600 high0 "after a self-fence demote this node can re-take the identity it JUST dropped sooner (that account WILL look delinquent+frozen — every normal gate would pass)"
     _drift_check EXPECTED_PRIMARY_SELF_FENCE_SECS 30 high "understates the PRIMARY's relinquish worst case → the cross-node takeover-delay floor computes too low"
     _drift_check SELF_FENCE_MARGIN_SECS 30 high "shrinks the cross-node safety margin → the takeover-delay floor computes too low"
+    _drift_check TAKEOVER_STARVATION_ALERT_SECS 300 low0 "a silently-held takeover episode (blindness/flip/floor holds) would page later — or never"
 }
 
 # v0.6.6 (N1): cross-node fail-over timing safety. The PRIMARY must self-fence (relinquish the staked
@@ -2666,12 +2891,15 @@ while $_running; do
             window_push 0
             if window_mostly_clear; then
                 [[ $FIRST_DELINQUENT_TIME -gt 0 ]] && alert_info "✅ STANDBY delinquency cleared (window mostly clear)"
+                _starvation_note_close "delinquency cleared"   # v0.7 (B3 s4 rework): BEFORE the inline resets (this branch does not call window_reset)
                 FIRST_DELINQUENT_TIME=0; _takeover_alert_sent=""
                 LAST_LIVENESS_ACTIVE_TIME=0   # v0.6.7 (N3): reset with FIRST_DELINQUENT_TIME — fresh episode
                 _fastpath_absent_seen=0; _fastpath_confirm=0   # v0.6.8 (S2): end the fast-path episode too, so the A2 absent→present transition cannot latch across the organic delinquency-clear into the next episode
                 _gossip_prefetched=false; _gossip_result=""
                 _last_confirm_attempt=0   # v0.6.1 (F2): fresh episode starts un-throttled
                 _liveness_first_vote=""; _liveness_first_tip=""; _liveness_first_ts=0; _liveness_first_provider=""   # v0.6.2 (C1) / v0.6.3 (Block 1) / v0.7 (B3 s2): drop stale sample + tip + provider pin
+                _last_blind_end=0   # v0.7 (B3 s4): episode over — drop the blind anchor with the episode
+                _liveness_obs_since=0; _ep_blind_cycles=0; _ep_provider_flips=0; _ep_floor_holds=0   # v0.7 (B3 s4 rework): observed span + episode diagnostics end with the episode
                 if [[ "$_turbo_mode" == "true" ]]; then
                     _turbo_mode=false
                     _current_interval=$CHECK_INTERVAL

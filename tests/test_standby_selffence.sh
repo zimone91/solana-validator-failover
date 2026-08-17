@@ -179,6 +179,10 @@ VOTE_LIVENESS_VERIFY=true; _takeover_alert_sent=""
 LAST_LIVENESS_ACTIVE_TIME=0
 confirm_delinquency_external(){ return 0; }
 staked_is_actively_voting(){ return 1; }   # frozen → fence clear
+# v0.7 (B3 s4): pre-pin a back-dated first sample so (a) the hoisted A9a capture never runs a real
+# sampler here and (b) the observation-span floor is satisfied — this case tests the H1.3 lockout,
+# not the slice-4 span floor (test_blindness_is_life owns that).
+_liveness_first_vote=100; _liveness_first_tip=1; _liveness_first_ts=$(( T_FENCE + 100 )); _last_blind_end=0
 _takes=0; take_staked_identity(){ _takes=$((_takes+1)); return 0; }
 FIRST_DELINQUENT_TIME=$(( T_FENCE + 10 ))
 _SIM_NOW=$(( T_FENCE + 300 ))   # inside the lockout, delay long served

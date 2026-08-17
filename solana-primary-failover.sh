@@ -141,6 +141,19 @@ RECOVERY_CHECK_INTERVAL=30                # seconds between recovery checks
 # rationale + measured cost (≈ +70s on a stray burst; no deadlock): the STANDBY twin's definition site.
 VOTE_LIVENESS_EPSILON=0                   # lastVote must advance > this many slots to count as "voting" (0 = ANY advance)
 VOTE_LIVENESS_MIN_INTERVAL=10             # min seconds between the two lastVote samples for a valid delta
+# v0.7 (Block 3, slice 4) — OBSERVATION-SPAN FLOOR (RATIFIED by the reviewer, 2026-08-17). A
+# FROZEN-based re-take must rest on at least this many seconds of OBSERVED span since the
+# EPISODE's first successful observation (or since the end of the last blind cycle) — measured
+# from _liveness_obs_since, NOT the re-basable pair pin — so a post-blind pair only one
+# MIN_INTERVAL wide cannot clear the recovery fence. 0 = disabled (drift-announced). Full
+# rationale + the correctness/convergence argument: _liveness_span_short (and the STANDBY twin's
+# definition site). NOTE (reviewer): unlike the STANDBY (strict no-op on its live-tested path),
+# on the PRIMARY this is NOT a no-op — the recovery delay branch deliberately resets the pair
+# every cycle ("keep the sample fresh"), so the first observation lands only at eligibility and
+# the floor adds up to (MIN_SPAN - MIN_INTERVAL) ≈ 30s of observation before an automatic
+# re-take. Accepted: recovery is minutes-scale (RECOVERY_DELAY 300 + RECOVERY_CHECKS×30s) and
+# the added wait fails toward NOT re-taking.
+VOTE_LIVENESS_MIN_SPAN=40                 # min OBSERVED seconds this episode behind a FROZEN-based re-take (0 = off)
 
 # --- PRIMARY self-fence / "vote lease" (v0.6.3 Block 3) ---
 # Closes the residual partition case: a PRIMARY that is alive but ISOLATED from the supermajority
@@ -299,6 +312,25 @@ _liveness_first_tip=""
 _liveness_first_ts=0
 _liveness_first_provider=""
 _liveness_sample_provider=""
+# v0.7 (Block 3, slice 4 / AUDIT-5 S-3): mono time of the last recovery-path cycle on which NO
+# external provider yielded a usable observation (liveness sampler empty on both tiers). Second
+# input to the RECOVERY_DELAY anchor — see INVARIANT(blindness-is-life) in attempt_safe_recovery
+# (full statement: the standby twin's _note_blind_cycle). 0 = no blind cycle observed; reset on
+# every switch / manual identity change (episode boundaries), NOT in reset_recovery_liveness
+# (that runs every delay cycle and must not erase the blind anchor it just created).
+_last_blind_end=0
+# v0.7 (Block 3, slice-4 rework): mono time of the EPISODE's first successful external observation
+# (0 = none yet). Pinned by _note_observation on every successful sampler observation; reset ONLY
+# by episode resets (every _last_blind_end=0 site) and by blind cycles (_note_blind_cycle) —
+# NEVER by pair re-bases (and NOT by reset_recovery_liveness — same rule as _last_blind_end).
+# The observation-span floor measures from this, not the pair pin.
+_liveness_obs_since=0
+# v0.7 (Block 3, slice-4 rework): per-episode hold diagnostics — reset at every _last_blind_end=0
+# site (episode boundaries), incremented in the byte-identical helpers. The counters feed the
+# STANDBY's starvation page; on the PRIMARY they are kept only for helper byte-parity/diagnostics.
+_ep_blind_cycles=0
+_ep_provider_flips=0
+_ep_floor_holds=0
 
 # Self-fence "vote lease" tracker (v0.6.3 Block 3): last LOCAL confirmed slot + the wall-clock time
 # it last advanced. LOCAL signals only. Reset (re-armed) on every switch / manual identity change.
@@ -1079,7 +1111,7 @@ get_staked_liveness_sample() {
 #              provider flip across the pair — re-pins, see below) → BLOCK
 staked_is_actively_voting() {
     local now2 sample rest cur tip prov elapsed delta tip_delta
-    now2=$(mono_now)   # v0.7 (Block 3): SAFETY clock — the recovery fence's sample interval must not be steppable
+    now2=$(mono_now)   # v0.7 (Block 3): SAFETY clock — the authoritative fence's sample interval must not be steppable
     sample=$(get_staked_liveness_sample) || sample=""
     cur="${sample%% *}"; rest="${sample#* }"; tip="${rest%% *}"   # tip = cluster-wide max lastVote (freshness reference)
     # v0.7 (Block 3, slice 2 / AUDIT-5 A2): third field = the answering tier ("T2"/"T3"). $() ran
@@ -1090,9 +1122,12 @@ staked_is_actively_voting() {
     _liveness_sample_provider="$prov"
     if [[ -z "$sample" || ! "$cur" =~ ^[0-9]+$ || ! "$tip" =~ ^[0-9]+$ ]]; then
         log_warn "[liveness] staked lastVote/reference unavailable (externals down) — cannot determine"
+        _note_blind_cycle "$now2"   # v0.7 (B3 s4 / S-3): blind cycle — INVARIANT(blindness-is-life) re-anchors the countdown
         return 2
     fi
+    _note_observation "$now2"   # v0.7 (B3 s4 rework): successful observation — pin the episode's observed-span start (no-op once pinned; re-pins after blindness)
 
+    # First sample not captured yet → record lastVote + reference tip and wait for a real interval.
     if [[ -z "$_liveness_first_vote" ]]; then
         _liveness_first_vote="$cur"; _liveness_first_tip="$tip"; _liveness_first_ts="$now2"
         _liveness_first_provider="$prov"   # v0.7 (Block 3, slice 2): pin the pair to this vantage
@@ -1106,10 +1141,12 @@ staked_is_actively_voting() {
         return 2
     fi
 
-    # RPC-freshness guard: the cluster-wide reference (max lastVote from the SAME payload as cur)
-    # MUST advance between samples; if not, the RPC's view is stale/cached/lagging and a "frozen"
-    # staked lastVote is meaningless → cannot determine → BLOCK. (cur and the reference share one
-    # atomic snapshot, so a stale view can't show a fresh reference with a stale cur.)
+    # v0.6.3 (Block 1): RPC-freshness guard. The cluster-wide reference (max lastVote from the SAME
+    # payload as cur) MUST advance between the two samples; if it did not, the RPC's view is
+    # stalled/cached/lagging and a "frozen" staked lastVote is meaningless (it could be a live holder
+    # whose votes this stale view isn't reporting). Because cur and the reference come from one atomic
+    # snapshot, a stale view cannot show a fresh reference with a stale cur. Fail closed: cannot
+    # determine → BLOCK (never a false-frozen ALLOW). Re-base so the next interval is fresh.
     tip_delta=$(( tip - _liveness_first_tip ))
     if [[ $tip_delta -le 0 ]]; then
         log_warn "[liveness] cluster reference (max lastVote) did NOT advance (Δref=${tip_delta} in ${elapsed}s) — RPC view stale/lagging, cannot determine → BLOCK"
@@ -1147,14 +1184,35 @@ staked_is_actively_voting() {
     # verdict; worst case one extra VOTE_LIVENESS_MIN_INTERVAL per provider flip.
     if [[ "$prov" != "$_liveness_first_provider" ]]; then
         log_warn "[liveness] provider flipped ${_liveness_first_provider:-unknown}→${prov:-unknown} across the pair — frozen reading not comparable, cannot determine → BLOCK; re-pinning to ${prov:-unknown}"
+        _ep_provider_flips=$((_ep_provider_flips + 1))   # v0.7 (B3 s4 rework): episode diagnostics (starvation page); the re-pin does NOT touch _liveness_obs_since
         [[ $cur -lt $_liveness_first_vote ]] && _liveness_first_vote="$cur"
         _liveness_first_tip="$tip"; _liveness_first_ts="$now2"; _liveness_first_provider="$prov"
         return 2
     fi
 
+    # v0.6.8 (B2): DOUBLE-SIGN-SAFETY INVARIANT — the FROZEN path deliberately does NOT re-base
+    # _liveness_first_vote (only the ADVANCED/return-0 and backwards/return-2 paths above do). The first
+    # sample stays PINNED for the whole episode, so `delta` is measured against the episode start
+    # over an ever-growing window: ANY vote burst that lifts the holder's lastVote > EPSILON above that pin
+    # — at any point in the delay — trips return 0 (VOTING → BLOCK) and re-anchors the countdown. This is
+    # exactly what protects against the intermittent/flapping "wedged-but-alive" holder (Audit-1 B7): only a
+    # holder that lands ZERO qualifying votes for the ENTIRE delay reads frozen. DO NOT refactor this to
+    # re-base on the frozen path — a sliding per-interval window would re-open that double-sign hole.
     # INVARIANT(baseline-rises-only-on-voting): the episode vote baseline may RISE only on a
-    # VOTING verdict; every other re-base (tip-guard, backwards, provider re-pin) may only LOWER it.
-    # Full statement + the structural soundness argument: the standby twin's frozen path.
+    # VOTING verdict. Every other re-base — tip-guard, backwards, provider re-pin — may only LOWER
+    # it (the min rule). That is the whole rule; "why min here" reads from this line, not from
+    # commit history.
+    # Why it is sound, structurally (a property, not a case list — it survives refactoring):
+    #   1. A lower baseline can only INFLATE delta = cur - baseline, pushing every reading toward
+    #      VOTING (block) and never toward FROZEN (allow).
+    #   2. A min-rule baseline UNDER-approximates the same-vantage baseline, so measured delta >=
+    #      true same-vantage delta — a FROZEN reading (delta <= EPSILON) therefore implies the
+    #      holder is frozen on the pinned vantage a fortiori.
+    #   3. A mixed-provider pair structurally cannot reach this FROZEN return at all: every earlier
+    #      exit (tip-guard, VOTING, backwards, provider mismatch) precedes it.
+    # Violating this — e.g. a re-pin that ADOPTS the current (higher) lastVote, or a high-water-mark
+    # pin — forgets a pre-flip vote burst and re-opens the double-sign hole this block guards
+    # (measured: take ~25s after the last observed vote).
     log_info "[liveness] staked vote frozen (Δ${delta} slots, tip +${tip_delta}, in ${elapsed}s) — holder not voting → clear"
     return 1
 }
@@ -1162,9 +1220,99 @@ staked_is_actively_voting() {
 # Drop the recovery vote-liveness samples so the next recovery episode starts fresh.
 reset_recovery_liveness() { _liveness_first_vote=""; _liveness_first_tip=""; _liveness_first_ts=0; _liveness_first_provider=""; }
 
+# ── v0.7 (Block 3, slice 4 / AUDIT-5 S-3) — blind-cycle stamp (BYTE-IDENTICAL in both daemons) ──
+# A BLIND cycle = an ACTIVE-episode cycle in which an external observation of the holder was
+# ATTEMPTED and NO provider yielded a usable one: (a) the liveness sampler returned nothing usable
+# (both tiers failed/invalid), or (b) external confirm returned 2 (cannot confirm — both externals
+# down/invalid). Callers stamp it through this seam (tests neuter it to simulate the pre-slice-4
+# daemon). A cycle that attempts no observation (e.g. deep inside the countdown) is NOT blind — a
+# pinned pair spanning such a stretch still proves silence, because lastVote is monotonic on-chain.
+# INVARIANT(blindness-is-life): time we could not observe the holder counts as if the holder was
+# voting; the countdown only counts OBSERVED silence. The takeover/recovery anchor takes
+# max(..., _last_blind_end), so the FULL countdown re-elapses from the END of the last observed
+# blind cycle. Blindness that began BEFORE the first sample was ever pinned is the same rule with
+# zero prior observations: nothing to "restart" — the full countdown starts over from the end of
+# blindness. A VOTING observation still re-anchors exactly as before — blindness never delays the
+# LIVE verdict, only the take.
+_note_blind_cycle() {
+    _last_blind_end="$1"
+    _liveness_obs_since=0   # blindness = no observation — the episode's observed span re-pins at the next successful sample
+    _ep_blind_cycles=$((_ep_blind_cycles + 1))   # episode diagnostics (starvation page)
+    log_info "[blindness-is-life] no usable external observation this cycle — countdown re-anchored to the end of blindness (mono ${1})"
+}
+
+# ── v0.7 (Block 3, slice-4 rework) — first-observation pin (BYTE-IDENTICAL in both daemons) ────
+# Pins the EPISODE's first successful external observation (mono time; only if currently 0).
+# Re-pinned after blindness (_note_blind_cycle resets it to 0, so the next successful sample
+# re-pins); NEVER touched by the pair re-bases (tip-stall, backwards, provider flip) — those
+# re-base the PAIR's comparability, not "how long we have been observing".
+_note_observation() {
+    [[ ${_liveness_obs_since:-0} -gt 0 ]] || _liveness_obs_since="$1"
+}
+
+# ── v0.7 (Block 3, slice 4) — OBSERVATION-SPAN FLOOR (RATIFIED by the reviewer, 2026-08-17;
+# BYTE-IDENTICAL in both daemons; revert = delete this function, its two one-line call-site hunks,
+# the VOTE_LIVENESS_MIN_SPAN knob and its validation/drift-table lines).
+# SEMANTICS: a FROZEN-based take must rest on >= VOTE_LIVENESS_MIN_SPAN seconds of OBSERVED span
+# since the EPISODE's first successful observation (or since the end of the last blind cycle):
+# span = mono_now - _liveness_obs_since — NOT the re-basable pair pin. Returns 0 (SHORT) → the
+# caller demotes the FROZEN verdict to "cannot determine yet" (never a verdict). Floor 0 disables
+# (the config-drift table announces it).
+# CORRECTNESS (the reviewer's argument, stated exactly): INVARIANT(baseline-rises-only-on-voting)
+# means every non-VOTING re-base only LOWERS _liveness_first_vote; so on a FROZEN verdict the
+# baseline <= the minimum lastVote observed since the last VOTING verdict (episode start if none),
+# and lastVote is monotonic on-chain — FROZEN therefore proves the holder never exceeded that
+# minimum over that whole stretch — up to the last sample's snapshot staleness (an external
+# view that ADVANCES but LAGS compresses the observed tail; the tip-guard checks advance, not
+# rate — a pre-existing exposure the floor narrows but does not close). With no in-episode
+# VOTING verdict that stretch is exactly
+# [obs_since, now] — the claimed span is real, and STRONGER than the replaced version ("since the
+# last re-pin"). Across an in-episode VOTING verdict obs_since is OLDER than the proven stretch:
+# harmless on the STANDBY (every VOTING verdict re-anchors the FULL countdown — DELAY > floor —
+# and the pair re-based at that verdict spans it), and on the PRIMARY the voting→frozen
+# transition is guarded by the recovery ladder instead (RECOVERY_CHECKS rungs x
+# RECOVERY_CHECK_INTERVAL, liveness re-verified each rung, any vote resets the count).
+# CONVERGENCE: inside an unblinded stretch obs_since stays PINNED while the SPAN grows
+# monotonically, so the floor is always eventually met; residual flip cost returns to the accepted "+1 MIN_INTERVAL per flip".
+# HISTORY: the first cut measured span from the re-basable pair pin and did NOT converge under
+# provider-flip periods inside (MIN_INTERVAL, MIN_SPAN) — measured flip 20s/35s: NO take in 3600s
+# (reviewer, 2026-08-17; never shipped).
+# SIDE EFFECT: obs_since resets on blind cycles, so after ANY blindness the floor is a strict
+# no-op (the re-anchored countdown 60s > floor 40s and obs_since re-pins ~one cycle after
+# blindness ends) — the floor bites exactly where it was built for (the late-observed A9a
+# episode) and nowhere else.
+# A zero obs_since returns 1 (not short): a real FROZEN verdict structurally implies a successful
+# sample THIS cycle, which pinned obs_since via _note_observation — that state only occurs in
+# harnesses that mock the fence, never in the shipped daemons.
+_liveness_span_short() {
+    local floor="${VOTE_LIVENESS_MIN_SPAN:-40}" span
+    [[ "$floor" =~ ^[0-9]+$ ]] || floor=40
+    floor=$((10#$floor))
+    [[ $floor -gt 0 ]] || return 1
+    [[ ${_liveness_obs_since:-0} -gt 0 ]] || return 1
+    span=$(( $(mono_now) - _liveness_obs_since ))
+    if [[ $span -lt $floor ]]; then
+        _ep_floor_holds=$((_ep_floor_holds + 1))   # episode diagnostics (starvation page)
+        log_info "[liveness] FROZEN pair but only ${span}s observed this episode (< span floor ${floor}s) — cannot determine yet"
+        return 0
+    fi
+    return 1
+}
+
 attempt_safe_recovery() {
     local now elapsed
-    now=$(mono_now); elapsed=$(( now - LAST_SWITCH_TIME ))   # v0.7 (Block 3): SAFETY clock (RECOVERY_DELAY gate)
+    now=$(mono_now)   # v0.7 (Block 3): SAFETY clock (RECOVERY_DELAY gate)
+    # v0.7 (Block 3, slice 4 / AUDIT-5 S-3): recovery anchor = max(LAST_SWITCH_TIME,
+    # _last_blind_end) — INVARIANT(blindness-is-life), the standby N3-anchor rule applied to the
+    # rpc-recovery countdown. A blind stretch (externals down while recovery was eligible) must
+    # make the FULL RECOVERY_DELAY re-elapse from the END of the last observed blind cycle: without
+    # it, the re-take could fire off a post-blind pair only VOTE_LIVENESS_MIN_INTERVAL wide — ~10s
+    # of observed silence standing in for the whole delay. bash has no ternary → max via if.
+    recovery_anchor=$LAST_SWITCH_TIME
+    if [[ ${_last_blind_end:-0} -gt $recovery_anchor ]]; then
+        recovery_anchor=$_last_blind_end
+    fi
+    elapsed=$(( now - recovery_anchor ))
 
     if [[ $elapsed -lt $RECOVERY_DELAY ]]; then
         if [[ $(( now - _last_recovery_log )) -ge 60 ]]; then
@@ -1189,6 +1337,12 @@ attempt_safe_recovery() {
     # replaces gossip-IP inference as the decision; the gossip ip:port check below stays as
     # advisory corroboration (it can still abort, which is always the safe direction for recovery).
     staked_is_actively_voting; local rec_liveness=$?
+    # ── v0.7 (Block 3, slice 4) hunk (RATIFIED, 2026-08-17) — observation-span floor: a FROZEN
+    # verdict resting on < VOTE_LIVENESS_MIN_SPAN seconds of the EPISODE's observed span is
+    # demoted to "cannot determine yet" (see _liveness_span_short). Revert = delete this hunk
+    # (one line + comment).
+    if [[ $rec_liveness -eq 1 ]] && _liveness_span_short; then rec_liveness=2; fi
+    # ── end slice-4 floor hunk ──
     if [[ $rec_liveness -eq 0 ]]; then
         [[ -z "$_standby_alert_sent" ]] && {
             alert_warn "⚠️ Recovery blocked: staked identity is ACTIVELY VOTING elsewhere (the STANDBY holds it). Manual switch-back needed."
@@ -1361,6 +1515,8 @@ switch_to_unstaked() {
         LAST_SWITCH_TIME=$(mono_now); STAT_SWITCHES=$((STAT_SWITCHES + 1)); save_state   # v0.6.1 (F7)
         _recovery_confirm_count=0; _standby_alert_sent=""; _last_switch_fail_alert=0; window_reset
         reset_recovery_liveness; _selffence_reset   # v0.6.3 (Block 2/3): fresh trackers after the switch
+        _last_blind_end=0   # v0.7 (B3 s4): fresh recovery episode — no observed blind cycle yet
+        _liveness_obs_since=0; _ep_blind_cycles=0; _ep_provider_flips=0; _ep_floor_holds=0   # v0.7 (B3 s4 rework): observed span + episode diagnostics reset with the episode
         alert "$reason" "$UNSTAKED_PUBKEY" "SWITCHED TO UNSTAKED ✅"; return 0
     else
         # v0.6.0: throttle repeated failure alerts — the internet-lost path retries every cycle.
@@ -1416,6 +1572,8 @@ switch_to_staked() {
     if [[ "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]]; then
         LAST_SWITCH_TIME=$(mono_now); STAT_SWITCHES=$((STAT_SWITCHES + 1)); save_state   # v0.6.1 (F7)
         _recovery_confirm_count=0; window_reset; reset_recovery_liveness; _selffence_reset   # v0.6.3 (Block 2/3)
+        _last_blind_end=0   # v0.7 (B3 s4): recovery episode over — drop the blind anchor with it
+        _liveness_obs_since=0; _ep_blind_cycles=0; _ep_provider_flips=0; _ep_floor_holds=0   # v0.7 (B3 s4 rework): observed span + episode diagnostics end with the episode
         alert "$reason" "$STAKED_PUBKEY" "RECOVERED TO STAKED ✅"; return 0
     else
         alert "$reason" "${CURRENT_IDENTITY:-unknown}" "RECOVERY FAILED ❌"; return 1
@@ -1773,6 +1931,7 @@ validate_numeric_config() {
         _validate_numeric RECOVERY_DELAY 0
         _validate_numeric RECOVERY_CHECKS 1
         _validate_numeric RECOVERY_CHECK_INTERVAL 0
+        _validate_numeric VOTE_LIVENESS_MIN_SPAN 0             # v0.7 (B3 s4, ratified): episodic observation-span floor behind a FROZEN re-take (0 = disabled, drift-announced)
     fi
 }
 
@@ -1836,6 +1995,7 @@ announce_config_drift() {
     # ── [config-drift] shared safety-knob table — BYTE-IDENTICAL in both daemons (test_config_drift) ──
     _drift_check VOTE_LIVENESS_EPSILON 0 low "a still-voting holder advancing 1..ε slots reads FROZEN → a spare can take under a LIVE holder (double-sign)"
     _drift_check VOTE_LIVENESS_MIN_INTERVAL 10 high "a shorter sample pair gives a slow voter less time to show life → false FROZEN reads"
+    _drift_check VOTE_LIVENESS_MIN_SPAN 40 high0 "a FROZEN-based take can rest on a shorter observed span this episode — a late-observed episode can take on ~one sample interval of observed silence"
     _drift_check SELF_FENCE_ISOLATION_SECS 30 low "an isolated holder keeps voting longer before self-fencing → erodes the relinquish-before-takeover margin"
     _drift_check SELF_FENCE_NOANSWER_SECS 30 low0 "a silent LOCAL RPC leaves the staked identity voting longer before the demote"
     _drift_check SELF_FENCE_VOTE_LAG_SLOTS 32 low0 "an egress-partitioned holder demotes later and can lose the relinquish-first race against a spare's takeover"
@@ -2097,6 +2257,8 @@ while $_running; do
             fi
             window_reset
             reset_recovery_liveness; _selffence_reset   # v0.6.3 (Block 2/3): re-arm trackers after a manual change
+            _last_blind_end=0   # v0.7 (B3 s4): manual change = new episode — drop the blind anchor
+            _liveness_obs_since=0; _ep_blind_cycles=0; _ep_provider_flips=0; _ep_floor_holds=0   # v0.7 (B3 s4 rework): observed span + episode diagnostics reset with the episode
             CONNECTIVITY_FAIL_COUNT=0
             LATENCY_FAIL_COUNT=0
             # Grace period — validator needs time to catch up and start voting

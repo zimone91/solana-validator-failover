@@ -61,7 +61,13 @@ prime() {
     _delinq_window="1111111111"; _turbo_mode=true
     FIRST_DELINQUENT_TIME=$(( $(date +%s) - TAKEOVER_DELAY - 40 ))    # delay already served
     LAST_LIVENESS_ACTIVE_TIME=0   # v0.6.7 (N3): fresh episode — daemon resets this in window_reset / main loop
-    _liveness_first_vote="$1"; _liveness_first_tip=1; _liveness_first_ts=$(( $(date +%s) - VOTE_LIVENESS_MIN_INTERVAL - 20 ))
+    _last_blind_end=0             # v0.7 (B3 s4): fresh episode — a prior case's blind stamp (case C's externals-down) must not re-anchor this one
+    # v0.7 (B3 s4): back-dated past VOTE_LIVENESS_MIN_SPAN too (was MIN_INTERVAL+20) — this suite
+    # tests the fence verdicts, not the slice-4 observation-span floor (test_blindness_is_life).
+    # v0.7 (B3 s4 rework): the floor now measures the EPISODE's observed span (_liveness_obs_since,
+    # re-pinned by _note_observation) — prime it alongside the pair (observation began at the pin).
+    _liveness_first_vote="$1"; _liveness_first_tip=1; _liveness_first_ts=$(( $(date +%s) - VOTE_LIVENESS_MIN_INTERVAL - VOTE_LIVENESS_MIN_SPAN - 20 ))
+    _liveness_obs_since=$_liveness_first_ts
     _took=0
 }
 
