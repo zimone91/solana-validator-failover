@@ -12,6 +12,16 @@
 #   (F-d4) explicit STANDBY keeps the small floor (the live prod first spare is not refused)
 #   (F-e) NON-VACUOUS CONTROL: the shipped call site no longer carries `|| true`; the v0.6.8
 #         baseline did (warn-only) — proves the escalation is new and wired
+#   (U)   v0.7 (pre-Block-4, №3): unstaked-uniqueness startup refusal — drives the REAL standby
+#         startup_checks (the test_primary_selffence_n7_votepubkey idiom: prerequisite mocks +
+#         a validate_numeric_config sentinel exit 99 just past the refusal region):
+#         (U-a) own UNSTAKED_PUBKEY == PRIMARY_UNSTAKED_PUBKEY → REFUSES (exit 1, shared-key
+#               message); (U-b) distinct keys → passes to the sentinel; (U-c) empty
+#               PRIMARY_UNSTAKED_PUBKEY → passes (nothing to compare); (U-d) own key ∈ a
+#               MULTI-key PRIMARY_UNSTAKED_PUBKEY list → REFUSES (the reviewer's ∈ semantics —
+#               PRIMARY_UNSTAKED_PUBKEY is space-separated)
+#         RED (captured pre-implementation): U-a and U-d reach the sentinel (99) instead of
+#         refusing — no daemon line compares the two variables at 94d64a6.
 
 set +e
 PASS=0; FAIL=0
@@ -154,6 +164,55 @@ if [[ -f "$V068" ]]; then
 else
     ok "(F-e2) v0.6.8 baseline not present to compare (skipped)"
 fi
+
+# ── (U) v0.7 (pre-Block-4, №3): unstaked-uniqueness startup refusal ────────────────────────────
+# Run the REAL standby startup_checks; echo "<exit_code>|<last log_error>". $1=PRIMARY_UNSTAKED_PUBKEY.
+# The mocked validate_keypair_file yields STAKEDPK / UNSTAKEDPK (by path; runs in $()); the sentinel
+# validate_numeric_config → exit 99 sits just PAST the pubkey-refusal region (reached = no refusal).
+uniq_run() {
+  local res; res=$(mktemp)
+  (
+  set +e
+  SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
+  # shellcheck disable=SC1090
+  source "$SRC"; rm -f "$SRC"
+  VALIDATOR_TYPE=agave
+  SP=$(mktemp -d); : > "$SP/agave-validator"; : > "$SP/solana-keygen"; SOLANA_PATH="$SP"
+  STAKED_KEYPAIR=/x; UNSTAKED_KEYPAIR=/y; STAKED_PUBKEY_OVERRIDE=""; VOTE_PUBKEY="V1"
+  DELINQUENCY_WINDOW_SIZE=10; DELINQUENCY_WINDOW_THRESHOLD=7
+  VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_EPSILON=0; VOTE_LIVENESS_MIN_INTERVAL=10
+  GIVE_BACK_MODE=manual; WITNESS_FASTPATH=false
+  PRIMARY_UNSTAKED_PUBKEY="$1"
+  # prerequisite mocks (so startup_checks flows to the refusal region without spurious earlier exits)
+  detect_ledger_path(){ LEDGER_PATH=/tmp/led; }
+  get_validator_args(){ echo ""; }                     # no --identity → startup-identity check skipped
+  validate_keypair_file(){ [[ "$1" == "$STAKED_KEYPAIR" ]] && echo "STAKEDPK" || echo "UNSTAKEDPK"; }
+  log(){ :;}; log_info(){ :;}; log_warn(){ :;}; alert(){ :;}; alert_warn(){ :;}; send_telegram(){ return 0;}; send_webhook(){ :;}
+  validate_numeric_config(){ exit 99; }                # sentinel: reached past the refusal region cleanly
+  _LAST_ERR=""; log_error(){ _LAST_ERR="$*"; }
+  exit(){ printf '%s|%s' "$1" "$_LAST_ERR" > "$res"; rm -rf "$SP"; command exit "$1"; }
+  startup_checks >/dev/null 2>&1 </dev/null
+  ) >/dev/null 2>&1
+  cat "$res"; rm -f "$res"
+}
+
+echo ""; echo "─── (U) №3: refuse to start when our own unstaked pubkey is a watched holder key ───"
+r=$(uniq_run "UNSTAKEDPK")           # PRIMARY_UNSTAKED_PUBKEY == our own unstaked pubkey
+[[ "${r%%|*}" == "1" && "$r" == *"shared unstaked"* ]] \
+    && ok "(U-a) own key == PRIMARY_UNSTAKED_PUBKEY → startup REFUSES (exit 1): ${r#*|}" \
+    || bad "(U-a) shared unstaked pubkey did not refuse (got '$r')"
+r=$(uniq_run "SomeOtherHolderKey111")
+[[ "${r%%|*}" == "99" && "$r" != *"shared unstaked"* ]] \
+    && ok "(U-b) distinct keys → passes the refusal region (reached the sentinel)" \
+    || bad "(U-b) distinct keys refused / failed (got '$r')"
+r=$(uniq_run "")
+[[ "${r%%|*}" == "99" ]] \
+    && ok "(U-c) empty PRIMARY_UNSTAKED_PUBKEY → passes (nothing to compare)" \
+    || bad "(U-c) empty watch list refused (got '$r')"
+r=$(uniq_run "SomeOtherHolderKey111 UNSTAKEDPK")
+[[ "${r%%|*}" == "1" && "$r" == *"shared unstaked"* ]] \
+    && ok "(U-d) own key ∈ multi-key watch list → REFUSES (∈ semantics, space-separated list)" \
+    || bad "(U-d) membership in a multi-key list did not refuse (got '$r')"
 
 echo ""
 echo "============================================="

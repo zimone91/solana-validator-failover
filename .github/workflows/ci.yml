@@ -27,7 +27,9 @@
 #                   claim drifted from reality three separate times in this project's history
 #                   (a stale suite count, a nonexistent "tested on" tag, and release bodies
 #                   carrying retracted wording). Numbers in public claims are now checked
-#                   mechanically, not remembered.
+#                   mechanically, not remembered. v0.7 (pre-Block-4, №10): the same job also pins
+#                   the per-daemon counts of `date +%s` (wall-clock) and `${var//…}` (patsub)
+#                   lines — growth in either is a review-stop, enforced the same way.
 
 name: ci
 on:
@@ -76,7 +78,7 @@ jobs:
           shellcheck -S error solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh
 
   facts:
-    name: claims match reality (suite count)
+    name: claims match reality (suite count, wall-clock/patsub pins, checksums)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -87,5 +89,24 @@ jobs:
           echo "actual=$actual manifest=$manifest"
           [ "$actual" = "$manifest" ] || { echo "run_all.sh EXPECTED_SUITES=$manifest but $actual test files exist"; exit 1; }
           grep -q "${actual} suites" README.md || { echo "README does not state the actual suite count (${actual})"; exit 1; }
+      - name: wall-clock / patsub counters — pinned per daemon (v0.7 pre-Block-4, №10 / addendum §3b.4)
+        # Pinned the same way as the suite count: measured != pinned = red. Growth = a NEW
+        # `date +%s` (wall-clock) or `${var//…}` (patsub) site — both are review-stops (the
+        # monotonic-timer rule and the bash-5.2 patsub_replacement class are held mechanically,
+        # not remembered). A legitimate change updates the pin in the SAME reviewed diff.
+        # Counts are `grep -c` matching LINES (a few are comment lines) — exact and stable.
+        # KNOWN LIMIT (named, deliberately unfixed): line counts include comment lines, so
+        # "add a code site + delete a comment mention" passes green. A comment-excluding regex
+        # would be its own bug source; the pin narrows the door, review closes it.
+        run: |
+          d_pri=$(grep -c 'date +%s' solana-primary-failover.sh)
+          d_sby=$(grep -c 'date +%s' solana-standby-failover.sh)
+          p_pri=$(grep -cE '\$\{[A-Za-z_0-9]+//' solana-primary-failover.sh)
+          p_sby=$(grep -cE '\$\{[A-Za-z_0-9]+//' solana-standby-failover.sh)
+          echo "date+%s: primary=$d_pri standby=$d_sby ; patsub: primary=$p_pri standby=$p_sby"
+          [ "$d_pri" = "19" ] || { echo "primary 'date +%s' lines: $d_pri != pinned 19 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
+          [ "$d_sby" = "20" ] || { echo "standby 'date +%s' lines: $d_sby != pinned 20 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
+          [ "$p_pri" = "4" ]  || { echo "primary patsub \${var//} lines: $p_pri != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
+          [ "$p_sby" = "4" ]  || { echo "standby patsub \${var//} lines: $p_sby != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
       - name: SHA256SUMS manifest matches the tree (regen — sha256sum <files> > SHA256SUMS)
         run: sha256sum -c SHA256SUMS
