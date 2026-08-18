@@ -5,6 +5,37 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Alpenglow feature-gate tripwire** (both daemons, pre-Block-4 №9): agave 4.2.1 ships the entire
+  votor/BLS machinery dormant, runtime-gated on the on-chain `alpenglow` feature — on activation
+  `set-identity` demands a vote-history file by default (a direct hit on the deliberate
+  no-tower-transfer design) and the whole lastVote observation model needs re-derivation. The
+  daemons now probe the feature-gate account (`getAccountInfo` on the agave v4.2.1 feature id,
+  TIER2→TIER3, read-only) every `ALPENGLOW_GATE_CHECK_HOURS` (default 6, 0 = off,
+  drift-announced; first check immediate) and **page the moment the gate shows pending/active** —
+  `pending` at WARN (epoch-boundary slack), `active` on the CRITICAL channel (set-identity then
+  fails by default without a vote-history file: the promote path may be inert — the
+  UNKNOWN-IDENTITY class and channel) — with the instruction to re-run the 4.2 audit (Blocks 5–6
+  constants freeze until it passes). The last known state persists in the state file; "unknown"
+  (both externals unusable) never overwrites it, logs at WARN, retries on a **900 s floor**
+  instead of waiting out the full cadence, and **pages after 4 consecutive failures** (repeating
+  per `ALERT_THROTTLE`) — a tripwire whose failure mode is silence would be a dead gate that
+  looks alive. The companion gate `alpenglow_fast_leader_handover` is deliberately NOT watched —
+  source-verified (one usage, `replay_stage.rs:1611`, subordinate to the main migration status;
+  gates neither set-identity nor observation). Page-only — the probe sits at the top of the main
+  loop, never inside a takeover/recovery/verdict path.
+
+- **Unstaked-key uniqueness enforced** (STANDBY, pre-Block-4 №3): the relinquish-proof fence (G2)
+  and the Option-A fast path both read "a live publisher holds this unstaked key on box X" as
+  "box X cannot sign staked votes" — sound only while each unstaked key belongs to ONE host.
+  README always required a unique unstaked keypair per node; startup now refuses (same fatal class
+  as the staked==unstaked refusal) when the node's own `UNSTAKED_PUBKEY` appears in
+  `PRIMARY_UNSTAKED_PUBKEY` (membership over the space-separated list).
+
+- **CI drift-counter pins** (pre-Block-4 №10): the `facts` job now pins the per-daemon counts of
+  `date +%s` (wall-clock) and `${var//…}` (patsub) sites the same way it pins the suite count —
+  growth = a new wall-clock/patsub site = review-stop (addendum §3b.4); a legitimate change
+  updates the pin in the same diff.
+
 - **Act-then-alert (A8) + fresh-proof re-check** (both daemons): the pre-take 🔍 alert is deleted —
   a network call between the verdict and the mutation (the tier summary is not lost: it travels
   verbatim inside the reason of the TOOK STAKED ✅ / WOULD TAKE / TAKEOVER FAILED alert) — and the
