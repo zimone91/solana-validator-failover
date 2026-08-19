@@ -10,8 +10,9 @@
 # (flaky LOCAL RPC delaying the window fill) pinned its first sample only via the fence → the
 # verdict pair was just MIN_INTERVAL apart → measured take at t0+10s.
 #
-# Drives the REAL shipped attempt_takeover / attempt_safe_recovery / staked_is_actively_voting
-# (source-to-MAIN-LOOP seam, mono_now/date shims, controllable sampler/confirm mocks). Controls
+# Drives the REAL shipped attempt_takeover / attempt_safe_recovery / staked_is_actively_voting.
+# harness: tests/lib/harness.sh — load_seam, harness_clock_shims, harness_silence_sinks,
+# extract_twin, drift_out, ok/bad+banners (sampler/confirm mocks stay suite-local). Controls
 # simulate the pre-slice-4 parent by neutering the _note_blind_cycle seam and/or setting
 # VOTE_LIVENESS_MIN_SPAN=0 (a supported config) — each control is observed RED (the measured
 # collapse reproduced) so every assertion provably bites.
@@ -54,14 +55,7 @@
 # exactly this: the un-probed [55,60) stretch is covered by the t0-pinned pair).
 
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$STANDBY" && -f "$PRIMARY" ]] || { echo "  ❌ scripts not found"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 T0=100000            # mono origin (never 0 — 0 collides with the "unset" sentinel)
 DELAY=60             # TAKEOVER_DELAY / RECOVERY_DELAY under test (the shipped default)
@@ -84,17 +78,13 @@ sim() {
   local mode="$1" bs="$2" be="$3" fd="$4" burst="$5" horizon="$6" probe="$7" flip="$8"
   (
   set +e
-  SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
-  # shellcheck disable=SC1090
-  source "$SRC"; rm -f "$SRC"
+  load_seam "$STANDBY"
   STAKED_PUBKEY="S1"; VOTE_PUBKEY="V1"
   TAKEOVER_DELAY=$DELAY; TAKEOVER_COOLDOWN=0; EXTERNAL_CONFIRM_THROTTLE=0
   VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_MIN_INTERVAL=$MININT; VOTE_LIVENESS_EPSILON=0
   GOSSIP_VERIFY=false; DRY_RUN=false; WITNESS_FASTPATH=false
-  date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
-  mono_now() { echo "$_SIM_NOW"; }
-  log(){ :;}; log_info(){ :;}; log_warn(){ :;}; log_error(){ :;}
-  alert(){ :;}; alert_info(){ :;}; alert_warn(){ :;}; send_telegram(){ return 0;}; send_webhook(){ :;}
+  harness_clock_shims
+  harness_silence_sinks
   save_state(){ :;}
   # External world: ONE switch controls both observation channels (both-tiers-down blindness).
   _EXT_UP=1
@@ -153,16 +143,12 @@ prim_sim() {
   local mode="$1" bs="$2" be="$3" horizon="$4"
   (
   set +e
-  SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
-  # shellcheck disable=SC1090
-  source "$SRC"; rm -f "$SRC"
+  load_seam "$PRIMARY"
   STAKED_PUBKEY="S1"; VOTE_PUBKEY="V1"
   RECOVERY_DELAY=$DELAY; RECOVERY_CHECKS=1; RECOVERY_CHECK_INTERVAL=0
   VOTE_LIVENESS_MIN_INTERVAL=$MININT; VOTE_LIVENESS_EPSILON=0
-  date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
-  mono_now() { echo "$_SIM_NOW"; }
-  log(){ :;}; log_info(){ :;}; log_warn(){ :;}; log_error(){ :;}
-  alert(){ :;}; alert_info(){ :;}; alert_warn(){ :;}; send_telegram(){ return 0;}; send_webhook(){ :;}
+  harness_clock_shims
+  harness_silence_sinks
   save_state(){ :;}; sleep(){ :;}
   tier1_check_delinquency(){ return 1; }         # local: no longer delinquent
   _check_rpc_delinquency(){ return 1; }          # tier2: no longer delinquent
@@ -191,23 +177,9 @@ prim_sim() {
   )
 }
 
-# ── drift-announcer probe (as in test_config_drift) ─────────────────────────────────────────────
-drift_out() {  # $1=script ; rest=VAR=val overrides
-    local script="$1"; shift
-    (
-        SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$script" > "$SRC"
-        # shellcheck disable=SC1090
-        source "$SRC" 2>/dev/null; rm -f "$SRC"
-        log_info(){ :; }; log_error(){ :; }
-        log_warn(){ printf '%s\n' "$*"; }
-        for kv in "$@"; do eval "$kv"; done
-        announce_config_drift
-    )
-}
+# drift-announcer probe: drift_out from tests/lib/harness.sh (as in test_config_drift)
 
-echo "============================================="
-echo "  Blindness-is-life (v0.7 Block 3 slice 4 / AUDIT-5 S-3 + A9a)"
-echo "============================================="
+title_banner "Blindness-is-life (v0.7 Block 3 slice 4 / AUDIT-5 S-3 + A9a)"
 
 # Sanity: the slice-4 knob ships as 40 in BOTH daemons (the sims below lean on the default).
 grep -q '^VOTE_LIVENESS_MIN_SPAN=40' "$STANDBY" && grep -q '^VOTE_LIVENESS_MIN_SPAN=40' "$PRIMARY" \
@@ -324,20 +296,20 @@ echo "    fixed: re-take t0+${P_REC}s | parent control: re-take t0+${P_CTL}s"
 [[ $P_CTL -eq $(( 90 + MININT )) ]] \
     && ok "(g2) CONTROL RED: parent re-takes at recovery+MIN_INTERVAL (t0+${P_CTL}s) — exactly the post-blind pair the twin rule forbids, (g1) bites" \
     || bad "(g2) parent control re-took at t0+${P_CTL}s (want $(( 90 + MININT ))) — the scenario no longer exercises the twin hole"
-P_B=$(sed -n '/AUDIT-5 S-3) — blind-cycle stamp/,/^}$/p' "$PRIMARY")
-S_B=$(sed -n '/AUDIT-5 S-3) — blind-cycle stamp/,/^}$/p' "$STANDBY")
+extract_twin 'AUDIT-5 S-3) — blind-cycle stamp' '^}$'
+P_B=$TWIN_P; S_B=$TWIN_S
 [[ -n "$P_B" && "$P_B" == "$S_B" ]] \
     && ok "(g3) _note_blind_cycle block BYTE-IDENTICAL in both daemons ($(printf '%s\n' "$P_B" | wc -l | tr -d ' ') lines)" \
     || bad "(g3) blind-cycle block missing or DIVERGED between the daemons"
 # The anchor must hit the HELPER-block header (ends "…2026-08-17;"), not the knob comment's
 # ratified line (ends "…2026-08-17)…") — the trailing semicolon disambiguates.
-P_F=$(sed -n '/OBSERVATION-SPAN FLOOR (RATIFIED by the reviewer, 2026-08-17;/,/^}$/p' "$PRIMARY")
-S_F=$(sed -n '/OBSERVATION-SPAN FLOOR (RATIFIED by the reviewer, 2026-08-17;/,/^}$/p' "$STANDBY")
+extract_twin 'OBSERVATION-SPAN FLOOR (RATIFIED by the reviewer, 2026-08-17;' '^}$'
+P_F=$TWIN_P; S_F=$TWIN_S
 [[ -n "$P_F" && "$P_F" == "$S_F" && "$P_F" == *"_liveness_obs_since"* ]] \
     && ok "(g4) _liveness_span_short block (ratified header + episodic body) BYTE-IDENTICAL in both daemons ($(printf '%s\n' "$P_F" | wc -l | tr -d ' ') lines)" \
     || bad "(g4) span-floor block missing, not episodic, or DIVERGED between the daemons"
-P_O=$(sed -n '/^_note_observation() {/,/^}$/p' "$PRIMARY")
-S_O=$(sed -n '/^_note_observation() {/,/^}$/p' "$STANDBY")
+extract_twin '^_note_observation() {' '^}$'
+P_O=$TWIN_P; S_O=$TWIN_S
 [[ -n "$P_O" && "$P_O" == "$S_O" ]] \
     && ok "(g6) _note_observation body BYTE-IDENTICAL in both daemons ($(printf '%s\n' "$P_O" | wc -l | tr -d ' ') lines)" \
     || bad "(g6) _note_observation missing or DIVERGED between the daemons"
@@ -410,8 +382,4 @@ echo "    floor=100 burst@30: take t0+${K_TOOK}s (VOTING seen t0+${K_LA}s) | flo
     && ok "(k2) inert at defaults: SPAN=40 takes at t0+120s with the nit exactly as without (DELAY 60 > floor 40)" \
     || bad "(k2) default-floor take t0+${K40_TOOK}s (want 120) — the nit changed default-config timing"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

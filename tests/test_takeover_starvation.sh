@@ -9,8 +9,9 @@
 # repeating per ALERT_THROTTLE, page-only. Standby-only by design (the primary's recovery path
 # legitimately holds forever post-failover under manual switch-back).
 #
-# Drives the REAL shipped attempt_takeover (source-to-MAIN-LOOP seam of the STANDBY daemon, the
-# test_blindness_is_life sim idiom: mono_now/date shims, alert shadows, controllable mocks).
+# Drives the REAL shipped attempt_takeover on the STANDBY daemon.
+# harness: tests/lib/harness.sh — load_seam, harness_clock_shims, harness_silence_sinks, drift_out,
+# ok/bad+banners (alert capture shadows + controllable mocks stay suite-local).
 # Blinking externals: BOTH observation channels down for exactly one cycle every 50s
 # (_EXT_UP=0 iff off % 50 == 0), dead holder, single provider T2, FIRST_DELINQUENT_TIME=T0,
 # ALERT_THROTTLE=600, attempt_takeover driven once per simulated second.
@@ -32,13 +33,7 @@
 #       DISABLES, value 600 announces laxer-than-default, default 300 announces nothing.
 
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ script not found"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 T0=100000            # mono origin (never 0 — 0 collides with the "unset" sentinel)
 DELAY=60             # TAKEOVER_DELAY under test (the shipped default)
@@ -55,19 +50,15 @@ sim() {
   local horizon="$1" blinkstop="$2" fpfrom="$3" latched="$4" neuter="$5" knob="$6"
   (
   set +e
-  SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
-  # shellcheck disable=SC1090
-  source "$SRC"; rm -f "$SRC"
+  load_seam "$STANDBY"
   STAKED_PUBKEY="S1"; VOTE_PUBKEY="V1"
   TAKEOVER_DELAY=$DELAY; TAKEOVER_COOLDOWN=0; EXTERNAL_CONFIRM_THROTTLE=0
   VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_MIN_INTERVAL=10; VOTE_LIVENESS_EPSILON=0
   GOSSIP_VERIFY=false; DRY_RUN=false; WITNESS_FASTPATH=false
   ALERT_THROTTLE=600
   [[ -n "$knob" ]] && TAKEOVER_STARVATION_ALERT_SECS="$knob"
-  date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
-  mono_now() { echo "$_SIM_NOW"; }
-  log(){ :;}; log_info(){ :;}; log_warn(){ :;}; log_error(){ :;}
-  alert(){ :;}; send_telegram(){ return 0;}; send_webhook(){ :;}
+  harness_clock_shims
+  harness_silence_sinks
   save_state(){ :;}
   _starv_offs=""; _fence_count=0; _resolve_count=0; _text_ok=1
   alert_warn(){
@@ -112,23 +103,9 @@ sim() {
   )
 }
 
-# ── drift-announcer probe (as in test_blindness_is_life / test_config_drift) ────────────────────
-drift_out() {  # $1=script ; rest=VAR=val overrides
-    local script="$1"; shift
-    (
-        SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$script" > "$SRC"
-        # shellcheck disable=SC1090
-        source "$SRC" 2>/dev/null; rm -f "$SRC"
-        log_info(){ :; }; log_error(){ :; }
-        log_warn(){ printf '%s\n' "$*"; }
-        for kv in "$@"; do eval "$kv"; done
-        announce_config_drift
-    )
-}
+# drift-announcer probe: drift_out from tests/lib/harness.sh (as in test_blindness_is_life / test_config_drift)
 
-echo "============================================="
-echo "  Takeover starvation page (v0.7 Block 3 slice-4 rework)"
-echo "============================================="
+title_banner "Takeover starvation page (v0.7 Block 3 slice-4 rework)"
 
 # ── (1)+(3) the measured silence scenario: blink forever, 3600s ─────────────────────────────────
 echo ""; echo "─── (1) blink 1 cycle/50s over a dead holder, 3600s: no take, pages every ALERT_THROTTLE ───"
@@ -220,8 +197,4 @@ echo "    took=${F_TOOK} pages=[${F_OFFS} ]"
     && ok "(7) fresh-boot first page at exactly t0+300 (held>=threshold alone gates the FIRST page; the throttle gates repeats)" \
     || bad "(7) fresh-boot page offsets [${F_OFFS} ] (want [ 300]) — the throttle gate swallowed the first page on a young-uptime host"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

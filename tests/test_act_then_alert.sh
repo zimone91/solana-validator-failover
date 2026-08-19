@@ -6,8 +6,8 @@
 # set-identity (no alert, no network log, no gossip advisory). Extends the demote path's "safety
 # action FIRST" rule (N2) to the take path.
 #
-# Harness: source-to-`# MAIN LOOP` seam of each daemon (the test_standby_take_timeout /
-# test_standby_take_reset real-take idiom — mocks ONLY at the I/O boundary). An ordered EVENT LOG
+# harness: tests/lib/harness.sh — load_seam, harness_clock_shims, field, dump_freshness (the sole
+# reader of the freshness triple), extract_twin, ok/bad+banners. An ordered EVENT LOG
 # (append-only temp file) is written by:
 #   SAMPLE <n>  — the shadowed get_staked_liveness_sample (scriptable per-call return values;
 #                 the re-check call is identified by _IN_TAKE, set by a thin wrapper that
@@ -52,14 +52,7 @@
 # (12) was observed red against the unthrottled first cut (≥50 pages over 2000s).
 
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$STANDBY" && -f "$PRIMARY" ]] || { echo "  ❌ scripts not found"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 T0=100000            # mono origin (never 0 — 0 collides with the "unset" sentinel)
 DELAY=60             # TAKEOVER_DELAY / RECOVERY_DELAY (shipped default)
@@ -76,9 +69,7 @@ sim_sb() {
   local rmode="$1" dry="$2" shadow="$3" hz="${4:-0}"   # hz>0 = drive-through: keep cycling past aborts, stop on MUTATE (or horizon)
   (
   set +e
-  SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
-  # shellcheck disable=SC1090
-  source "$SRC"; rm -f "$SRC"
+  load_seam "$STANDBY"
   _RMODE="$rmode"
   EVT=$(mktemp); export _EVT_FILE="$EVT"
   STUB=$(mktemp -d)
@@ -96,14 +87,13 @@ EOS
   VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_MIN_INTERVAL=$MININT; VOTE_LIVENESS_EPSILON=0
   VOTE_LIVENESS_MIN_SPAN=$SPAN
   GOSSIP_VERIFY=false; WITNESS_FASTPATH=false; DRY_RUN="$dry"; TG_ENABLED=false
-  date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
-  mono_now() { echo "$_SIM_NOW"; }
+  harness_clock_shims
   log(){ :;}; log_info(){ :;}; log_error(){ :;}
   log_warn(){ if [[ ${_IN_TAKE:-0} -eq 1 ]]; then local t="${1//$'\n'/ }"; printf 'LOG %s\n' "${t:0:120}" >> "$_EVT_FILE"; fi; }
   send_telegram(){
       local t="${1//$'\n'/ }"
       printf 'NET %s\n' "${t:0:120}" >> "$_EVT_FILE"
-      printf 'ST8 lla=%s lfv=%s obs=%s\n' "$LAST_LIVENESS_ACTIVE_TIME" "$_liveness_first_vote" "$_liveness_obs_since" >> "$_EVT_FILE"
+      printf 'ST8 lla=%s lfv=%s obs=%s\n' "$LAST_LIVENESS_ACTIVE_TIME" "$_liveness_first_vote" "$(field "$(dump_freshness)" observed_since)" >> "$_EVT_FILE"
       return 0
   }
   send_webhook(){ local t="${1//$'\n'/ }"; printf 'NET %s\n' "${t:0:120}" >> "$_EVT_FILE"; return 0; }
@@ -166,7 +156,8 @@ EOS
   done
   local mutoff=-1
   grep -q '^MUTATE' "$EVT" && mutoff=$(( _SIM_NOW - T0 ))   # the loop breaks on the MUTATE tick
-  local lla=$LAST_LIVENESS_ACTIVE_TIME lfts=$_liveness_first_ts obs=$_liveness_obs_since blind=$_last_blind_end
+  local lla=$LAST_LIVENESS_ACTIVE_TIME lfts=$_liveness_first_ts obs blind
+  obs=$(field "$(dump_freshness)" observed_since); blind=$(field "$(dump_freshness)" blind_until)
   [[ $lla   -gt 0 ]] && lla=$((   lla - T0 ))
   [[ $lfts  -gt 0 ]] && lfts=$((  lfts - T0 ))
   [[ $obs   -gt 0 ]] && obs=$((   obs - T0 ))
@@ -174,7 +165,7 @@ EOS
   printf 'EVENTS=%s\n' "$(tr '\n' ';' < "$EVT")"
   printf 'STATE=rc=%s|lla=%s|lfv=%s|lftip=%s|lfts=%s|lfp=%s|obs=%s|blind=%s|ltt=%s|mutoff=%s\n' \
       "$_take_rc" "$lla" "$_liveness_first_vote" "$_liveness_first_tip" "$lfts" \
-      "$_liveness_first_provider" "$obs" "$blind" "$LAST_TAKEOVER_TIME" "$mutoff"
+      "$(field "$(dump_freshness)" vantage)" "$obs" "$blind" "$LAST_TAKEOVER_TIME" "$mutoff"
   )
 }
 
@@ -184,9 +175,7 @@ sim_pr() {
   local rmode="$1"
   (
   set +e
-  SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
-  # shellcheck disable=SC1090
-  source "$SRC"; rm -f "$SRC"
+  load_seam "$PRIMARY"
   _RMODE="$rmode"
   EVT=$(mktemp); export _EVT_FILE="$EVT"
   STUB=$(mktemp -d)
@@ -204,14 +193,13 @@ EOS
   VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_MIN_INTERVAL=$MININT; VOTE_LIVENESS_EPSILON=0
   VOTE_LIVENESS_MIN_SPAN=$SPAN
   DRY_RUN=false; TG_ENABLED=false
-  date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
-  mono_now() { echo "$_SIM_NOW"; }
+  harness_clock_shims
   log(){ :;}; log_info(){ :;}; log_error(){ :;}
   log_warn(){ if [[ ${_IN_TAKE:-0} -eq 1 ]]; then local t="${1//$'\n'/ }"; printf 'LOG %s\n' "${t:0:120}" >> "$_EVT_FILE"; fi; }
   send_telegram(){
       local t="${1//$'\n'/ }"
       printf 'NET %s\n' "${t:0:120}" >> "$_EVT_FILE"
-      printf 'ST8 lla=%s lfv=%s obs=%s\n' "${LAST_LIVENESS_ACTIVE_TIME:-0}" "$_liveness_first_vote" "$_liveness_obs_since" >> "$_EVT_FILE"
+      printf 'ST8 lla=%s lfv=%s obs=%s\n' "${LAST_LIVENESS_ACTIVE_TIME:-0}" "$_liveness_first_vote" "$(field "$(dump_freshness)" observed_since)" >> "$_EVT_FILE"
       return 0
   }
   send_webhook(){ local t="${1//$'\n'/ }"; printf 'NET %s\n' "${t:0:120}" >> "$_EVT_FILE"; return 0; }
@@ -256,11 +244,8 @@ EOS
 
 evline(){ printf '%s\n' "$1" | grep '^EVENTS=' | head -1 | cut -c8-; }
 stline(){ printf '%s\n' "$1" | grep '^STATE='  | head -1 | cut -c7-; }
-field(){ printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d= -f2-; }
 
-echo "============================================="
-echo "  Act-then-alert + fresh-proof re-check (v0.7 Block 3 slice 5)"
-echo "============================================="
+title_banner "Act-then-alert + fresh-proof re-check (v0.7 Block 3 slice 5)"
 
 # ── (1) ORDER-PROCEED (standby, end-to-end) ─────────────────────────────────────────────────────
 echo ""; echo "─── (1) ORDER-PROCEED: real attempt_takeover to a successful take ───"
@@ -395,8 +380,8 @@ ev=$(evline "$out"); st=$(stline "$out")
 
 # ── (7) BYTE-IDENTITY across daemons ────────────────────────────────────────────────────────────
 echo ""; echo "─── (7) _fresh_proof_recheck byte-identical in both daemons ───"
-P_R=$(sed -n '/^_fresh_proof_recheck() {/,/^}$/p' "$PRIMARY")
-S_R=$(sed -n '/^_fresh_proof_recheck() {/,/^}$/p' "$STANDBY")
+extract_twin '^_fresh_proof_recheck() {' '^}$'
+P_R=$TWIN_P; S_R=$TWIN_S
 [[ -n "$P_R" && "$P_R" == "$S_R" ]] \
     && ok "(7) _fresh_proof_recheck body BYTE-IDENTICAL in both daemons ($(printf '%s\n' "$P_R" | wc -l | tr -d ' ') lines)" \
     || bad "(7) _fresh_proof_recheck missing or DIVERGED between the daemons"
@@ -462,8 +447,4 @@ echo "    abort pages=$aborts starvation pages=$starv"
     && ok "(12c) the starvation page still fires alongside ($starv pages) — a re-check-starved episode is loud" \
     || bad "(12c) starvation pages=$starv (want >=2) — re-check starvation went quiet"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

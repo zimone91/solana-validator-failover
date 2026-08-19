@@ -17,16 +17,11 @@
 #   (d)  helper sanity: mono_now/boot_id exist in BOTH daemons BYTE-IDENTICALLY (diff the extracted
 #        definitions); on a no-/proc/uptime box mono_now falls back to `date +%s`; on Linux it
 #        reads /proc/uptime (numeric, non-decreasing)
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, harness_silence_sinks ONLY (this suite
+# TESTS the clock: its dual _WALL_NOW/_MONO_NOW shims, seam cuts and parity checks stay local).
 
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$PRIMARY" && -f "$STANDBY" ]] || { echo "  ❌ scripts not found"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 MONO0=5000           # mono origin — deliberately far from the wall origin so a cross-clock leak is loud
 WALL0=1700000000     # wall origin
 DELAY=60             # TAKEOVER_DELAY under test
@@ -46,8 +41,7 @@ sim_take() {
   TAKEOVER_DELAY=$DELAY; TAKEOVER_COOLDOWN=0; EXTERNAL_CONFIRM_THROTTLE=0
   VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_MIN_INTERVAL=10; VOTE_LIVENESS_EPSILON=2
   GOSSIP_VERIFY=false; DRY_RUN=false; WITNESS_FASTPATH=false
-  log(){ :; }; log_info(){ :; }; log_warn(){ :; }; log_error(){ :; }
-  alert(){ :; }; alert_info(){ :; }; alert_warn(){ :; }; send_telegram(){ return 0; }; send_webhook(){ :; }
+  harness_silence_sinks
   save_state(){ :; }
   date(){ [[ "$1" == "+%s" ]] && { echo "$_WALL_NOW"; return 0; }; command date "$@"; }
   if [[ "$clock" == "mono" ]]; then
@@ -88,8 +82,7 @@ sim_fence() {
   STANDBY_SELF_FENCE=true; SELF_FENCE_ISOLATION_SECS=$ISO; SELF_FENCE_NOANSWER_SECS=30
   SELF_FENCE_MAX_BEHIND=0; SELF_FENCE_VOTE_LAG_SLOTS=0; SELF_FENCE_VOTE_LAG_SECS=0
   DRY_RUN=false; CURRENT_IDENTITY="S1"
-  log(){ :; }; log_info(){ :; }; log_warn(){ :; }; log_error(){ :; }
-  alert(){ :; }; alert_info(){ :; }; alert_warn(){ :; }; send_telegram(){ return 0; }; send_webhook(){ :; }
+  harness_silence_sinks
   save_state(){ :; }; sleep(){ :; }
   date(){ [[ "$1" == "+%s" ]] && { echo "$_WALL_NOW"; return 0; }; command date "$@"; }
   if [[ "$clock" == "mono" ]]; then
@@ -148,9 +141,7 @@ load_phase() {
   )
 }
 
-echo "============================================="
-echo "  Monotonic SAFETY timers (v0.7 Block 3)"
-echo "============================================="
+title_banner "Monotonic SAFETY timers (v0.7 Block 3)"
 
 echo ""
 echo "─── (a) takeover delay vs a +3600s wall step at t=10 (delay ${DELAY}s) ───"
@@ -293,8 +284,4 @@ fi
   && ok "(e2) zero stamp survives the wall conversion (no invented cooldown)" \
   || bad "(e2) zero became '$_zero' — an invented cooldown would block a legitimate first takeover"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner
