@@ -9,8 +9,9 @@
 # "now - FIRST_DELINQUENT_TIME", i.e. the v0.6.6 line) makes the spare take ~one liveness interval
 # after silence (overlap) — which the (1) assertion then FAILS to confirm. (4) asserts that collapse.
 #
-# harness: tests/lib/harness.sh — harness_clock_shims, harness_silence_sinks, ok/bad+banners
-# (the sim's cut+source stays local: its revert mode sed-mutates the cut — moves onto mutate() in 4.2).
+# harness: tests/lib/harness.sh — harness_clock_shims, harness_silence_sinks, ok/bad+banners, mutate
+# (4.3: the revert-mode mutation of the cut cannot silently no-op; its ❌ goes to stderr — sim()'s
+# stdout is $()-captured — and the "-2 -2" sentinel makes assertion (4) go red). Cut+source stay local.
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
@@ -30,7 +31,8 @@ sim() {
   set +e
   SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
   if [[ "$mode_anchor" == "revert" ]]; then
-    sed 's/now - takeover_anchor/now - FIRST_DELINQUENT_TIME/' "$SRC" > "$SRC.r" && mv "$SRC.r" "$SRC"
+    mutate "$SRC" 's/now - takeover_anchor/now - FIRST_DELINQUENT_TIME/' "$SRC.r" >&2 || { echo "-2 -2"; exit 1; }
+    mv "$SRC.r" "$SRC"
   fi
   source "$SRC"; rm -f "$SRC"
   STAKED_PUBKEY="S1"; VOTE_PUBKEY="V1"

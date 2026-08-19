@@ -102,7 +102,8 @@ check_caller_simulation() {
     if [[ "$gossip_clear" == "true" ]]; then
         echo "  → caller behavior: TAKEOVER ALLOWED"
         if [[ "$expected_outcome" == "takeover-allowed-but-WRONG" ]]; then
-            echo "  ❌ BUG CONFIRMED: takeover allowed when PRIMARY still has identity!"
+            # 🐞 not ❌: reproducing the historical bug is this suite's SUCCESS, not a failure (run_all reserves ❌ in suite output for failures)
+            echo "  🐞 BUG CONFIRMED: takeover allowed when PRIMARY still has identity!"
             FAIL=$((FAIL + 1))
         else
             PASS=$((PASS + 1))
@@ -110,7 +111,8 @@ check_caller_simulation() {
     else
         echo "  → caller behavior: TAKEOVER BLOCKED"
         if [[ "$expected_outcome" == "takeover-blocked-but-WRONG" ]]; then
-            echo "  ❌ BUG CONFIRMED: takeover blocked when PRIMARY actually dropped!"
+            # 🐞 not ❌: reproducing the historical bug is this suite's SUCCESS, not a failure (run_all reserves ❌ in suite output for failures)
+            echo "  🐞 BUG CONFIRMED: takeover blocked when PRIMARY actually dropped!"
             FAIL=$((FAIL + 1))
         else
             PASS=$((PASS + 1))
