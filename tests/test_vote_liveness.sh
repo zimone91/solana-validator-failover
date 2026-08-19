@@ -11,14 +11,12 @@
 # DEFAULT is what changed), plus the measured A3 scenario: a live holder voting +1/window under a
 # single honest provider never reads FROZEN at ε=0 (at ε=2 it did, and the spare took → double-sign).
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, extract_region (the section-6 validate-knob
+# region: the sed range is byte-faithful to the old awk-with-exit — verified — and cannot silently
+# extract empty). Cut + printing log shadows + `date +%s` clock stay local.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby not found at $STANDBY"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 SRC=$(mktemp)
 sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
@@ -55,9 +53,7 @@ curl() {
 reset_samples() { _liveness_first_vote=""; _liveness_first_tip=""; _liveness_first_ts=0; }
 age_first_sample() { _liveness_first_ts=$(( $(date +%s) - VOTE_LIVENESS_MIN_INTERVAL - 5 )); }  # force interval elapsed
 
-echo "============================================="
-echo "  Vote-liveness fence unit tests (v0.6.2 C1 / v0.6.3 freshness guard / v0.7 slice-3 ε=0)"
-echo "============================================="
+title_banner "Vote-liveness fence unit tests (v0.6.2 C1 / v0.6.3 freshness guard / v0.7 slice-3 ε=0)"
 
 # 0. v0.7 (Block 3, slice 3 / AUDIT-5 A3): the shipped DEFAULT epsilon must be 0 and must be the
 #    value this suite runs on (sourced from the daemon, not set by the harness).
@@ -169,7 +165,7 @@ staked_is_actively_voting; r=$?
 # 6. startup config validation — a typo'd EPSILON/MIN_INTERVAL must NOT silently disable the
 #    fence; the real shipped validation block must reject it at startup (exit 1).
 echo ""; echo "─── 6. startup rejects bad vote-liveness config (real shipped lines) ───"
-extract_cfg() { awk '/v0.6.2 \(C1\): validate the vote-liveness knobs/{p=1} p{print} /Bad vote-liveness config/{exit}' "$STANDBY"; }
+extract_cfg() { extract_region "$STANDBY" 'v0.6.2 (C1): validate the vote-liveness knobs' 'Bad vote-liveness config'; }
 run_cfg() {   # eps, interval → exit code of the shipped validation block
     local f; f=$(mktemp)
     { echo 'log_error(){ echo "      [ERR ] $*"; }'
@@ -187,8 +183,4 @@ run_cfg 08 10;      [[ $? -eq 0 ]] && ok "leading-zero EPSILON (08) octal-safe" 
 run_cfg 2 4;        [[ $? -eq 1 ]] && ok "MIN_INTERVAL<5 exits 1"               || bad "tiny interval not rejected"
 run_cfg 10 10;      [[ $? -eq 1 ]] && ok "MIN_INTERVAL not > EPSILON exits 1"   || bad "interval<=epsilon not rejected"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

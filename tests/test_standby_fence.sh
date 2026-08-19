@@ -11,14 +11,10 @@
 #                                                   blocks; v0.6.2 would have BLOCKED here)
 #   gossip BLOCKS + holder LIVE      -> BLOCK   ("active holder -> BLOCK" invariant kept; liveness)
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. Sink subset + cut + `date +%s` clock stay local.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby not found at $STANDBY"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 SRC=$(mktemp)
 sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
@@ -77,9 +73,7 @@ prime() {   # triggered + delay-served episode, with a back-dated liveness first
     _took=0
 }
 
-echo "============================================="
-echo "  STANDBY fence: vote-liveness authoritative, gossip advisory (v0.6.3)"
-echo "============================================="
+title_banner "STANDBY fence: vote-liveness authoritative, gossip advisory (v0.6.3)"
 
 echo ""; echo "─── 1. gossip CLEAR + holder LIVE → BLOCK (liveness must fence) ───"
 _GOSSIP_RC=0; prime 1000; _MOCK_LV=1090
@@ -114,8 +108,4 @@ attempt_takeover >/dev/null; rc=$?
 [[ "$_took" -eq 0 ]] && ok "active (voting) holder blocked regardless of gossip (rc=$rc)" \
                      || bad "STANDBY took the identity while it was voting — double-sign!"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

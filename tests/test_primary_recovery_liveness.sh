@@ -13,14 +13,10 @@
 # script, so shellcheck cannot see its definition); Part 2 then deliberately OVERRIDES it with a mock
 # defined further down. SC2218 "used before defined" is therefore a false positive for this whole file.
 # shellcheck disable=SC2218
+#
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. Cut + sink subset + `date +%s` clock stay local.
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$PRIMARY" ]] || { echo "  ❌ primary not found at $PRIMARY"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 SRC=$(mktemp)
 sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
@@ -37,9 +33,7 @@ log_warn()  { :; }
 alert_info() { :; }
 alert_warn() { :; }   # v0.6.4: recovery-blocked warning routes via alert_warn
 
-echo "============================================="
-echo "  PRIMARY rpc-recovery liveness fence (v0.6.3 Block 2)"
-echo "============================================="
+title_banner "PRIMARY rpc-recovery liveness fence (v0.6.3 Block 2)"
 
 # ── Part 1: the ported staked_is_actively_voting ─────────────────────────────────────────────
 echo ""; echo "─── Part 1: ported staked_is_actively_voting ───"
@@ -113,8 +107,4 @@ attempt_safe_recovery >/dev/null
 [[ "$_switched" -eq 0 ]] && ok "D. undetermined liveness → recovery refused (fail closed)" \
                         || bad "D. recovery re-took with undetermined liveness — invariant 3 violated!"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

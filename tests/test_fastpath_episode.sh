@@ -8,12 +8,11 @@
 #   (RESET-safe)  _fastpath_absent_seen=0 (reset) + present-on-both → does NOT fire (transition required)
 #   (SITE)        both episode-end sites (window_reset AND the organic clear) reset the fast-path state
 
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, extract_region (the window_reset /
+# organic-clear structural regions cannot silently grep an empty extraction; the organic sed range
+# is byte-faithful to the old awk-with-exit — verified). Cut + sink subset stay local.
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
 # shellcheck disable=SC1090
 source "$SRC"; rm -f "$SRC"
@@ -35,9 +34,7 @@ curl() {
     return 7
 }
 
-echo "============================================="
-echo "  Option A episode-state reset (v0.6.8 S2)"
-echo "============================================="
+title_banner "Option A episode-state reset (v0.6.8 S2)"
 
 echo ""; echo "─── behavioral: the absent-latch is load-bearing ───"
 # LEAK danger: if _fastpath_absent_seen=1 survives into a new episode, present-on-both fires with NO fresh absent
@@ -55,16 +52,12 @@ peer_has_relinquished >/dev/null; peer_has_relinquished; rc=$?
 
 echo ""; echo "─── structural: BOTH episode-end sites reset the fast-path state ───"
 # window_reset resets it
-sed -n '/^window_reset() {/,/^}/p' "$STANDBY" | grep -q '_fastpath_absent_seen=0' \
+extract_region "$STANDBY" '^window_reset() {' '^}' | grep -q '_fastpath_absent_seen=0' \
     && ok "(SITE-window) window_reset() resets _fastpath_absent_seen" || bad "(SITE-window) window_reset does NOT reset the fast-path state"
 # the organic delinquency-clear path (the block that sets FIRST_DELINQUENT_TIME=0; _takeover_alert_sent="")
 # resets it within the same block (the S2 fix)
-awk '/FIRST_DELINQUENT_TIME=0; _takeover_alert_sent=""/{f=1} f{print} /_gossip_prefetched=false; _gossip_result=""/{if(f)exit}' "$STANDBY" | grep -q '_fastpath_absent_seen=0' \
+extract_region "$STANDBY" 'FIRST_DELINQUENT_TIME=0; _takeover_alert_sent=""' '_gossip_prefetched=false; _gossip_result=""' | grep -q '_fastpath_absent_seen=0' \
     && ok "(SITE-organic) the organic delinquency-clear path resets _fastpath_absent_seen (S2 fix present)" \
     || bad "(SITE-organic) the organic clear path does NOT reset the fast-path state — S2 leak still open"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

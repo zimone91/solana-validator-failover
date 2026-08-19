@@ -11,13 +11,9 @@
 #   VOTE_PUBKEY set + N6 armed                → passes the N6 gate (no such refusal; reaches the sentinel)
 #   N6 disabled (SLOTS=0) + empty VOTE_PUBKEY → passes (N6 opt-out)
 
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. n7_run's cut + mock block stay local.
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$PRIMARY" ]] || { echo "  ❌ primary not found at $PRIMARY"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 # Run the REAL startup_checks; echo "<exit_code>|<last log_error message>".
 # $1=SELF_FENCE_VOTE_LAG_SLOTS  $2=SELF_FENCE_VOTE_LAG_SECS  $3=VOTE_PUBKEY  $4=PRIMARY_SELF_FENCE
@@ -46,9 +42,7 @@ n7_run() {
   cat "$res"; rm -f "$res"
 }
 
-echo "============================================="
-echo "  N7: VOTE_PUBKEY required when N6 is armed"
-echo "============================================="
+title_banner "N7: VOTE_PUBKEY required when N6 is armed"
 echo ""
 
 r=$(n7_run 32 20 "" true)            # N6 armed (32/20), VOTE_PUBKEY EMPTY
@@ -66,8 +60,4 @@ r=$(n7_run 0 20 "" true)             # N6 DISABLED (SLOTS=0), VOTE_PUBKEY empty
   && ok "(N7-optout) N6 disabled (knob 0) + empty VOTE_PUBKEY → starts (N6 opt-out, no refusal)" \
   || bad "(N7-optout) refused on the N6 opt-out path (got '$r')"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

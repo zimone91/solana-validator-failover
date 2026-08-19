@@ -48,21 +48,25 @@ PRIMARY="$HARNESS_DIR/solana-primary-failover.sh"
 STANDBY="$HARNESS_DIR/solana-standby-failover.sh"
 [[ -f "$PRIMARY" && -f "$STANDBY" ]] || { echo "  ❌ scripts not found"; exit 1; }
 
-# ── seam_cut <script> — the source-to-MAIN-LOOP cut, cached per (basename, mtime) ───────────────
+# ── seam_cut <script> — the source-to-MAIN-LOOP cut, cached per (basename, mtime, size) ─────────
 # Echoes the path of the cached cut file. The cache lives in a per-process mktemp dir (parallel
 # suites never share it; subshells of ONE suite do — the cut re-read ~200 KB per call before).
 # The cache file is read-only shared state: NEVER edit it in place — mutation controls copy first
 # (see mutate()).
+# The size component closes the same-second collision: a file rewritten with different content
+# within one mtime second would otherwise key to the same cache entry and serve a STALE cut.
 _HARNESS_TMP=$(mktemp -d)
 seam_cut() {
-    local script="$1" mt cache
+    local script="$1" mt sz cache
     [[ -f "$script" ]] || { echo "  ❌ FAIL: seam_cut: no such script: $script" >&2; return 1; }
     # mtime: GNU/busybox `stat -c %Y` FIRST — on busybox (the bash:5.2 CI image) `stat -f %m`
     # does not fail, it prints multi-line FILESYSTEM status (found red on Linux, 2026-08-19);
     # macOS/BSD stat has no -c and falls through to -f %m.
     mt=$(stat -c %Y "$script" 2>/dev/null || stat -f %m "$script" 2>/dev/null)
     case "$mt" in *[!0-9]*) mt="" ;; esac   # anything non-numeric → no mtime key (cache still per-process)
-    cache="$_HARNESS_TMP/$(basename "$script").${mt:-0}.cut"
+    sz=$(wc -c < "$script" 2>/dev/null | tr -d '[:space:]')   # BSD wc pads with spaces
+    case "$sz" in *[!0-9]*) sz="" ;; esac   # numeric-validated like mtime
+    cache="$_HARNESS_TMP/$(basename "$script").${mt:-0}.${sz:-0}.cut"
     if [[ ! -s "$cache" ]]; then
         sed -n '1,/MAIN LOOP/p' "$script" > "$cache" || return 1
     fi
@@ -152,6 +156,47 @@ extract_twin() {
     TWIN_S=$(sed -n "/$start/,/$end/p" "$STANDBY")
     if [[ -z "$TWIN_P" || -z "$TWIN_S" ]]; then
         echo "  ❌ FAIL: extract_twin: EMPTY extraction (primary=${#TWIN_P}B standby=${#TWIN_S}B) for anchor: $start"
+        FAIL=$((FAIL+1))
+        return 1
+    fi
+    return 0
+}
+
+# ── extract_region <file> <start-regex> <end-regex> — loud single-file region extraction ────────
+# `sed -n "/start/,/end/p"` over ONE file; echoes the extracted text on stdout. FAILS the suite
+# loudly (❌ + FAIL counter + rc 1) when the extraction is EMPTY: an anchored sed whose anchor
+# text moved would otherwise hand the caller an empty region — sourcing/eval'ing an empty string
+# is a silent no-op seam, green for the wrong reason. The ❌ goes to stderr (stdout carries the
+# region and is usually $()-captured); callers hold the suite-side red:
+#     region=$(extract_region "$PRIMARY" 'start' 'end') || bad "…"; eval "$region"
+extract_region() {
+    local file="$1" start="$2" end="$3" _r
+    [[ -f "$file" ]] || { echo "  ❌ FAIL: extract_region: no such file: $file" >&2; FAIL=$((FAIL+1)); return 1; }
+    _r=$(sed -n "/$start/,/$end/p" "$file")
+    if [[ -z "$_r" ]]; then
+        echo "  ❌ FAIL: extract_region: EMPTY extraction (anchor matched nothing): $start on $(basename "$file")" >&2
+        FAIL=$((FAIL+1))
+        return 1
+    fi
+    printf '%s\n' "$_r"
+    return 0
+}
+
+# ── mutate_filter <in> <out> <cmd…> — generic stdin→stdout filter form of mutate() (map §3.2) ───
+# Runs `cmd… < in > out` (the awk-strip control class). FAILS the suite loudly (❌ + FAIL counter
+# + rc 1) if the filter errored OR the output is byte-identical to the input: a filter whose
+# marker text no longer matches the daemon would otherwise no-op silently and the control stays
+# green for the wrong reason (the cannot-silently-no-op contract, same as mutate()).
+mutate_filter() {
+    local in="$1" out="$2"
+    shift 2
+    if ! "$@" < "$in" > "$out"; then
+        echo "  ❌ FAIL: mutate_filter: filter failed: $1 on $(basename "$in")"
+        FAIL=$((FAIL+1))
+        return 1
+    fi
+    if cmp -s "$in" "$out"; then
+        echo "  ❌ FAIL: mutate_filter: filter changed NOTHING (control would be green-for-the-wrong-reason): $1 on $(basename "$in")"
         FAIL=$((FAIL+1))
         return 1
     fi

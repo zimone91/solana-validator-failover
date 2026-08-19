@@ -49,15 +49,11 @@
 # (4b) warn level, (11a/11b) retry floor + blind streak, (12a) transient cost, (13a/13b) CRITICAL
 # active, (14 both daemons) companion-gate justification — 8 FAILs, green after the fixes.
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, field, harness_clock_shims, drift_out.
+# ap_run's cut + capture shadows stay local; the (8) parity extraction keeps its own -n guard.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$STANDBY" && -f "$PRIMARY" ]] || { echo "  ❌ scripts not found"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 # ── harness: drive the REAL _alpenglow_gate_check over a scripted fetch sequence + timeline ────
 #   $1=script  $2=ALPENGLOW_GATE_CHECK_HOURS  $3=fetch sequence (space-separated words; "rc1" =
@@ -78,8 +74,7 @@ ap_run() {
     EVT=$(mktemp); export _AP_EVT="$EVT"
     trap 'rm -f "$EVT"' EXIT
     _SIM_NOW=0
-    date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
-    mono_now(){ echo "$_SIM_NOW"; }
+    harness_clock_shims
     WARNLOGS=0
     log(){ :; }; log_info(){ :; }; log_error(){ :; }
     log_warn(){ case "$*" in *"[alpenglow]"*) WARNLOGS=$((WARNLOGS+1)) ;; esac; }
@@ -118,25 +113,7 @@ ap_run() {
         "${BTEXT:0:140}" "${CTEXT:0:200}"
   )
 }
-field(){ printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d= -f2-; }
-
-# drift_out idiom (test_config_drift): recorded [config-drift] output of the REAL announcer
-ap_drift() {
-    local script="$1"; shift
-    (
-        SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$script" > "$SRC"
-        # shellcheck disable=SC1090
-        source "$SRC" 2>/dev/null; rm -f "$SRC"
-        log_info(){ :; }; log_error(){ :; }
-        log_warn(){ printf '%s\n' "$*"; }
-        for kv in "$@"; do eval "$kv"; done
-        announce_config_drift
-    )
-}
-
-echo "============================================="
-echo "  Alpenglow feature-gate tripwire (v0.7 pre-Block-4, №9)"
-echo "============================================="
+title_banner "Alpenglow feature-gate tripwire (v0.7 pre-Block-4, №9)"
 
 # ── (1) inactive → pending: ONE page, the re-audit instruction, state persisted ────────────────
 echo ""; echo "─── (1) inactive → (next check) pending → exactly one page + persisted ───"
@@ -190,15 +167,15 @@ out=$(ap_run "$STANDBY" 0 "inactive" "100 21700 999999")
 [[ "$(field "$out" fetches)" == "0" && "$(field "$out" pages)" == "0" ]] \
     && ok "(5a) knob 0 → zero fetches, zero pages over 3 cycles" \
     || bad "(5a) knob 0 still probed ($out)"
-d=$(ap_drift "$STANDBY" 'ALPENGLOW_GATE_CHECK_HOURS=0')
+d=$(drift_out "$STANDBY" 'ALPENGLOW_GATE_CHECK_HOURS=0')
 [[ "$d" == *"ALPENGLOW_GATE_CHECK_HOURS=0 DISABLES"* ]] \
     && ok "(5b) drift announcer: 0 → DISABLES wording (laxest)" \
     || bad "(5b) 0 not announced as DISABLES: '$d'"
-d=$(ap_drift "$STANDBY" 'ALPENGLOW_GATE_CHECK_HOURS=12')
+d=$(drift_out "$STANDBY" 'ALPENGLOW_GATE_CHECK_HOURS=12')
 [[ "$d" == *"ALPENGLOW_GATE_CHECK_HOURS=12 is laxer than this version's default 6"* ]] \
     && ok "(5c) drift announcer: 12 → generic laxer-than-default-6 line" \
     || bad "(5c) 12 not announced: '$d'"
-d=$(ap_drift "$STANDBY")
+d=$(drift_out "$STANDBY")
 [[ "$d" != *"ALPENGLOW"* ]] \
     && ok "(5d) default 6 → silent (no ALPENGLOW drift line)" \
     || bad "(5d) default announced: '$d'"

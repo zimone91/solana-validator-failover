@@ -11,20 +11,14 @@
 #   (C-g) NON-VACUOUS: v0.6.8 baseline has ZERO check_identity_collision (the detector is new) and
 #         both v0.6.9 MAIN LOOP STAKED branches call it
 
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. The per-script subshell's cut + shims stay
+# local (non-pair mono clock, capture subset; the case-free curl is the bash-3.2 $() parse rule).
+
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+V068P="$HARNESS_DIR/../../0.6.8/failover-v0.6.8/solana-primary-failover.sh"
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-STANDBY="$DIR/solana-standby-failover.sh"
-V068P="$DIR/../../0.6.8/failover-v0.6.8/solana-primary-failover.sh"
-[[ -f "$PRIMARY" && -f "$STANDBY" ]] || { echo "  ❌ scripts not found"; exit 1; }
-
-echo "============================================="
-echo "  Collision detector (v0.6.9 M5) — detection-only"
-echo "============================================="
+title_banner "Collision detector (v0.6.9 M5) — detection-only"
 
 for SCRIPT in "$PRIMARY" "$STANDBY"; do
   NAME=$(basename "$SCRIPT" | sed 's/solana-\(.*\)-failover.sh/\1/' | tr '[:lower:]' '[:upper:]')
@@ -142,8 +136,4 @@ ns=$(sed -n '/MAIN LOOP/,$p' "$STANDBY" | grep -c 'check_identity_collision')
     && ok "(C-g2) both MAIN LOOP STAKED branches call check_identity_collision (primary=$np standby=$ns)" \
     || bad "(C-g2) main-loop wiring missing (primary=$np standby=$ns)"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

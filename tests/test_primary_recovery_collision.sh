@@ -9,14 +9,10 @@
 #
 # _check_single_rpc return contract: 0 = another node has it (ABORT recovery); 1 = nobody else.
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. Cut + printing log shadows + curl mock stay local.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$PRIMARY" ]] || { echo "  ❌ primary not found at $PRIMARY"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 SRC=$(mktemp)
 sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
@@ -60,9 +56,7 @@ curl() {
     return 7
 }
 
-echo "============================================="
-echo "  F3 parity: PRIMARY rpc-recovery collision"
-echo "============================================="
+title_banner "F3 parity: PRIMARY rpc-recovery collision"
 
 echo ""; echo "─── shared IP / different port → recovery must ABORT ───"
 _check_single_rpc "$TIER2_RPC"; rc=$?
@@ -91,8 +85,4 @@ _check_single_rpc "$TIER2_RPC"; rc=$?
 [[ $rc -eq 1 ]] && ok "staked == our own exact endpoint → nobody else has it (rc=1)" \
                || bad "genuine self endpoint wrongly aborted recovery (rc=$rc)"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

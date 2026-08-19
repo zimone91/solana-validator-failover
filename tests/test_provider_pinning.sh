@@ -36,15 +36,12 @@
 #   (i)  convergence sanity at ε=0: a dead node's lastVote is a FIXED NUMBER every provider
 #        converges to → FROZEN renders normally, even across a provider flip (one extra interval)
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, extract_twin (the g1/g2 parity hunks
+# cannot silently compare two empties). The mono-only clock (no date interceptor — not the pair),
+# log subset, prim_sim's cut and the direct freshness-field reads stay local (reads move in 4.3).
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$STANDBY" && -f "$PRIMARY" ]] || { echo "  ❌ scripts not found"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 SRC=$(mktemp)
 sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
@@ -94,9 +91,7 @@ curl() {
 
 reset_ep() { _liveness_first_vote=""; _liveness_first_tip=""; _liveness_first_ts=0; _liveness_first_provider=""; }
 
-echo "============================================="
-echo "  Liveness provider pinning (v0.7 Block 3 slice 2 / AUDIT-5 A2)"
-echo "============================================="
+title_banner "Liveness provider pinning (v0.7 Block 3 slice 2 / AUDIT-5 A2)"
 
 # ── (a) THE MEASURED A2 SCENARIO ────────────────────────────────────────────────────────────────
 # Holder voting SLOWLY (+30 slots over the window, cluster advances +30). Sample #1 from a fresh
@@ -308,17 +303,13 @@ fi
 
 # ── (g) twin parity: the new pinning hunks must be BYTE-IDENTICAL across the daemons ────────────
 echo ""; echo "─── (g) twin parity of the slice-2 hunks (this repo fights twin drift) ───"
-P_PIN=$(sed -n '/AUDIT-5 A2): PROVIDER PIN/,/^    fi$/p' "$PRIMARY")
-S_PIN=$(sed -n '/AUDIT-5 A2): PROVIDER PIN/,/^    fi$/p' "$STANDBY")
-if [[ -n "$P_PIN" && "$P_PIN" == "$S_PIN" ]]; then
-    ok "(g1) PROVIDER PIN block byte-identical in both daemons ($(printf '%s\n' "$P_PIN" | wc -l | tr -d ' ') lines)"
+if extract_twin 'AUDIT-5 A2): PROVIDER PIN' '^    fi$' && [[ "$TWIN_P" == "$TWIN_S" ]]; then
+    ok "(g1) PROVIDER PIN block byte-identical in both daemons ($(printf '%s\n' "$TWIN_P" | wc -l | tr -d ' ') lines)"
 else
     bad "(g1) PROVIDER PIN block missing or DIVERGED between the daemons"
 fi
-P_MIN=$(sed -n '/re-base here is LOWER-ONLY/,/return 2/p' "$PRIMARY")
-S_MIN=$(sed -n '/re-base here is LOWER-ONLY/,/return 2/p' "$STANDBY")
-if [[ -n "$P_MIN" && "$P_MIN" == "$S_MIN" ]]; then
-    ok "(g2) tip-guard lower-only re-base hunk byte-identical in both daemons ($(printf '%s\n' "$P_MIN" | wc -l | tr -d ' ') lines)"
+if extract_twin 're-base here is LOWER-ONLY' 'return 2' && [[ "$TWIN_P" == "$TWIN_S" ]]; then
+    ok "(g2) tip-guard lower-only re-base hunk byte-identical in both daemons ($(printf '%s\n' "$TWIN_P" | wc -l | tr -d ' ') lines)"
 else
     bad "(g2) tip-guard lower-only hunk missing or DIVERGED between the daemons"
 fi
@@ -419,8 +410,4 @@ staked_is_actively_voting >/dev/null; c2=$?
     && ok "(i3) re-pinned T3/T3 pair converges on the SAME number → FROZEN (rc=1) — ε=0 cannot deadlock" \
     || bad "(i3) rc=$c2 (want 1) — the fixed-number convergence argument failed"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

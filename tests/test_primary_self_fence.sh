@@ -21,14 +21,11 @@
 # Non-vacuous: (a) fires only because the frozen-slot timer trips; (F1a) only because the no-answer
 # timer trips; (c)/(d)/(F1b)/(F1c) prove it does NOT fire when advancing, briefly silent, or fresh.
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. Cut + printing log shadows + `date +%s`
+# clock + the N2 subshell's sink block stay local.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$PRIMARY" ]] || { echo "  ❌ primary not found at $PRIMARY"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 SRC=$(mktemp)
 sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
@@ -62,9 +59,7 @@ curl() {
     return 7
 }
 
-echo "============================================="
-echo "  PRIMARY self-fence (v0.6.3 Block 3)"
-echo "============================================="
+title_banner "PRIMARY self-fence (v0.6.3 Block 3)"
 
 # ── (e) FIRST, with the REAL switch_to_unstaked, to verify the DRY_RUN log-only behavior ──────
 echo ""; echo "─── (e) DRY_RUN → log only, no swap (real switch_to_unstaked) ───"
@@ -212,8 +207,4 @@ set -- $_pos; _rc="${1#rc=}"; _sw="${2#switch=}"; _bf="${3#before=}"; _el="${4#e
     && ok "(N2 control) old alert-first order is detectable (2 notifier calls precede the demote) → assertion non-vacuous" \
     || bad "(N2 control) negative control unexpected ($_neg)"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

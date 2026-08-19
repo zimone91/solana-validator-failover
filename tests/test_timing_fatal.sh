@@ -23,15 +23,12 @@
 #         RED (captured pre-implementation): U-a and U-d reach the sentinel (99) instead of
 #         refusing — no daemon line compares the two variables at 94d64a6.
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, field. run_enforce/uniq_run subshell cuts
+# + mock blocks stay local.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-V068="$DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby script not found"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+V068="$HARNESS_DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
 
 # rc + observables of enforce_crossnode_timing_safety under the given knobs
 #   $1=TAKEOVER_DELAY $2=EXPECTED $3=MARGIN $4=ALLOW_UNSAFE_TIMING
@@ -57,11 +54,7 @@ run_enforce() {
     printf 'rc=%s|alerts=%s|warns=%s\n' "$rc" "$A" "$W"
   )
 }
-field(){ printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d= -f2-; }
-
-echo "============================================="
-echo "  Cross-node timing violations are FATAL (v0.6.9 M9)"
-echo "============================================="
+title_banner "Cross-node timing violations are FATAL (v0.6.9 M9)"
 
 echo ""; echo "─── (F-a) violating config → exit 1 ───"
 out=$(run_enforce 15 30 30 false)
@@ -214,8 +207,4 @@ r=$(uniq_run "SomeOtherHolderKey111 UNSTAKEDPK")
     && ok "(U-d) own key ∈ multi-key watch list → REFUSES (∈ semantics, space-separated list)" \
     || bad "(U-d) membership in a multi-key list did not refuse (got '$r')"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

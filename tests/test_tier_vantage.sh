@@ -10,15 +10,12 @@
 #         (peer_has_relinquished fires on the same corroborated flip) — proves V-b bites
 #   (V-d) one tier empty → no warn (single-provider users keep working, loudly elsewhere)
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, field, extract_region (the M8 seam: the
+# sed range is byte-faithful to the old awk-with-exit — verified — and cannot silently source empty).
+# run_seam's cut + capture shims stay local.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$PRIMARY" && -f "$STANDBY" ]] || { echo "  ❌ scripts not found"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 # Run the shipped M8 seam (marker comment → its closing 4-space fi) with the given tiers.
 # For the standby, then run the REAL peer_has_relinquished against a fully-passing flip.
@@ -43,8 +40,7 @@ run_seam() {
     [[ "$fp" == "true" ]] && _fastpath_compute_stagger >/dev/null 2>&1
     # extract + run the shipped M8 block (marker → first closing 4-space fi)
     SEAM=$(mktemp)
-    awk '/# v0\.6\.9 \(M8\): TIER2\/TIER3 vantage-independence/ {p=1} p {print} p && /^    fi$/ {exit}' "$script" > "$SEAM"
-    [[ -s "$SEAM" ]] || { echo "seam-empty"; exit 1; }
+    extract_region "$script" '# v0\.6\.9 (M8): TIER2\/TIER3 vantage-independence' '^    fi$' > "$SEAM" || { echo "seam-empty"; exit 1; }
     # shellcheck disable=SC1090
     source "$SEAM"; rm -f "$SEAM"
     fired=-1
@@ -59,11 +55,7 @@ run_seam() {
     printf 'warn=%s|alertwarn=%s|disabled=%s|fired=%s\n' "$W" "$AW" "${_fastpath_disabled:-NONE}" "$fired"
   )
 }
-field(){ printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d= -f2-; }
-
-echo "============================================="
-echo "  TIER2/TIER3 vantage-independence (v0.6.9 M8)"
-echo "============================================="
+title_banner "TIER2/TIER3 vantage-independence (v0.6.9 M8)"
 
 echo ""; echo "─── (V-a) equal tiers (incl. trailing-slash) → warn on both daemons ───"
 out=$(run_seam "$PRIMARY" "https://rpc.example.com/v1" "https://rpc.example.com/v1/" false)
@@ -97,8 +89,4 @@ out=$(run_seam "$PRIMARY" "" "https://api.mainnet-beta.solana.com" false)
     && ok "(V-d) empty TIER2 → the comparison is skipped (single-provider setups unchanged)" \
     || bad "(V-d) warned on an empty tier ($out)"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

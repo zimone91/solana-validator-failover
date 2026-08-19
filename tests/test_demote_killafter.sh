@@ -9,17 +9,12 @@
 #   (K-137)     the escalation branches fire on rc 137 (SIGKILL), not only 124
 #   (K-control) NON-VACUOUS: the v0.6.7 baseline has ZERO `-k` (v0.6.8 genuinely added the escalation)
 
+# harness: tests/lib/harness.sh — ok/bad+banners, paths only (structural suite).
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-V067="$DIR/../../0.6.7/failover-v0.6.7/solana-primary-failover.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+V067="$HARNESS_DIR/../../0.6.7/failover-v0.6.7/solana-primary-failover.sh"
 
-echo "============================================="
-echo "  Demote/promote timeout --kill-after (v0.6.8 S3)"
-echo "============================================="
+title_banner "Demote/promote timeout --kill-after (v0.6.8 S3)"
 echo ""
 
 # v0.6.9 (TASK-v0.6.9 H2): 7 → 8 — the hard-stop now also masks the unit (`timeout -k 5 15 systemctl
@@ -46,8 +41,4 @@ else
     ok "(K-control) v0.6.7 baseline not present to compare (skipped)"
 fi
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

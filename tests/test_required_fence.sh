@@ -6,14 +6,12 @@
 #      determine → BLOCK); with the explicit override it proceeds UNFENCED.
 # Closes the old "both fences off → silent unfenced takeover with only a warning" hole.
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. extract_req KEEPS its awk (the region must
+# EXCLUDE its end line — `load_state` would execute under a sed range, so sed is not byte-faithful);
+# it gains the loud-empty check below instead (the extract_region contract without the sed form).
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby not found at $STANDBY"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 SRC=$(mktemp)
 sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
@@ -27,13 +25,13 @@ log_warn()  { :; }
 alert_info() { :; }
 alert_warn() { :; }   # v0.6.4: fence-not-clear warning routes via alert_warn
 
-echo "============================================="
-echo "  Vote-liveness REQUIRED fence (v0.6.3 Block 1)"
-echo "============================================="
+title_banner "Vote-liveness REQUIRED fence (v0.6.3 Block 1)"
 
 # ── A. Startup validation (run the SHIPPED lines standalone) ─────────────────────────────────
 echo ""; echo "─── A. startup refuses VOTE_LIVENESS_VERIFY=false without override ───"
 extract_req() { awk '/REQUIRED — it is the authoritative split-brain fence/{p=1} /load_state   # v0.6.1/{p=0} p{print}' "$STANDBY"; }
+# loud-empty guard (harness extract_region contract; the awk itself stays — see header):
+[[ -n "$(extract_req)" ]] || { echo "  ❌ FAIL: extract_req: EMPTY extraction (startup-validation anchors moved) — run_req would exercise nothing"; FAIL=$((FAIL+1)); }
 run_req() {   # VOTE_LIVENESS_VERIFY, ALLOW_UNFENCED_TAKEOVER → exit code of the shipped block
     local f; f=$(mktemp)
     { echo 'log_error(){ echo "      [ERR ] $*"; }'; echo 'log_warn(){ echo "      [WARN] $*"; }'
@@ -80,8 +78,4 @@ attempt_takeover >/dev/null; rc=$?
 [[ "$_took" -eq 1 ]] && ok "explicit override permits the (dangerous) unfenced takeover (rc=$rc)" \
                      || bad "override set but takeover still blocked (_took=$_took rc=$rc)"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

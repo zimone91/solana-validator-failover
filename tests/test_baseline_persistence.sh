@@ -14,15 +14,11 @@
 #   (P-g) v0.6.9 (B4): the age==0 boundary — a same-second restart with max=900 restores+fires, but
 #         max=0 is a HARD disable (restores NOTHING) — closes the '0 = never restore' off-by-one
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, field, extract_region (the P-e startup-wait
+# seam cannot silently extract empty). phase1/phase2/run_waitloop cuts + non-pair clock shims stay local.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$PRIMARY" && -f "$STANDBY" ]] || { echo "  ❌ scripts not found"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 T0=1700000000
 
 # Phase 1 (the "pre-restart" daemon): establish a STAKED baseline at T0, observe the stall until
@@ -97,11 +93,7 @@ phase2() {
         "${_selffence_noanswer_since:-0}" "$restored_pending" "${_persisted_role:-none}"
   )
 }
-field(){ printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d= -f2-; }
-
-echo "============================================="
-echo "  Self-fence baseline persistence (v0.6.9 H3)"
-echo "============================================="
+title_banner "Self-fence baseline persistence (v0.6.9 H3)"
 
 for SCRIPT in "$PRIMARY" "$STANDBY"; do
   NAME=$(basename "$SCRIPT" | sed 's/solana-\(.*\)-failover.sh/\1/' | tr '[:lower:]' '[:upper:]')
@@ -185,7 +177,7 @@ run_waitloop() {   # $1=script $2=persisted_role → echoes "alerts=<n>|pings=<n
     SEAM=$(mktemp)
     { echo 'startup_wait_seam() {'
       # primary says "# Wait for validator", standby "# Wait for local validator" — match both
-      sed -n '/# Wait for.*validator/,/\[\[ "\$_running" != "true" \]\] \&\& exit 0/p' "$script"
+      extract_region "$script" '# Wait for.*validator' '\[\[ "\$_running" != "true" \]\] \&\& exit 0'
       echo '}'
     } > "$SEAM"
     # shellcheck disable=SC1090
@@ -222,8 +214,4 @@ out=$(run_waitloop "$STANDBY" staked)
     && ok "(P-e3) STANDBY wait-loop port pages once + pings too ($out)" \
     || bad "(P-e3) standby wait loop wrong ($out)"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

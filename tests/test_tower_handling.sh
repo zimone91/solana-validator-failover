@@ -5,13 +5,10 @@
 #   - staked set-identity must use the path-as-argument form
 #   - PRIMARY must still DELETE the staked tower on switch-to-unstaked
 #   - both scripts must pass `bash -n`
+# harness: tests/lib/harness.sh — counters+banners, paths only (structural suite; the
+# assert_absent/assert_present locals stay).
 set +e
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-STANDBY="$DIR/solana-standby-failover.sh"
-
-PASS=0; FAIL=0
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 assert_absent() {   # desc, ERE pattern, file
     if grep -Eq "$2" "$3"; then echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1));
@@ -22,12 +19,7 @@ assert_present() {  # desc, fixed string, file
     else echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); fi
 }
 
-echo "============================================="
-echo "  Tower-handling static tests (v0.6.0)"
-echo "============================================="
-
-[[ -f "$PRIMARY" ]] || { echo "  ❌ FAIL: primary script not found at $PRIMARY"; exit 1; }
-[[ -f "$STANDBY" ]] || { echo "  ❌ FAIL: standby script not found at $STANDBY"; exit 1; }
+title_banner "Tower-handling static tests (v0.6.0)"
 
 echo ""
 echo "─── 1. No '--require-tower' on the set-identity command ───"
@@ -51,8 +43,4 @@ echo "─── 4. Scripts pass bash -n ───"
 if bash -n "$PRIMARY" 2>/dev/null; then echo "  ✅ PASS: PRIMARY syntax"; PASS=$((PASS+1)); else echo "  ❌ FAIL: PRIMARY syntax"; FAIL=$((FAIL+1)); fi
 if bash -n "$STANDBY" 2>/dev/null; then echo "  ✅ PASS: STANDBY syntax"; PASS=$((PASS+1)); else echo "  ❌ FAIL: STANDBY syntax"; FAIL=$((FAIL+1)); fi
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

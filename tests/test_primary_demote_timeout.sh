@@ -16,14 +16,10 @@
 # B1-a..e call the REAL switch_to_unstaked (sourced below); the retry-discipline block later defines a
 # mock that shadows it — shellcheck can't see the sourced def and flags SC2218 (used-before-defined).
 # shellcheck disable=SC2218
+#
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. Cut + sink subset + `date +%s` clock stay local.
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$PRIMARY" ]] || { echo "  ❌ primary not found at $PRIMARY"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
 # shellcheck disable=SC1090
@@ -82,9 +78,7 @@ get_local_identity() { echo "$_IDENT_AFTER"; }
 
 reset_obs() { _alert_status=""; _alert_calls=0; _kills=0; _proc_alive=1; _proc_immortal=0; _RC_SETID=0; _RC_REMOVE=0; _RC_SYSTEMCTL=0; CURRENT_IDENTITY="$STAKED_PUBKEY"; DRY_RUN=false; SELF_FENCE_HARD_STOP=true; }
 
-echo "============================================="
-echo "  PRIMARY demote timeout + hard stop + retry discipline (v0.6.8 B1)"
-echo "============================================="
+title_banner "PRIMARY demote timeout + hard stop + retry discipline (v0.6.8 B1)"
 
 # ── (B1-a) set-identity to unstaked times out → HARD STOP ─────────────────────────────────────
 echo ""; echo "─── (B1-a) demote set-identity TIMES OUT → systemctl stop + kill, HARD STOP alert, rc 0 ───"
@@ -223,8 +217,4 @@ check_self_fence_isolation >/dev/null 2>&1   # slot advances → reach getHealth
     && ok "(B1-i) getHealth: failed demote fired and LEFT the frozen tracker intact (_last_confirmed_slot=$_last_confirmed_slot; a premature reset would empty it)" \
     || bad "(B1-i) getHealth wiped the tracker on a failed demote (_sw_calls=$_sw_calls last_slot='$_last_confirmed_slot' want=$_SLOT)"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

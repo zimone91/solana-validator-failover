@@ -25,14 +25,12 @@
 # The P-* cases call the REAL peer_has_relinquished (sourced below); the I-* block later mocks it. The
 # linter can't see the sourced def and flags SC2218 (used-before-defined) — a false positive, disabled:
 # shellcheck disable=SC2218
+#
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, extract_region (the FA-control/S6 function
+# regions cannot silently extract empty), mutate (the FA-control strip cannot silently no-op; the
+# fn-rename stays a separate sed step). The 3-sink log subset + top-level cut stay local.
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby not found"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
 # shellcheck disable=SC1090
 source "$SRC"; rm -f "$SRC"
@@ -71,9 +69,7 @@ curl() {
 WITNESS_FASTPATH=true; FASTPATH_PEER_RECOVERY_MANUAL=true; FASTPATH_CONFIRM_SAMPLES=2
 prep_p() { _fastpath_absent_seen=0; _fastpath_confirm=0; _T2_UP=1; _T3_UP=1; _T2_PK=""; _T3_PK=""; _T2_EP="$_STAKED_EP"; _T3_EP="$_STAKED_EP"; _T2_STAKED=1; _T3_STAKED=1; WITNESS_FASTPATH=true; PRIMARY_UNSTAKED_PUBKEY="UnstakedHolder1111111111111111111111111111"; FASTPATH_PEER_RECOVERY_MANUAL=true; }
 
-echo "============================================="
-echo "  Option A: peer_has_relinquished + attempt_takeover early-exit (v0.6.8)"
-echo "============================================="
+title_banner "Option A: peer_has_relinquished + attempt_takeover early-exit (v0.6.8)"
 
 echo ""; echo "─── peer_has_relinquished — fail-closed preconditions ───"
 prep_p; WITNESS_FASTPATH=false; peer_has_relinquished; [[ $? -ne 0 ]] && ok "(P-off) WITNESS_FASTPATH=false → no fire" || bad "(P-off) fired while off"
@@ -131,7 +127,12 @@ peer_has_relinquished >/dev/null; peer_has_relinquished; rca=$?
 
 # (FA-control) NON-VACUOUS: strip the endpoint equality from the REAL function (revert to pre-F-A "match
 # any pubkey regardless of endpoint") → the FA-nonholder data now FIRES, proving the anchor is load-bearing.
-_buggy_src=$(sed -n '/^peer_has_relinquished() {/,/^}/p' "$STANDBY" | sed 's/ && "\$pk_ep" == "\$staked_ep"//' | sed '1s/^peer_has_relinquished/peer_has_relinquished_noanchor/')
+_fn_src=$(extract_region "$STANDBY" '^peer_has_relinquished() {' '^}') || bad "(FA-control) peer_has_relinquished region extraction came back EMPTY"
+_fn_file=$(mktemp); _buggy_file=$(mktemp)
+printf '%s\n' "$_fn_src" > "$_fn_file"
+mutate "$_fn_file" 's/ && "\$pk_ep" == "\$staked_ep"//' "$_buggy_file"
+_buggy_src=$(sed '1s/^peer_has_relinquished/peer_has_relinquished_noanchor/' "$_buggy_file")
+rm -f "$_fn_file" "$_buggy_file"
 eval "$_buggy_src"
 _fastpath_absent_seen=1; _fastpath_confirm=0
 _T2_STAKED=1; _T3_STAKED=1; _T2_PK="PeerA1111111111111111111111111111111111111"; _T3_PK="PeerA1111111111111111111111111111111111111"
@@ -202,7 +203,8 @@ echo ""; echo "─── (S6) real flip detector + real attempt_takeover + liven
 # that even when the REAL detector fires, liveness=cannot-determine(2) blocks the take (the headline, but
 # through the real detector this time).
 # shellcheck disable=SC1090
-eval "$(sed -n '/^peer_has_relinquished() {/,/^}/p' "$STANDBY")"
+_real_fn=$(extract_region "$STANDBY" '^peer_has_relinquished() {' '^}') || bad "(S6) peer_has_relinquished region extraction came back EMPTY"
+eval "$_real_fn"
 FASTPATH_CONFIRM_SAMPLES=2; FASTPATH_PEER_RECOVERY_MANUAL=true; _fastpath_disabled=""; _fastpath_stagger_floor=0
 PRIMARY_UNSTAKED_PUBKEY="UnstakedHolder1111111111111111111111111111"
 _CONFIRM=0; _LIVENESS=2                       # external delinquent; liveness CANNOT-DETERMINE
@@ -223,8 +225,4 @@ s6cycle; t2=$_take_calls                                                        
     && ok "(S6) real peer_has_relinquished fired (confirm=$_fastpath_confirm) through real attempt_takeover, yet liveness=cannot-determine → NO takeover (flip never bypasses Gate 3)" \
     || bad "(S6) wrong (absent:$t_absent c1:$t1 c2:$t2 confirm:$_fastpath_confirm) — a take occurred or the detector never fired"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

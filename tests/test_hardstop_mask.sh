@@ -13,16 +13,12 @@
 #   (M-e) NON-VACUOUS CONTROL: awk-strip the mask + re-verify blocks from a patched copy → the same
 #         resurrect inputs return the OLD false-✅ (rc 0) — proves M-b bites
 #   (M-f) standby port parity: the same resurrect scenario fails loudly on the standby copy too
+#
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, field, mutate_filter (the M-e awk-strip
+# control cannot silently no-op). scenario()'s cut + sink/mocks stay local (capture subset).
 
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$PRIMARY" && -f "$STANDBY" ]] || { echo "  ❌ scripts not found"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 # Run _selffence_hard_stop from the given script copy in a fresh subshell.
 #   $1=script  $2=RC_STOP  $3=RC_MASK  $4=resurrect(1/0)  $5=proc_alive_at_start(1/0)
@@ -56,11 +52,7 @@ scenario() {
     printf 'rc=%s|status=%s|events=%s\n' "$rc" "$_STATUS" "$(tr '\n' ',' < "$EV")"
   )
 }
-field(){ printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d= -f2-; }
-
-echo "============================================="
-echo "  Hard-stop mask + delayed re-verify (v0.6.9 H2)"
-echo "============================================="
+title_banner "Hard-stop mask + delayed re-verify (v0.6.9 H2)"
 
 # ── (M-a) stop fails → mask BEFORE kill; ✅ page says masked + unmask command ─────────────────
 echo ""; echo "─── (M-a) systemctl stop fails → mask --runtime BEFORE the kill; masked ✅ page ───"
@@ -110,12 +102,12 @@ fi
 # ── (M-e) NON-VACUOUS CONTROL: strip mask+re-verify → the old false-✅ returns ────────────────
 echo ""; echo "─── (M-e) control: awk-strip the H2 blocks → same resurrect inputs report false ✅ ───"
 PATCHED=$(mktemp)
-awk '
+mutate_filter "$PRIMARY" "$PATCHED" awk '
   /# v0\.6\.9 \(H2\): systemctl stop did NOT cleanly succeed/ {skip=1}
   /# v0\.6\.9 \(H2\): RE-verify after a Restart=always-scale delay/ {skip=1}
   skip && /^    fi$/ {skip=0; next}
   !skip {print}
-' "$PRIMARY" > "$PATCHED"
+'
 out=$(scenario "$PATCHED" 124 1 1 1)
 rm -f "$PATCHED"
 if [[ "$(field "$out" rc)" == "0" && "$(field "$out" status)" == *"HARD STOP ✅"* ]]; then
@@ -135,8 +127,4 @@ else
     bad "(M-f) standby port diverges: resurrect='$out' masked='$outm'"
 fi
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

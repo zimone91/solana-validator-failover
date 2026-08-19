@@ -6,13 +6,11 @@
 # tracks the C3/F3 rework: full ip:port comparison, and only a GENUINE self endpoint
 # match is "us". Keeps the v0.5.9 invariant "a present (non-self) holder → BLOCK".
 
+# harness: tests/lib/harness.sh — counters+banners, paths. run_test's own PASS-format echoes, the
+# md5-keyed curl dispatcher, printing log shadows and the cut stay local.
+
 set +e
-
-PASS=0; FAIL=0
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby script not found at $STANDBY"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 # Source functions only (up to the MAIN LOOP banner — no startup_checks, no loop).
 SRC=$(mktemp)
@@ -73,9 +71,7 @@ DROPPED='{"jsonrpc":"2.0","result":[{"pubkey":"UnstakedPubkey1111111111111111111
 STALE='{"jsonrpc":"2.0","result":[{"pubkey":"StakedPubkey111111111111111111111111111111","gossip":"10.0.0.2:8001"},{"pubkey":"UnstakedPubkey1111111111111111111111111111","gossip":"10.0.0.2:8001"}],"id":1}'
 INVALID='{"jsonrpc":"2.0","error":{"code":-32600,"message":"x"},"id":1}'
 
-echo "============================================="
-echo "  Gossip semantics unit tests (v0.6.2)"
-echo "============================================="
+title_banner "Gossip semantics unit tests (v0.6.2)"
 
 clear_mocks; set_mock "$TIER2_RPC" "$ACTIVE"; set_mock "$TIER3_RPC" "$ACTIVE"
 run_test "1. PRIMARY active (non-self endpoint) on T2+T3 → BLOCK" 1
@@ -108,8 +104,4 @@ run_test "9. T2 active / T3 dropped (conservative) → BLOCK" 1
 clear_mocks; set_mock "$TIER2_RPC" "$DROPPED"; set_mock "$TIER3_RPC" "$ACTIVE"
 run_test "10. T2 dropped / T3 active (conservative) → BLOCK" 1
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner
