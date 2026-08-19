@@ -38,6 +38,12 @@ for t in test_*.sh; do
     if bash "$t" > "$_suite_out" 2>&1; then
         if grep -q "❌" "$_suite_out"; then
             run_fail=$((run_fail+1)); failed="$failed $t(printed-FAIL-but-exit-0)"
+            # v0.7 (4.4, reviewer): print the offending line(s) — diagnosis, not just detection.
+            # The daemons under test ALSO print ❌ (e.g. "❌ FALSE POSITIVE" on healthy detector
+            # paths — the full site list: tests/HARNESS.md); if the lines below are captured
+            # DAEMON output, the fix is to stub that suite's log/alert sinks — NEVER to suppress
+            # the suite's own output.
+            grep "❌" "$_suite_out" | head -3 | sed 's/^/      offending: /'
         else
             run_pass=$((run_pass+1))
         fi
