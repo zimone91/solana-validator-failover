@@ -1,7 +1,8 @@
 #!/bin/bash
-# v0.6.9 (H1): self-fence for the PROMOTED STANDBY. Drives the REAL ported functions (sourced from the
-# shipped script up to MAIN LOOP) on a simulated clock, with mocks ONLY at the I/O boundary (curl, date,
-# timeout, pgrep/kill, notifiers). The demote path runs the REAL bounded give_back_identity.
+# v0.6.9 (H1): self-fence for the PROMOTED STANDBY. Drives the REAL ported functions on a simulated
+# clock, with mocks ONLY at the I/O boundary (curl, timeout, pgrep/kill, notifiers).
+# harness: tests/lib/harness.sh — load_seam, harness_clock_shims, ok/bad+banners (this suite's sink
+# subset + alert capture stay local). The demote path runs the REAL bounded give_back_identity.
 #   (H1-a) frozen confirmed slot fires at >= SELF_FENCE_ISOLATION_SECS (30) — not before
 #   (H1-b) no-answer fires ONLY with a baseline (fresh start never arms); with baseline fires at >= 30s
 #   (H1-c) N6 sustained + B2 hysteresis: 1 healthy dip does NOT clear; K consecutive healthy clears;
@@ -17,18 +18,10 @@
 #          under STANDBY_SELF_FENCE (v0.6.8 baseline had zero check_self_fence references)
 
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+V068="$HARNESS_DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-V068="$DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby script not found"; exit 1; }
-
-SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
-# shellcheck disable=SC1090
-source "$SRC"; rm -f "$SRC"
+load_seam "$STANDBY"
 
 # --- fixtures / I/O-boundary mocks ---
 STAKED_PUBKEY="StakedPubkey111111111111111111111111111111"
@@ -52,8 +45,7 @@ send_telegram(){ return 0; }; send_webhook(){ :; }
 save_state(){ :; }   # persistence exercised in test_baseline_persistence.sh
 sleep(){ :; }        # simulated clock only (see date below)
 _SIM_NOW=1700000000
-date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
-mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
+harness_clock_shims
 
 # alert capture (all pages routed here)
 _alert_log=""
@@ -101,9 +93,7 @@ reset_all(){
 # keep the frozen-slot path quiet while exercising N6 (slot advancing → healthy)
 adv(){ _last_confirmed_slot=$(( _LOCAL_SLOT - 50 )); _last_confirmed_advance_ts=$_SIM_NOW; }
 
-echo "============================================="
-echo "  STANDBY self-fence for the promoted holder (v0.6.9 H1)"
-echo "============================================="
+title_banner "STANDBY self-fence for the promoted holder (v0.6.9 H1)"
 
 # ── (H1-a) frozen slot: fires at >= 30s, not before ──────────────────────────────────────────
 echo ""; echo "─── (H1-a) frozen confirmed slot → demote at >= ${SELF_FENCE_ISOLATION_SECS}s (not before) ───"
@@ -219,8 +209,4 @@ else
     ok "(H1-g2) v0.6.8 baseline not present to compare (skipped)"
 fi
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

@@ -9,18 +9,11 @@
 # "now - FIRST_DELINQUENT_TIME", i.e. the v0.6.6 line) makes the spare take ~one liveness interval
 # after silence (overlap) — which the (1) assertion then FAILS to confirm. (4) asserts that collapse.
 #
-# Method = the project's source-seam pattern (same as test_crossnode_timing.sh): source the script
-# truncated at MAIN LOOP in a subshell with date()-> a simulated clock and curl/liveness/notifiers
-# mocked. No script edits — the real attempt_takeover (incl. the byte-identical liveness fence) runs.
+# harness: tests/lib/harness.sh — harness_clock_shims, harness_silence_sinks, ok/bad+banners
+# (the sim's cut+source stays local: its revert mode sed-mutates the cut — moves onto mutate() in 4.2).
 
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby script not found"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 T0=1700000000        # non-zero clock origin (0 collides with the "timer unset" sentinel)
 DELAY=60             # TAKEOVER_DELAY under test
 FREEZE=100           # holder votes [t0, t0+FREEZE), then is silent — t0+FREEZE = ACTUAL silence
@@ -44,10 +37,8 @@ sim() {
   TAKEOVER_DELAY="$DELAY"; TAKEOVER_COOLDOWN=0; EXTERNAL_CONFIRM_THROTTLE=0
   VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_MIN_INTERVAL=10; VOTE_LIVENESS_EPSILON=2
   GOSSIP_VERIFY=false; DRY_RUN=false
-  date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
-  mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
-  log(){ :;}; log_info(){ :;}; log_warn(){ :;}; log_error(){ :;}
-  alert(){ :;}; alert_info(){ :;}; alert_warn(){ :;}; send_telegram(){ return 0;}; send_webhook(){ :;}
+  harness_clock_shims
+  harness_silence_sinks
   confirm_delinquency_external(){ return 0; }                 # externally CONFIRMED delinquent
   if [[ "$mode_live" == "silent" ]]; then
     # FROZEN from t0: staked lastVote constant, cluster tip advancing → liveness never "active".
@@ -71,9 +62,7 @@ sim() {
   ) ;
 }
 
-echo "============================================="
-echo "  N3 takeover-anchor (v0.6.7) — last-seen-voting"
-echo "============================================="
+title_banner "N3 takeover-anchor (v0.6.7) — last-seen-voting"
 echo ""
 echo "─── timeline: FIRST_DELINQUENT at t0; holder VOTES [t0,t0+${FREEZE}s) then SILENT; TAKEOVER_DELAY=${DELAY}s ───"
 
@@ -116,8 +105,4 @@ echo ""
   && ok "(4) REVERTED anchor takes only ${OLD_GAP}s after silence (< ${DELAY}s) → (1) collapses → non-vacuous" \
   || bad "(4) REVERTED anchor did NOT take early (gap=${OLD_GAP}s) — test would be vacuous"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

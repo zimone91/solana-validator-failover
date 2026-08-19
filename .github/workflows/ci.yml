@@ -68,14 +68,14 @@ jobs:
         run: cd tests && /bin/bash run_all.sh
 
   shellcheck:
-    name: shellcheck -S error · four shipped scripts
+    name: shellcheck -S error · four shipped scripts + test harness lib
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -S error solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh
+          shellcheck -S error solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh tests/lib/harness.sh
 
   facts:
     name: claims match reality (suite count, wall-clock/patsub pins, checksums)
