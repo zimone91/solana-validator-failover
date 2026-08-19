@@ -32,8 +32,11 @@ _suite_out=$(mktemp)
 for t in test_*.sh; do
     # Cross-check printed FAILs against the exit code: a suite that prints ❌ but exits 0 (a broken
     # tail, a stray exit 0) must count as FAILED, not pass silently.
+    # v0.7 (4.3): the grep is BARE ❌ — the contract is "❌ is reserved for failures in suite
+    # output"; a suite reporting non-failures must use a different marker (the v058 🐞 precedent).
+    # Named so after the reviewer found the old "❌ FAIL" literal made v058 an exception-by-phrasing.
     if bash "$t" > "$_suite_out" 2>&1; then
-        if grep -q "❌ FAIL" "$_suite_out"; then
+        if grep -q "❌" "$_suite_out"; then
             run_fail=$((run_fail+1)); failed="$failed $t(printed-FAIL-but-exit-0)"
         else
             run_pass=$((run_pass+1))
@@ -52,11 +55,27 @@ if [[ $(( run_pass + run_fail )) -ne $EXPECTED_SUITES ]]; then
 fi
 
 echo ""
-total=$(( parse_fail + run_fail + count_fail ))
+echo "═══ (3) sole-reader check: the freshness triple is read only via dump_freshness ═══"
+# Map §3.4 (the 4.0 GO condition), mechanical since 4.3: dump_freshness() in tests/lib/harness.sh
+# is the SOLE reader of _liveness_first_provider / _liveness_obs_since / _last_blind_end — suites
+# read named fields via `field "$(dump_freshness)" <name>` (priming WRITES in fixtures stay).
+# A $-dereference in a suite is a private parser of the triple = twin-drift inside the test bed
+# (the S-1 blocker class). Runs on both interpreters and locally (CI facts is Linux-only).
+solereader_fail=0
+if grep -n -E '[$][{]?(_liveness_first_provider|_liveness_obs_since|_last_blind_end)' test_*.sh; then
+    echo "  SOLE-READER VIOLATION (sites above): suites must not dereference the freshness triple —"
+    echo "  dump_freshness (tests/lib/harness.sh) is its only reader: field \"\$(dump_freshness)\" <vantage|observed_since|blind_until>"
+    solereader_fail=1
+else
+    echo "  clean: no suite dereferences the triple outside tests/lib/harness.sh"
+fi
+
+echo ""
+total=$(( parse_fail + run_fail + count_fail + solereader_fail ))
 if [[ $total -eq 0 ]]; then
     echo "═══ GREEN — $run_pass/$run_pass suites, parse-clean on $(bash --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1) ═══"
     exit 0
 else
-    echo "═══ NOT GREEN — $parse_fail parse fail(s), $run_fail run fail(s) ═══"
+    echo "═══ NOT GREEN — $parse_fail parse fail(s), $run_fail run fail(s), $solereader_fail sole-reader fail(s) ═══"
     exit 1
 fi

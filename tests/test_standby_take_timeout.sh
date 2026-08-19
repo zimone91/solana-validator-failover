@@ -13,8 +13,8 @@
 #         proves T-a/T-c observe the fix, not an accident
 #   (T-g) structural: v0.6.8 baseline had ZERO bounded calls in take/give-back
 
-# harness: tests/lib/harness.sh — ok/bad+banners, paths, field. scenario()'s cut + shims stay local;
-# the T-f strip control stays on plain sed (not one of the §5.3 four — a 4.3/4.4 mutate() candidate).
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, field, mutate (4.3: the T-f strip control
+# cannot silently no-op if the H4 bound's text moves). scenario()'s cut + shims stay local.
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
@@ -91,7 +91,8 @@ else
 fi
 
 # ── (T-b) take wedged, NOT applied → TAKEOVER FAILED, episode intact (N9), no kill ────────────
-echo ""; echo "─── (T-b) take rc 124, NOT applied → TAKEOVER FAILED ❌, episode state intact (N9) ───"
+# banner says "TAKEOVER FAILED" without the daemon's ❌: run_all reserves ❌ in suite output for failures (the 4.3 census found this banner)
+echo ""; echo "─── (T-b) take rc 124, NOT applied → TAKEOVER FAILED, episode state intact (N9) ───"
 out=$(scenario "$STANDBY" take 124 124 0 0 true)
 if [[ "$(field "$out" rc)" == "1" && "$out" == *"TAKEOVER FAILED ❌"* \
       && "$(field "$out" window)" == "1111111111" && "$(field "$out" first)" == "12345" \
@@ -138,7 +139,7 @@ fi
 # ── (T-f) NON-VACUOUS control: strip the bound → the wedge observables disappear ─────────────
 echo ""; echo "─── (T-f) control: sed-strip 'timeout -k 5 \"\$SETIDENTITY_TIMEOUT\"' → no wedge detection ───"
 PATCHED=$(mktemp)
-sed 's/timeout -k 5 "\$SETIDENTITY_TIMEOUT" //g' "$STANDBY" > "$PATCHED"
+mutate "$STANDBY" 's/timeout -k 5 "\$SETIDENTITY_TIMEOUT" //g' "$PATCHED"
 # same T-a inputs — but with the bound stripped the CLI runs unwrapped: our `timeout` mock is never hit,
 # so the rc-124 wedge can never be observed (the pre-H4 blindness). The take still "succeeds" via the
 # re-read, but WITHOUT the ⚠️ wedged warn — the fix's observable vanishes → T-a is non-vacuous.

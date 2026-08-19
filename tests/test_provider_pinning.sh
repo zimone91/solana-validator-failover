@@ -37,8 +37,9 @@
 #        converges to → FROZEN renders normally, even across a provider flip (one extra interval)
 
 # harness: tests/lib/harness.sh — ok/bad+banners, paths, extract_twin (the g1/g2 parity hunks
-# cannot silently compare two empties). The mono-only clock (no date interceptor — not the pair),
-# log subset, prim_sim's cut and the direct freshness-field reads stay local (reads move in 4.3).
+# cannot silently compare two empties), field+dump_freshness (4.3: every read of the pin goes
+# through the sole reader — `field "$(dump_freshness)" vantage`; priming WRITES stay direct).
+# The mono-only clock (no date interceptor — not the pair), log subset, prim_sim's cut stay local.
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
@@ -103,9 +104,10 @@ reset_ep
 _SIM_NOW=100000
 _T2_UP=1; _T2_LV=1000; _T2_TIP=100000
 staked_is_actively_voting >/dev/null; r=$?
-[[ $r -eq 2 && "$_liveness_first_provider" == "T2" ]] \
-    && ok "(a0) first sample captured AND pinned to T2 (rc=2, pin=$_liveness_first_provider)" \
-    || bad "(a0) first sample rc=$r pin='$_liveness_first_provider' (want rc=2 pin=T2)"
+pin=$(field "$(dump_freshness)" vantage)
+[[ $r -eq 2 && "$pin" == "T2" ]] \
+    && ok "(a0) first sample captured AND pinned to T2 (rc=2, pin=$pin)" \
+    || bad "(a0) first sample rc=$r pin='$pin' (want rc=2 pin=T2)"
 
 _SIM_NOW=100012                       # 12s later (> MIN_INTERVAL)
 _T2_UP=0                              # T2 hiccups exactly at sample #2 — needs no misconfiguration
@@ -113,9 +115,10 @@ _T3_LV=1001; _T3_TIP=100001           # T3 lags 29 slots: true 1030/100030 reads
 staked_is_actively_voting; r=$?
 [[ $r -eq 2 ]] && ok "(a1) provider flip on a frozen-candidate → rc=2 (cannot determine, no take)" \
                || bad "(a1) rc=$r (want 2) — a mixed pair rendered a verdict"
-[[ "$_liveness_first_provider" == "T3" ]] \
+pin=$(field "$(dump_freshness)" vantage)
+[[ "$pin" == "T3" ]] \
     && ok "(a1) re-pinned to the answering provider (pin=T3)" \
-    || bad "(a1) pin='$_liveness_first_provider' (want T3)"
+    || bad "(a1) pin='$pin' (want T3)"
 [[ "$_liveness_first_vote" == "1000" ]] \
     && ok "(a1) baseline kept at min(1000,1001)=1000 (min rule)" \
     || bad "(a1) baseline='$_liveness_first_vote' (want 1000)"
@@ -148,9 +151,10 @@ _SIM_NOW=100012; _T2_UP=0; _T3_LV=1001; _T3_TIP=100001
 staked_is_actively_voting >/dev/null                     # mismatch → re-pin T3 @100012
 _SIM_NOW=100021; _T3_LV=1001; _T3_TIP=100010             # 9s after re-pin: too soon
 staked_is_actively_voting; r=$?
-[[ $r -eq 2 && "$_liveness_first_ts" == "100012" && "$_liveness_first_provider" == "T3" ]] \
+pin=$(field "$(dump_freshness)" vantage)
+[[ $r -eq 2 && "$_liveness_first_ts" == "100012" && "$pin" == "T3" ]] \
     && ok "(b1) pre-interval probe: rc=2 and the re-pin undisturbed (ts=100012 pin=T3)" \
-    || bad "(b1) rc=$r ts=$_liveness_first_ts pin=$_liveness_first_provider (want 2/100012/T3)"
+    || bad "(b1) rc=$r ts=$_liveness_first_ts pin=$pin (want 2/100012/T3)"
 _SIM_NOW=100022; _T3_LV=1001; _T3_TIP=100012             # exactly MIN_INTERVAL after the re-pin
 staked_is_actively_voting; r=$?
 [[ $r -eq 1 ]] && ok "(b2) same-provider pair converges: FROZEN (rc=1) at re-pin + exactly ${VOTE_LIVENESS_MIN_INTERVAL}s — worst case ONE extra interval per flip" \
@@ -195,9 +199,10 @@ _SIM_NOW=300012; _T2_UP=0; _T3_LV=3100; _T3_TIP=300100   # even the lagging vant
 staked_is_actively_voting; r=$?
 [[ $r -eq 0 ]] && ok "(d1) T2→T3 flip with Δ=100 > ε → immediate VOTING (rc=0), no re-pin detour" \
                || bad "(d1) rc=$r (want 0) — a provider flip blocked a LIFE SIGN"
-[[ "$_liveness_first_provider" == "T3" && "$_liveness_first_vote" == "3100" ]] \
+pin=$(field "$(dump_freshness)" vantage)
+[[ "$pin" == "T3" && "$_liveness_first_vote" == "3100" ]] \
     && ok "(d1) VOTING re-base adopted the current sample and its pin (base=3100 pin=T3)" \
-    || bad "(d1) post-VOTING state wrong (base=$_liveness_first_vote pin=$_liveness_first_provider)"
+    || bad "(d1) post-VOTING state wrong (base=$_liveness_first_vote pin=$pin)"
 
 # (d2) through the REAL attempt_takeover: the VOTING verdict must re-anchor N3
 # (LAST_LIVENESS_ACTIVE_TIME) — a mixed pair must never hide the holder's life sign from the anchor.
@@ -235,9 +240,10 @@ attempt_takeover >/dev/null
 echo ""; echo "─── (e) episode lifecycle: resets clear the pin, prefetch re-pins ───"
 _liveness_first_provider="T3"; _liveness_first_vote=123
 window_reset
-[[ -z "$_liveness_first_provider" && -z "$_liveness_first_vote" ]] \
+pin=$(field "$(dump_freshness)" vantage)
+[[ -z "$pin" && -z "$_liveness_first_vote" ]] \
     && ok "(e1) window_reset cleared the provider pin with the sample" \
-    || bad "(e1) stale pin survived window_reset (pin='$_liveness_first_provider')"
+    || bad "(e1) stale pin survived window_reset (pin='$pin')"
 
 # In-delay episode → the attempt_takeover PREFETCH must capture and pin the first sample.
 _SIM_NOW=500000
@@ -249,9 +255,10 @@ reset_ep
 _T2_UP=1; _T2_LV=7000; _T2_TIP=700000
 _took=0
 attempt_takeover >/dev/null
-[[ $_took -eq 0 && "$_liveness_first_vote" == "7000" && "$_liveness_first_provider" == "T2" && "$_liveness_first_ts" == "500000" ]] \
+pin=$(field "$(dump_freshness)" vantage)
+[[ $_took -eq 0 && "$_liveness_first_vote" == "7000" && "$pin" == "T2" && "$_liveness_first_ts" == "500000" ]] \
     && ok "(e2) prefetch captured AND pinned the first sample (vote=7000 pin=T2 ts=500000)" \
-    || bad "(e2) prefetch state wrong (vote=$_liveness_first_vote pin='$_liveness_first_provider' ts=$_liveness_first_ts took=$_took)"
+    || bad "(e2) prefetch state wrong (vote=$_liveness_first_vote pin='$pin' ts=$_liveness_first_ts took=$_took)"
 
 # The main-loop inline episode-clear sits PAST the seam (unsourceable) — assert textually that it
 # drops the provider pin together with the vote/tip sample.
@@ -281,15 +288,16 @@ prim_sim() {
     _T3_UP=1; _T3_LV=1000; _T3_TIP=100000
     _liveness_first_vote=""; _liveness_first_tip=""; _liveness_first_ts=0; _liveness_first_provider=""
     staked_is_actively_voting >/dev/null; rc0=$?
-    pin0="$_liveness_first_provider"
+    pin0="$(field "$(dump_freshness)" vantage)"
     _SIM_NOW=100012; _T2_UP=0; _T3_LV=1001; _T3_TIP=100001    # the measured A2 pair
     staked_is_actively_voting >/dev/null; rc1=$?
-    pin1="$_liveness_first_provider"; base1="$_liveness_first_vote"
+    pin1="$(field "$(dump_freshness)" vantage)"; base1="$_liveness_first_vote"
     _SIM_NOW=100022; _T3_LV=1001; _T3_TIP=100012              # T3/T3, genuinely frozen holder
     staked_is_actively_voting >/dev/null; rc2=$?
     reset_recovery_liveness
+    pinreset="$(field "$(dump_freshness)" vantage)"
     printf 'rc0=%s pin0=%s rc1=%s pin1=%s base1=%s rc2=%s pinreset=%s\n' \
-        "$rc0" "$pin0" "$rc1" "$pin1" "$base1" "$rc2" "${_liveness_first_provider:-EMPTY}"
+        "$rc0" "$pin0" "$rc1" "$pin1" "$base1" "$rc2" "${pinreset:-EMPTY}"
     )
 }
 PRIM_OUT=$(prim_sim)
@@ -401,9 +409,10 @@ staked_is_actively_voting >/dev/null; c0=$?
     || bad "(i1) rc=$c0 (want 1) — ε=0 broke the plain frozen verdict"
 _SIM_NOW=870024; _T2_UP=0; _T3_LV=7777; _T3_TIP=910020     # T2 dies; T3 reports the SAME fixed number
 staked_is_actively_voting >/dev/null; c1=$?
-[[ $c1 -eq 2 && "$_liveness_first_provider" == "T3" && "$_liveness_first_vote" == "7777" ]] \
+pin=$(field "$(dump_freshness)" vantage)
+[[ $c1 -eq 2 && "$pin" == "T3" && "$_liveness_first_vote" == "7777" ]] \
     && ok "(i2) provider flip re-pins (rc=2, pin=T3) and the min-rule baseline stays the fixed 7777" \
-    || bad "(i2) rc=$c1 pin='$_liveness_first_provider' base='$_liveness_first_vote' (want 2/T3/7777)"
+    || bad "(i2) rc=$c1 pin='$pin' base='$_liveness_first_vote' (want 2/T3/7777)"
 _SIM_NOW=870034; _T3_LV=7777; _T3_TIP=910030               # one interval after the re-pin
 staked_is_actively_voting >/dev/null; c2=$?
 [[ $c2 -eq 1 ]] \
