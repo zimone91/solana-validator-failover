@@ -218,10 +218,8 @@ done
 echo ""
 echo "─── (d) helper sanity: byte-identical twins + platform behavior ───"
 for FN in mono_now boot_id; do
-  P_DEF=$(sed -n "/^${FN}()/,/^}/p" "$PRIMARY")
-  S_DEF=$(sed -n "/^${FN}()/,/^}/p" "$STANDBY")
-  if [[ -n "$P_DEF" && "$P_DEF" == "$S_DEF" ]]; then
-      ok "(d) ${FN}() present in BOTH daemons and BYTE-IDENTICAL ($(printf '%s\n' "$P_DEF" | wc -l | tr -d ' ') lines)"
+  if extract_twin "^${FN}()" '^}' && [[ "$TWIN_P" == "$TWIN_S" ]]; then
+      ok "(d) ${FN}() present in BOTH daemons and BYTE-IDENTICAL ($(printf '%s\n' "$TWIN_P" | wc -l | tr -d ' ') lines)"
   else
       bad "(d) ${FN}() missing or DIVERGED between the daemons (twin-drift)"
   fi

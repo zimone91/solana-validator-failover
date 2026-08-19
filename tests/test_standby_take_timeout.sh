@@ -13,15 +13,12 @@
 #         proves T-a/T-c observe the fix, not an accident
 #   (T-g) structural: v0.6.8 baseline had ZERO bounded calls in take/give-back
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, field. scenario()'s cut + shims stay local;
+# the T-f strip control stays on plain sed (not one of the §5.3 four — a 4.3/4.4 mutate() candidate).
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-V068="$DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby script not found"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+V068="$HARNESS_DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
 
 # run one scenario in a fresh subshell against the given script copy; echo observables
 #   $1=script  $2=op (take|giveback)  $3=RC_SETID  $4=RC_ADD  $5=RC_REMOVE  $6=applied(1/0)  $7=hardstop(true/false)
@@ -82,11 +79,7 @@ scenario() {
         "$LAST_LIVENESS_ACTIVE_TIME" "$_liveness_first_vote" "$LAST_TAKEOVER_TIME" "$(cat "$ID_FILE")"
   )
 }
-field(){ printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d= -f2-; }
-
-echo "============================================="
-echo "  STANDBY take/give-back timeout handling (v0.6.9 H4)"
-echo "============================================="
+title_banner "STANDBY take/give-back timeout handling (v0.6.9 H4)"
 
 # ── (T-a) take wedged but APPLIED → success + warn ────────────────────────────────────────────
 echo ""; echo "─── (T-a) take set-identity rc 124 but APPLIED → TOOK STAKED ✅ + ⚠️ wedged warn ───"
@@ -167,8 +160,4 @@ else
     ok "(T-g) v0.6.8 baseline not present to compare (skipped)"
 fi
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

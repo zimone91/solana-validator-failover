@@ -14,15 +14,10 @@
 #   (EPS-fail) EPSILON=20, band=32                  → validate_numeric_config EXITS 1 (20*4 > 32)
 #   (EPS-skip) band=0                               → assert skipped (rc 0) even with a large EPSILON
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. Cut + sink subset + `date +%s` clock stay local.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$PRIMARY" && -f "$STANDBY" ]] || { echo "  ❌ scripts not found"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
 # shellcheck disable=SC1090
@@ -66,9 +61,7 @@ alert() { :; }
 healthy() { _CLUSTER_MAX=100000; _OWN_LV=99995; _LOCAL_SLOT=100000; adv; }      # vlag 5 <= 32
 overthr() { _CLUSTER_MAX=100100; _OWN_LV=100000; _OWN_ARRAY=delinquent; _LOCAL_SLOT=100100; adv; }  # vlag 100 > 32
 
-echo "============================================="
-echo "  PRIMARY N6 reset hysteresis + EPSILON<<band assert (v0.6.8 B2)"
-echo "============================================="
+title_banner "PRIMARY N6 reset hysteresis + EPSILON<<band assert (v0.6.8 B2)"
 
 # ── (H-a) one healthy dip must NOT clear an armed timer ────────────────────────────────────────
 echo ""; echo "─── (H-a) armed timer + ONE healthy dip → timer NOT cleared (healthy=1) ───"
@@ -154,8 +147,4 @@ eps_validate() {   # run validate_numeric_config in a fresh subshell sourcing th
     && ok "(EPS-skip) band=0 → assert skipped (operator opt-out), rc 0 even with EPSILON=20" \
     || bad "(EPS-skip) band=0 did not skip the assert (got $(eps_validate 20 0))"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

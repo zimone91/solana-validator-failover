@@ -10,13 +10,14 @@
 #   - ntfy Title header: NODE_NAME newlines/control chars are stripped (no HTTP header injection).
 # Non-vacuous: revert _html_escape / the jq webhook build / _header_sanitize → these assertions fail.
 
+# harness: tests/lib/harness.sh — ok/bad+banners, paths (DIR aliased: run_suite takes basenames so
+# its banner line stays byte-identical). Capture curl mock + per-script cut stay local.
+
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 command -v jq >/dev/null 2>&1 || { echo "  ❌ jq required for this test"; exit 1; }
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIR="$HARNESS_DIR"
 
 run_suite() {
     local SCRIPT="$1" LABEL="$2"
@@ -106,14 +107,8 @@ run_suite() {
     unset -f curl
 }
 
-echo "============================================="
-echo "  v0.6.5 (F5) notification/payload escaping"
-echo "============================================="
+title_banner "v0.6.5 (F5) notification/payload escaping"
 run_suite "solana-primary-failover.sh" "PRIMARY"
 run_suite "solana-standby-failover.sh" "STANDBY"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

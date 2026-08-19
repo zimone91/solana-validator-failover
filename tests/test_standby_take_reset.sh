@@ -11,16 +11,13 @@
 #   (R-c) NON-VACUOUS CONTROL: on a copy with the B1 `_selffence_reset` line stripped from take, the
 #         SAME inputs DO demote (the stale backdate fires) — proves the reset is load-bearing
 #   (R-d) structural: v0.6.8 take_staked_identity had no self-fence reset (the whole self-fence is new)
+#
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, field, mutate (the R-c strip control cannot
+# silently no-op). run_b1's cut + clock/sink shims stay local: capture subset, non-byte-identical pair.
 
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-V068="$DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby script not found"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+V068="$HARNESS_DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
 
 # Arm a stale votelag restore-pending (as load_state would from a prior staked tenure), do a REAL take,
 # then run the first self-fence cycle with a fresh catch-up lag. Echoes: take rc, the votelag flags
@@ -105,11 +102,7 @@ run_b1() {   # $1=script
     printf 'take_rc=%s|%s|demoted=%s|id=%s\n' "$take_rc" "$flags" "$demoted" "$(cat "$ID_FILE")"
   )
 }
-field(){ printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d= -f2-; }
-
-echo "============================================="
-echo "  STANDBY take → self-fence reset (v0.6.9 B1)"
-echo "============================================="
+title_banner "STANDBY take → self-fence reset (v0.6.9 B1)"
 
 echo ""; echo "─── (R-a)/(R-b) real take clears the stale votelag flags → no spurious self-fence ───"
 out=$(run_b1 "$STANDBY")
@@ -130,7 +123,7 @@ fi
 
 echo ""; echo "─── (R-c) NON-VACUOUS control: strip B1's reset from take → the stale backdate FIRES ───"
 PATCHED=$(mktemp)
-sed '/_selffence_reset   # v0.6.9 (B1): a FRESH staked tenure/d' "$STANDBY" > "$PATCHED"
+mutate "$STANDBY" '/_selffence_reset   # v0.6.9 (B1): a FRESH staked tenure/d' "$PATCHED"
 # sanity: the strip must have removed exactly the take-path reset (definition + demote reset stay)
 stripped=$(grep -c '_selffence_reset' "$PATCHED"); orig=$(grep -c '_selffence_reset' "$STANDBY")
 out=$(run_b1 "$PATCHED"); rm -f "$PATCHED"
@@ -149,8 +142,4 @@ else
     ok "(R-d) v0.6.8 baseline not present to compare (skipped)"
 fi
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

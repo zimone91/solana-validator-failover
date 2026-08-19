@@ -17,14 +17,15 @@
 # heartbeat_ping), which shellcheck can't see — silence the false "unused" reports.
 # shellcheck disable=SC2034
 
+# harness: tests/lib/harness.sh — ok/bad+banners, paths (DIR aliased: run_suite takes basenames so
+# its banner line stays byte-identical). Recorders, curl mock and per-script cut stay local.
+
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "  ❌ jq is required for this test"; exit 1; }
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIR="$HARNESS_DIR"
 
 # Per-call recorders. Files (not vars) because send_telegram calls curl inside $(...) (a subshell)
 # and heartbeat_ping backgrounds curl with & — both lose plain-variable mutations.
@@ -218,16 +219,10 @@ run_suite() {
     wait 2>/dev/null   # reap the slow background ping before leaving the suite
 }
 
-echo "============================================="
-echo "  v0.6.4 notification routing + heartbeat"
-echo "============================================="
+title_banner "v0.6.4 notification routing + heartbeat"
 run_suite "solana-primary-failover.sh" "PRIMARY"
 run_suite "solana-standby-failover.sh" "STANDBY"
 
 rm -f "$TG_CALLS" "$WH_CALLS" "$HB_CALLS"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]]
+results_banner

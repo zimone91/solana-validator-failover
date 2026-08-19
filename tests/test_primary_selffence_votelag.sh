@@ -16,15 +16,12 @@
 #                non-vacuous: revert the lag source (cluster_max→slot) and it DOES fire (the old bug)
 #   (N9-retry)   demote FAILS                                → timer stays armed, re-attempts next cycle
 #   (N9-storm)   demote SUCCEEDS (incl. DRY_RUN)             → reset-after → fires once, no re-fire storm
+#
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, mutate+seam_cut (the N8-skew revert control
+# cannot silently no-op). The printing log captures + the subshell's sink subset stay local.
 
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$PRIMARY" ]] || { echo "  ❌ primary not found at $PRIMARY"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
 # shellcheck disable=SC1090
@@ -74,9 +71,7 @@ curl() {
 NOW() { date +%s; }
 adv() { _last_confirmed_slot=$(( _LOCAL_SLOT - 50 )); _last_confirmed_advance_ts=$(NOW); }   # slot advancing → check (1) clears
 
-echo "============================================="
-echo "  PRIMARY own-vote-lag self-fence (v0.6.7 N6/N8/N9)"
-echo "============================================="
+title_banner "PRIMARY own-vote-lag self-fence (v0.6.7 N6/N8/N9)"
 
 # ── (VL-e) FIRST with the REAL switch_to_unstaked → verify DRY_RUN log-only ───────────────────
 echo ""; echo "─── (VL-e) DRY_RUN + sustained lag → log only, no swap (real switch_to_unstaked) ───"
@@ -164,7 +159,7 @@ old_lag=$(( _LOCAL_SLOT - _OWN_LV ))   # what the rc.2 (confirmed-tip vs own) co
 # Non-vacuous: revert the lag SOURCE (cluster_max → slot, the rc.2 form) and confirm it FIRES on this data.
 _n8rev=$(
   set +e
-  SRC2=$(mktemp); sed -n '1,/MAIN LOOP/p' "$PRIMARY" | sed 's/cluster_max - own_lv/slot - own_lv/' > "$SRC2"; source "$SRC2"; rm -f "$SRC2"
+  SRC2=$(mktemp); mutate "$(seam_cut "$PRIMARY")" 's/cluster_max - own_lv/slot - own_lv/' "$SRC2"; source "$SRC2"; rm -f "$SRC2"
   mono_now() { date +%s; }   # v0.7 (Block 3): re-sourced daemon redefines the helper — re-shim to the scenario clock
   STAKED_PUBKEY="S"; UNSTAKED_PUBKEY="U"; VOTE_PUBKEY="VotePubkey1111111111111111111111111111111"
   LOCAL_RPC="http://mock"; DRY_RUN=false; CURRENT_IDENTITY="$STAKED_PUBKEY"; TG_ENABLED=false
@@ -210,8 +205,4 @@ prep_n9; check_self_fence_isolation    # cycle 3: same → no fire
     && ok "(N9-storm) successful/DRY_RUN demote resets-after → fires once, no re-fire storm ($_okcalls call over 3 cycles)" \
     || bad "(N9-storm) re-fire storm or no fire ($_okcalls calls)"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

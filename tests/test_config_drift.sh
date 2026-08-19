@@ -23,36 +23,15 @@
 # equal-to-default is silent either way. PRIMARY_SELF_FENCE / STANDBY_SELF_FENCE /
 # VOTE_LIVENESS_VERIFY are excluded from the table (fatal-or-page elsewhere).
 
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, drift_out (byte-kept in the lib),
+# extract_twin (the f5/f6 parity extractions cannot silently compare two empties). The (g1)
+# neutered-announce control's inline cut stays local.
+
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$PRIMARY" && -f "$STANDBY" ]] || { echo "  ❌ scripts not found"; exit 1; }
-
-# Recorded [config-drift] output of the REAL announce_config_drift under the given VAR=val
-# overrides. Sources the shipped script up to the MAIN LOOP marker (defaults + functions, no loop),
-# then records log_warn verbatim on stdout. log_info/log_error silenced.
-drift_out() {  # $1=script ; rest=VAR=val overrides
-    local script="$1"; shift
-    (
-        SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$script" > "$SRC"
-        # shellcheck disable=SC1090
-        source "$SRC" 2>/dev/null; rm -f "$SRC"
-        log_info(){ :; }; log_error(){ :; }
-        log_warn(){ printf '%s\n' "$*"; }
-        for kv in "$@"; do eval "$kv"; done
-        announce_config_drift
-    )
-}
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 count_drift() { printf '%s\n' "$1" | grep -c '\[config-drift\]'; }
 
-echo "============================================="
-echo "  Safety-config drift announcement (v0.7 Block 3 slice 3.5)"
-echo "============================================="
+title_banner "Safety-config drift announcement (v0.7 Block 3 slice 3.5)"
 
 # ── (a) THE MOTIVATING CASE: a ≤ v0.6.10 env's VOTE_LIVENESS_EPSILON=2 on the standby ───────────
 echo ""; echo "─── (a) VOTE_LIVENESS_EPSILON=2 (the ≤ v0.6.10 PRIMARY installer env (the standby case here is synthetic — old standby wizards never wrote the knob)) → exactly one announce ───"
@@ -186,17 +165,13 @@ out=$(drift_out "$STANDBY" 'RECOVERY_DELAY=60')
                 || bad "(f4) STANDBY announced a PRIMARY-only knob: $out"
 # Structural twin parity (like test_provider_pinning (g)): the _drift_check body and the shared
 # knob table must be BYTE-IDENTICAL across the daemons; only the role tables differ.
-P_FN=$(sed -n '/^_drift_check() {/,/^}$/p' "$PRIMARY")
-S_FN=$(sed -n '/^_drift_check() {/,/^}$/p' "$STANDBY")
-if [[ -n "$P_FN" && "$P_FN" == "$S_FN" ]]; then
-    ok "(f5) _drift_check body byte-identical in both daemons ($(printf '%s\n' "$P_FN" | wc -l | tr -d ' ') lines)"
+if extract_twin '^_drift_check() {' '^}$' && [[ "$TWIN_P" == "$TWIN_S" ]]; then
+    ok "(f5) _drift_check body byte-identical in both daemons ($(printf '%s\n' "$TWIN_P" | wc -l | tr -d ' ') lines)"
 else
     bad "(f5) _drift_check missing or DIVERGED between the daemons"
 fi
-P_TBL=$(sed -n '/config-drift\] shared safety-knob table/,/config-drift\] end shared table/p' "$PRIMARY")
-S_TBL=$(sed -n '/config-drift\] shared safety-knob table/,/config-drift\] end shared table/p' "$STANDBY")
-if [[ -n "$P_TBL" && "$P_TBL" == "$S_TBL" ]]; then
-    ok "(f6) shared knob table byte-identical in both daemons ($(printf '%s\n' "$P_TBL" | wc -l | tr -d ' ') lines)"
+if extract_twin 'config-drift\] shared safety-knob table' 'config-drift\] end shared table' && [[ "$TWIN_P" == "$TWIN_S" ]]; then
+    ok "(f6) shared knob table byte-identical in both daemons ($(printf '%s\n' "$TWIN_P" | wc -l | tr -d ' ') lines)"
 else
     bad "(f6) shared knob table missing or DIVERGED between the daemons"
 fi
@@ -239,8 +214,4 @@ for script in "$PRIMARY" "$STANDBY"; do
     fi
 done
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

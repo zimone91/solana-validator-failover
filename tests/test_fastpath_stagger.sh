@@ -17,21 +17,16 @@
 #   (G-control) NON-VACUOUS: BACKUP with floor 0 (enforcement reverted) → fast-takes at 0
 #   (G-disabled) _fastpath_disabled set → no fast-take regardless of elapsed
 
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. Cut + sink subset + `date +%s` clock stay local.
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
 # shellcheck disable=SC1090
 source "$SRC"; rm -f "$SRC"
 mono_now() { date +%s; }   # v0.7 (Block 3): tests prime timers via `date +%s` — keep the mono helper on the same clock
 log_info() { :; }; log_warn() { :; }; log_error() { :; }; alert_warn() { :; }
 
-echo "============================================="
-echo "  Option A stagger enforcement (v0.6.8 S1)"
-echo "============================================="
+title_banner "Option A stagger enforcement (v0.6.8 S1)"
 
 echo ""; echo "─── _fastpath_compute_stagger ───"
 FASTPATH_STAGGER_SECS=0; WITNESS_FASTPATH_FIRST_SPARE=false   # F-B: BACKUP-role default; the STANDBY opts in below
@@ -110,8 +105,4 @@ _disabled_take=$( _take_calls=0; _fastpath_stagger_floor=0; _fastpath_disabled="
     attempt_takeover >/dev/null 2>&1; echo "$_take_calls" )
 [[ "$_disabled_take" == "0" ]] && ok "(G-disabled) _fastpath_disabled set → no fast-take at any elapsed (fail-closed)" || bad "(G-disabled) fast-took while disabled ($_disabled_take)"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

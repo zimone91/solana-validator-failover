@@ -11,17 +11,12 @@
 #   (S-e) role defaults DIFFER between the shipped daemons (state-primary vs state-standby)
 #   (S-f) NON-VACUOUS: v0.6.8 defaults were IDENTICAL (.../state on both) — the clobber M10 fixes
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. run_load's cut + sink subset stay local.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-STANDBY="$DIR/solana-standby-failover.sh"
-V068P="$DIR/../../0.6.8/failover-v0.6.8/solana-primary-failover.sh"
-V068S="$DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
-[[ -f "$PRIMARY" && -f "$STANDBY" ]] || { echo "  ❌ scripts not found"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+V068P="$HARNESS_DIR/../../0.6.8/failover-v0.6.8/solana-primary-failover.sh"
+V068S="$HARNESS_DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
 
 # run load_state from the given script with STATE_FILE=$2; echoes restored key var + file layout
 run_load() {   # $1=script $2=state_file $3=key(LAST_SWITCH_TIME|LAST_TAKEOVER_TIME) $4=default_state_file(opt; =$2)
@@ -43,9 +38,7 @@ run_load() {   # $1=script $2=state_file $3=key(LAST_SWITCH_TIME|LAST_TAKEOVER_T
   )
 }
 
-echo "============================================="
-echo "  Role-specific STATE_FILE + legacy migration (v0.6.9 M10)"
-echo "============================================="
+title_banner "Role-specific STATE_FILE + legacy migration (v0.6.9 M10)"
 
 for SCRIPT in "$PRIMARY" "$STANDBY"; do
   if [[ "$SCRIPT" == "$PRIMARY" ]]; then ROLE=primary; KEY=LAST_SWITCH_TIME; else ROLE=standby; KEY=LAST_TAKEOVER_TIME; fi
@@ -120,8 +113,4 @@ else
     ok "(S-f) v0.6.8 baseline not present to compare (skipped)"
 fi
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

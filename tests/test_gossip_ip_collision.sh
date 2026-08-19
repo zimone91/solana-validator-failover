@@ -7,14 +7,11 @@
 # DOUBLE-SIGN. v0.6.2 (C3) compares the full ip:port → different endpoint → BLOCK.
 # Sources the real check_primary_dropped_identity so it tests shipped code.
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. The md5-keyed curl dispatcher + printing
+# log shadows + cut stay local.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby script not found at $STANDBY"; exit 1; }
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 SRC=$(mktemp)
 sed -n '1,/MAIN LOOP/p' "$STANDBY" > "$SRC"
@@ -44,9 +41,7 @@ export -f curl; export MOCKDIR
 set_mock()  { local key; key=$(echo -n "$1" | md5sum | cut -d' ' -f1); echo "$2" > "$MOCKDIR/$key"; }
 clear_mocks() { rm -f "$MOCKDIR"/*; }
 
-echo "============================================="
-echo "  F3: shared-IP / different-port collision"
-echo "============================================="
+title_banner "F3: shared-IP / different-port collision"
 
 # Live PRIMARY (staked) on 10.0.0.5:8001; we (unstaked STANDBY) on 10.0.0.5:8101 — same IP.
 COLLISION='{"jsonrpc":"2.0","result":[{"pubkey":"StakedPubkey111111111111111111111111111111","gossip":"10.0.0.5:8001"},{"pubkey":"UnstakedPubkey1111111111111111111111111111","gossip":"10.0.0.5:8101"}],"id":1}'
@@ -76,8 +71,4 @@ echo ""
 [[ $rc -eq 0 ]] && ok "genuine self endpoint (exact ip:port match) → ALLOW (rc=$rc)" \
                 || bad "genuine self match wrongly blocked (rc=$rc)"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

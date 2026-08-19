@@ -10,14 +10,10 @@
 #   - a fully-valid default config passes (exit 0)
 # Non-vacuous: revert validate_numeric_config (no-op) → the rejection cases return 0 and FAIL.
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths. rc_of/norm_of subshell cuts + sink subsets stay local.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY="$DIR/solana-primary-failover.sh"
-STANDBY="$DIR/solana-standby-failover.sh"
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 # Exit code of validate_numeric_config under the given VAR=val overrides. The inner ( ) contains the
 # `exit 1` a bad knob triggers, so the outer command substitution still reaches `echo $?`.
@@ -47,9 +43,7 @@ norm_of() {  # $1=script $2=varname ; rest=overrides
     )
 }
 
-echo "============================================="
-echo "  F4: numeric config validation"
-echo "============================================="
+title_banner "F4: numeric config validation"
 
 # --- valid defaults pass ---
 [[ "$(rc_of "$PRIMARY")" == "0" ]] && ok "PRIMARY: default config passes" || bad "PRIMARY: default config rejected"
@@ -76,8 +70,4 @@ echo "============================================="
     && ok "STANDBY: short TAKEOVER_DELAY allowed when vote-liveness OFF (emergency path)" \
     || bad "STANDBY: short TAKEOVER_DELAY blocked even unfenced"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

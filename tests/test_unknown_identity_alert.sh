@@ -12,15 +12,10 @@
 # Non-vacuous: revert the branch to the old `log_warn "Unknown identity: …"` one-liner → the seam
 # anchor vanishes → (0) fails; the alert counts also collapse.
 
+# harness: tests/lib/harness.sh — ok/bad + paths ONLY (map hazard 13: this suite's comment-anchor
+# seams migrate LAST or never; banners, RESULTS tail and the seam extractions stay untouched).
 set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$STANDBY" && -f "$PRIMARY" ]] || { echo "  ❌ missing daemon script(s)"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 echo "============================================="
 echo "  Unknown-identity critical paging"

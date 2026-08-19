@@ -6,28 +6,27 @@
 # both deploy scripts AND both env templates. (The interactive deploy flow needs root + a live
 # validator, so it can't run headless; the seam is the unit-testable slice.)
 
-set +e
-PASS=0; FAIL=0
-ok()  { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, extract_region (the daemon M6 seam — sed
+# byte-faithful to the old awk-with-exit, verified — and the 7 installer-file anchors against
+# deploy-*.sh: none can silently extract empty). The grep-appended prompt lines stay greps.
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEPLOY_STANDBY="$DIR/deploy-failover-standby.sh"
-DEPLOY_PRIMARY="$DIR/deploy-failover.sh"
-ENV_STANDBY="$DIR/failover-standby.env.example"
-ENV_PRIMARY="$DIR/failover.env.example"
+set +e
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+DEPLOY_STANDBY="$HARNESS_DIR/deploy-failover-standby.sh"
+DEPLOY_PRIMARY="$HARNESS_DIR/deploy-failover.sh"
+ENV_STANDBY="$HARNESS_DIR/failover-standby.env.example"
+ENV_PRIMARY="$HARNESS_DIR/failover.env.example"
 for f in "$DEPLOY_STANDBY" "$DEPLOY_PRIMARY" "$ENV_STANDBY" "$ENV_PRIMARY"; do
   [[ -f "$f" ]] || { echo "  ❌ missing $f"; exit 1; }
 done
 
-echo "============================================="
-echo "  Installer guardrails (v0.6.7)"
-echo "============================================="
+title_banner "Installer guardrails (v0.6.7)"
 echo ""
 
 # ── Source the testable seam: the REC_* block + warn fn, from "^REC_EXPECTED..." to the fn's "^}". ──
 RED=$'\033[0;31m'; NC=$'\033[0m'   # the warn fn references these (defined at the top of the deploy script)
-eval "$(sed -n '/^REC_EXPECTED_PRIMARY_SELF_FENCE_SECS=/,/^}$/p' "$DEPLOY_STANDBY")"
+_rec_seam=$(extract_region "$DEPLOY_STANDBY" '^REC_EXPECTED_PRIMARY_SELF_FENCE_SECS=' '^}$') || bad "REC_* seam extraction came back EMPTY"
+eval "$_rec_seam"
 
 echo "─── REC_* single source of truth ───"
 # (1) REC_TAKEOVER_DELAY is DERIVED from EXPECTED + MARGIN (not a hardcoded 60), and equals 60 by default.
@@ -103,7 +102,7 @@ grep -qF 'FAILOVER_ROLE=${CFG_ROLE}' "$DEPLOY_STANDBY" && ok "(11b) standby depl
 grep -qE '^FAILOVER_ROLE=' "$ENV_STANDBY"              && ok "(12b) standby env: FAILOVER_ROLE present"   || bad "(12b) standby env missing FAILOVER_ROLE"
 
 # ═══════════════════════ v0.6.9 (TASK-v0.6.9): M6 / M7 / M8 installer guardrails ═══════════════════════
-STANDBY_SCRIPT="$DIR/solana-standby-failover.sh"
+STANDBY_SCRIPT="$STANDBY"
 
 echo ""
 echo "─── (M6) GIVE_BACK_MODE=auto trap removed ───"
@@ -117,7 +116,7 @@ fi
 m6_out=$(
   set +e
   SEAM=$(mktemp)
-  awk '/# v0\.6\.9 \(M6\): GIVE_BACK_MODE=auto/ {p=1} p {print} p && /^    fi$/ {exit}' "$STANDBY_SCRIPT" > "$SEAM"
+  extract_region "$STANDBY_SCRIPT" '# v0\.6\.9 (M6): GIVE_BACK_MODE=auto' '^    fi$' > "$SEAM"
   W=0; log_warn(){ W=$((W+1)); }; alert_warn(){ W=$((W+1)); }
   GIVE_BACK_MODE="auto"
   # shellcheck disable=SC1090
@@ -134,7 +133,7 @@ echo "─── (M7) start-the-service-you-stopped prompt ───"
 m7_out=$(
   set +e
   SEAM=$(mktemp)
-  sed -n '/^offer_start_service() {/,/^}$/p' "$DEPLOY_STANDBY" > "$SEAM"
+  extract_region "$DEPLOY_STANDBY" '^offer_start_service() {' '^}$' > "$SEAM"
   BOLD=""; NC=""; YELLOW=""
   ok(){ :; }; warn(){ :; }
   SYS=0; systemctl(){ SYS=$((SYS+1)); return 0; }
@@ -174,7 +173,7 @@ echo "─── (M8) equal-tier re-prompt loop ───"
 m8_out=$(
   set +e
   SEAM=$(mktemp)
-  sed -n '/# v0\.6\.9 (M8): Tier 2 and Tier 3 must be DISTINCT/,/^done$/p' "$DEPLOY_STANDBY" > "$SEAM"
+  extract_region "$DEPLOY_STANDBY" '# v0\.6\.9 (M8): Tier 2 and Tier 3 must be DISTINCT' '^done$' > "$SEAM"
   W=0; warn(){ W=$((W+1)); }
   _ANSWERS=("https://same.example.com" "https://other.example.com")
   _IDX=0
@@ -203,7 +202,7 @@ echo "─── re-run keeps the configured role (sticky FAILOVER_ROLE default) 
 s2_drive() {  # $1 = FAILOVER_ROLE as loaded from an existing env ('' = fresh install)
   set +e
   SEAM=$(mktemp)
-  sed -n '/^ask_choice() {/,/^}$/p' "$DEPLOY_STANDBY" > "$SEAM"
+  extract_region "$DEPLOY_STANDBY" '^ask_choice() {' '^}$' > "$SEAM"
   grep '^ask_choice "Server role"' "$DEPLOY_STANDBY" >> "$SEAM"
   BOLD=""; NC=""
   warn(){ :; }
@@ -239,8 +238,8 @@ s2_hint60=$(s2_drive "" "60")
 s2b_drive() {  # $1 = STANDBY_TAKEOVER_DELAY as loaded from an existing env
   set +e
   SEAM=$(mktemp)
-  sed -n '/^ask() {/,/^}$/p' "$DEPLOY_STANDBY" > "$SEAM"
-  sed -n '/^ask_numeric() {/,/^}$/p' "$DEPLOY_STANDBY" >> "$SEAM"
+  extract_region "$DEPLOY_STANDBY" '^ask() {' '^}$' > "$SEAM"
+  extract_region "$DEPLOY_STANDBY" '^ask_numeric() {' '^}$' >> "$SEAM"
   grep 'ask_numeric "STANDBY.s TAKEOVER_DELAY' "$DEPLOY_STANDBY" >> "$SEAM"
   BOLD=""; NC=""
   warn(){ :; }
@@ -295,7 +294,7 @@ grep -qF 'CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS=${EXPECTED_PRIMARY_SELF_FENCE_SEC
 ha_drive() {  # $1=EXPECTED $2=MARGIN from a loaded env
   set +e
   SEAM=$(mktemp)
-  sed -n '/^CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS=/,/^fi$/p' "$DEPLOY_STANDBY" > "$SEAM"
+  extract_region "$DEPLOY_STANDBY" '^CFG_EXPECTED_PRIMARY_SELF_FENCE_SECS=' '^fi$' > "$SEAM"
   RED=""; NC=""
   REC_EXPECTED_PRIMARY_SELF_FENCE_SECS=30; REC_SELF_FENCE_MARGIN_SECS=30
   EXPECTED_PRIMARY_SELF_FENCE_SECS="$1"; SELF_FENCE_MARGIN_SECS="$2"
@@ -319,8 +318,4 @@ ha_junk=$(ha_drive "abc" "10")
   && ok "(26c) non-numeric EXPECTED reset to safe 30; low MARGIN still warned ($ha_junk)" \
   || bad "(26c) non-numeric handling wrong ($ha_junk)"
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

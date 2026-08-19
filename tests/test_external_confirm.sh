@@ -9,13 +9,11 @@
 # before the MAIN LOOP) instead of carrying an embedded copy. The old copy-based test is
 # exactly why F1/F2 passed CI while the shipped code was broken.
 
+# harness: tests/lib/harness.sh — counters+banners, paths. run_test's own PASS-format echoes stay
+# (they carry the expected/got detail); the printing log/alert shadows and the cut stay local.
+
 set +e
-
-PASS=0; FAIL=0
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby script not found at $STANDBY"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 # Source functions only — everything up to the MAIN LOOP banner (no startup_checks, no loop).
 SRC=$(mktemp)
@@ -53,9 +51,7 @@ run_test() {
     fi
 }
 
-echo "============================================="
-echo "  Test: confirm_delinquency_external (v0.6.1)"
-echo "============================================="
+title_banner "Test: confirm_delinquency_external (v0.6.1)"
 
 # v0.6.1: both external RPCs down → "could not confirm" → 2 (HOLD), NOT 1 (false positive).
 unset ALLOW_TAKEOVER_WHEN_EXTERNAL_RPC_DOWN
@@ -87,8 +83,4 @@ run_test "6. T2 down + T3 confirms → ALLOW" 0
 tier3_confirm_delinquency() { return 1; }
 run_test "7. T2 down + T3 denies (false positive) → reset (1)" 1
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner

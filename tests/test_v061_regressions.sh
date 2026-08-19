@@ -7,17 +7,12 @@
 #   F2  One external back + delinquent → takeover PROCEEDS (no re-accumulation).
 #   F6  Bad window config (THRESHOLD>SIZE, SIZE=0) → startup validation exits 1.
 
+# harness: tests/lib/harness.sh — ok/bad+banners, paths, extract_region (the F6 validate-block
+# region: sed range byte-faithful to the old awk-with-exit in BOTH daemons — verified — and cannot
+# silently extract empty). Cut + printing log shadows + `date +%s` clock stay local.
+
 set +e
-
-PASS=0; FAIL=0
-ok()   { echo "  ✅ PASS: $1"; PASS=$((PASS+1)); }
-bad()  { echo "  ❌ FAIL: $1"; FAIL=$((FAIL+1)); }
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STANDBY="$DIR/solana-standby-failover.sh"
-PRIMARY="$DIR/solana-primary-failover.sh"
-[[ -f "$STANDBY" ]] || { echo "  ❌ standby not found at $STANDBY"; exit 1; }
-[[ -f "$PRIMARY" ]] || { echo "  ❌ primary not found at $PRIMARY"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
 # Load standby functions only (everything up to the MAIN LOOP banner).
 SRC=$(mktemp)
@@ -34,9 +29,7 @@ log_error()  { echo "      [ERR ] $*"; }
 alert_info() { echo "      [ALERT] $*"; }
 alert_warn() { echo "      [ALERT] $*"; }   # v0.6.4: fence-not-clear warning routes via alert_warn
 
-echo "============================================="
-echo "  v0.6.1 regression tests"
-echo "============================================="
+title_banner "v0.6.1 regression tests"
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
@@ -130,7 +123,7 @@ attempt_takeover >/dev/null; attempt_takeover >/dev/null   # two consecutive cyc
 echo ""
 echo "─── F6: bad window config exits at startup validation (real shipped lines) ───"
 # Extract the exact validation block from each script and run it standalone.
-extract_f6() { awk '/DELINQUENCY_WINDOW_SIZE" =~/{p=1} p{print} /Bad window config: require/{exit}' "$1"; }
+extract_f6() { extract_region "$1" 'DELINQUENCY_WINDOW_SIZE" =~' 'Bad window config: require'; }
 
 run_f6() {   # script, SIZE, THRESHOLD  → returns the block's exit code
     local f; f=$(mktemp)
@@ -154,8 +147,4 @@ for script in "$STANDBY" "$PRIMARY"; do
     run_f6 "$script" 08 07; [[ $? -eq 0 ]] && ok "$name: leading-zero 08/07 accepted (no octal crash)" || bad "$name: 08/07 wrongly rejected (octal)"
 done
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+results_banner
