@@ -12,14 +12,16 @@
 # text). This keeps the monitor unit IMMUTABLE across arm states: `failover arm` never edits it,
 # so arm-state lives ENTIRELY in which fence unit file exists (§2.3: arm-state IS which of the
 # two fence units is installed — one source of truth, byte-aligned with the daemons'
-# _fence_unit_state classifier). ⚠️ UNVERIFIED ASSUMPTION (reviewer, 2026-08-20 — verify in a
-# real-systemd container BEFORE Block 5 proper; never accept on reasoning, the gate-B class):
-# "systemd enqueues each OnFailure= job independently and ignores a listed unit that is not
-# installed (logged, not fatal)". This assumption is LOAD-BEARING IN ANY DESIGN, not only the
-# two-unit list: on every un-armed host OnFailure= names a unit that does not exist. The
-# §2.1-rev2.1 arm-time probe physically demonstrates the dispatch on THIS host before any armed
-# state exists — the probe (and the container check above), not this comment, is what proves the
-# wiring live. BOTH fence units present is an arm-ceremony
+# _fence_unit_state classifier). ✅ VERIFIED BY EXECUTION (2026-08-20, real-systemd containers,
+# systemd 249 AND 255 — the fleet's boundary versions; design record
+# verify-onfailure-missing-unit.md): systemd enqueues each OnFailure= job independently and
+# ignores a listed unit that is not installed — journal: "Failed to enqueue OnFailure= job,
+# ignoring: Unit … not found"; the failing unit still reaches terminal `failed`, and the
+# EXISTING unit in the list dispatches despite the missing sibling. Load-bearing in ANY design
+# (every un-armed host names a nonexistent unit) — which is why it was executed, not reasoned
+# (the gate-B class). The §2.1-rev2.1 arm-time probe still physically demonstrates the dispatch
+# on THIS host before any armed state exists — the record proves the semantics, the probe proves
+# the wiring live. BOTH fence units present is an arm-ceremony
 # bug state: the daemons classify it as `real` (fail toward the №1 refusal), and the real
 # fence's outcome dominates (the page-only unit mutates nothing by construction).
 

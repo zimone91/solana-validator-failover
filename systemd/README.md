@@ -83,9 +83,14 @@ While the entry blocker stands: unit files, the №1 refusal, and harness tests 
 `/etc/systemd/system`. The `.skel` suffix is the guard: nothing execs these, CI ships none of
 them, and the monitor skeleton's `<role>` placeholder makes it uninstallable as-is.
 
-## Unverified assumptions (verify BEFORE Block 5 proper — in a real-systemd container, not by reasoning)
+## Assumptions — verified by execution
 
-1. **OnFailure= tolerates a missing listed unit** (enqueue-per-dependency, ignore-not-installed,
-   logged-not-fatal). Load-bearing in ANY design: every un-armed host has `OnFailure=` naming a
-   unit that does not exist. Five-minute container check; the gate-B ("HotSpare on reasoning")
-   class — never accepted without execution. Reviewer-flagged 2026-08-20.
+1. **OnFailure= tolerates a missing listed unit** — ✅ VERIFIED 2026-08-20 in real-systemd
+   containers on the fleet's boundary versions (systemd 249 = Ubuntu 22.04 floor, systemd 255 =
+   Ubuntu 24.04): missing target is ignored+logged ("Failed to enqueue OnFailure= job,
+   ignoring"), the failing unit reaches terminal `failed` normally, and the existing unit in a
+   two-unit list dispatches despite the missing sibling. Load-bearing in ANY design (every
+   un-armed host names a nonexistent unit) — executed, not reasoned (the gate-B class). Full
+   record: the project design records (`verify-onfailure-missing-unit.md`). The §2.1-rev2.1
+   arm-time probe remains: the record proves systemd's semantics, the probe proves THIS host's
+   wiring.
