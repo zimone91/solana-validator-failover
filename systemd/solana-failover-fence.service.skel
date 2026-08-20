@@ -1,6 +1,6 @@
-# SKELETON (v0.7 Block 5) — installed ONLY by the `failover arm` ceremony (not yet shipped);
-# NOTHING in this repository installs units. The Block-5 entry blocker (all four nodes on
-# v0.6.10+) gates the first real installation.
+# SKELETON (v0.7 Block 5) — installed ONLY by the `failover arm` ceremony (failover-arm.sh,
+# Block 5.3 — shipped, EXECUTED only at the v0.7 rollout); NOTHING in this repository installs
+# units. The Block-5 entry blocker (all four nodes on v0.6.10+) gates the first real installation.
 #
 # The REAL fence. Its presence at /etc/systemd/system/solana-failover-fence.service IS the armed
 # state (§2.3: arm-state IS which of the two fence units is installed): the daemons'

@@ -1,0 +1,25 @@
+# SKELETON (v0.7 Block 5.3) — the §2.1-rev2.1 arm-time PROBE FENCE: rendered into
+# ARM_RUNTIME_DIR (tmpfs — ephemeral by construction) ONLY by the `failover arm` ceremony and
+# cleaned by it; NOTHING in this repository installs units.
+#
+# Dispatched by PID 1 when the probe unit reaches terminal `failed` (its watchdog firing on the
+# deliberately-stopped pets). Its ONLY action is writing the marker file the ceremony waits
+# for: marker present ⇔ stopped-petting → watchdog → `failed` → OnFailure dispatch WORKS on
+# this host. Trigger wiring (the [Unit] shape, Type=oneshot off OnFailure=) mirrors the real
+# fence units, so the probe exercises the same PID-1 machinery the armed state will ride —
+# while touching nothing: no admin socket, no systemctl, no validator.
+
+[Unit]
+Description=Solana failover arm probe fence (transient) — writes the probe marker, nothing else
+# Identical posture to the fence units: startable in degraded states.
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+User=root
+# The ceremony's renderer replaces this ExecStart with the concrete marker path (under
+# FENCE_MARKER_DIR). ONLY action: one marker write.
+ExecStart=/bin/touch <probe-marker>
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=solana-failover-arm-probe-fence

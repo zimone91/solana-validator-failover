@@ -6,31 +6,36 @@
 #      substitution (etc.) parses on bash 4+ but FAILS on bash 3.2; without this gate such a break
 #      silently skipped a whole suite there (v0.6.9 B3: test_collision_detector.sh, 34/35 as 35/35).
 #   2. RUN gate — execute every suite; a non-zero exit fails the gate.
-# Also `bash -n` the seven shipped scripts (v0.7 Block 5.1 promotes the two fence scripts into
-# this explicit list — shippable artifacts, installed only by the future `failover arm`
-# ceremony; install.sh joined at the Block-5.1 panel fix round — a pre-existing gap: it was in
-# SHA256SUMS but in neither parse nor shellcheck list). Exit non-zero on any parse or run failure.
+# Also `bash -n` the eight shipped scripts (v0.7 Block 5.1 promotes the two fence scripts into
+# this explicit list — shippable artifacts, installed only by the `failover arm` ceremony;
+# install.sh joined at the Block-5.1 panel fix round — a pre-existing gap: it was in SHA256SUMS
+# but in neither parse nor shellcheck list; Block 5.3 adds failover-arm.sh — the ceremony
+# itself, shippable, EXECUTED only at the v0.7 rollout). Exit non-zero on any parse or run failure.
 set +e
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 2
 PKG="$(cd .. && pwd)"
 
-echo "bash: $(bash --version | head -1)"
+# 5.3 panel fix round: every dispatch below is "${BASH:-bash}" — the interpreter RUNNING this
+# gate, never a PATH-resolved bare `bash` (the interpreter-drift class: a runner image whose
+# PATH fronts a newer bash would silently parse/execute the suites on an interpreter the
+# fingerprint never saw). The banner prints the SAME interpreter the gate dispatches.
+echo "bash: $("${BASH:-bash}" --version | head -1)"
 echo "═══ (1) PARSE gate: bash -n on scripts + harness lib + all suites ═══"
 parse_fail=0
 for s in "$PKG"/install.sh "$PKG"/solana-primary-failover.sh "$PKG"/solana-standby-failover.sh \
-         "$PKG"/deploy-failover.sh "$PKG"/deploy-failover-standby.sh \
+         "$PKG"/deploy-failover.sh "$PKG"/deploy-failover-standby.sh "$PKG"/failover-arm.sh \
          "$PKG"/systemd/failover-fence.sh "$PKG"/systemd/failover-fence-page-only.sh; do
-    if bash -n "$s" 2>/dev/null; then echo "  ok    $(basename "$s")"; else echo "  PARSE-FAIL $(basename "$s")"; parse_fail=$((parse_fail+1)); fi
+    if "${BASH:-bash}" -n "$s" 2>/dev/null; then echo "  ok    $(basename "$s")"; else echo "  PARSE-FAIL $(basename "$s")"; parse_fail=$((parse_fail+1)); fi
 done
 for t in lib/*.sh test_*.sh; do
-    if bash -n "$t" 2>/dev/null; then :; else echo "  PARSE-FAIL $t"; parse_fail=$((parse_fail+1)); fi
+    if "${BASH:-bash}" -n "$t" 2>/dev/null; then :; else echo "  PARSE-FAIL $t"; parse_fail=$((parse_fail+1)); fi
 done
 [[ $parse_fail -eq 0 ]] && echo "  all suites parse-clean" || echo "  $parse_fail parse failure(s)"
 
 echo ""
 echo "═══ (2) RUN gate: execute every suite ═══"
 # A vanished/misnamed suite must FAIL this gate, not silently shrink it (bump when adding a suite).
-EXPECTED_SUITES=47
+EXPECTED_SUITES=48
 run_pass=0; run_fail=0; failed=""
 _suite_out=$(mktemp)
 for t in test_*.sh; do
@@ -39,7 +44,7 @@ for t in test_*.sh; do
     # v0.7 (4.3): the grep is BARE ❌ — the contract is "❌ is reserved for failures in suite
     # output"; a suite reporting non-failures must use a different marker (the v058 🐞 precedent).
     # Named so after the reviewer found the old "❌ FAIL" literal made v058 an exception-by-phrasing.
-    if bash "$t" > "$_suite_out" 2>&1; then
+    if "${BASH:-bash}" "$t" > "$_suite_out" 2>&1; then
         if grep -q "❌" "$_suite_out"; then
             run_fail=$((run_fail+1)); failed="$failed $t(printed-FAIL-but-exit-0)"
             # v0.7 (4.4, reviewer): print the offending line(s) — diagnosis, not just detection.
@@ -83,7 +88,7 @@ fi
 echo ""
 total=$(( parse_fail + run_fail + count_fail + solereader_fail ))
 if [[ $total -eq 0 ]]; then
-    echo "═══ GREEN — $run_pass/$run_pass suites, parse-clean on $(bash --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1) ═══"
+    echo "═══ GREEN — $run_pass/$run_pass suites, parse-clean on $("${BASH:-bash}" --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1) ═══"
     exit 0
 else
     echo "═══ NOT GREEN — $parse_fail parse fail(s), $run_fail run fail(s), $solereader_fail sole-reader fail(s) ═══"
