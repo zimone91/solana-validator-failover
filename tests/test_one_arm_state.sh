@@ -276,6 +276,7 @@ cs_s=$(grep -c '^[[:space:]][[:space:]]*_enforce_one_arm_state' "$STANDBY")
 #    there is the silent-failure class. Driver keeps the REAL alert() + flush_pending_alerts and
 #    scripts send_telegram.
 deliv_fn() {  # $1=daemon  $2=send_telegram rc (0=deliverable, 1=telegram down)
+              # $3=TG_ENABLED (default true)  $4=WEBHOOK_URL (default empty)
   rm -f "$RES_DIR/rc" "$RES_DIR/err" "$RES_DIR/tgcount"
   (
     set +e
@@ -283,6 +284,9 @@ deliv_fn() {  # $1=daemon  $2=send_telegram rc (0=deliverable, 1=telegram down)
     # shellcheck disable=SC1090
     source "$SRC" 2>/dev/null; rm -f "$SRC"
     STAKED_PUBKEY="S1"
+    TG_ENABLED="${3:-true}"; TG_BOT_TOKEN="x"; TG_CHAT_ID="y"
+    [[ "$TG_ENABLED" != "true" ]] && { TG_BOT_TOKEN=""; TG_CHAT_ID=""; }
+    WEBHOOK_URL="${4:-}"
     log(){ :;}; log_info(){ :;}; log_warn(){ :;}
     log_error(){ printf '%s\n' "$*" >> "$RES_DIR/err"; }
     send_webhook(){ :;}; sleep(){ :;}
@@ -307,6 +311,18 @@ for D in "$PRIMARY" "$STANDBY"; do
     [[ "$(cat "$RES_DIR/rc")" == "1" && "$tg" == "2" ]] && grep -q "NOT delivered" "$RES_DIR/err" && grep -q "journalctl" "$RES_DIR/err" \
         && ok "(D2:$dn) telegram down → bounded retry (two sends), journal says NOT delivered + queue-never-drained + journalctl-is-your-record" \
         || bad "(D2:$dn) mute-refusal path (rc=$(cat "$RES_DIR/rc" 2>/dev/null) sends=$tg err='$(cat "$RES_DIR/err" 2>/dev/null | tr '\n' ';')')"
+    # (D3/D4, reviewer split: "delivered" must never cover "there was no channel at all") —
+    # empty _pending_alert has TWO meanings: it WENT, or there was NOWHERE to send. The second
+    # tells the operator: this refusal is recorded nowhere but the journal. A configured webhook
+    # is a real (fire-and-forget) channel — "NOWHERE" must not lie when one exists.
+    deliv_fn "$D" 0 false ""
+    [[ "$(cat "$RES_DIR/rc")" == "1" ]] && grep -q "NO channel" "$RES_DIR/err" && grep -q "NOWHERE but this journal" "$RES_DIR/err" \
+        && ok "(D3:$dn) no telegram, no webhook → journal says NO channel / recorded NOWHERE but this journal" \
+        || bad "(D3:$dn) no-channel outcome wrong (err='$(cat "$RES_DIR/err" 2>/dev/null | tr '\n' ';')')"
+    deliv_fn "$D" 0 false "http://hook.example"
+    [[ "$(cat "$RES_DIR/rc")" == "1" ]] && grep -q "webhook only" "$RES_DIR/err" && grep -q "unverified" "$RES_DIR/err" \
+        && ok "(D4:$dn) no telegram, webhook configured → journal says webhook-only (delivery unverified), never claims delivered/NOWHERE" \
+        || bad "(D4:$dn) webhook-only outcome wrong (err='$(cat "$RES_DIR/err" 2>/dev/null | tr '\n' ';')')"
 done
 
 results_banner
