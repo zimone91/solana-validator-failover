@@ -5,6 +5,78 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Block 5.1 panel fix round** (5-lens adversarial verification panel; blockers B1/B2/B3 +
+  every nit — folded into the Block 5.1 commit). **B1 (double-sign blocker):** the crash-loop
+  breaker now honors a `fenced-stopped` marker only if it is from the SAME BOOT (boot epoch =
+  now − uptime via `${FENCE_PROC_ROOT:-/proc}/uptime`; pre-boot mtime with a 60 s slack toward
+  stale, or unreadable/garbage uptime ⇒ STALE → WARN + page + fence normally) — a stale marker
+  surviving an operator's staked recovery must never leave a genuine new incident unfenced,
+  unmonitored, and paged journal-only; and a FRESH refusal now also restarts the monitor (dead
+  in `failed` at OnFailure dispatch — the restart is what delivers the CRITICAL page and re-arms
+  monitoring). The §2.5 proc-gone demote excuse now requires an ACCEPTED (rc 0) set-identity: a
+  FAILED set-identity with the process gone goes to the stop-fallback (whose `systemctl stop`
+  also cancels a Restart=always resurrection), and the two `fenced-demoted` reasons are truthful
+  and DISTINCT — "ladder verified by N sustained unstaked reads" vs the proc-gone outcome naming
+  the ACCEPTED set-identity and the unit `--identity` invariant this script cannot verify (arm
+  ceremony (5.3) obligation). **B2 (availability blocker):** every monitor restart is
+  `systemctl restart --no-block` — the monitor is `Type=notify` with READY gated on its first
+  identity read (minutes away mid-replay), so a job-blocking 15 s restart deterministically
+  produced a false CRITICAL "UNMONITORED; intervene" on a healthy node (a killed wait is not a
+  canceled job); rc now means ENQUEUE outcome only. Also: single-instance `flock -n` guard
+  (loser logs + exits 0; skipped where flock is absent — macOS harness only); marker precedence
+  enforced in `_write_marker` (never `fenced-demoted` while `fenced-stopped` exists; a stopped
+  write supersedes the demoted sibling); per-rung-sized watchdog pets (the repoll rung's real
+  ~104 s bound, stop-path pets) made REAL by the fence unit skeleton's new `NotifyAccess=all` +
+  derived `TimeoutStartSec=300` (term-by-term arithmetic in the skel; pets = belt, budget =
+  suspenders, failure direction stated honestly — a cut fence is a silent half-fence, not
+  "louder"); word-anchored startup token ("restarting" is NOT startup evidence); the
+  third-branch fence↔monitor loop named honestly in a comment (loud, nothing stopped; breaker
+  is 5.2 monitor-side); frankendancer stop-only posture documented (header +
+  `systemd/README.md` — v0.7 limitation, reviewer-packet item). **B3 (test honesty):**
+  `tests/test_fence_script.sh` grows 21 → 41 checks — B1 stale/fresh/unreadable-uptime cases,
+  B2 enqueue semantics (with a slow-READY systemctl model), and a killer for every panel
+  mutation that had survived: unreadable-re-poll-with-live-process abort, stop-UNCONFIRMED
+  loudest-page path, delayed re-verify vs a Restart=always resurrection (per-call `proc.seq`
+  pgrep model), wedged-BARRIER remove-all not excused by proc-gone, `UNSTAKED_KEYPAIR` guard,
+  shipped-default re-poll (5, no env override) + floor clamp 0→1, twin/flock lock, marker
+  precedence, and truthful marker reasons. The SIGTERM/SIGKILL kill invocations remain
+  structurally unobservable (bash-builtin `kill`; ESRCH pid 2147483647 is the single
+  containment — named in the suite header as the recorded coverage hole). `install.sh` joined
+  the CI shellcheck list and `run_all.sh`'s parse gate (pre-existing gap the panel found: it
+  was checksummed but never linted/parsed).
+
+- **Block 5.1 — the fence script PROPER** (`systemd/failover-fence.sh` promoted from the
+  skeleton; every `# BLOCK5-PROPER:` seam filled, structure and failure directions kept). The
+  §2.2 identity verdict grows its three real branches: (a) staked/unknown → the §2.5 ladder —
+  `authorized-voter remove-all` → `set-identity <unstaked>` → `remove-all` AGAIN (the
+  late-voter-add barrier) → SUSTAINED identity re-poll (`FENCE_REPOLL_SECS`, provisional 5 —
+  an EMPIRICAL floor Block 10 sets by measurement, [rev3/№5]) → `fenced-demoted`;
+  (b) already unstaked → marker + INFO page, zero admin mutations; (c) unreadable + unit
+  active + startup-phase evidence → restart monitor, NO stop (the reboot-brick fix);
+  unreadable without evidence → stop. Every admin call bounded (`timeout -k 5`, the daemons'
+  H4/B1 idiom; wedge rc 124/137 → stop-fallback). Stop-fallback ports the H2
+  stop → mask --runtime → SIGTERM/SIGKILL → verify + delayed re-verify discipline; an
+  unverifiable stop still writes `fenced-stopped` and exits 1 — **claim MORE fencing than
+  proven, never less** (the monitor's HOLD path treats the marker as authoritative).
+  `VALIDATOR_UNIT` comes from the validator's cgroup (v2 `0::` line, v1 `systemd:` fallback;
+  configured env wins; no unit determinable → no guessed stop, marker + exit 1) — kills the
+  hard-coded `solana.service`. Crash-loop breaker: a pre-existing `fenced-stopped` marker →
+  page + exit 0, zero actuator calls (`fenced-demoted` allows the idempotent re-run). Markers
+  live as files in `FENCE_MARKER_DIR` (default `/var/lib/solana-failover`), ISO timestamp +
+  reason, atomic tmp+mv; the monitor consumes them in slice 5.2. NO network anywhere in the
+  fence (pages are journal lines — a fence that waits on Telegram can hang mid-demote). Plus
+  the §2.3 twin `systemd/failover-fence-page-only.sh` (structural DRY_RUN: marker + CRITICAL
+  journal line, zero mutation tokens outside comments — grep-assertable). **Ship-surface
+  promotion, deliberate:** both scripts enter `SHA256SUMS`, the CI shellcheck list, and
+  `run_all.sh`'s parse gate; the `.service.skel` units stay skeletons — **still nothing
+  installs anything anywhere**; execution begins only at the v0.7 rollout (`failover arm`,
+  upgrade-then-arm). New suite `tests/test_fence_script.sh` (46 suites): drives the real
+  script as a subprocess behind a fully mocked PATH (scriptable `agave-validator`/`systemctl`/
+  `pgrep`/`timeout` stubs, ordered event log; no real systemctl can run), covering the exact
+  ladder order (with a swap-mutation control), the stale-write re-poll abort, all three
+  verdict branches, both breaker sides, unit detection (env/v2/v1/neither), and the page-only
+  twin's inertness.
+
 - **Block 5 skeleton — systemd unit skeletons + the ONE-arm-state refusal (№1)**. `systemd/` now
   carries the v0.7 fence topology as repo-only `.skel` files: the monitor under the native
   watchdog (`Type=notify`, `WatchdogSec=30`, `NotifyAccess=main` with socat main-PID pets as the

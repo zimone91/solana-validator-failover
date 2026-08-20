@@ -6,7 +6,10 @@
 #      substitution (etc.) parses on bash 4+ but FAILS on bash 3.2; without this gate such a break
 #      silently skipped a whole suite there (v0.6.9 B3: test_collision_detector.sh, 34/35 as 35/35).
 #   2. RUN gate — execute every suite; a non-zero exit fails the gate.
-# Also `bash -n` the four shipped scripts. Exit non-zero on any parse or run failure.
+# Also `bash -n` the seven shipped scripts (v0.7 Block 5.1 promotes the two fence scripts into
+# this explicit list — shippable artifacts, installed only by the future `failover arm`
+# ceremony; install.sh joined at the Block-5.1 panel fix round — a pre-existing gap: it was in
+# SHA256SUMS but in neither parse nor shellcheck list). Exit non-zero on any parse or run failure.
 set +e
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 2
 PKG="$(cd .. && pwd)"
@@ -14,8 +17,9 @@ PKG="$(cd .. && pwd)"
 echo "bash: $(bash --version | head -1)"
 echo "═══ (1) PARSE gate: bash -n on scripts + harness lib + all suites ═══"
 parse_fail=0
-for s in "$PKG"/solana-primary-failover.sh "$PKG"/solana-standby-failover.sh \
-         "$PKG"/deploy-failover.sh "$PKG"/deploy-failover-standby.sh; do
+for s in "$PKG"/install.sh "$PKG"/solana-primary-failover.sh "$PKG"/solana-standby-failover.sh \
+         "$PKG"/deploy-failover.sh "$PKG"/deploy-failover-standby.sh \
+         "$PKG"/systemd/failover-fence.sh "$PKG"/systemd/failover-fence-page-only.sh; do
     if bash -n "$s" 2>/dev/null; then echo "  ok    $(basename "$s")"; else echo "  PARSE-FAIL $(basename "$s")"; parse_fail=$((parse_fail+1)); fi
 done
 for t in lib/*.sh test_*.sh; do
@@ -26,7 +30,7 @@ done
 echo ""
 echo "═══ (2) RUN gate: execute every suite ═══"
 # A vanished/misnamed suite must FAIL this gate, not silently shrink it (bump when adding a suite).
-EXPECTED_SUITES=45
+EXPECTED_SUITES=46
 run_pass=0; run_fail=0; failed=""
 _suite_out=$(mktemp)
 for t in test_*.sh; do

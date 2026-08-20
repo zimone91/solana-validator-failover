@@ -20,7 +20,28 @@ DefaultDependencies=no
 # meaningful next to the marker the restarted monitor reads (§2.2 two-outcome contract).
 Type=oneshot
 User=root
-# The fence BODY (structure fixed NOW in failover-fence.sh.skel; mechanism = Block 5 proper):
+# §5 per-op pets: the fence body extends this unit's start budget per rung via
+# EXTEND_TIMEOUT_USEC datagrams. Type=oneshot DISCARDS those datagrams unless NotifyAccess
+# opens them — and it must be `all` (not `main`): each pet is sent by a short-lived socat
+# CHILD, not by the oneshot's main PID, so `main` would still discard every pet.
+NotifyAccess=all
+# DERIVED worst-case start budget (SUSPENDERS; the per-rung pets are BELT on top). Terms, at
+# shipped defaults (SETIDENTITY_TIMEOUT=15, +5 kill-grace; FENCE_REPOLL_SECS=5;
+# HARD_STOP_REVERIFY_SECS=15):
+#   admin ladder  ~75 s  (3 bounded admin ops × 20 + monitor-restart enqueue 15)
+#   repoll rung  ~104 s  (5 reads × 20 + 4 inter-read sleeps — an OVER-estimate: a 20 s read is
+#                         a wedge (rc 124) that EXITS the loop, so a completing repoll is faster)
+#   stop path     ~63 s  (stop 15 + mask 15 + kill-grace sleeps 3 + verify + delayed re-verify 15×2)
+#   margin        ~43 s  honest completing-worst-case headroom (re-panel recount: the -k 5 SIGKILL
+#                         grace on every bounded op + worst-case 5 s socat pets eat ~15 s of the
+#                         naive ~58 s figure) — still positive at every term's worst case
+#   total         300
+# Block 10's measured FENCE_REPOLL_SECS re-derives this together with the constant — a fence
+# cut off mid-budget is a silent half-fence (unit `failed`, no marker, no monitor restart, and
+# no OnFailure chain exists for the fence itself).
+TimeoutStartSec=300
+# The fence BODY (failover-fence.sh — REAL since Block 5.1: ladder, three-branch verdict,
+# markers, breaker):
 #
 # §2.5 ladder — the stale-write barrier (order load-bearing; reversing the first two reopens a
 # one-vote window):
@@ -49,9 +70,8 @@ User=root
 #                                        what the spare's G2 consumes.
 ExecStart=/opt/solana-failover/failover-fence.sh
 EnvironmentFile=/opt/solana-failover/failover.env
-# BLOCK5-PROPER: TimeoutStartSec for this oneshot is set TOGETHER with the ladder's sustained
-# re-poll constant (the Block-10 measurement) — a fence cut off mid-ladder by the systemd
-# default would be a silent half-fence.
+# BLOCK10: when the measured FENCE_REPOLL_SECS lands, RE-DERIVE TimeoutStartSec above with the
+# same term-by-term arithmetic — the two constants move together.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=solana-failover-fence
