@@ -1,0 +1,57 @@
+# SKELETON (v0.7 Block 5) — installed ONLY by the `failover arm` ceremony (not yet shipped);
+# NOTHING in this repository installs units. The Block-5 entry blocker (all four nodes on
+# v0.6.10+) gates the first real installation.
+#
+# The REAL fence. Its presence at /etc/systemd/system/solana-failover-fence.service IS the armed
+# state (§2.3: arm-state IS which of the two fence units is installed): the daemons'
+# _fence_unit_state classifies exactly this path, and DRY_RUN=true + this unit installed is the
+# №1 startup refusal (the deadly combination — a fence that can stop a live validator while the
+# operator believes the system inert). Dispatched by PID 1 when the monitor unit reaches
+# terminal `failed` (first missed watchdog pet — the monitor skeleton's R8 pair).
+
+[Unit]
+Description=Solana failover fence (REAL) — demote-or-stop on monitor watchdog failure
+# A safety action, not a service with ordering needs: the fence must remain startable in
+# degraded/shutdown states (research record, recommended pattern).
+DefaultDependencies=no
+
+[Service]
+# One bounded safety action per dispatch. oneshot keeps this unit's own success/failure state
+# meaningful next to the marker the restarted monitor reads (§2.2 two-outcome contract).
+Type=oneshot
+User=root
+# The fence BODY (structure fixed NOW in failover-fence.sh.skel; mechanism = Block 5 proper):
+#
+# §2.5 ladder — the stale-write barrier (order load-bearing; reversing the first two reopens a
+# one-vote window):
+#   authorized-voter remove-all
+#     → set-identity <unstaked>
+#     → remove-all AGAIN            (the barrier: a delivered-but-unanswered `authorized-voter
+#                                    add` can land AFTER the demote — the admin server's worker
+#                                    pool outlives the killed client)
+#     → SUSTAINED identity re-poll  ([rev3/№5] an EMPIRICAL floor — Block 10 sets the constant
+#                                    by measurement; provisional until then, never silently
+#                                    asserted)
+#     → stop-fallback on ANY doubt  (fail toward stop, never toward silently-staked).
+#
+# §2.2 third identity branch: identity UNREADABLE but validator unit ACTIVE with startup-phase
+# evidence ⇒ page + restart monitor, NO stop (a healthy validator mid-replay must not be
+# fenced); unreadable with NO startup evidence ⇒ stop (fail toward stop).
+#
+# Two outcome markers (§2.2), consumed by the restarted monitor:
+#   fenced-stopped   (stop+mask path)  → monitor HOLD: no watchdog re-arm, one CRITICAL page
+#                                        ("fenced — awaiting operator"), quiet; cleared only by
+#                                        the operator's recovery flow.
+#   fenced-demoted   (Lever-2 path — validator RUNNING, unstaked) → normal demoted-holder
+#                                        monitoring: READY on first read, watchdog re-armed,
+#                                        marker cleared on the monitor's first clean cycle. The
+#                                        running node keeps re-advertising the flip — exactly
+#                                        what the spare's G2 consumes.
+ExecStart=/opt/solana-failover/failover-fence.sh
+EnvironmentFile=/opt/solana-failover/failover.env
+# BLOCK5-PROPER: TimeoutStartSec for this oneshot is set TOGETHER with the ladder's sustained
+# re-poll constant (the Block-10 measurement) — a fence cut off mid-ladder by the systemd
+# default would be a silent half-fence.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=solana-failover-fence

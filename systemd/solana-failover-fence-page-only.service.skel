@@ -1,0 +1,37 @@
+# SKELETON (v0.7 Block 5) — installed ONLY by the `failover arm` ceremony (not yet shipped);
+# NOTHING in this repository installs units. The Block-5 entry blocker (all four nodes on
+# v0.6.10+) gates the first real installation.
+#
+# arm-state IS which of the two fence units is installed. (§2.3)
+#
+# The PAGE-ONLY fence — §2.3's STRUCTURAL DRY_RUN: while THIS unit (and not the real one) is
+# installed, a monitor failure can produce only a page and a marker — nothing that can stop,
+# mask, or demote a validator exists on the host's dispatch path AT ALL. Inertness is decided
+# by WHICH FILE EXISTS, never by an env flag a corrupt config could flip (§2.3: a
+# missing/corrupt env cannot flip inertness; ambiguity fails toward inert + page).
+#
+# Trigger wiring is IDENTICAL to the real fence unit (same [Unit] shape, same Type=oneshot
+# dispatch off the monitor's OnFailure=): the §2.1-rev2.1 arm probe therefore exercises the
+# exact same PID-1 machinery in either arm state, and swapping units swaps ONLY the action.
+
+[Unit]
+Description=Solana failover fence (PAGE-ONLY) — page + marker on monitor watchdog failure, mutates nothing
+# Identical to the real fence unit (see its comment): startable in degraded states.
+DefaultDependencies=no
+
+[Service]
+# Identical trigger wiring to the real fence unit — Type=oneshot off the monitor's OnFailure=.
+Type=oneshot
+User=root
+# ZERO mutations, structural (§2.3 rev-2 enumeration): no stop/mask/unmask, no SIGTERM/SIGKILL,
+# no unit writes, AND no admin-socket mutations (set-identity, authorized-voter *). Page +
+# marker only; restart-monitor is the sole permitted action. The Block-10 DRY_RUN sweep's
+# admin-socket recorder asserts exactly this against the DEPLOYED unit.
+# BLOCK5-PROPER: the page-only helper ships with Block 5 proper as a SEPARATE script from
+# failover-fence.sh — deliberately: this unit's inertness must be decidable from the installed
+# files alone, never from a runtime flag branching inside the real fence's body.
+ExecStart=/opt/solana-failover/failover-fence-page-only.sh
+EnvironmentFile=/opt/solana-failover/failover.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=solana-failover-fence-page-only

@@ -68,14 +68,16 @@ jobs:
         run: cd tests && /bin/bash run_all.sh
 
   shellcheck:
-    name: shellcheck -S error · four shipped scripts + test harness lib
+    name: shellcheck -S error · four shipped scripts + test harness lib + fence skeleton
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: shellcheck
+        # systemd/failover-fence.sh.skel is LINTED, not shipped: repo-only skeleton (v0.7 Block 5),
+        # installed by nothing, excluded from SHA256SUMS — linting keeps its bash real while inert.
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -S error solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh tests/lib/harness.sh
+          shellcheck -S error solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh tests/lib/harness.sh systemd/failover-fence.sh.skel
 
   facts:
     name: claims match reality (suite count, wall-clock/patsub pins, checksums)

@@ -1,0 +1,86 @@
+# SKELETON (v0.7 Block 5) — installed ONLY by the `failover arm` ceremony (not yet shipped);
+# NOTHING in this repository installs units. The Block-5 entry blocker (all four nodes on
+# v0.6.10+) gates the first real installation.
+#
+# The monitor under the NATIVE systemd watchdog (DESIGN-v0.7-ADDENDUM §2.2/§2.6 +
+# design-records/research-systemd-watchdog.md). It replaces nothing today: the shipped v0.6.x
+# unit (solana-failover.service — Type=simple, Restart=always, no watchdog) keeps running
+# everywhere until `failover arm` performs the switch on a host that passed the entry blocker.
+#
+# WIRING CHOICE (per the Block-5 spec, justified): OnFailure= lists BOTH fence units as PLAIN
+# units — no @-template (the fence needs no instance parameter; %n would only decorate page
+# text). This keeps the monitor unit IMMUTABLE across arm states: `failover arm` never edits it,
+# so arm-state lives ENTIRELY in which fence unit file exists (§2.3: arm-state IS which of the
+# two fence units is installed — one source of truth, byte-aligned with the daemons'
+# _fence_unit_state classifier). ⚠️ UNVERIFIED ASSUMPTION (reviewer, 2026-08-20 — verify in a
+# real-systemd container BEFORE Block 5 proper; never accept on reasoning, the gate-B class):
+# "systemd enqueues each OnFailure= job independently and ignores a listed unit that is not
+# installed (logged, not fatal)". This assumption is LOAD-BEARING IN ANY DESIGN, not only the
+# two-unit list: on every un-armed host OnFailure= names a unit that does not exist. The
+# §2.1-rev2.1 arm-time probe physically demonstrates the dispatch on THIS host before any armed
+# state exists — the probe (and the container check above), not this comment, is what proves the
+# wiring live. BOTH fence units present is an arm-ceremony
+# bug state: the daemons classify it as `real` (fail toward the №1 refusal), and the real
+# fence's outcome dominates (the page-only unit mutates nothing by construction).
+
+[Unit]
+Description=Solana failover monitor (v0.7, native-watchdog fenced)
+Documentation=https://github.com/zimone91/solana-validator-failover
+After=network-online.target
+# R8 (research record, assumption 2 — THE sharp edge): OnFailure= fires ONLY on the terminal
+# `failed` state. With ANY restarting Restart= the unit cycles active→activating and NEVER
+# reaches `failed` until the start limit is exhausted (systemd #34023/#27594) — the fence would
+# simply never run. The pair Restart=no (below) + StartLimitIntervalSec=0 is THE load-bearing
+# difference from a naive unit: the FIRST missed pet drives this unit to `failed` and
+# dispatches the fence, deterministically, in one hop.
+OnFailure=solana-failover-fence.service solana-failover-fence-page-only.service
+StartLimitIntervalSec=0
+
+[Service]
+# §2.6 (rev3/№6): Type=notify + NotifyAccess=main + the daemon's OWN shell PID writing
+# datagrams to $NOTIFY_SOCKET via socat — the SOLE armed transport in v0.7 (no C shim, no
+# systemd-notify in armed mode). The socat datagram carries the main PID's SCM_CREDENTIALS,
+# which defeats the pre-257 fork-and-exit attribution race (sd_notify(3): the pidfd/MAINPIDFD=
+# fix is "Added in version 257"; every current target ships 249–255). On systemd >= 257
+# systemd-notify becomes a full zero-dependency transport and `failover arm` may prefer it
+# there — referenced only, not implemented in v0.7 (research record, assumption 1).
+Type=notify
+NotifyAccess=main
+# BLOCK5-PROPER: `failover arm` writes the role's daemon here (solana-primary-failover.sh or
+# solana-standby-failover.sh) — the skeleton deliberately does not guess a role, and the
+# <role> placeholder keeps this file uninstallable as-is.
+ExecStart=/opt/solana-failover/solana-<role>-failover.sh
+EnvironmentFile=/opt/solana-failover/failover.env
+# §2 derivation (addendum §3a.3: timing constants live in ONE derivation table, never scattered):
+# 30 s tolerates one lost datagram at the <= WatchdogSec/2 pet cadence (pet every ~10–15 s,
+# research record assumption 1) and stays inside every cross-node bound the spare's timers
+# assume. R15: WatchdogSec is enforced by PID 1 on CLOCK_MONOTONIC — immune by construction to
+# the NTP-step class that defeated the old wall-clock fence (AUDIT-5). Shortening it is a
+# false-fire-rate trade, gated on the measured E2E rate (§3.4) — never asserted.
+WatchdogSec=30
+# §2.2 (BLOCKER-2, rev-2 — the reboot-brick fix): the daemon sends READY=1 ONLY after its first
+# successful identity read; pre-READY the watchdog is unarmed and the daemon extends startup
+# honestly, sending EXTEND_TIMEOUT_USEC each cycle WHILE it can positively confirm the
+# validator is up in startup/replay (process alive + admin socket / health answering
+# "starting"). A wedged monitor stops extending → timeout → fence; a long replay extends
+# honestly. This replaces the rev-1 static TimeoutStartSec guess (a replay longer than the
+# guess would have fenced a healthy validator mid-replay — the reboot brick with a 20-minute
+# fuse). EXTEND_TIMEOUT_USEC is supported since systemd 236 — all targets.
+#
+# R8 (load-bearing, see the [Unit] comment): NEVER a restarting policy on this unit. Post-fence
+# restart of the monitor is the FENCE's explicit action (two marker states, §2.2), not PID 1's.
+Restart=no
+# Watchdog expiry sends SIGABRT (the default — explicit for audit; research record assumption
+# 4). A bash monitor has nothing to core-dump: TimeoutAbortSec=5s SIGKILLs a SIGABRT-ignoring
+# monitor fast so the unit settles into `failed` (and thus the fence) without delay. The daemon
+# must NOT trap/ignore SIGABRT.
+WatchdogSignal=SIGABRT
+TimeoutAbortSec=5s
+User=root
+LimitNOFILE=1000000
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=solana-failover-monitor
+
+[Install]
+WantedBy=multi-user.target

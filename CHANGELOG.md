@@ -5,6 +5,30 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Block 5 skeleton — systemd unit skeletons + the ONE-arm-state refusal (№1)**. `systemd/` now
+  carries the v0.7 fence topology as repo-only `.skel` files: the monitor under the native
+  watchdog (`Type=notify`, `WatchdogSec=30`, `NotifyAccess=main` with socat main-PID pets as the
+  sole armed transport §2.6, and the load-bearing R8 pair `Restart=no` +
+  `StartLimitIntervalSec=0` so the FIRST missed pet reaches terminal `failed` and dispatches
+  `OnFailure=`), the REAL fence unit (§2.5 stale-write barrier ladder mapped verbatim; §2.2
+  third identity branch; the two outcome markers `fenced-stopped`/`fenced-demoted`), the
+  PAGE-ONLY fence unit (§2.3 structural DRY_RUN — arm-state IS which of the two fence units is
+  installed), and the fence script skeleton (ladder structure + failure directions real now,
+  every branch labeled toward stop/page; mechanism behind `# BLOCK5-PROPER:` seams that page +
+  fail — executing it can never stop, mask, kill, or demote anything). **NOTHING INSTALLS
+  THESE**: no code path writes `/etc/systemd/system` or runs `systemctl` for them; they are
+  outside `SHA256SUMS` and every CI ship glob (the `.sh.skel` is shellcheck-LINTED only).
+  Installation is the future `failover arm` ceremony, gated on the Block-5 entry blocker (all
+  four nodes confirmed on v0.6.10+). Both daemons gain the §2.3 [rev3/№1] startup check
+  (byte-identical `_fence_unit_state` + `_enforce_one_arm_state`): `DRY_RUN=true` + REAL fence
+  unit installed → **refuse to start** + CRITICAL page naming both alignment paths (re-run
+  `failover arm` to install the page-only fence, or set `DRY_RUN=false` if arming was intended);
+  `DRY_RUN=false` + page-only → WARN (v0.6.x behavior, the §2.3 third row — acceptable);
+  classification is pure `test -e` on the two canonical unit paths (BOTH present = `real`, fail
+  toward the refusal; no systemctl on the startup path), and `none` — no fence unit exists,
+  every host today — keeps the check **structurally inert**. No new env knobs. New suite
+  `tests/test_one_arm_state.sh` (45 suites).
+
 - **Alpenglow feature-gate tripwire** (both daemons, pre-Block-4 №9): agave 4.2.1 ships the entire
   votor/BLS machinery dormant, runtime-gated on the on-chain `alpenglow` feature — on activation
   `set-identity` demands a vote-history file by default (a direct hit on the deliberate

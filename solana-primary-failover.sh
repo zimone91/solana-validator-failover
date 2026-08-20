@@ -1634,6 +1634,70 @@ _validator_pid() {
     printf '%s' "$p"
 }
 
+# ── [one-arm-state] shared classifier + startup refusal — BYTE-IDENTICAL in both daemons (test_one_arm_state) ──
+# v0.7 (Block 5 skeleton, №1): after Block 5 there are TWO arm-states — DRY_RUN in the env, and
+# WHICH fence unit file is installed (§2.3: arm-state IS which unit — structural, never an env
+# flag). The two canonical paths are written ONLY by the future `failover arm` ceremony; NOTHING
+# in this repository installs them, so on every host today (and on the macOS harness) neither
+# path exists, _fence_unit_state answers "none", and the refusal below is STRUCTURALLY INERT.
+FENCE_UNIT_REAL="/etc/systemd/system/solana-failover-fence.service"
+FENCE_UNIT_PAGE_ONLY="/etc/systemd/system/solana-failover-fence-page-only.service"
+
+# Echoes one of none|page-only|real. Pure `test -e` file classification — NO systemctl on this
+# path (it runs at every startup, on bash 3.2 + macOS in the harness, and a hung systemctl must
+# never wedge startup). page-only wins ONLY if the real unit is absent; BOTH present = `real` —
+# an ambiguous arm state must fail TOWARD the №1 refusal (§2.3: ambiguity → inert + page), never
+# toward "page-only" while a unit that can actually stop a validator sits installed.
+_fence_unit_state() {
+    if [[ -e "$FENCE_UNIT_REAL" ]]; then
+        echo "real"
+    elif [[ -e "$FENCE_UNIT_PAGE_ONLY" ]]; then
+        echo "page-only"
+    else
+        echo "none"
+    fi
+}
+
+# v0.7 (Block 5 skeleton, №1): ONE arm-state, enforced at startup (§2.3 [rev3/№1]). The deadly
+# combination is DRY_RUN=true + the REAL fence unit: the fence can stop a LIVE validator while
+# the operator believes the system inert — and it arises from exactly the gesture README teaches
+# (sed -i DRY_RUN back to true "to switch off for a while"). Project rule: ambiguity → inert +
+# page — REFUSE to start (the №3/unstaked-uniqueness fatal class) + CRITICAL page (the
+# UNKNOWN-IDENTITY channel) naming BOTH alignment paths. DRY_RUN=false + page-only fence is the
+# §2.3 table's third row — v0.6.x behavior, explicitly acceptable: WARN, not fatal. Every other
+# combination is silent (normal). Inert wherever no fence unit exists (every host today).
+_enforce_one_arm_state() {
+    local _fus
+    _fus=$(_fence_unit_state)
+    if [[ "$DRY_RUN" == "true" && "$_fus" == "real" ]]; then
+        log_error "FATAL: DRY_RUN=true but the REAL fence unit is installed ($FENCE_UNIT_REAL) — the fence can stop a live validator while the operator believes the system inert. REFUSING TO START (ambiguity → inert + page, §2.3). Align the arm-states: re-run 'failover arm' to install the page-only fence, or set DRY_RUN=false if arming was intended."
+        alert "DRY_RUN=true + REAL fence unit installed — the fence can STOP a live validator while the operator believes the system inert. REFUSING TO START until the arm-states align: re-run 'failover arm' to install the page-only fence, or set DRY_RUN=false if arming was intended." "${STAKED_PUBKEY:-unknown}" "ONE ARM-STATE VIOLATION — REFUSING TO START 🚨"
+        # v0.7 (Block 5 skeleton, reviewer fix): this daemon EXITS below — the pending-alert queue
+        # drains ONLY in the main loop we are refusing to enter, so an undelivered page would sit
+        # queued FOREVER (the next start refuses and queues again), and the refusal would be MUTE
+        # on exactly the entry-blocker hosts (bash 5.2 pre-v0.6.10: Telegram delivery itself
+        # broken). One bounded retry, then the journal states the OUTCOME — on a refusing daemon
+        # journalctl is the only durable record, and it must say whether the push happened, not
+        # merely that it was attempted. (The starvation page and TRIPWIRE BLIND re-ring from the
+        # RUNNING loop; this path gets one shot — hence the explicit delivery check.)
+        if [[ -n "$_pending_alert" ]]; then
+            sleep 2
+            flush_pending_alerts
+        fi
+        if [[ -n "$_pending_alert" ]]; then
+            log_error "CRITICAL page NOT delivered — queued, but this daemon refuses to start and will not drain the queue; journalctl is your only record of this refusal."
+        else
+            log_error "CRITICAL page delivered (or Telegram not configured) — refusing to start."
+        fi
+        exit 1
+    fi
+    if [[ "$DRY_RUN" != "true" && "$_fus" == "page-only" ]]; then
+        log_warn "⚠️ [one-arm-state] fence is page-only — v0.6.x behavior: the daemon can take identities but the holder is not fenced (§2.3 third row, acceptable). Re-run 'failover arm' to install the real fence when the fleet is ready."
+    fi
+    return 0
+}
+# ── [one-arm-state] end shared block ──
+
 # v0.6.8 (B1): the demote admin-socket call wedged (timed out). The self-fence's contract is that the
 # staked identity STOPS voting even when set-identity cannot run — so escalate to a HARD STOP of the
 # validator process (the safe direction: a dead validator cannot double-sign). Gated by SELF_FENCE_HARD_STOP.
@@ -2371,6 +2435,8 @@ startup_checks() {
     validate_numeric_config   # v0.6.5 (F4): reject/normalize all remaining numeric knobs
 
     announce_config_drift     # v0.7 (Block 3, slice 3.5): env safety knobs laxer than THIS version's defaults — one line each (visibility, never force)
+
+    _enforce_one_arm_state    # v0.7 (Block 5 skeleton, №1): refuse DRY_RUN=true + REAL fence unit — CRITICAL + exit 1; structurally inert while no fence unit exists (every host today)
 
     # v0.6.9 (M8): TIER2/TIER3 vantage-independence. Identical URLs silently void every "two vantages"
     # assumption (A6, the liveness fence's fallback independence, the tiered confirmations). Warn loudly

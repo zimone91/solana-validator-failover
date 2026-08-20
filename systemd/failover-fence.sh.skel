@@ -1,0 +1,173 @@
+#!/bin/bash
+# SKELETON (v0.7 Block 5) — installed ONLY by the `failover arm` ceremony (not yet shipped);
+# NOTHING in this repository installs units. The Block-5 entry blocker (all four nodes on
+# v0.6.10+) gates the first real installation.
+#
+# The REAL fence body — dispatched by solana-failover-fence.service when the monitor unit
+# reaches terminal `failed` (first missed watchdog pet). THIS SLICE fixes the STRUCTURE and the
+# FAILURE DIRECTIONS; every mechanism sits behind a `# BLOCK5-PROPER:` seam and, until filled,
+# returns "not implemented" + page. Executing this skeleton can therefore page and (in
+# unreachable-today success paths) write a marker — it can NEVER stop, mask, kill, or demote
+# anything: no such call exists outside the unfilled seams.
+#
+# Failure-direction rule (every branch below labels its direction): toward stop/page, NEVER
+# toward silently-staked.
+#
+# bash 3.2-safe; same interpreter discipline as the daemons (no namerefs, no assoc arrays, no
+# backslash continuation inside [[ ]]).
+
+# bash 5.2+ patsub_replacement guard — the v0.6.10 alert-death class (see the daemons' header).
+shopt -u patsub_replacement 2>/dev/null || true
+
+# ── constants ───────────────────────────────────────────────────────────────────────────────────
+# §2.2: the outcome marker the restarted monitor reads. Only TWO outcome values exist
+# (fenced-stopped / fenced-demoted); a fence that achieved neither writes NO marker and exits
+# non-zero (the unit's `failed` state + the CRITICAL page are the record — inventing a third
+# marker would silently grow the monitor's state machine).
+MARKER_FILE="${MARKER_FILE:-/opt/solana-failover/fence.outcome}"
+MONITOR_UNIT="${MONITOR_UNIT:-solana-failover-monitor.service}"
+
+# stderr, deliberately: several callers run inside $(…) capture (e.g. the identity read), and a
+# stdout page would be swallowed into the captured value instead of reaching the journal. The
+# unit routes StandardError=journal.
+_fence_log() { printf '[failover-fence] %s\n' "$*" >&2; }
+
+# ── BLOCK5-PROPER seams (mechanism arrives with Block 5 proper; structure is final NOW) ─────────
+
+_fence_page() {
+    # BLOCK5-PROPER: reuse the daemons' Telegram/webhook senders (env is present via the unit's
+    # EnvironmentFile). Until filled: journal only — a fence page is never silently swallowed,
+    # and the journal line survives for the operator either way.
+    _fence_log "PAGE(stub): $*"
+}
+
+_not_implemented() {
+    # Every unfilled mechanism lands here: page + FAIL the step. Direction: a missing mechanism
+    # reads as doubt → the caller falls toward stop/page, never toward silently-staked.
+    _fence_page "fence mechanism '$1' NOT IMPLEMENTED (Block 5 skeleton) — treating the step as FAILED"
+    return 1
+}
+
+# BLOCK5-PROPER: VALIDATOR_UNIT read from the validator process's cgroup (/proc/<pid>/cgroup) —
+# kills the hard-coded solana.service (a box named sol.service would make a name-guessing stop a
+# silent no-op; addendum §1). Until filled: no guess — a stop against a guessed unit name that
+# no-ops silently is exactly the failure this seam exists to prevent.
+# shellcheck disable=SC2329  # uninvoked UNTIL Block 5 proper wires it into _stop_validator/_validator_unit_active
+_detect_validator_unit() { _not_implemented "detect-validator-unit(cgroup)"; }
+
+# BLOCK5-PROPER: per-op watchdog pet — each ladder op notifies the transport so one wedged admin
+# call cannot silently eat the whole fence budget (§5 Block-5 line: per-op pets). No-op until
+# filled (a missing pet can only make the fence LOUDER/earlier, never staked).
+_fence_pet() { :; }
+
+# BLOCK5-PROPER: crash-loop breaker — a fence that itself crash-loops must degrade to page +
+# stop-fallback, never into a mutation loop (§5 Block-5 line). No-op until filled.
+_crash_loop_guard() { :; }
+
+# BLOCK5-PROPER: bounded admin-socket identity read (the daemons' get_local_identity class),
+# echoing the current identity pubkey. rc!=0 = unreadable.
+_read_identity() { _not_implemented "read-identity"; }
+
+# BLOCK5-PROPER: `systemctl is-active` on the DETECTED unit (bounded; the only read-only
+# systemctl the fence performs).
+_validator_unit_active() { _not_implemented "validator-unit-active"; }
+
+# BLOCK5-PROPER: startup-phase evidence (§2.2 third branch): admin socket / health answering
+# "starting". rc 0 ONLY on positive evidence — absence of evidence is NOT evidence of startup.
+_startup_phase_evidence() { _not_implemented "startup-phase-evidence"; }
+
+# BLOCK5-PROPER: the three admin-socket ops of the §2.5 ladder (bounded, per-op pets).
+_admin_remove_all() { _not_implemented "authorized-voter remove-all"; }
+_admin_set_identity_unstaked() { _not_implemented "set-identity <unstaked>"; }
+
+# BLOCK5-PROPER + [rev3/№5]: SUSTAINED identity re-poll over several seconds — NOT one read (a
+# delivered-but-unanswered stale write can land after a single verify). The window is an
+# EMPIRICAL FLOOR set by the Block-10 delayed-request measurement; PROVISIONAL until that lands
+# (per §3a.3: time constants are derived or explicitly labeled empirical, never silently
+# asserted). rc 0 ONLY if the identity stayed unstaked for the whole window.
+_sustained_identity_repoll() { _not_implemented "sustained-identity-repoll(EMPIRICAL floor, Block 10)"; }
+
+# BLOCK5-PROPER: stop+mask with the H2 discipline (stop → mask --runtime on failure → SIGTERM →
+# SIGKILL → verify + delayed re-verify against Restart=always resurrection). rc 0 ONLY when the
+# validator is provably DOWN.
+_stop_validator() { _not_implemented "stop-validator(H2 stop+mask+verify)"; }
+
+# BLOCK5-PROPER: restart the monitor unit (the fence's LAST act in every outcome — §2.2: the
+# restarted monitor reads the marker and enters HOLD or demoted monitoring).
+_restart_monitor() { _not_implemented "restart-monitor(${MONITOR_UNIT})"; }
+
+# ── outcome marker (§2.2 — the only two values) ─────────────────────────────────────────────────
+_write_marker() {
+    # $1 = fenced-stopped | fenced-demoted ; $2 = reason
+    printf '%s %s %s\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$2" > "$MARKER_FILE" \
+        || _fence_page "could not write marker '$1' to $MARKER_FILE — restarted monitor will see NO marker (treat as unfenced: page-and-hold on its own evidence)"
+}
+
+# ── §2.5 demote ladder (Lever 2) — order load-bearing ───────────────────────────────────────────
+_demote_ladder() {
+    # remove-all FIRST closes the one-vote window (reversing the first two ops reopens it —
+    # source-verified demote order, addendum §0 TL;DR). Direction on EVERY failure: rc 1 → the
+    # caller's stop-fallback. Never "assume it worked".
+    _fence_pet; _admin_remove_all            || return 1   # direction: doubt → stop-fallback
+    _fence_pet; _admin_set_identity_unstaked || return 1   # direction: doubt → stop-fallback
+    # Expected-and-benign here (§2.5): fence-issued set-identity can make the replay loop exit
+    # the process on tower-reload failure; under Restart=always it returns on the
+    # install-enforced unstaked --identity. Process-gone is a DEMOTE OUTCOME, not an error.
+    _fence_pet; _admin_remove_all            || return 1   # the LATE-VOTER-ADD BARRIER (stale-write §2.5)
+    _fence_pet; _sustained_identity_repoll   || return 1   # EMPIRICAL floor [rev3/№5]; any doubt → stop-fallback
+    return 0
+}
+
+# ── stop-fallback (the terminal safe direction) ─────────────────────────────────────────────────
+_stop_fallback() {
+    local why="$1"
+    if _stop_validator; then
+        _write_marker fenced-stopped "$why"
+        # §2.2: restarted monitor enters HOLD — no watchdog re-arm, one CRITICAL page, quiet.
+        _fence_page "FENCED (stopped): $why — validator STOPPED+verified. Monitor restarting into HOLD; recover with unmask+start ONLY after confirming no spare holds the identity."
+        _restart_monitor || _fence_page "monitor restart failed after fenced-stopped — node is DOWN and UNMONITORED; intervene now"
+        exit 0
+    fi
+    # Even the stop failed: NO outcome marker (there was no fence outcome — see the MARKER_FILE
+    # comment), LOUDEST page, exit non-zero so the fence unit itself shows `failed`. The monitor
+    # is still restarted: live monitoring + its own self-fence paths are strictly safer than a
+    # dead monitor next to a possibly-staked validator. Direction: page, never silently-staked.
+    _fence_page "FENCE FAILED: $why — could NOT stop the validator; the staked identity may STILL BE VOTING. INTERVENE NOW (stop the validator by hand)."
+    _restart_monitor || _fence_page "monitor restart ALSO failed — dead monitor next to a possibly-staked validator; intervene now"
+    exit 1
+}
+
+# ── main: the §2.2 identity verdict (three branches) ────────────────────────────────────────────
+main() {
+    _crash_loop_guard
+
+    local ident
+    if ident=$(_read_identity); then
+        _fence_log "identity readable ($ident) — Lever-2 demote ladder (§2.5)"
+        if _demote_ladder; then
+            _write_marker fenced-demoted "monitor watchdog failure; ladder verified sustained-unstaked"
+            # §2.2: validator RUNNING, unstaked — restarted monitor enters normal demoted-holder
+            # monitoring (READY on first read, watchdog re-armed, marker cleared on first clean
+            # cycle); the running node keeps re-advertising the flip (what the spare's G2 reads).
+            _fence_page "FENCED (demoted): validator running UNSTAKED, verified over the sustained window. Monitor restarting into demoted monitoring."
+            _restart_monitor || _fence_page "monitor restart failed after fenced-demoted — demoted node UNMONITORED; intervene"
+            exit 0
+        fi
+        _stop_fallback "demote ladder failed/doubtful"           # direction: doubt → stop
+    else
+        if _validator_unit_active && _startup_phase_evidence; then
+            # §2.2 THIRD BRANCH: unreadable BUT active WITH positive startup-phase evidence ⇒
+            # page + restart monitor, NO stop (a healthy validator mid-replay must not be
+            # fenced — the reboot-brick fix). Deliberately NO marker: this is not a fence
+            # outcome; the restarted monitor resumes pre-READY extension per §2.2.
+            _fence_page "identity unreadable but validator ACTIVE with startup-phase evidence — NOT stopping (§2.2 third branch); restarting monitor into pre-READY extension"
+            _restart_monitor || _fence_page "monitor restart failed on the third branch — validator in startup, UNMONITORED; intervene"
+            exit 0
+        fi
+        # Unreadable with NO positive startup evidence: fail toward stop (§2.2 — the verdict for
+        # unreadable-with-no-startup-evidence remains stop).
+        _stop_fallback "identity unreadable, no startup-phase evidence"
+    fi
+}
+
+main "$@"
