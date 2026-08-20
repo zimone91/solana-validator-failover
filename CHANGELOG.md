@@ -5,6 +5,100 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Block 5.2 panel fix round** (5-lens adversarial verification panel; folded into the Block
+  5.2 commit — every fix red-first, every panel mutant re-killed, every attack scenario re-run).
+  **FF-B1 (false-fence blocker):** the wedged-demote paths now pet their COMPLETED timed-out
+  ops — a `timeout` rc 124/137 return IS a completed bounded op (the monitor is alive and
+  remediating): the primary's `switch_to_unstaked` rc-124 branches pet BEFORE entering
+  `_selffence_hard_stop`, the standby's `give_back_identity` branches pet before
+  `_giveback_wedged_escalate`, and the escalate's own identity re-read is petted. Panel's
+  measured pet-free stacks: PRIMARY 40 s → 20 s, STANDBY 48 s → 20 s (attack_petgap2 re-run),
+  both < WatchdogSec 30 with margin. The N-is-all audit over the whole class (every
+  early-return/branch after a ≥ 5 s-bound op) closed 11 more sites: primary
+  `tier1_check_delinquency` / `tier1_get_vote_latency` ×2 / `_check_rpc_delinquency` /
+  `_check_single_rpc` ×3, standby `tier1_check_local_health` / `local_check_delinquency` /
+  `tier2_check_delinquency` / `tier3_confirm_delinquency` (capture-rc-then-pet idiom), and
+  converted every loop-top pet (liveness sampler, alpenglow fetch, collision/gossip/relinquish
+  loops, both daemons) to post-op placement so the loops' final reads are covered on every
+  exit. **FF-B2:** the tiered checks' unreachable paths pet their completed 15 s curls —
+  both-externals-hanging confirm: 30 s/0 pets → max gap 15 s (re-run). **FF-B3 + HOLD-B1:**
+  all 11 main-loop/HOLD `sleep` sites route through `_watchdog_sleep` (chunked ≤ 10 s + a pet
+  per chunk under the armed unit; byte-identical plain sleep un-armed — asserted): ANY legal
+  `CHECK_INTERVAL`/`TURBO_INTERVAL` is now armed-safe — no interval ceiling needed; the A3
+  comment no longer leans on the 3–5 s defaults, and it names the primary's opt-in
+  MAX_VOTE_LATENCY>0 term (2 × 10 s, per-op petted). **FF nits:** the wait loop re-sends
+  EXTEND immediately BEFORE and AFTER the one-time H3 alert (the composed flap+alert 72 s
+  EXTEND→EXTEND trace closes to 52/33 s < 60, re-run); armed-only throttled re-page while the
+  pre-READY wait extends ("validator still in startup after Ns; protection not yet active" —
+  un-armed hosts unchanged); the monitor skel's WatchdogSec comment now carries the honest
+  ≈ 22 s max-gap figure (the "~10–15 s cadence, tolerates one lost datagram" claim
+  contradicted the daemons' own derivation) and pins `TimeoutStartSec=90s` (= the systemd
+  default) so the part-D no-EXTEND-sent bound is stated where it binds; the honest pet
+  call-site count is pinned structurally in the suite: 34 per-op/end-of-cycle call sites in
+  the primary, 35 in the standby (`grep -cE '^[[:space:]]*_watchdog_pet\b'` minus the
+  definition line — the earlier "36 per daemon" figure counted the definition + a comment).
+  **HOLD fixes:** `_consume_fence_markers` now runs FIRST in `startup_checks` — before EVERY
+  fatal gate (binary/keypair/one-arm/numeric/vote-liveness), so a fenced node parks in HOLD
+  instead of looping a fatal exit-1 through OnFailure → fence-breaker → restart (suite-driven,
+  both daemons; the HOLD loop sanitizes CHECK_INTERVAL locally since numeric validation now
+  runs later); the fence script's HOLD comments and `systemd/README.md` now state the
+  IMPLEMENTED HOLD (READY=1 + continuous pets + throttled re-page — explicitly superseding
+  addendum §2.2's original "no watchdog re-arm, one CRITICAL page, quiet" wording, with both
+  counterfactual directions traced in README), and the daemons' HOLD comment carries the same
+  supersession line; the stale-marker branch re-checks existence before paging (a marker
+  cleared mid-check → silent normal startup, no lying "stale marker present" page).
+  **Comment-truth:** `systemd/README.md` transport section rewritten to the implemented truth
+  (socat-CHILD datagrams + `MAINPID=$$` payload claim + `NotifyAccess=all`; the old
+  "main-PID datagrams"/"NotifyAccess=main" wording would produce the functionally-dead unit
+  class). **Test honesty (killing the panel's four surviving mutants):** `drive_hold` stubs
+  17+ monitoring/takeover entrypoints as bait and case (7) asserts ZERO fire in HOLD (M6a/M6b
+  now red); a primary drive-cycle case covers the primary's first-clean-cycle fenced-demoted
+  clear (M7-primary now red); end-of-cycle pet CALL-line counts (5/4) and TOTAL pet call-site
+  counts (35/36 incl. definitions) are pinned structurally — a call deleted or `:`-neutered
+  under its kept comment trips the pin (the M1b class now red); a full non-delay cycle with
+  the №8 lever ON asserts ZERO voter adds (M11x now red); the suite's inertness grep widened
+  to socat|NOTIFY_SOCKET|WATCHDOG_USEC|READY=1|WATCHDOG=1|EXTEND_TIMEOUT_USEC in code outside
+  the [watchdog] block; the red-log provenance note records that the archived red predates the
+  final suite revision (identical per-case outcome set re-verified). The primary's dead-but-
+  parity-kept `boolf` drift branch is annotated (twin discipline over dead-code purity).
+  Suite grows 44 → 60 checks; the panel's M1–M11x battery re-run post-fix: 15/15 mutants red.
+- **Block 5.2 — monitor-side fence integration** (installed by nothing; structurally inert on
+  every host today — every mechanism activates only under the Block-5 systemd unit, i.e. when
+  PID 1 exports `NOTIFY_SOCKET`+`WATCHDOG_USEC`, or when a fence outcome marker exists; both
+  asserted by the new suite incl. a zero-inertness grep-proof). **Transport (§2.6):** sd_notify
+  datagrams via the research record's `socat -t0` pattern with the `MAINPID=$$` claim; the
+  monitor unit skeleton moves to `NotifyAccess=all` (honesty fix: socat is a forked child — its
+  credentials are not the main PID's). **Per-op pets (§5):** `WATCHDOG=1` after every bounded
+  network/admin op completes plus an end-of-cycle pet; every ≥ 15 s AND every main-loop/HOLD
+  inter-cycle sleep is chunked through `_watchdog_sleep` (fix round); the WatchdogSec=30
+  arithmetic is derived in-code (max inter-pet gap ≈ 22 s at zero datagram loss;
+  the one-lost-datagram residual across a maximal 20 s op is named, not hidden); a pet NEVER
+  fires between an op's start and completion — wedge detection is the pets' absence, and a
+  timeout RETURN (rc 124/137) counts as completion (fix round).
+  **Startup (§2.2 B):** `READY=1` only after the first successful identity read; pre-READY the
+  wait loop sends `EXTEND_TIMEOUT_USEC=60000000` (2× the iteration's worst-case bound, derived)
+  each iteration WHILE the validator is positively in startup/replay — process alive AND the
+  fence's own startup-evidence probe, carried into the daemons as a byte-identical twin, so
+  daemon and fence share ONE evidence definition. **Markers (§2.2 C):** same-boot
+  `fenced-stopped` → HOLD (CRITICAL page + re-page per `ALERT_THROTTLE`, READY+pets — the one
+  documented B1 exception — zero monitoring logic; the operator's clear → exit 0 for a clean
+  restart under Restart=no); stale (pre-boot) → page once + monitor normally (same-boot
+  semantics at both ends); `fenced-demoted` (any age) → normal demoted monitoring, marker
+  cleared on the first clean cycle; the page-only twin's marker is ignored;
+  `_marker_same_boot` is a daemon↔fence byte-parity twin (suite-visible divergence).
+  **Part D:** the third-branch dispatch loop analyzed at the extension site — the shared
+  evidence definition closes it (stable no-evidence terminates on the SECOND dispatch, driven
+  as a two-dispatch test; the flap case is rate-bounded and loud, never stops the validator,
+  and deliberately gets no counter). **№8 (STANDBY only, DEFAULT-OFF, live-test-gated):**
+  `PREWARM_VOTER_ADD=false` — when true, ONE bounded `authorized-voter add` per episode inside
+  the takeover delay window + `remove-all` hygiene on episode reset (never while holding
+  staked); off/DRY_RUN = zero admin calls (asserted); drift-announced via the new `boolf`
+  direction with the live-test-gate wording. New suite
+  `tests/test_monitor_fence_integration.sh` (44 checks; 60 after the fix round — mutation
+  controls, structural pins, twin parity); suite
+  count 46 → 47; CI wall-clock pins 19→20/20→21 (the one new site per daemon is the
+  `_marker_same_boot` twin — mtime/boot-epoch comparisons are inherently wall-clock, not a
+  timer); `test_demote_killafter` census 8 → 9 (the bounded startup-evidence probe).
 - **Block 5.1 panel fix round** (5-lens adversarial verification panel; blockers B1/B2/B3 +
   every nit — folded into the Block 5.1 commit). **B1 (double-sign blocker):** the crash-loop
   breaker now honors a `fenced-stopped` marker only if it is from the SAME BOOT (boot epoch =

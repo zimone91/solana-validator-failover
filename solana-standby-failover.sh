@@ -259,6 +259,17 @@ STANDBY_TAKEOVER_DELAY=""
 # STANDBY_TAKEOVER_DELAY to the STANDBY's (smaller) delay. A zero floor without this true ⇒ DISABLED (fail-closed).
 WITNESS_FASTPATH_FIRST_SPARE=false
 
+# v0.7 (Block 5.2, №8 — DEFAULT-OFF, LIVE-TEST-GATED): pre-warm `authorized-voter add <staked>`
+# during the takeover delay window, so the eventual take collapses to a single admin call and
+# the "identity applied, voter-add wedged" limbo disappears. Vote-inert by source while the
+# identity is unstaked (gate B returns HotSpare — the same posture as the official Anza guide),
+# BUT that claim is about agave internals on the double-sign path — so per addendum §3/№8 this
+# ships false and STAYS false until a live testnet window shows a spare with the staked
+# authorized voter added and an unstaked identity remaining on-chain-silent. Do not enable
+# before that observation window. Hygiene: authorized-voter remove-all on episode reset
+# (unless this node took staked — see _prewarm_reset). false = zero admin calls (assertable).
+PREWARM_VOTER_ADD=false
+
 # Local health: how many slots behind tip = unhealthy (skip takeover)
 LOCAL_HEALTH_MAX_BEHIND=100               # if our node is >100 slots behind, don't take over
 
@@ -537,6 +548,7 @@ send_telegram() {
     result=$(curl -s -m 10 -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
         --data-urlencode "chat_id=$TG_CHAT_ID" --data-urlencode "text=$msg" -d parse_mode="HTML" 2>&1)
     local rc=$?
+    _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
     [[ $rc -ne 0 ]] && { log_warn "Telegram failed (curl $rc)"; return 1; }
     echo "$result" | jq -e '.ok' &>/dev/null || { log_warn "Telegram API error"; return 1; }
     return 0
@@ -582,6 +594,7 @@ send_webhook() {
         body=$(jq -nc --arg text "$jtext" '{text: $text}')
         curl -s -m 10 -X POST "$WEBHOOK_URL" -H "Content-Type: application/json" -d "$body" >/dev/null 2>&1 || true
     fi
+    _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
 }
 
 alert() {
@@ -674,6 +687,7 @@ window_triggered() {
 
 window_reset() {
     _starvation_note_close "window reset"   # v0.7 (B3 s4 rework): FIRST — reads FIRST_DELINQUENT_TIME before it is zeroed below
+    _prewarm_reset                          # v0.7 (Block 5.2, №8): episode over — the hygiene half (remove-all, only when NOT holding staked)
     _delinq_window=""
     FIRST_DELINQUENT_TIME=0
     LAST_LIVENESS_ACTIVE_TIME=0            # v0.6.7 (N3): reset with FIRST_DELINQUENT_TIME — fresh episode
@@ -879,12 +893,14 @@ tier1_check_local_health() {
     STAT_TIER1_HEALTH=$((STAT_TIER1_HEALTH + 1))
 
     # 1. getHealth — checks if validator is caught up (uses --health-check-slot-distance)
-    local health_result
+    local health_result _t1h_rc
     health_result=$(curl -s -m 5 "$LOCAL_RPC" -X POST \
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' 2>/dev/null)
+    _t1h_rc=$?
+    _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1 N-audit): bounded op completed (rc captured above); fires on the unreachable early-return too — no-op outside the armed unit
 
-    if [[ $? -ne 0 || -z "$health_result" ]]; then
+    if [[ $_t1h_rc -ne 0 || -z "$health_result" ]]; then
         log_warn "[TIER1] Local RPC unreachable — not ready to take over"
         return 1
     fi
@@ -935,12 +951,14 @@ tier1_check_local_health() {
 local_check_delinquency() {
     STAT_LOCAL_DELINQ=$((STAT_LOCAL_DELINQ + 1))
 
-    local vote_result
+    local vote_result _lcd_rc
     vote_result=$(curl -s -m 5 "$LOCAL_RPC" -X POST \
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts"}' 2>/dev/null)
+    _lcd_rc=$?
+    _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1 N-audit): bounded op completed (rc captured above); fires on the unreachable early-return too — no-op outside the armed unit
 
-    if [[ $? -ne 0 || -z "$vote_result" ]]; then
+    if [[ $_lcd_rc -ne 0 || -z "$vote_result" ]]; then
         return 2
     fi
     echo "$vote_result" | jq -e '.result' &>/dev/null || return 2
@@ -1092,11 +1110,14 @@ peer_has_relinquished() {
     [[ -z "$_fastpath_disabled" ]] || return 1   # v0.6.8 (S1): fail-closed when the stagger config is bad
     [[ -n "$PRIMARY_UNSTAKED_PUBKEY" ]] || return 1
     [[ "$FASTPATH_PEER_RECOVERY_MANUAL" == "true" ]] || return 1   # A4: only when peers cannot auto re-stake
-    local rpc info staked_ep pk pk_ep responders=0 vantages=0
+    local rpc info staked_ep pk pk_ep responders=0 vantages=0 _phr_rc
     for rpc in "$TIER2_RPC" "$TIER3_RPC"; do
         [[ -z "$rpc" ]] && continue
         info=$(curl -s -m 5 "$rpc" -X POST -H "Content-Type: application/json" \
-            -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' 2>/dev/null) || continue
+            -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' 2>/dev/null)
+        _phr_rc=$?
+        _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1 N-audit): bounded op completed (rc captured above) — post-op placement covers EVERY exit (parse-continue, final loop exit); no-op outside the armed unit
+        [[ $_phr_rc -eq 0 ]] || continue
         echo "$info" | jq -e '.result' &>/dev/null || continue
         responders=$(( responders + 1 ))
         # F-A: ANCHOR to the HOLDER. Read the staked identity's gossip endpoint (its lingering ~48h CRDS
@@ -1131,6 +1152,63 @@ peer_has_relinquished() {
     _fastpath_confirm=0
     return 1
 }
+
+# ── v0.7 (Block 5.2, №8) — pre-warm lever (STANDBY-only; DEFAULT-OFF, live-test-gated) ─────────
+# ONE bounded `authorized-voter add <staked>` per episode, issued inside the takeover delay
+# window (the call site in attempt_takeover's delay branch). H4 idiom (timeout -k 5, rc 124/137
+# = wedge). A failed/wedged add is logged and NOT retried this episode: the take path still
+# performs its own authorized-voter add, so a pre-warm failure costs nothing (exact v0.6.7
+# behavior) — while a per-cycle retry would hammer the same admin socket the take will need.
+# DRY_RUN issues NOTHING (the §2.3 guarantee: zero admin-socket mutations) and logs the
+# would-act once per episode. agave-only (no fdctl authorized-voter path in this tree).
+_prewarm_voter_add() {
+    [[ "${PREWARM_VOTER_ADD:-false}" == "true" ]] || return 0
+    [[ ${_prewarm_done:-0} -eq 0 ]] || return 0
+    _prewarm_done=1
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[prewarm] [DRY RUN] would pre-warm authorized-voter add (staked) — no admin call in DRY_RUN"
+        return 0
+    fi
+    if [[ "$VALIDATOR_TYPE" == "frankendancer" ]]; then
+        log_warn "[prewarm] agave-only (no fdctl authorized-voter path) — skipping"
+        return 0
+    fi
+    local out _rc
+    out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" authorized-voter add "$STAKED_KEYPAIR" 2>&1); _rc=$?
+    [[ -n "$out" ]] && log_info "[prewarm] add-voter: $out"
+    _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
+    if [[ $_rc -eq 124 || $_rc -eq 137 ]]; then
+        log_warn "[prewarm] authorized-voter add WEDGED (rc $_rc after ${SETIDENTITY_TIMEOUT}s) — not retried this episode; the take path performs its own add"
+    elif [[ $_rc -ne 0 ]]; then
+        log_warn "[prewarm] authorized-voter add failed (rc $_rc) — not retried this episode; the take path performs its own add"
+    else
+        log_info "[prewarm] authorized-voter add (staked) pre-warmed for this episode — hygiene: remove-all on episode reset"
+    fi
+    return 0
+}
+
+# №8 hygiene half: an UNSTAKED node must not keep the staked authorized voter registered past
+# the episode (the exact limbo the lever exists to remove, inverted). Fires ONLY when this
+# episode pre-warmed AND the episode ends WITHOUT this node holding staked: after a successful
+# take the voter is LIVE (removing it would stop voting — give_back_identity's own remove-all
+# owns that lifecycle), and DRY_RUN never issued the add so it never issues the remove. A
+# failed remove says the manual command out loud — an idle spare with the staked voter still
+# registered is a limbo the operator must see.
+_prewarm_reset() {
+    [[ ${_prewarm_done:-0} -eq 1 ]] || return 0
+    _prewarm_done=0
+    [[ "${PREWARM_VOTER_ADD:-false}" == "true" ]] || return 0
+    [[ "$DRY_RUN" == "true" ]] && return 0
+    [[ "$VALIDATOR_TYPE" == "frankendancer" ]] && return 0
+    [[ -n "$STAKED_PUBKEY" && "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]] && return 0
+    local out _rc
+    out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" authorized-voter remove-all 2>&1); _rc=$?
+    [[ -n "$out" ]] && log_info "[prewarm] remove-voter (episode-reset hygiene): $out"
+    _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
+    [[ $_rc -ne 0 ]] && log_warn "[prewarm] episode-reset remove-all failed (rc $_rc) — the pre-warmed staked voter may still be registered on this UNSTAKED node; run 'agave-validator --ledger ${LEDGER_PATH} authorized-voter remove-all' manually"
+    return 0
+}
+_prewarm_done=0   # №8: non-zero = this episode already pre-warmed (cleared by _prewarm_reset at episode end)
 
 # ── v0.7 (Block 3, slice 4 / AUDIT-5 S-3) — blind-cycle stamp (BYTE-IDENTICAL in both daemons) ──
 # A BLIND cycle = an ACTIVE-episode cycle in which an external observation of the holder was
@@ -1335,13 +1413,16 @@ _fresh_proof_recheck() {
 #   number). Unparsable/absent data or non-JSON → try the next tier; both tiers unusable → rc 1
 #   (the caller treats that as "unknown").
 _alpenglow_gate_fetch() {
-    local rpc result activated
+    local rpc result activated _agf_rc
     for rpc in "$TIER2_RPC" "$TIER3_RPC"; do
         [[ -z "$rpc" ]] && continue
         # the liveness sampler's curl idiom ("Cache-Control: no-cache" defeats HTTP/CDN caches)
         result=$(curl -s -m 10 "$rpc" -X POST \
             -H "Content-Type: application/json" -H "Cache-Control: no-cache" \
-            -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountInfo\",\"params\":[\"${ALPENGLOW_FEATURE_ID}\",{\"encoding\":\"jsonParsed\"}]}" 2>/dev/null) || continue
+            -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountInfo\",\"params\":[\"${ALPENGLOW_FEATURE_ID}\",{\"encoding\":\"jsonParsed\"}]}" 2>/dev/null)
+        _agf_rc=$?
+        _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1 N-audit): bounded op completed (rc captured above) — post-op placement covers EVERY exit (success return, parse-continue, final loop exit); no-op outside the armed unit
+        [[ $_agf_rc -eq 0 ]] || continue
         echo "$result" | jq -e '.result' &>/dev/null || continue
         if echo "$result" | jq -e '.result.value == null' &>/dev/null; then echo "inactive"; return 0; fi
         echo "$result" | jq -e '.result.value.data.parsed.info | type == "object"' &>/dev/null || continue
@@ -1571,7 +1652,10 @@ attempt_takeover() {
                 [[ -z "$rpc" ]] && continue
                 cluster_info=$(curl -s -m 5 "$rpc" -X POST \
                     -H "Content-Type: application/json" \
-                    -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' 2>/dev/null) || continue
+                    -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' 2>/dev/null)
+                _gpf_rc=$?
+                _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1 N-audit): bounded op completed (rc captured above) — post-op placement covers EVERY exit (hit break-out, final loop exit); no-op outside the armed unit
+                [[ $_gpf_rc -eq 0 ]] || continue
                 staked_ep=$(echo "$cluster_info" | jq -r \
                     --arg pubkey "$STAKED_PUBKEY" \
                     '.result[]? | select(.pubkey == $pubkey) | .gossip // empty' 2>/dev/null | head -1)
@@ -1584,6 +1668,7 @@ attempt_takeover() {
             [[ -z "$_gossip_result" ]] && log_info "[gossip prefetch] Staked NOT in gossip" \
                 || log_info "[gossip prefetch] Staked on $_gossip_result"
         fi
+        _prewarm_voter_add   # v0.7 (Block 5.2, №8): default-off pre-warm — ONE bounded attempt per episode, inside the delay window only
         # v0.6.2 (C1/C2) → v0.7 (Block 3, slice 4 / AUDIT-5 A9a): the vote-liveness FIRST-sample
         # capture that lived here moved ABOVE the anchor computation, so it runs on EVERY take-path
         # cycle (a late-triggering episode skips this delay branch entirely and still must pin).
@@ -1717,12 +1802,14 @@ tier2_check_delinquency() {
     local curl_timeout=15
     [[ "$_turbo_mode" == "true" ]] && curl_timeout=5
 
-    local vote_result
+    local vote_result _t2_rc
     vote_result=$(curl -s -m "$curl_timeout" "$TIER2_RPC" -X POST \
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts"}' 2>/dev/null)
+    _t2_rc=$?
+    _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B2): bounded op completed (rc captured above — the pet must not clobber $?); fires on the UNREACHABLE path too — a completed 15 s curl timeout is a completed op — no-op outside the armed unit
 
-    if [[ $? -ne 0 || -z "$vote_result" ]]; then
+    if [[ $_t2_rc -ne 0 || -z "$vote_result" ]]; then
         log_warn "[TIER2] Alchemy unreachable"
         return 2
     fi
@@ -1756,6 +1843,7 @@ tier2_check_delinquency() {
             -H "Content-Type: application/json" \
             -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' 2>/dev/null \
             | jq -r '.result // empty' 2>/dev/null)
+        _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
 
         last_vote=$(echo "$vote_result" | jq -r \
             --arg vote "$VOTE_PUBKEY" \
@@ -1780,12 +1868,14 @@ tier2_check_delinquency() {
 tier3_confirm_delinquency() {
     STAT_TIER3_CHECKS=$((STAT_TIER3_CHECKS + 1))
 
-    local vote_result
+    local vote_result _t3_rc
     vote_result=$(curl -s -m 15 "$TIER3_RPC" -X POST \
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts"}' 2>/dev/null)
+    _t3_rc=$?
+    _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B2): bounded op completed (rc captured above — the pet must not clobber $?); fires on the UNREACHABLE path too — a completed 15 s curl timeout is a completed op — no-op outside the armed unit
 
-    if [[ $? -ne 0 || -z "$vote_result" ]]; then
+    if [[ $_t3_rc -ne 0 || -z "$vote_result" ]]; then
         log_warn "[TIER3] Public RPC unreachable"
         return 2
     fi
@@ -1835,10 +1925,13 @@ check_primary_dropped_identity() {
 
     for rpc in "$TIER2_RPC" "$TIER3_RPC"; do
         [[ -z "$rpc" ]] && continue
-        local cluster_info
+        local cluster_info _cpd_rc
         cluster_info=$(curl -s -m 15 "$rpc" -X POST \
             -H "Content-Type: application/json" \
-            -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' 2>/dev/null) || continue
+            -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' 2>/dev/null)
+        _cpd_rc=$?
+        _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1 N-audit): bounded op completed (rc captured above) — post-op placement covers EVERY exit (holder-present return, parse-continue, final loop exit); no-op outside the armed unit
+        [[ $_cpd_rc -eq 0 ]] || continue
         echo "$cluster_info" | jq -e '.result' &>/dev/null || continue
         any_rpc_responded=true
 
@@ -1902,7 +1995,7 @@ check_primary_dropped_identity() {
 #     mis-clear the fence (false-ALLOW). staked_is_actively_voting treats a non-advancing reference
 #     across the interval as "RPC stalled/lagging → cannot determine → BLOCK".
 get_staked_liveness_sample() {
-    local rpc vote_result lv ref tier
+    local rpc vote_result lv ref tier _gls_rc
     # v0.7 (Block 3, slice 2 / AUDIT-5 A2): label WHICH tier answered. A liveness pair is only
     # comparable same-vantage (a lagging fallback provider can collapse a live holder's advance to
     # ≤ EPSILON → false FROZEN), so the verdict logic must know when a pair mixed providers. The
@@ -1916,7 +2009,10 @@ get_staked_liveness_sample() {
         # v0.6.2 (C1): "Cache-Control: no-cache" defeats an HTTP/CDN cache in front of the RPC.
         vote_result=$(curl -s -m 10 "$rpc" -X POST \
             -H "Content-Type: application/json" -H "Cache-Control: no-cache" \
-            -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts","params":[{"commitment":"processed"}]}' 2>/dev/null) || continue
+            -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts","params":[{"commitment":"processed"}]}' 2>/dev/null)
+        _gls_rc=$?
+        _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1 N-audit): bounded op completed (rc captured above) — post-op placement covers EVERY exit (success return, parse-continue, final loop exit); no-op outside the armed unit
+        [[ $_gls_rc -eq 0 ]] || continue
         echo "$vote_result" | jq -e '.result' &>/dev/null || continue
         lv=$(echo "$vote_result" | jq -r \
             --arg vote "$VOTE_PUBKEY" \
@@ -2088,6 +2184,7 @@ take_staked_identity() {
         timeout -k 5 "$SETIDENTITY_TIMEOUT" fdctl set-identity --config "$CONFIG_TOML" "$STAKED_KEYPAIR" --force 2>&1 | while IFS= read -r l; do log_info "fdctl: $l"; done
         _rc=${PIPESTATUS[0]}
         [[ $_rc -eq 124 || $_rc -eq 137 ]] && { take_wedged=1; log_warn "[take] fdctl set-identity timed out (${SETIDENTITY_TIMEOUT}s) — admin socket wedged; the re-read below decides what applied (fail toward NOT taking)"; }
+        _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
     else
         local out
         # v0.6.0: NO --require-tower — STANDBY never has a saved tower for the staked identity
@@ -2096,11 +2193,13 @@ take_staked_identity() {
         out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" set-identity "$STAKED_KEYPAIR" 2>&1); _rc=$?
         [[ -n "$out" ]] && log_info "set-identity: $out"
         [[ $_rc -eq 124 || $_rc -eq 137 ]] && { take_wedged=1; log_warn "[take] set-identity timed out (${SETIDENTITY_TIMEOUT}s) — admin socket wedged; the re-read below decides what applied (fail toward NOT taking)"; }
+        _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
         # v0.6.9 (H4): the voter add is attempted even after a wedged set-identity — if the take DID
         # apply, voting needs the voter registered. Its own timeout is ⚠️-only; identity state stands.
         out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" authorized-voter add "$STAKED_KEYPAIR" 2>&1); _rc=$?
         [[ -n "$out" ]] && log_info "add-voter: $out"
         [[ $_rc -eq 124 || $_rc -eq 137 ]] && { add_wedged=1; log_warn "[take] authorized-voter add timed out (${SETIDENTITY_TIMEOUT}s) — voting may not start"; }
+        _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
     fi
 
     sleep 1    # v0.5.9: reduced from 2s (agave-validator updates instantly)
@@ -2141,6 +2240,7 @@ take_staked_identity() {
 _giveback_wedged_escalate() {
     local why="$1" reason="$2"
     CURRENT_IDENTITY=$(get_local_identity) || true
+    _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1): the bounded identity re-read (timeout 8, same wedged socket) completed — without this pet the wedge stack (remove-all 20 + re-read 8 + stop 20) ran 48 s pet-free (the panel's measured C trace); no-op outside the armed unit
     if [[ -n "$UNSTAKED_PUBKEY" && "$CURRENT_IDENTITY" == "$UNSTAKED_PUBKEY" ]]; then
         log_warn "[give-back] $why — but the identity DID flip to unstaked; treating as success (verify node health)"
         window_reset
@@ -2172,6 +2272,7 @@ give_back_identity() {
     if [[ "$VALIDATOR_TYPE" == "frankendancer" ]]; then
         timeout -k 5 "$SETIDENTITY_TIMEOUT" fdctl set-identity --config "$CONFIG_TOML" "$UNSTAKED_KEYPAIR" --force 2>&1 | while IFS= read -r l; do log_info "fdctl: $l"; done
         _rc=${PIPESTATUS[0]}
+        _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1): bounded op completed — a TIMED-OUT op (rc 124/137) IS completed (`timeout` returned; the monitor is alive), so the pet fires BEFORE the wedge branch below — no-op outside the armed unit
         if [[ $_rc -eq 124 || $_rc -eq 137 ]]; then
             _giveback_wedged_escalate "fdctl set-identity to unstaked timed out (${SETIDENTITY_TIMEOUT}s) — admin socket wedged" "$reason"; return $?
         fi
@@ -2180,12 +2281,14 @@ give_back_identity() {
         # v0.6.9 (H4): bound remove-all; a hang here means the admin socket is wedged (set-identity
         # below would hang the same way) → escalate at once.
         out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" authorized-voter remove-all 2>&1); _rc=$?
+        _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1): bounded op completed — a TIMED-OUT op (rc 124/137) IS completed (`timeout` returned; the monitor is alive), so the pet fires BEFORE the wedge branch below — no-op outside the armed unit
         [[ -n "$out" ]] && log_info "remove-voter: $out"
         if [[ $_rc -eq 124 || $_rc -eq 137 ]]; then
             _giveback_wedged_escalate "authorized-voter remove-all timed out (${SETIDENTITY_TIMEOUT}s) — admin socket wedged" "$reason"; return $?
         fi
         # v0.5.9: path-as-argument (official Anza API)
         out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" set-identity "$UNSTAKED_KEYPAIR" 2>&1); _rc=$?
+        _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1): bounded op completed — a TIMED-OUT op (rc 124/137) IS completed (`timeout` returned; the monitor is alive), so the pet fires BEFORE the wedge branch below — no-op outside the armed unit
         [[ -n "$out" ]] && log_info "set-identity: $out"
         if [[ $_rc -eq 124 || $_rc -eq 137 ]]; then
             _giveback_wedged_escalate "set-identity to unstaked timed out (${SETIDENTITY_TIMEOUT}s) — admin socket wedged" "$reason"; return $?
@@ -2303,6 +2406,342 @@ _enforce_one_arm_state() {
 }
 # ── [one-arm-state] end shared block ──
 
+# ── [watchdog] monitor-side fence integration — BYTE-IDENTICAL in both daemons (test_monitor_fence_integration) ──
+# v0.7 (Block 5.2): the native-systemd-watchdog transport + pre-READY live extension + §2.2
+# fence-marker consumption (DESIGN-v0.7-ADDENDUM §2.2/§2.6, design-records/
+# research-systemd-watchdog.md, systemd/failover-fence.sh). STRUCTURALLY INERT on today's hosts,
+# by construction: every watchdog function below no-ops unless PID 1 itself exported
+# NOTIFY_SOCKET AND WATCHDOG_USEC into our environment (only the Block-5 monitor unit —
+# Type=notify + WatchdogSec — does that, and NOTHING in this repository installs it), and the
+# marker consumer acts only when a fence outcome marker actually exists under FENCE_MARKER_DIR
+# (only the real fence (5.1) writes those; nothing installs it either). A v0.6.9-style host —
+# the daemon under the old Type=simple unit, or run by hand — sees ZERO behavior change: no
+# datagram, no startup probe, no chunked sleep, no marker action beyond two [[ -e ]] tests on
+# files that do not exist there. Asserted, not asserted-in-prose: the inertness cases plus the
+# zero-inertness grep-proof (no socat/NOTIFY_SOCKET reference outside this block) live in
+# test_monitor_fence_integration.sh.
+
+# Fence marker directory — MUST match the fence script's default (systemd/failover-fence.sh):
+# the fence WRITES the §2.2 outcome markers there; this block CONSUMES them.
+FENCE_MARKER_DIR="${FENCE_MARKER_DIR:-/var/lib/solana-failover}"
+
+_WATCHDOG_READY=0              # set once READY=1 went out; pets gate on it (the watchdog arms at READY)
+_fence_demoted_pending=0       # §2.2: a fenced-demoted marker awaits its first-clean-cycle clear (main loop)
+_sd_notify_socat_logged=0      # socat-missing logged once per process
+_last_sd_notify_fail_log=0     # failed-send log throttle (mono clock)
+
+# The single activation gate for every watchdog mechanism in this block: TRUE iff PID 1 started
+# us as the Type=notify monitor unit with WatchdogSec set — systemd exports NOTIFY_SOCKET for
+# Type=notify and WATCHDOG_USEC only under WatchdogSec=, so both non-empty ⇔ under the armed
+# unit. Structurally inert outside it: today's hosts and the test harness never set these, so
+# every consumer takes its first-line return 0.
+_watchdog_active() {
+    [[ -n "${NOTIFY_SOCKET:-}" && -n "${WATCHDOG_USEC:-}" ]]
+}
+
+# One sd_notify datagram to $NOTIFY_SOCKET via socat — the systemd research record's chosen
+# armed transport, mirrored exactly (design-records/research-systemd-watchdog.md, assumption 1,
+# "Recommended concrete pet call": printf '%s' "$1" | socat -t0 - UNIX-SENDTO:"$NOTIFY_SOCKET";
+# the @-abstract case split mirrors the fence's _fence_pet — the record's could-not-verify
+# item 3). socat is unavoidably a forked CHILD of this shell, so the datagram's SCM_CREDENTIALS
+# are socat's own, not the daemon's — the record's fork-and-exit attribution race applies to it
+# as an auxiliary process on every target (the pidfd fix is systemd ≥ 257; the fleet ships
+# 249–255). Per the 5.2 spec the payload therefore carries the MainPID claim (MAINPID=$$ — the
+# daemon IS the unit's main PID, and bash expands $$ to the ORIGINAL shell's PID even inside
+# $()-subshells, so pets sent from captured helpers claim the right PID) and the monitor unit
+# sets NotifyAccess=all (without it PID 1 discards datagrams from non-main senders outright).
+# Honest residual: a datagram whose socat already exited can still be dropped by the race —
+# absorbed by the pet cadence (see _watchdog_pet's derivation), never by retry; a unix-datagram
+# send is kernel-local, not the network-loss class.
+# Bounded (timeout -k 2 5) + fire-and-forget: the rc is NEVER fatal — the watchdog FIRING is
+# the failure semantics; a failed send logs at most once per ALERT_THROTTLE. socat missing →
+# log once, return 0: the arm ceremony (5.3) hard-requires socat, and a running daemon must not
+# die over a transport gap — under the armed unit the missed pets fence it via PID 1, which is
+# the designed direction.
+_sd_notify() {
+    local _sn_rc _sn_now
+    if ! command -v socat >/dev/null 2>&1; then
+        if [[ "${_sd_notify_socat_logged:-0}" -eq 0 ]]; then
+            _sd_notify_socat_logged=1
+            log_warn "[watchdog] socat not found — cannot send sd_notify datagrams; under the armed unit PID 1 will fence on the missed pets (the arm ceremony hard-requires socat)"
+        fi
+        return 0
+    fi
+    case "$NOTIFY_SOCKET" in
+        @*) printf '%s\nMAINPID=%s' "$1" "$$" | timeout -k 2 5 socat -t0 - "ABSTRACT-SENDTO:${NOTIFY_SOCKET#@}" >/dev/null 2>&1 ;;
+        *)  printf '%s\nMAINPID=%s' "$1" "$$" | timeout -k 2 5 socat -t0 - "UNIX-SENDTO:${NOTIFY_SOCKET}" >/dev/null 2>&1 ;;
+    esac
+    _sn_rc=$?
+    if [[ $_sn_rc -ne 0 ]]; then
+        _sn_now=$(mono_now)
+        if [[ $(( _sn_now - ${_last_sd_notify_fail_log:-0} )) -ge ${ALERT_THROTTLE:-600} ]]; then
+            _last_sd_notify_fail_log=$_sn_now
+            log_warn "[watchdog] sd_notify send failed (rc $_sn_rc) — never fatal; if pets keep failing PID 1 fires the watchdog after WatchdogSec (that IS the failure semantics)"
+        fi
+    fi
+    return 0
+}
+
+# §5 per-op / per-cycle pet (WATCHDOG=1). Gated on the activation gate AND on READY having gone
+# out (the watchdog arms at READY; pre-READY the startup path speaks EXTEND_TIMEOUT_USEC — B1).
+#
+# The A3 arithmetic — WatchdogSec=30 vs the REAL cycle, derived from this tree's actual bounds:
+#   - Normal steady cycle (worst-case BOUNDS, healthy path): identity read 8 (timeout 8) +
+#     internet ≤ 3 + tier-1 reads ≤ 10–16 (curl -m 5/10 × 2–3) + the inter-cycle sleep
+#     (chunked — see below; counted here at the 3–5 s DEFAULTS) ≈ 24–32 s of bound. Typical
+#     wall time is 1–6 s, but the BOUND already reaches WatchdogSec — one pet per cycle is not
+#     enough even before any incident.
+#   - Opt-in latency path (PRIMARY only, MAX_VOTE_LATENCY>0; shipped default 0 = off):
+#     tier1_get_vote_latency adds 2 × curl -m 10 = 20 s of bound to the healthy staked cycle
+#     (~49 s total) — outside the steady range above but inside the invariant: each added read
+#     carries its own per-op pet, so the ≈ 22 s max-gap claim below is unchanged.
+#   - Incident-path cycles COMPOUND bounds: a tiered confirm (curl -m 15 × 2 + -m 10), a
+#     demote/take ladder (2 × (SETIDENTITY_TIMEOUT 15 + kill-grace 5) = 40), a hard stop
+#     (stop 20 + mask 20 + kill-grace 3 + re-verify 15) and each page (Telegram -m 10 +
+#     webhook -m 10) stack past ~170 s of bound inside ONE cycle.
+# Therefore, per the A3 rule (worst case ≫ 15 s): pets fire ADDITIONALLY after EVERY bounded
+# network/admin op (≥ 5 s bound) COMPLETES on the main-loop paths, EVERY main-loop/HOLD sleep
+# goes through _watchdog_sleep (≤ 10 s chunks + a pet per completed chunk under the armed
+# unit — so ANY legal CHECK_INTERVAL/TURBO_INTERVAL value is safe; no interval ceiling exists
+# or is needed, and nothing here depends on the 3–5 s defaults), and an end-of-cycle pet
+# closes every loop iteration. Resulting max inter-pet gap = the single longest bounded op +
+# glue = (SETIDENTITY_TIMEOUT 15 + kill-grace 5) + ~2 ≈ 22 s < WatchdogSec 30 — at ZERO
+# datagram loss. Honest residual, named: across a maximal 20 s op the gap exceeds
+# WatchdogSec/2, so ONE discarded datagram immediately before such an op can stretch the
+# observed gap past 30 s → a false fence. The discard class is kernel-local (PID 1
+# notify-socket pressure / the record's fork-exit attribution race), not network loss.
+# WHY THIS RESIDUAL NEEDS NO FIX (reviewer, 5.2 GO — the full argument, so the next reader does
+# not "fix" it): look at WHICH ops create the 20 s class. (a) A set-identity/remove-all that ran
+# to its full timeout = a WEDGED ADMIN SOCKET — exactly the condition the watchdog exists to
+# fence; (b) systemctl stop inside the hard-stop = a node this daemon is already deliberately
+# stopping. In both, the "false" fence lands on a node already heading to the same outcome by
+# another path. The ONLY branch where the fence's outcome diverges from the daemon's intent is a
+# wedged set-identity on the TAKE path (the daemon says TAKEOVER FAILED, never kill) — and there
+# the spare still holds its unstaked identity, so the cost is availability only, never a
+# double-sign. That is why the residual is ACCEPTED rather than engineered away: the INVARIANT
+# below forbids the wrong fix (timer pets); this paragraph is why no fix is needed at all. The
+# two levers (SETIDENTITY_TIMEOUT down, WatchdogSec up) remain E2E-gate material (§3.4),
+# measured there, never asserted here.
+# INVARIANT (load-bearing): a pet fires ONLY after an op completes — NEVER between an op's
+# start and its completion — so a wedged admin call/curl stops the pet stream at its start and
+# PID 1 fires after WatchdogSec: wedge detection IS the pets' absence. Do not "fix" a slow path
+# by petting on a timer. COMPLETION includes a timeout return: rc 124/137 means `timeout`
+# RETURNED — the monitor is alive and remediating — so every wedged-op branch pets BEFORE it
+# escalates (hard stop / give-back escalate / unreachable-tier return); only an op that has
+# not yet returned withholds pets.
+_watchdog_pet() {
+    _watchdog_active || return 0
+    [[ "${_WATCHDOG_READY:-0}" -eq 1 ]] || return 0
+    _sd_notify "WATCHDOG=1"
+    return 0
+}
+
+# B1 (§2.2): READY=1 — sent ONLY after the first successful identity read (the startup wait
+# loop's exit), plus the ONE documented HOLD exception (_consume_fence_markers). Enables the
+# pets: WATCHDOG=1 is meaningless before the watchdog arms at READY.
+_watchdog_ready() {
+    _watchdog_active || return 0
+    _WATCHDOG_READY=1
+    _sd_notify "READY=1"
+    log_info "[watchdog] READY=1 sent (first successful identity read) — WatchdogSec armed; per-op pets active"
+    return 0
+}
+
+# B1 live-extension datagram. 60 s = 2× the wait-loop iteration's worst-case bound, derived:
+# get_local_identity ≤ 8 (its own timeout) + _validator_pid ≈ 0 + _startup_phase_evidence ≤ 13
+# (timeout -k 5, run bound 8 s) + sleep 5 = 26 s → ×2 = 52 → rounded UP to 60 (µs on the wire).
+# The alert term (FF-1, fix round): the one-time H3 staked-unreachable alert (Telegram -m 10 +
+# webhook -m 10 = 20 s bound) rides INSIDE a wait-loop iteration and is NOT in the 26 s base —
+# uncorrected, an alert iteration that immediately FOLLOWS a one-iteration evidence flap
+# composes to a 72 s EXTEND→EXTEND gap (the executed panel trace). The wait loop therefore
+# re-sends EXTEND immediately BEFORE and immediately AFTER the alert (extend-after-bounded-op,
+# mirroring per-op pets; both sends stay evidence-gated like every extension): pre-alert gap ≤
+# flap 26 + sleep 5 + identity 8 + evidence 13 = 52 s < 60 (the pure-flap arithmetic),
+# post-alert gap ≤ alert 20 + evidence 13 = 33 s < 60. Two CONSECUTIVE no-evidence probes
+# still expire the deadline — that is the design (part-D (b)/(c): persistent no-evidence must
+# time out into the fence), not a gap.
+# Direction of the rounding, named: a too-SHORT deadline false-fences a healthy replaying
+# validator (the §2.2 reboot brick — the exact bug live extension replaces); a too-LONG one
+# delays a wedged start's fence by ≤ ~34 s, once, bounded — because a non-confirming iteration
+# sends NOTHING at all (the deadline then simply expires).
+_watchdog_extend_startup() {
+    _watchdog_active || return 0
+    _sd_notify "EXTEND_TIMEOUT_USEC=60000000"
+    return 0
+}
+
+# B1: one wait-loop iteration's extension decision — extend iff POSITIVELY confirmed in
+# startup/replay (process alive AND start-progress evidence); otherwise warn and send nothing
+# (the deadline then expires into the fence path — the wait-loop call site carries the full
+# part-D loop analysis). A separate helper so the wait-loop region stays sourceable bare in
+# older seams (test_baseline_persistence P-e).
+_watchdog_extend_if_starting() {
+    _watchdog_active || return 0
+    if [[ -n "$(_validator_pid)" ]] && _startup_phase_evidence; then
+        _watchdog_extend_startup
+    else
+        log_warn "[watchdog] validator not positively in startup/replay — NOT extending the start timeout (a wedged start must time out into the fence path — §2.2)"
+    fi
+    return 0
+}
+
+# Watchdog-aware sleep for EVERY daemon sleep that can reach WatchdogSec: the ≥ 15 s sites
+# (STARTUP_GRACE ×3, the primary's RECOVERY_CHECK_INTERVAL, the hard-stop re-verify) AND every
+# main-loop/HOLD inter-cycle sleep (FF-B3/HOLD-B1, fix round: CHECK_INTERVAL/TURBO_INTERVAL
+# are validated min-only — any legal operator value must be safe under the armed unit, so the
+# inter-cycle sleep is CHUNKED rather than ceilinged). Under the armed unit a monolithic sleep
+# ≥ WatchdogSec (30) starves the watchdog and false-fences a healthy, deliberately-idle
+# monitor — so chunk to ≤ 10 s with a pet after each COMPLETED chunk (a chunk is a completed
+# bounded op; the no-pet-mid-op invariant holds). OUTSIDE the unit: one plain `sleep`,
+# byte-for-byte the old behavior — structural inertness.
+_watchdog_sleep() {
+    local _ws_left="$1" _ws_chunk
+    if ! _watchdog_active; then
+        sleep "$_ws_left"
+        return 0
+    fi
+    case "$_ws_left" in ''|*[!0-9]*) sleep "$_ws_left"; return 0 ;; esac   # non-integer (no caller today) → plain
+    while [[ $_ws_left -gt 0 ]]; do
+        _ws_chunk=10
+        [[ $_ws_left -lt 10 ]] && _ws_chunk=$_ws_left
+        sleep "$_ws_chunk"
+        _ws_left=$(( _ws_left - _ws_chunk ))
+        _watchdog_pet
+    done
+    return 0
+}
+
+# §2.2 startup-phase evidence — BYTE-IDENTICAL twin of the FENCE's copy (systemd/
+# failover-fence.sh; test_monitor_fence_integration asserts daemon↔fence byte-parity). ONE
+# evidence definition at BOTH ends is load-bearing: the part-D dispatch-loop termination
+# argument (see the wait-loop comment) holds only because what makes this daemon stop extending
+# is exactly what makes the fence's third branch take the stop path on its next dispatch.
+# agave-CLI-only (like the fence's copy): on a frankendancer box this probe fails → no
+# extension → a long fd replay under the armed unit times out into the fence — consistent with
+# the fence's documented fd-stop-only limitation (its header + systemd/README.md).
+_startup_phase_evidence() {
+    local out
+    out=$(timeout -k 5 8 "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" monitor 2>&1)
+    # Word-anchored: 'restarting' contains 'starting' and is READY-node noise, NOT startup
+    # evidence (the false-positive direction on this branch is 'do not fence'). With -i the
+    # [^a-z] class is case-insensitive too, so 'Restarting' is equally excluded.
+    printf '%s' "$out" | grep -qiE '(^|[^a-z])(starting|startup)'
+}
+
+# B1 marker freshness — BYTE-IDENTICAL twin of the FENCE's copy (systemd/failover-fence.sh;
+# test_monitor_fence_integration asserts the daemon↔fence byte-parity — a future divergence is
+# a suite-visible parity break, deliberately: same-boot semantics must mean the same thing at
+# BOTH ends, or one end honors a marker the other ignores).
+_marker_same_boot() {
+    local f="$1" up now boot mt
+    up=$(awk '{ print int($1) }' "${FENCE_PROC_ROOT:-/proc}/uptime" 2>/dev/null)
+    case "$up" in ''|*[!0-9]*) return 1 ;; esac
+    now=$(date +%s 2>/dev/null)
+    case "$now" in ''|*[!0-9]*) return 1 ;; esac
+    boot=$(( now - up ))
+    mt=$(stat -c %Y "$f" 2>/dev/null)                              # GNU/busybox stat (deploy hosts)
+    case "$mt" in ''|*[!0-9]*) mt=$(stat -f %m "$f" 2>/dev/null) ;; esac   # BSD stat (macOS harness)
+    case "$mt" in ''|*[!0-9]*) return 1 ;; esac
+    [[ "$mt" -lt $(( boot + 60 )) ]] && return 1
+    return 0
+}
+
+# ── §2.2 marker consumption (Block 5.2 part C) ── called FIRST in startup_checks (HOLD-1, fix
+# round) — after the env is loaded, BEFORE every fatal startup gate (binary/keypair/one-arm/
+# numeric/vote-liveness) and the validator wait, deliberately:
+#   - a fenced-STOPPED node's identity is unreadable forever, so the wait loop would spin and
+#     the HOLD page would never fire if this ran later;
+#   - ANY fatal startup refusal that precedes this call would, on a fenced node under the armed
+#     unit, loop monitor-exit → `failed` → OnFailure → fence-breaker → restart-monitor →
+#     exit… forever (unbounded: StartLimitIntervalSec=0), paging or journal-spamming each pass;
+#     entering HOLD first parks the node loudly instead, and the operator's post-recovery
+#     restart re-runs every gate against the recovered state. This function needs only
+#     FENCE_MARKER_DIR + the alert channels (STAKED_PUBKEY is guarded with :-unknown), so
+#     running it first is sound.
+# The page-only twin's marker (fenced-page-only) is deliberately IGNORED (§2.3: written by a
+# DIFFERENT script in the un-armed state — never an input to the two-outcome state machine).
+# NO marker → two [[ -e ]] tests and return: zero behavior change (assertable, asserted).
+_consume_fence_markers() {
+    local _m_stop="$FENCE_MARKER_DIR/fenced-stopped" _m_dem="$FENCE_MARKER_DIR/fenced-demoted" _hold_now _last_hold_page _hold_iv
+    if [[ -e "$_m_stop" ]]; then
+        if _marker_same_boot "$_m_stop"; then
+            # §2.2 HOLD: the fence stopped — or, claim-more, could not VERIFY it stopped — the
+            # validator THIS boot. Run NO takeover/recovery/self-fence logic; page CRITICAL,
+            # re-page through ALERT_THROTTLE, poll the marker, and KEEP PETTING: a HOLD monitor
+            # is alive and looping, and not petting would re-fire the fence against an
+            # already-fenced node in a loop.
+            log_error "[fence-marker] fenced-stopped (same boot) — HOLD: no monitoring logic runs; awaiting operator ($(head -1 "$_m_stop" 2>/dev/null))"
+            alert "fenced-stopped — awaiting operator; unmask+start ONLY after confirming no spare holds the identity; clear ${FENCE_MARKER_DIR}/fenced-stopped to resume" "${STAKED_PUBKEY:-unknown}" "FENCED (stopped) — MONITOR IN HOLD 🚨"
+            # The ONE documented exception to the B1 READY gate (READY only after an identity
+            # read): the validator here is INTENTIONALLY down, so an identity read can never
+            # succeed — without READY the unit's start would time out → `failed` → OnFailure →
+            # the fence dispatches again, forever. READY in HOLD claims only "the monitor is
+            # up, parked"; it claims nothing about the validator.
+            # This implemented HOLD (READY=1 + continuous pets + throttled re-page) SUPERSEDES
+            # addendum §2.2's ORIGINAL wording ("no watchdog re-arm, one CRITICAL page,
+            # quiet") — ratified in the Block 5.2 spec (part C1): the original wording IS the
+            # start-timeout → `failed` → OnFailure → re-fence loop this exception prevents,
+            # and a pre-READY operator-clear exit 0 would land as a Type=notify "protocol"
+            # failure → OnFailure → the fence re-writes fenced-stopped, silently undoing the
+            # operator's clear.
+            if _watchdog_active; then
+                _WATCHDOG_READY=1
+                _sd_notify "READY=1"
+            fi
+            # HOLD runs BEFORE numeric validation (marker consumption precedes every fatal
+            # gate — HOLD-1), so sanitize the loop interval locally: garbage → 5.
+            _hold_iv="${CHECK_INTERVAL:-5}"
+            case "$_hold_iv" in ''|*[!0-9]*) _hold_iv=5 ;; esac
+            _last_hold_page=$(mono_now)
+            while [[ -e "$_m_stop" ]]; do
+                heartbeat_ping   # the dead-man's switch stays live — observability, not monitoring logic
+                _watchdog_pet    # a missed pet here would re-dispatch the fence in a loop
+                _hold_now=$(mono_now)
+                if [[ $(( _hold_now - _last_hold_page )) -ge ${ALERT_THROTTLE:-600} ]]; then
+                    _last_hold_page=$_hold_now
+                    alert "fenced-stopped — STILL awaiting operator; unmask+start ONLY after confirming no spare holds the identity; clear ${FENCE_MARKER_DIR}/fenced-stopped to resume" "${STAKED_PUBKEY:-unknown}" "FENCED (stopped) — MONITOR IN HOLD 🚨"
+                fi
+                _watchdog_sleep "$_hold_iv"   # FF-B3/HOLD-B1 (fix round): chunked under the armed unit — a legal CHECK_INTERVAL ≥ ~28 s must not starve WatchdogSec inside HOLD (plain sleep un-armed)
+            done
+            # Marker cleared by the operator → EXIT 0, deliberately not continue: a fresh start
+            # re-runs EVERY startup check (keys, one-arm state, timing gates, the validator
+            # wait) against the RECOVERED state — resuming mid-startup here would carry checks
+            # validated against the pre-fence world. The unit is Restart=no: restarting the
+            # monitor is the operator's explicit recovery step, not PID 1's.
+            log_info "[fence-marker] fenced-stopped cleared by the operator — exiting 0 for a clean restart (Restart=no: restart the monitor as part of recovery)"
+            alert_info "✅ fenced-stopped marker cleared — monitor exiting; restart it (systemctl start) to resume monitoring with fresh startup checks"
+            exit 0
+        fi
+        # STALE (pre-boot) stopped marker: the host rebooted since the fence wrote it — nothing
+        # it claims about "stopped" still holds, and the fence's own breaker no longer honors
+        # stale markers. Same-boot semantics, BOTH ends — an asymmetry here would let one end
+        # honor what the other ignores. Page once, monitor normally. The file is deliberately
+        # NOT deleted (operator evidence; the page says clearing it is safe).
+        # HOLD-3 (fix round): re-check existence first — the marker can VANISH between the
+        # [[ -e ]] above and the freshness stat (an operator's clear mid-check lands here via
+        # _marker_same_boot's failed stat), and paging "stale marker present — clearing it is
+        # safe" about a file that no longer exists would lie. Vanished → silent normal startup
+        # (exactly what the clear intended).
+        if [[ -e "$_m_stop" ]]; then
+            log_warn "[fence-marker] STALE fenced-stopped marker (pre-boot mtime) — ignoring; monitoring normally (same-boot semantics, both ends)"
+            alert_warn "⚠️ stale fenced-stopped marker from a previous boot under ${FENCE_MARKER_DIR} — clearing it is safe; monitoring normally"
+        fi
+    fi
+    if [[ -e "$_m_dem" ]]; then
+        # §2.2: fenced-demoted, ANY age — a demoted marker only ever means "the fence demoted a
+        # running validator", and normal monitoring re-verifies the running state immediately,
+        # so marker freshness adds nothing here. Demoted-holder monitoring IS the existing main
+        # loop (the UNSTAKED branch); this block owns only the marker's LIFECYCLE — cleared by
+        # the monitor on its FIRST CLEAN CYCLE (the §2.2 contract), i.e. the first main-loop
+        # cycle whose identity read succeeds (the hunk after the unreachable check).
+        log_info "[fence-marker] fenced-demoted present ($(head -1 "$_m_dem" 2>/dev/null)) — normal demoted-holder monitoring; marker clears on the first clean cycle (§2.2)"
+        alert_info "ℹ️ fence outcome: fenced-demoted — the fence demoted the validator (running, unstaked); monitoring resumes, marker clears on the first clean cycle"
+        _fence_demoted_pending=1
+    fi
+    return 0
+}
+# ── [watchdog] end shared block ──
+
 # v0.6.9 (H1, B1+S4 port incl. the H2 mask + re-verify): the give-back admin-socket call wedged and
 # the identity did not flip — the self-fence's contract is that the staked identity STOPS voting even
 # when set-identity cannot run, so escalate to a HARD STOP of the validator (the safe direction: a
@@ -2320,6 +2759,7 @@ _selffence_hard_stop() {
     local sc_out sc_rc pid_found="" pid masked="" mask_out mask_rc
     sc_out=$(timeout -k 5 15 systemctl stop "${VALIDATOR_SERVICE:-solana}" 2>&1); sc_rc=$?
     [[ -n "$sc_out" ]] && log_info "systemctl stop: $sc_out"
+    _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
     # v0.6.9 (H2): stop did NOT cleanly succeed → mask the unit (--runtime; a reboot clears it — fail
     # toward recoverability) BEFORE the direct kill, so Restart=always cannot resurrect it voting
     # staked after the immediate verify. A failed mask never skips the kill (the delayed re-verify
@@ -2327,6 +2767,7 @@ _selffence_hard_stop() {
     if [[ $sc_rc -ne 0 ]]; then
         mask_out=$(timeout -k 5 15 systemctl mask --runtime "${VALIDATOR_SERVICE:-solana}" 2>&1); mask_rc=$?
         [[ -n "$mask_out" ]] && log_info "systemctl mask --runtime: $mask_out"
+        _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
         if [[ $mask_rc -eq 0 ]]; then
             masked=1
             log_warn "[self-fence] unit ${VALIDATOR_SERVICE:-solana} masked (--runtime) so Restart=always cannot resurrect it; unmask with: systemctl unmask --runtime ${VALIDATOR_SERVICE:-solana}"
@@ -2358,7 +2799,7 @@ _selffence_hard_stop() {
     # v0.6.9 (H2): RE-verify after a Restart=always-scale delay — a directly-killed process can pass
     # the immediate check and resurrect VOTING STAKED after RestartSec. FAILURE DIRECTION: toward
     # reporting failure / paging; the wait only delays the success page, never the stop.
-    sleep "${HARD_STOP_REVERIFY_SECS:-15}"
+    _watchdog_sleep "${HARD_STOP_REVERIFY_SECS:-15}"   # v0.7 (Block 5.2): chunked under the armed unit — an env-raised re-verify window must not starve WatchdogSec (plain sleep otherwise)
     pid=$(_validator_pid)
     if [[ -n "$pid" ]]; then
         log_error "[self-fence] HARD STOP FAILED — validator RESURRECTED (pid $pid) within ${HARD_STOP_REVERIFY_SECS:-15}s (Restart=always); keeping the fence armed to retry"
@@ -2421,6 +2862,7 @@ check_self_fence_isolation() {
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"confirmed"}]}' 2>/dev/null \
         | jq -r '.result // empty' 2>/dev/null)
+    _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
 
     if [[ -z "$slot" || ! "$slot" =~ ^[0-9]+$ ]]; then
         # A BRIEF LOCAL no-answer is the validator-unreachable pause path, NOT isolation. A CONTINUOUS
@@ -2485,6 +2927,7 @@ check_self_fence_isolation() {
         health_result=$(curl -s -m 5 "$LOCAL_RPC" -X POST \
             -H "Content-Type: application/json" \
             -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' 2>/dev/null)
+        _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
         if [[ -n "$health_result" ]]; then
             behind=$(echo "$health_result" | jq -r '.error.data.numSlotsBehind // empty' 2>/dev/null)
             if [[ "$behind" =~ ^[0-9]+$ && $behind -gt $SELF_FENCE_MAX_BEHIND ]]; then
@@ -2508,6 +2951,7 @@ check_self_fence_isolation() {
         own_sample=$(curl -s -m 5 "$LOCAL_RPC" -X POST \
             -H "Content-Type: application/json" \
             -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts","params":[{"commitment":"processed"}]}' 2>/dev/null)
+        _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
         own_lv=$(echo "$own_sample" | jq -r --arg vote "$VOTE_PUBKEY" '(.result.current + .result.delinquent)[]? | select(.votePubkey == $vote) | .lastVote // empty' 2>/dev/null | head -1)
         cluster_max=$(echo "$own_sample" | jq -r '[(.result.current + .result.delinquent)[]? | .lastVote] | map(numbers) | max // empty' 2>/dev/null)
         if [[ -n "$own_lv" && "$own_lv" =~ ^[0-9]+$ && -n "$cluster_max" && "$cluster_max" =~ ^[0-9]+$ ]]; then
@@ -2576,18 +3020,22 @@ check_identity_collision() {
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' 2>/dev/null \
         | jq -r --arg pk "$STAKED_PUBKEY" '.result[]? | select(.pubkey == $pk) | .gossip // empty' 2>/dev/null | head -1)
+    _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
     if [[ -z "$own_ep" ]]; then
         log_info "[collision] cannot read our own gossip endpoint (LOCAL) — cannot compare this cycle (strikes held at ${_collision_strikes})"
         return 0
     fi
 
     # External vantages (T2 → T3): where does the cluster say the staked pubkey lives?
-    local rpc cluster_info ext_ep mismatch_ep="" saw_self=""
+    local rpc cluster_info ext_ep mismatch_ep="" saw_self="" _cic_rc
     for rpc in "$TIER2_RPC" "$TIER3_RPC"; do
         [[ -z "$rpc" ]] && continue
         cluster_info=$(curl -s -m 10 "$rpc" -X POST \
             -H "Content-Type: application/json" \
-            -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' 2>/dev/null) || continue
+            -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' 2>/dev/null)
+        _cic_rc=$?
+        _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1 N-audit): bounded op completed (rc captured above) — post-op placement covers EVERY exit (mismatch break-out, parse-continue, final loop exit); no-op outside the armed unit
+        [[ $_cic_rc -eq 0 ]] || continue
         echo "$cluster_info" | jq -e '.result' &>/dev/null || continue
         ext_ep=$(echo "$cluster_info" | jq -r --arg pk "$STAKED_PUBKEY" '.result[]? | select(.pubkey == $pk) | .gossip // empty' 2>/dev/null | head -1)
         [[ -z "$ext_ep" ]] && continue
@@ -2749,13 +3197,20 @@ _norm_rpc_url() { local u="$1"; while [[ "$u" == */ ]]; do u="${u%/}"; done; pri
 # high = higher-is-stricter (laxer when value < default); low0 = lower-is-stricter BUT 0 disables
 # the sub-check entirely, so 0 is the LAXEST value (distinct wording); bool = true-is-stricter
 # (laxer when set non-empty and not "true" — the runtime gates read ${KNOB:-true}, so an EMPTY
-# value behaves as true = strict = silent). Numeric-safe: a non-numeric value is SKIPPED here
+# value behaves as true = strict = silent); boolf = false-is-stricter (laxer ONLY when
+# explicitly "true" — the runtime gates read ${KNOB:-false}, so empty/absent is strict/silent;
+# v0.7 Block 5.2 №8). Numeric-safe: a non-numeric value is SKIPPED here
 # (startup validation elsewhere owns rejection — this must never add a second failure mode), and
 # compared via 10# so a leading-zero value can't read as octal.
 _drift_check() {
     local name="$1" def="$2" dir="$3" why="$4" val="${!1}" lax=0
     if [[ "$dir" == "bool" ]]; then
         [[ -n "$val" && "$val" != "true" ]] && lax=1
+    elif [[ "$dir" == "boolf" ]]; then
+        # v0.7 (Block 5.2, №8): false-is-stricter twin of bool — laxer ONLY when explicitly
+        # "true" (the runtime gates read ${KNOB:-false}, so empty/absent behaves as false =
+        # strict = silent).
+        [[ "$val" == "true" ]] && lax=1
     else
         [[ "$val" =~ ^[0-9]+$ ]] || return 0
         val=$((10#$val))
@@ -2796,6 +3251,7 @@ announce_config_drift() {
     _drift_check EXPECTED_PRIMARY_SELF_FENCE_SECS 30 high "understates the PRIMARY's relinquish worst case → the cross-node takeover-delay floor computes too low"
     _drift_check SELF_FENCE_MARGIN_SECS 30 high "shrinks the cross-node safety margin → the takeover-delay floor computes too low"
     _drift_check TAKEOVER_STARVATION_ALERT_SECS 300 low0 "a silently-held takeover episode (blindness/flip/floor holds) would page later — or never"
+    _drift_check PREWARM_VOTER_ADD false boolf "the pre-warm lever is LIVE-TEST-GATED (addendum §3/№8): do not enable before the testnet on-chain observation window"
 }
 
 # v0.6.6 (N1): cross-node fail-over timing safety. The PRIMARY must self-fence (relinquish the staked
@@ -2899,6 +3355,8 @@ startup_checks() {
     echo " Solana STANDBY Failover v0.6.10 (3-TIER RPC)"
     echo "============================================="
 
+    _consume_fence_markers    # v0.7 (Block 5.2 §2.2 → fix round HOLD-1): FIRST — before EVERY fatal startup gate, so a fenced node parks in HOLD instead of looping a fatal exit-1 through OnFailure → fence-breaker → restart (see the function header); same-boot fenced-stopped → HOLD; stale → warn + monitor; fenced-demoted → note + clear on first clean cycle; inert when no marker exists (every host today)
+
     if [[ "$VALIDATOR_TYPE" == "frankendancer" ]]; then
         command -v fdctl &>/dev/null || { log_error "fdctl not found"; exit 1; }
         [[ -z "$CONFIG_TOML" ]] && { log_error "CONFIG_TOML required"; exit 1; }
@@ -2996,7 +3454,7 @@ startup_checks() {
 
     announce_config_drift     # v0.7 (Block 3, slice 3.5): env safety knobs laxer than THIS version's defaults — one line each (visibility, never force; BEFORE the M9 gate so drift is visible next to a timing refusal)
 
-    _enforce_one_arm_state    # v0.7 (Block 5 skeleton, №1): refuse DRY_RUN=true + REAL fence unit — CRITICAL + exit 1; structurally inert while no fence unit exists (every host today)
+    _enforce_one_arm_state    # v0.7 (Block 5 skeleton, №1): refuse DRY_RUN=true + REAL fence unit — CRITICAL + exit 1; structurally inert while no fence unit exists (every host today). Runs AFTER marker consumption (fix round HOLD-1): on a fenced node this refusal must not preempt HOLD.
 
     enforce_crossnode_timing_safety   # v0.6.9 (M9): FATAL on an unsafe TAKEOVER_DELAY unless ALLOW_UNSAFE_TIMING=true (was warn-only in v0.6.6–v0.6.8)
 
@@ -3027,6 +3485,15 @@ startup_checks() {
             alert_warn "⚠️ Fast-path disabled: ${_fastpath_disabled}. Set STANDBY_TAKEOVER_DELAY = the STANDBY's TAKEOVER_DELAY on every spare."
         fi
     fi
+
+    # v0.7 (Block 5.2, №8): pre-warm lever — bool-ish validation: ONLY the exact string "true"
+    # arms it; anything else (typo, empty, unset) is false. FAILURE DIRECTION: toward OFF
+    # (zero admin calls). When armed, the live-test gate is said out loud at every startup.
+    if [[ "$PREWARM_VOTER_ADD" != "true" && "$PREWARM_VOTER_ADD" != "false" && -n "$PREWARM_VOTER_ADD" ]]; then
+        log_warn "⚠️ PREWARM_VOTER_ADD='${PREWARM_VOTER_ADD}' is not true/false — coerced to false (fail toward OFF)"
+        PREWARM_VOTER_ADD=false
+    fi
+    [[ "$PREWARM_VOTER_ADD" == "true" ]] && log_warn "⚠️ PREWARM_VOTER_ADD=true — the pre-warm lever is LIVE-TEST-GATED (addendum §3/№8): do not enable before the testnet on-chain observation window"
 
     # v0.6.9 (M8): TIER2/TIER3 vantage-independence. Identical URLs silently void A6 ("two vantages")
     # and the liveness fence's fallback independence. Warn loudly — NOT fatal (single-provider users
@@ -3061,8 +3528,9 @@ startup_checks() {
     # Wait for local validator
     log_info "Waiting for local validator..."
     CURRENT_IDENTITY=""
-    local wc=0 _wait_start _wait_alerted=0
+    local wc=0 _wait_start _wait_alerted=0 _wait_start_mono _wait_last_repage _wait_now_mono
     _wait_start=$(date +%s)   # v0.6.9 (H3)
+    _wait_start_mono=$(mono_now); _wait_last_repage=$_wait_start_mono   # v0.7 (Block 5.2 fix round, FF-4): armed-only re-page cadence — mono clock (the HOLD re-page idiom; no new wall-clock site)
     while [[ -z "$CURRENT_IDENTITY" && "$_running" == "true" ]]; do
         heartbeat_ping   # v0.6.9 (H3): the dead-man's switch must not go dark while we wait here
         CURRENT_IDENTITY=$(get_local_identity 2>/dev/null) || true
@@ -3074,14 +3542,74 @@ startup_checks() {
             # toward paging the operator (holder path); a false page costs one 🚨.
             if [[ $_wait_alerted -eq 0 && "$_persisted_role" == "staked" \
                   && $(( $(date +%s) - _wait_start )) -ge $STARTUP_STAKED_UNREACHABLE_ALERT_SECS ]]; then
+                # v0.7 (Block 5.2 fix round, FF-1): the alert below is a bounded op (Telegram
+                # -m 10 + webhook -m 10 = 20 s) — re-send EXTEND immediately BEFORE and AFTER
+                # it (extend-after-bounded-op, mirroring per-op pets) so the alert term cannot
+                # stretch an EXTEND→EXTEND gap past the 60 s deadline even when the alert
+                # iteration immediately follows an evidence-flap iteration (the 72 s panel
+                # trace; full arithmetic at _watchdog_extend_startup). Both sends stay
+                # evidence-gated; no-ops outside the armed unit.
+                _watchdog_extend_if_starting 2>/dev/null
                 log_warn "Persisted role STAKED + local validator unreachable ${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s+ at startup — sending URGENT alert"
                 alert "STANDBY was STAKED (promoted holder) at last save + local validator unreachable since monitor startup (>${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s) — the daemon cannot self-fence/demote; a spare may take over. Intervene (stop the validator or confirm the spare took over)." "$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"
                 _wait_alerted=1
+                _watchdog_extend_if_starting 2>/dev/null
             fi
+            # v0.7 (Block 5.2 fix round, FF-4): under the ARMED unit an honest
+            # eternal-"starting" wait extends indefinitely with only the one-shot H3 page
+            # above, while protection is dark (pre-READY; the external heartbeat stays
+            # green). Re-page through ALERT_THROTTLE while the wait persists — loud, no
+            # behavior change. Armed-only: un-armed hosts keep the v0.6.9 behavior (log
+            # lines only) — structural inertness. Placed immediately BEFORE the
+            # per-iteration extension gate so an extension lands right after this bounded
+            # page (extend-after-bounded-op again).
+            if _watchdog_active 2>/dev/null; then   # 2>/dev/null: the P-e bare seam sources this region without the helper — command-not-found must stay silent there (the _watchdog_extend_if_starting idiom)
+                _wait_now_mono=$(mono_now)
+                if [[ $(( _wait_now_mono - _wait_last_repage )) -ge ${ALERT_THROTTLE:-600} ]]; then
+                    _wait_last_repage=$_wait_now_mono
+                    alert_warn "⚠️ validator still in startup after $(( _wait_now_mono - _wait_start_mono ))s — monitor pre-READY: failover protection NOT yet active (start extending honestly while startup evidence holds)"
+                fi
+            fi
+            # v0.7 (Block 5.2, B1/§2.2): pre-READY LIVE EXTENSION — replaces any static start-
+            # timeout guess (the reboot brick: a replay longer than a guess fences a healthy
+            # validator mid-replay). Extend ONLY on POSITIVE evidence that the validator is up
+            # and in startup/replay: process alive (_validator_pid) AND the admin socket
+            # answering start-progress (_startup_phase_evidence — the FENCE's own probe, twin
+            # copy, so daemon and fence share ONE evidence definition). A wedged/GONE validator
+            # sends NOTHING → PID 1 times the start out → `failed` → OnFailure → the fence's
+            # §2.2 third branch handles it. That is the design, not an oversight.
+            #
+            # [Block 5.2 part D — the third-branch dispatch loop, ANALYZED] The fence's third
+            # branch (identity unreadable + startup evidence) restarts this monitor and exits
+            # 0; a wedged-identity node could loop fence→monitor→fence, unbounded in COUNT. The
+            # damper is THIS gate, because both ends read the SAME probe (byte-identical twin):
+            #   (a) evidence HOLDS steadily (genuine startup/replay): every iteration extends →
+            #       the start never times out → NO further fence dispatch at all — the loop's
+            #       dispatch count stops at the dispatch that started us.
+            #   (b) evidence ABSENT steadily (wedged/gone validator — the part-D scenario): we
+            #       stop extending → the start times out within one extension deadline (≤ 60 s
+            #       after the LAST EXTEND sent; when NO extend was ever sent this start, the
+            #       bound is the unit's TimeoutStartSec instead — pinned 90 s in the monitor
+            #       skel, = the systemd default)
+            #       → `failed` → OnFailure → the fence probes the SAME evidence, finds none →
+            #       its STOP path (fenced-stopped → the next start parks in HOLD). TERMINATES
+            #       on the second dispatch — driven as a two-dispatch test case.
+            #   (c) evidence FLAPPING across dispatches: each loop iteration costs a full
+            #       no-evidence extension deadline (≥ 60 s) plus a fence pass, and pages on
+            #       both ends — RATE-BOUNDED and LOUD, never stops the validator by itself,
+            #       and settles into (a) or (b) the moment the flap does. Deliberately NO
+            #       counter for (c): a counter that force-stops on a flap would stop a
+            #       validator on AMBIGUOUS evidence — the wrong direction. Named residual.
+            # 2>/dev/null on the call: an older seam (test_baseline_persistence P-e) sources
+            # this region bare, where the helper is undefined — command-not-found must stay
+            # silent there (the helper's real output goes through log_*, never stderr).
+            _watchdog_extend_if_starting 2>/dev/null
             sleep 5
         fi
     done
     [[ "$_running" != "true" ]] && exit 0
+
+    _watchdog_ready   # v0.7 (Block 5.2, B1/§2.2): READY=1 strictly after the FIRST successful identity read — pre-READY the watchdog stays unarmed; no-op outside the unit
 
     echo ""
     echo "  Node:              $NODE_NAME"
@@ -3132,7 +3660,7 @@ startup_checks() {
         log_warn "⚠️  ⚠️  ⚠️  LIVE MODE — STANDBY will perform real takeover  ⚠️  ⚠️  ⚠️"
         alert_info "🚀 STANDBY v0.6.9 started [LIVE]. <code>${CURRENT_IDENTITY:0:8}...</code>"
     fi
-    [[ $STARTUP_GRACE -gt 0 ]] && { log_info "Grace: ${STARTUP_GRACE}s"; sleep "$STARTUP_GRACE"; }
+    [[ $STARTUP_GRACE -gt 0 ]] && { log_info "Grace: ${STARTUP_GRACE}s"; _watchdog_sleep "$STARTUP_GRACE"; }   # v0.7 (Block 5.2): grace chunked under the armed unit (plain sleep otherwise)
 }
 
 display_status() {
@@ -3163,6 +3691,7 @@ while $_running; do
     _alpenglow_gate_check   # v0.7 (pre-Block-4, №9): read-only Alpenglow gate probe — self-gates on cadence; top of loop, NEVER inside a takeover/recovery/verdict path (act-then-alert untouched: this network read is nowhere near a mutation)
 
     CURRENT_IDENTITY=$(get_local_identity 2>/dev/null) || true
+    _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
     if [[ -z "$CURRENT_IDENTITY" ]]; then
         now_ts=$(date +%s)
         if [[ $(( now_ts - _last_unreachable_alert )) -ge $ALERT_THROTTLE ]]; then
@@ -3182,10 +3711,20 @@ while $_running; do
             log_warn "Local validator unreachable"
         fi
         display_status "NO LOCAL"
-        sleep "$CHECK_INTERVAL"
+        _watchdog_pet   # §5 end-of-cycle pet (Block 5.2): the cycle's last op returned — no-op outside the armed unit
+        _watchdog_sleep "$CHECK_INTERVAL"   # FF-B3 (fix round): chunked under the armed unit — ANY legal interval is safe (plain sleep un-armed)
         continue
     fi
     _last_unreachable_alert=0
+
+    # v0.7 (Block 5.2, §2.2): the FIRST CLEAN CYCLE (identity readable again) clears the
+    # fence's fenced-demoted marker — this hunk owns only the marker's LIFECYCLE; the
+    # demoted-holder monitoring itself is the existing branch logic below, unchanged.
+    if [[ ${_fence_demoted_pending:-0} -eq 1 ]]; then
+        rm -f "$FENCE_MARKER_DIR/fenced-demoted" 2>/dev/null
+        _fence_demoted_pending=0
+        log_info "[fence-marker] fenced-demoted cleared on the first clean cycle (§2.2 contract)"
+    fi
     _last_known_identity="$CURRENT_IDENTITY"   # v0.6.9 (H1): remembered for the staked-unreachable URGENT page above
     flush_pending_alerts   # v0.6.1 (N3): retry any alert that failed to send earlier
 
@@ -3206,7 +3745,8 @@ while $_running; do
                 _last_behind_alert=$now_ts
             fi
             display_status "T1:BEHIND"
-            sleep "$CHECK_INTERVAL"
+            _watchdog_pet   # §5 end-of-cycle pet (Block 5.2): the cycle's last op returned — no-op outside the armed unit
+            _watchdog_sleep "$CHECK_INTERVAL"   # FF-B3 (fix round): chunked under the armed unit (plain sleep un-armed)
             continue
         fi
         _last_behind_alert=0
@@ -3251,6 +3791,7 @@ while $_running; do
                 FIRST_DELINQUENT_TIME=0; _takeover_alert_sent=""
                 LAST_LIVENESS_ACTIVE_TIME=0   # v0.6.7 (N3): reset with FIRST_DELINQUENT_TIME — fresh episode
                 _fastpath_absent_seen=0; _fastpath_confirm=0   # v0.6.8 (S2): end the fast-path episode too, so the A2 absent→present transition cannot latch across the organic delinquency-clear into the next episode
+                _prewarm_reset   # v0.7 (Block 5.2, №8): episode over without a take — the hygiene half
                 _gossip_prefetched=false; _gossip_result=""
                 _last_confirm_attempt=0   # v0.6.1 (F2): fresh episode starts un-throttled
                 _liveness_first_vote=""; _liveness_first_tip=""; _liveness_first_ts=0; _liveness_first_provider=""   # v0.6.2 (C1) / v0.6.3 (Block 1) / v0.7 (B3 s2): drop stale sample + tip + provider pin
@@ -3280,7 +3821,9 @@ while $_running; do
         # attempt_takeover).
         if [[ "$STANDBY_SELF_FENCE" == "true" ]]; then
             if check_self_fence_isolation; then
-                display_status "SELF-FENCED"; sleep "$_current_interval"; continue
+                display_status "SELF-FENCED"
+                _watchdog_pet   # §5 end-of-cycle pet (Block 5.2): the cycle's last op returned — no-op outside the armed unit
+                _watchdog_sleep "$_current_interval"; continue   # FF-B3 (fix round): chunked under the armed unit (plain sleep un-armed)
             fi
         fi
 
@@ -3331,7 +3874,8 @@ while $_running; do
     save_state   # v0.6.9 (H3): persist the self-fence baseline + lockout every cycle (plain overwrite) so a monitor restart mid-stall inherits the clock
 
     # Adaptive sleep: turbo=1s, normal=CHECK_INTERVAL
-    sleep "$_current_interval"
+    _watchdog_pet   # §5 end-of-cycle pet (Block 5.2): the cycle's last op returned — no-op outside the armed unit
+    _watchdog_sleep "$_current_interval"   # FF-B3 (fix round): chunked under the armed unit — ANY legal interval is safe (plain sleep un-armed)
 done
 
 log_info "Main loop exited."

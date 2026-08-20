@@ -109,8 +109,13 @@ jobs:
           p_pri=$(grep -cE '\$\{[A-Za-z_0-9]+//' solana-primary-failover.sh)
           p_sby=$(grep -cE '\$\{[A-Za-z_0-9]+//' solana-standby-failover.sh)
           echo "date+%s: primary=$d_pri standby=$d_sby ; patsub: primary=$p_pri standby=$p_sby"
-          [ "$d_pri" = "19" ] || { echo "primary 'date +%s' lines: $d_pri != pinned 19 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
-          [ "$d_sby" = "20" ] || { echo "standby 'date +%s' lines: $d_sby != pinned 20 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
+          # v0.7 Block 5.2: 19→20 / 20→21 — the ONE new site per daemon is _marker_same_boot,
+          # the byte-identical twin of the fence's marker-freshness check: it compares a file
+          # MTIME against the boot epoch (now − uptime) — inherently WALL-CLOCK quantities
+          # (mono_now would be wrong there, and would break the daemon↔fence byte-parity the
+          # 5.2 suite asserts). Not a timer; the monotonic-timer rule is untouched.
+          [ "$d_pri" = "20" ] || { echo "primary 'date +%s' lines: $d_pri != pinned 20 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
+          [ "$d_sby" = "21" ] || { echo "standby 'date +%s' lines: $d_sby != pinned 21 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$p_pri" = "4" ]  || { echo "primary patsub \${var//} lines: $p_pri != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$p_sby" = "4" ]  || { echo "standby patsub \${var//} lines: $p_sby != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
       - name: SHA256SUMS manifest matches the tree (regen — sha256sum <files> > SHA256SUMS)
