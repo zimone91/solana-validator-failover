@@ -21,7 +21,7 @@
 #                   Pinning /bin/bash matters: bare `bash` on a macOS runner may resolve to a newer
 #                   Homebrew bash, which would silently re-open the class where a bash-4-only
 #                   construct parses "green" while the 3.2 interpreter never runs the suite.
-#   shellcheck    — `-S error` on the four shipped scripts (the same bar every change has met).
+#   shellcheck    — `-S error` on the seven shipped scripts (the same bar every change has met).
 #   facts         — claims-vs-reality: the suite count stated in README and pinned in run_all.sh
 #                   must equal the actual number of test files. Exists because a frozen published
 #                   claim drifted from reality three separate times in this project's history
@@ -68,16 +68,19 @@ jobs:
         run: cd tests && /bin/bash run_all.sh
 
   shellcheck:
-    name: shellcheck -S error · four shipped scripts + test harness lib + fence skeleton
+    name: shellcheck -S error · seven shipped scripts + test harness lib
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: shellcheck
-        # systemd/failover-fence.sh.skel is LINTED, not shipped: repo-only skeleton (v0.7 Block 5),
-        # installed by nothing, excluded from SHA256SUMS — linting keeps its bash real while inert.
+        # v0.7 Block 5.1: the two fence scripts are REAL shippable artifacts (in SHA256SUMS and
+        # the run_all parse gate) — their EXECUTION on a host happens only at the v0.7 rollout
+        # (`failover arm`, upgrade-then-arm); nothing in this repository installs them.
+        # install.sh: in SHA256SUMS since it shipped, but absent from this list until the
+        # Block-5.1 panel found the gap (pre-existing, not a fence regression) — closed here.
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -S error solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh tests/lib/harness.sh systemd/failover-fence.sh.skel
+          shellcheck -S error install.sh solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh tests/lib/harness.sh systemd/failover-fence.sh systemd/failover-fence-page-only.sh
 
   facts:
     name: claims match reality (suite count, wall-clock/patsub pins, checksums)

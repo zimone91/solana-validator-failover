@@ -1,10 +1,18 @@
-# `systemd/` — v0.7 Block-5 unit skeletons (installed by NOTHING)
+# `systemd/` — v0.7 Block-5 fence scripts (real) + unit skeletons (installed by NOTHING)
 
-**Every file here is a `.skel` — repo-only.** They are installed ONLY by the `failover arm`
-ceremony (not yet shipped); nothing in this repository writes to `/etc/systemd/system`, runs
-`systemctl enable`, or `daemon-reload`s on their behalf. They are excluded from every ship
-surface: not in `SHA256SUMS`, not matched by the CI test/facts globs (the `.sh.skel` IS linted
-by the CI shellcheck job — linting, not shipping). The **Block-5 entry blocker** gates the first
+**Two kinds of file live here (Block 5.1):**
+
+- **The fence scripts are REAL shippable artifacts** — `failover-fence.sh` (the §2.5
+  ladder/§2.2 verdict body, tested by `tests/test_fence_script.sh`) and
+  `failover-fence-page-only.sh` (the §2.3 structural-DRY_RUN twin). They are in `SHA256SUMS`,
+  the CI shellcheck list, and `run_all.sh`'s parse gate. Shippable is NOT installed: their
+  EXECUTION on a host happens only at the v0.7 rollout (`failover arm`, upgrade-then-arm, per
+  the release checklist).
+- **Every `.service.skel` stays a skeleton — repo-only.** Units are installed ONLY by the
+  `failover arm` ceremony (not yet shipped).
+
+Nothing in this repository writes to `/etc/systemd/system`, runs `systemctl enable`, or
+`daemon-reload`s on their behalf. The **Block-5 entry blocker** gates the first
 real installation: **all four nodes confirmed on v0.6.10+** (the patsub alert-death class —
 pre-v0.6.10 daemons on bash 5.2 silently fail to deliver Telegram pages, and the fence's
 semantics is "does not act, loudly"). The blocker lifts on host answers, not on code readiness.
@@ -76,12 +84,28 @@ semantics is "does not act, loudly"). The blocker lifts on host answers, not on 
 4. Periodic holder-side re-verification of effective fence properties + the `FENCE_ROT_GRACE`
    escalation window (§2.1-rev2.1 №2) — Block 5 proper, daemon-side.
 
+## Frankendancer: STOP-ONLY fencing in v0.7 (named limitation — reviewer-packet item)
+
+On a `VALIDATOR_TYPE=frankendancer` box **every real-fence dispatch takes the stop path**:
+`_read_identity` and `_startup_phase_evidence` are agave-CLI-only, the fence's no-network rule
+bans the daemons' fd identity read (a localhost curl `getIdentity`) like any other network call,
+and no `fdctl` demote rung exists in the fence. A monitor failure on fd therefore means full
+validator stop + `fenced-stopped` + HOLD (operator-owned recovery) — and a stopped node never
+re-advertises the unstaked flip, so the spare's G2 verified-demote proof cannot form (slower or
+no takeover). The daemons DO demote fd (bounded `fdctl set-identity`); the fence deliberately
+does not in v0.7. An fd-native demote rung is future work; until then, arming a frankendancer
+box means accepting stop-only fencing.
+
 ## The boundary, restated
 
-While the entry blocker stands: unit files, the №1 refusal, and harness tests MAY be written —
-**NO unit is installed on ANY host (test hosts included)**, no `systemctl enable`, nothing into
-`/etc/systemd/system`. The `.skel` suffix is the guard: nothing execs these, CI ships none of
-them, and the monitor skeleton's `<role>` placeholder makes it uninstallable as-is.
+While the entry blocker stands: unit files, the fence scripts, and harness tests MAY be written
+— **NO unit is installed on ANY host (test hosts included)**, no `systemctl enable`, nothing
+into `/etc/systemd/system`. For the units the `.skel` suffix is the guard (nothing execs these,
+CI ships none of them, and the monitor skeleton's `<role>` placeholder makes it uninstallable
+as-is); for the two real fence scripts the guard is that no code path references or copies them
+to a host — they ship in the release artifact and are placed only by the `failover arm`
+ceremony at the rollout (upgrade-then-arm). Their tests mock every actuator (`systemctl`, the
+admin-socket CLI, `pgrep`, `/proc` reads); no real `systemctl` call runs from any test.
 
 ## Assumptions — verified by execution
 
