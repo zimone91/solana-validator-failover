@@ -2281,10 +2281,18 @@ _enforce_one_arm_state() {
             sleep 2
             flush_pending_alerts
         fi
+        # (reviewer split): an empty _pending_alert has TWO meanings — the page WENT, or there
+        # was NOWHERE to send it. On a path where the journal is the only durable channel,
+        # "delivered" must never cover "no channel existed"; and "recorded NOWHERE" must not lie
+        # when a webhook is configured (a real, fire-and-forget channel — delivery unverified).
         if [[ -n "$_pending_alert" ]]; then
             log_error "CRITICAL page NOT delivered — queued, but this daemon refuses to start and will not drain the queue; journalctl is your only record of this refusal."
+        elif [[ "$TG_ENABLED" == "true" && -n "$TG_BOT_TOKEN" && -n "$TG_CHAT_ID" ]]; then
+            log_error "CRITICAL page delivered — refusing to start."
+        elif [[ -n "$WEBHOOK_URL" ]]; then
+            log_error "CRITICAL page went to the webhook only (Telegram not configured; webhook delivery is fire-and-forget, unverified) — journalctl is the authoritative record of this refusal."
         else
-            log_error "CRITICAL page delivered (or Telegram not configured) — refusing to start."
+            log_error "CRITICAL page had NO channel (Telegram and webhook both unconfigured) — this refusal is recorded NOWHERE but this journal."
         fi
         exit 1
     fi
