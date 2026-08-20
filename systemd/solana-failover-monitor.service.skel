@@ -39,26 +39,37 @@ OnFailure=solana-failover-fence.service solana-failover-fence-page-only.service
 StartLimitIntervalSec=0
 
 [Service]
-# §2.6 (rev3/№6): Type=notify + NotifyAccess=main + the daemon's OWN shell PID writing
-# datagrams to $NOTIFY_SOCKET via socat — the SOLE armed transport in v0.7 (no C shim, no
-# systemd-notify in armed mode). The socat datagram carries the main PID's SCM_CREDENTIALS,
-# which defeats the pre-257 fork-and-exit attribution race (sd_notify(3): the pidfd/MAINPIDFD=
-# fix is "Added in version 257"; every current target ships 249–255). On systemd >= 257
-# systemd-notify becomes a full zero-dependency transport and `failover arm` may prefer it
-# there — referenced only, not implemented in v0.7 (research record, assumption 1).
+# §2.6 (rev3/№6): Type=notify + the daemon writing sd_notify datagrams to $NOTIFY_SOCKET via
+# socat — the SOLE armed transport in v0.7 (no C shim, no systemd-notify in armed mode; the
+# research record's chosen pattern, assumption 1). HONESTY FIX (Block 5.2): socat is
+# unavoidably a forked CHILD of the daemon, so the datagram's SCM_CREDENTIALS are socat's own,
+# NOT the main PID's — the pre-257 fork-and-exit attribution race applies to it as an auxiliary
+# process (sd_notify(3): the pidfd/MAINPIDFD= fix is "Added in version 257"; every current
+# target ships 249–255). Therefore NotifyAccess=all — PID 1 must accept datagrams from the
+# unit's auxiliary processes at all — and every payload carries the MainPID claim (MAINPID=$$,
+# the daemon's own PID; see the daemons' _sd_notify). Honest residual: a datagram whose sender
+# already exited can still be discarded (the record's race note) — absorbed by the pet cadence
+# (WatchdogSec=30 vs the ≤ ~22 s worst-case inter-pet gap derived at _watchdog_pet), never by
+# retry. On systemd >= 257 systemd-notify becomes a full zero-dependency transport and
+# `failover arm` may prefer it there — referenced only, not implemented in v0.7.
 Type=notify
-NotifyAccess=main
+NotifyAccess=all
 # BLOCK5-PROPER: `failover arm` writes the role's daemon here (solana-primary-failover.sh or
 # solana-standby-failover.sh) — the skeleton deliberately does not guess a role, and the
 # <role> placeholder keeps this file uninstallable as-is.
 ExecStart=/opt/solana-failover/solana-<role>-failover.sh
 EnvironmentFile=/opt/solana-failover/failover.env
 # §2 derivation (addendum §3a.3: timing constants live in ONE derivation table, never scattered):
-# 30 s tolerates one lost datagram at the <= WatchdogSec/2 pet cadence (pet every ~10–15 s,
-# research record assumption 1) and stays inside every cross-node bound the spare's timers
-# assume. R15: WatchdogSec is enforced by PID 1 on CLOCK_MONOTONIC — immune by construction to
-# the NTP-step class that defeated the old wall-clock fence (AUDIT-5). Shortening it is a
-# false-fire-rate trade, gated on the measured E2E rate (§3.4) — never asserted.
+# 30 s vs the daemons' per-op pet cadence — the honest figure (Block 5.2 fix round, aligned to
+# the derivation at _watchdog_pet): worst-case inter-pet gap ≈ 22 s (the single longest bounded
+# op, SETIDENTITY_TIMEOUT 15 + kill-grace 5, + glue) < 30 at ZERO datagram loss. NOT "tolerates
+# one lost datagram at a ~10–15 s cadence": across a maximal 20 s op the gap exceeds
+# WatchdogSec/2, so ONE discarded datagram immediately before such an op is the daemons' NAMED
+# false-fence residual (the kernel-local discard class, not network loss). 30 s also stays
+# inside every cross-node bound the spare's timers assume. R15: WatchdogSec is enforced by
+# PID 1 on CLOCK_MONOTONIC — immune by construction to the NTP-step class that defeated the old
+# wall-clock fence (AUDIT-5). Shortening it is a false-fire-rate trade, gated on the measured
+# E2E rate (§3.4) — never asserted.
 WatchdogSec=30
 # §2.2 (BLOCKER-2, rev-2 — the reboot-brick fix): the daemon sends READY=1 ONLY after its first
 # successful identity read; pre-READY the watchdog is unarmed and the daemon extends startup
@@ -68,6 +79,15 @@ WatchdogSec=30
 # honestly. This replaces the rev-1 static TimeoutStartSec guess (a replay longer than the
 # guess would have fenced a healthy validator mid-replay — the reboot brick with a 20-minute
 # fuse). EXTEND_TIMEOUT_USEC is supported since systemd 236 — all targets.
+#
+# Pre-first-EXTEND bound (Block 5.2 fix round): the live extension governs only once the daemon
+# has SENT an EXTEND — an iteration that cannot positively confirm startup sends NOTHING. From
+# exec to the first extension decision the governing bound is TimeoutStartSec, pinned here to
+# 90 s (= the systemd default, made EXPLICIT so the daemons' part-D scenario (b) bound is
+# stated where it binds and survives a future default change). The daemons' pre-wait-loop
+# startup work is bounded ≈ 30–40 s — comfortably inside. An EXTEND replaces the remaining
+# start timeout, so steady evidence keeps extending and a long replay is never fenced by this.
+TimeoutStartSec=90s
 #
 # R8 (load-bearing, see the [Unit] comment): NEVER a restarting policy on this unit. Post-fence
 # restart of the monitor is the FENCE's explicit action (two marker states, §2.2), not PID 1's.

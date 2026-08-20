@@ -33,8 +33,12 @@ shopt -u patsub_replacement 2>/dev/null || true
 # (content: ISO timestamp + reason; atomic tmp+mv). Direction on an unprovable stop: the fence
 # claims MORE fencing than proven, never less — a wedged/unverifiable stop still writes
 # fenced-stopped (+ exit 1): the monitor's HOLD path treats the marker as authoritative, which
-# parks the node in the conservative state (no watchdog re-arm, one CRITICAL page, operator owns
-# recovery) instead of resuming as if nothing were fenced.
+# parks the node in the conservative state — HOLD as IMPLEMENTED in the daemons'
+# _consume_fence_markers (Block 5.2, superseding addendum §2.2's original "no watchdog re-arm,
+# one CRITICAL page, quiet" wording): NO monitoring logic runs, but the monitor sends READY=1
+# (the one documented B1 exception), keeps petting, and re-pages CRITICAL per ALERT_THROTTLE
+# until the operator clears the marker — instead of resuming as if nothing were fenced. Both
+# ends of the marker contract (this writer and the daemons' consumer) describe THAT behavior.
 FENCE_MARKER_DIR="${FENCE_MARKER_DIR:-/var/lib/solana-failover}"
 MONITOR_UNIT="${MONITOR_UNIT:-solana-failover-monitor.service}"
 SETIDENTITY_TIMEOUT="${SETIDENTITY_TIMEOUT:-15}"
@@ -508,14 +512,17 @@ _stop_fallback() {
     local why="$1"
     if _stop_validator; then
         _write_marker fenced-stopped "$why"
-        # §2.2: restarted monitor enters HOLD — no watchdog re-arm, one CRITICAL page, quiet.
+        # §2.2: restarted monitor enters HOLD as implemented (supersedes the addendum's original
+        # §2.2 wording): READY=1 + pets (so the watchdog cannot re-fire the fence against an
+        # already-fenced node) + CRITICAL page re-paged per ALERT_THROTTLE; NO monitoring logic.
         _fence_page "FENCED (stopped): $why — validator STOPPED+verified. Monitor restarting into HOLD; recover with unmask+start ONLY after confirming no spare holds the identity."
         _restart_monitor || _fence_page "monitor restart enqueue failed after fenced-stopped — node is DOWN and UNMONITORED; intervene now"
         _fence_exit 0
     fi
     # Even the stop failed/unverifiable: the marker is STILL fenced-stopped — claim MORE fencing
     # than proven, never less. The monitor's HOLD path treats the marker as authoritative, which
-    # parks the node in the conservative state (no watchdog re-arm, no auto-recovery) while the
+    # parks the node in the conservative state (HOLD: no monitoring logic, no auto-recovery —
+    # with READY + pets + throttled re-page, per the daemons' implemented HOLD) while the
     # LOUDEST page + this unit's own `failed` state (exit 1) summon the operator. The monitor is
     # still restarted: live monitoring + its own self-fence paths are strictly safer than a dead
     # monitor next to a possibly-staked validator. Direction: page, never silently-staked.

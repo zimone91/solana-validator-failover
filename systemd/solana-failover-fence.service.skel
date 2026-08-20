@@ -60,9 +60,12 @@ TimeoutStartSec=300
 # fenced); unreadable with NO startup evidence ⇒ stop (fail toward stop).
 #
 # Two outcome markers (§2.2), consumed by the restarted monitor:
-#   fenced-stopped   (stop+mask path)  → monitor HOLD: no watchdog re-arm, one CRITICAL page
-#                                        ("fenced — awaiting operator"), quiet; cleared only by
-#                                        the operator's recovery flow.
+#   fenced-stopped   (stop+mask path)  → monitor HOLD as implemented (supersedes the addendum's
+#                                        original §2.2 wording — see systemd/README.md): no
+#                                        monitoring logic, but READY=1 + continuous pets +
+#                                        CRITICAL page re-paged per ALERT_THROTTLE ("fenced —
+#                                        awaiting operator"); cleared only by the operator's
+#                                        recovery flow.
 #   fenced-demoted   (Lever-2 path — validator RUNNING, unstaked) → normal demoted-holder
 #                                        monitoring: READY on first read, watchdog re-armed,
 #                                        marker cleared on the monitor's first clean cycle. The

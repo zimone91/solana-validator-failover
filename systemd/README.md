@@ -20,7 +20,8 @@ semantics is "does not act, loudly"). The blocker lifts on host answers, not on 
 ## Topology
 
 ```
-                     pets (socat → $NOTIFY_SOCKET, main-PID datagrams; §2.6)
+                pets (socat → $NOTIFY_SOCKET — socat-CHILD datagrams carrying a
+                MAINPID=$$ payload claim; NotifyAccess=all accepts them; §2.6)
   ┌──────────────────────────────┐  WATCHDOG=1 / EXTEND_TIMEOUT_USEC / READY=1
   │ solana-failover-monitor      │ ───────────────────────────────────────────►  PID 1
   │ (Type=notify, WatchdogSec=30,│                                            (CLOCK_MONOTONIC)
@@ -39,25 +40,52 @@ semantics is "does not act, loudly"). The blocker lifts on host answers, not on 
                  │       (or stop-fallback)            mutates NOTHING (§2.3)
                  ▼
         fence.outcome marker ──► restarted monitor:
-          fenced-stopped  → HOLD (no watchdog re-arm, one CRITICAL page, quiet)
+          fenced-stopped  → HOLD: no monitoring logic, but READY=1 + continuous pets
+                            + CRITICAL page re-paged per ALERT_THROTTLE until the
+                            operator clears the marker (see "HOLD, as implemented")
           fenced-demoted  → normal demoted-holder monitoring (READY, watchdog re-armed)
           (no marker + §2.2 third branch: startup evidence → pre-READY extension, no stop)
 ```
 
+## HOLD, as implemented (supersedes addendum §2.2's original wording)
+
+The addendum's original §2.2 described HOLD as "no watchdog re-arm, one CRITICAL page, quiet".
+**That wording is superseded** (ratified in the Block 5.2 spec, part C1) — the implemented HOLD
+in both daemons' `_consume_fence_markers` is: **no monitoring logic runs**, and the monitor
+sends `READY=1` (the ONE documented exception to the READY-after-first-identity-read gate),
+**keeps petting**, and **re-pages CRITICAL per `ALERT_THROTTLE`** until the operator clears the
+`fenced-stopped` marker (then exits 0 for a clean `Restart=no` restart). Why the original
+wording could not ship, both directions traced:
+
+- *No READY:* the unit's start would time out (`TimeoutStartSec`) → `failed` → `OnFailure` →
+  the fence dispatches again against an already-fenced node — forever. Worse, the operator's
+  marker-clear exit 0 would land pre-READY as a Type=notify "protocol" failure → `OnFailure` →
+  the fence re-writes `fenced-stopped`, silently undoing the operator's clear.
+- *No pets (once READY):* WatchdogSec fires against a parked, healthy monitor → the same
+  re-dispatch loop.
+- *Quiet:* a fenced node awaiting a human must not go silent — hence the throttled re-page.
+
 ## Where the design sections land
 
 - **§2.2 (BLOCKER-2 — startup & post-fence states)** lands in the **monitor unit + daemons**:
-  no `READY=1` until the first successful identity read; pre-READY the daemon sends
-  `EXTEND_TIMEOUT_USEC` each cycle while it can positively confirm startup/replay (the
-  reboot-brick fix — replaces the rev-1 static `TimeoutStartSec` guess); and in the **fence
-  script**: the third identity branch (unreadable + active + startup evidence ⇒ page + restart
-  monitor, NO stop) and the two outcome markers.
+  no `READY=1` until the first successful identity read (sole exception: HOLD, above); pre-READY
+  the daemon sends `EXTEND_TIMEOUT_USEC` each cycle while it can positively confirm
+  startup/replay (the reboot-brick fix — replaces the rev-1 static `TimeoutStartSec` guess; the
+  skel's explicit `TimeoutStartSec=90s` = the systemd default bounds the no-EXTEND-yet window);
+  and in the **fence script**: the third identity branch (unreadable + active + startup
+  evidence ⇒ page + restart monitor, NO stop) and the two outcome markers.
 - **§2.5 (stale-write barrier ladder)** lands in the **fence script**: remove-all →
   set-identity <unstaked> → remove-all AGAIN → SUSTAINED re-poll (EMPIRICAL floor, Block 10
   sets it — provisional, [rev3/№5]) → stop-fallback on any doubt.
-- **§2.6 (transport)** lands in the **monitor unit + daemons**: socat main-PID datagrams to
-  `$NOTIFY_SOCKET` are the SOLE armed transport in v0.7 (`NotifyAccess=main`); `systemd-notify`
-  = monitoring-only mode below systemd 257 (the attribution race; pidfd fix is v257+).
+- **§2.6 (transport)** lands in the **monitor unit + daemons**: `socat -t0` unit-datagrams to
+  `$NOTIFY_SOCKET` are the SOLE armed transport in v0.7. socat is unavoidably a forked CHILD of
+  the daemon, so the datagram's SCM_CREDENTIALS are socat's own, NOT the main PID's (the
+  pre-257 fork-and-exit attribution race; the pidfd fix is systemd ≥ 257, the fleet ships
+  249–255) — therefore the unit sets **`NotifyAccess=all`** (with `NotifyAccess=main` PID 1
+  would drop every socat-child datagram: READY never lands, the start times out, a healthy
+  monitor is fenced — the "syntactically valid, functionally dead" config class) and every
+  payload carries the `MAINPID=$$` claim (see the daemons' `_sd_notify`). `systemd-notify` =
+  monitoring-only mode below systemd 257 (the same attribution race).
 - **§2.3 (arm-state) [rev3/№1]** lands in the **daemons NOW** (this slice): `_fence_unit_state`
   (none|page-only|real; pure file tests, both-present = real) + the startup refusal on
   `DRY_RUN=true` + real fence unit. Structurally inert wherever no fence unit exists — every

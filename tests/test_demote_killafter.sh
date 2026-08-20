@@ -19,8 +19,10 @@ echo ""
 
 # v0.6.9 (TASK-v0.6.9 H2): 7 → 8 — the hard-stop now also masks the unit (`timeout -k 5 15 systemctl
 # mask --runtime`) before the direct kill so Restart=always cannot resurrect it. Same bound discipline.
+# v0.7 (Block 5.2): 8 → 9 — the daemons' _startup_phase_evidence twin (the fence's §2.2 probe, on the
+# pre-READY live-extension path) is a bounded `timeout -k 5 8` admin read. Same bound discipline.
 n_k=$(grep -cE 'timeout -k 5 ' "$PRIMARY")
-[[ $n_k -eq 8 ]] && ok "(K-count) 8 timeout calls carry -k 5 (6 set-identity/voter + systemctl stop + systemctl mask [v0.6.9 H2])" || bad "(K-count) expected 8 'timeout -k 5', got $n_k"
+[[ $n_k -eq 9 ]] && ok "(K-count) 9 timeout calls carry -k 5 (6 set-identity/voter + systemctl stop + systemctl mask [v0.6.9 H2] + the 5.2 startup-evidence probe)" || bad "(K-count) expected 9 'timeout -k 5', got $n_k"
 
 # No bare SIGTERM-only timeout left on the demote/promote/hard-stop paths.
 n_bare=$(grep -nE 'timeout (15 systemctl|"\$SETIDENTITY_TIMEOUT")' "$PRIMARY" | grep -vc '\-k 5')
