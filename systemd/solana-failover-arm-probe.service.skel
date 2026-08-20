@@ -1,0 +1,41 @@
+# SKELETON (v0.7 Block 5.3) — the §2.1-rev2.1 arm-time PROBE unit: rendered into ARM_RUNTIME_DIR
+# (default /run/systemd/system — tmpfs, ephemeral by construction) ONLY by the `failover arm`
+# ceremony, started once, then cleaned by it; NOTHING in this repository installs units.
+#
+# The probe is a PHYSICAL demonstration, on THIS host, of the exact chain the real fence rides:
+# READY lands via one socat pet (the §2.6 transport self-test — the ceremony's `systemctl start`
+# returns 0 only when that pet crossed), the unit then DELIBERATELY never pets again →
+# WatchdogSec=2s fires (PID 1, CLOCK_MONOTONIC) → terminal `failed` (Restart=no +
+# StartLimitIntervalSec=0 — the monitor skeleton's R8 pair, mirrored) → OnFailure= dispatches
+# the probe fence, whose ONLY action is writing the marker file the ceremony waits for
+# (bounded, ~15 s). This catches the "syntactically valid, functionally dead" config class
+# BEFORE any armed state exists; no marker → the ceremony REFUSES to arm.
+
+[Unit]
+Description=Solana failover arm probe (transient) — proves pet/watchdog/OnFailure wiring, then is removed
+# R8 pair (see the monitor skeleton): OnFailure= fires ONLY on terminal `failed`; Restart=no
+# (below) + StartLimitIntervalSec=0 make the FIRST missed pet terminal in one hop.
+OnFailure=solana-failover-arm-probe-fence.service
+StartLimitIntervalSec=0
+
+[Service]
+# Same Type/NotifyAccess shape as the armed monitor unit: the pet below is sent by a socat
+# CHILD (its SCM_CREDENTIALS are socat's own — the pre-257 attribution race), so
+# NotifyAccess=all is load-bearing here exactly as it is there; with `main` PID 1 would discard
+# the pet and the start would time out — precisely the wiring class this probe exists to catch.
+Type=notify
+NotifyAccess=all
+# One READY pet via the §2.6 armed transport (a socat unit-datagram to $NOTIFY_SOCKET — the
+# same @-abstract/path split as the daemons' _sd_notify), then DELIBERATE silence: sleep past
+# the watchdog so PID 1 — not this process — ends the unit. ($$ is systemd unit-file escaping
+# for one literal `$` handed to /bin/sh.)
+ExecStart=/bin/sh -c 'case "$$NOTIFY_SOCKET" in @*) printf "READY=1" | socat -t0 - "ABSTRACT-SENDTO:$${NOTIFY_SOCKET#@}" ;; *) printf "READY=1" | socat -t0 - "UNIX-SENDTO:$$NOTIFY_SOCKET" ;; esac; exec sleep 60'
+WatchdogSec=2s
+# Explicit expiry bounds (the monitor skeleton's discipline): SIGABRT, and a fast settle into
+# `failed` — the ceremony's marker wait is bounded and short.
+WatchdogSignal=SIGABRT
+TimeoutAbortSec=5s
+Restart=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=solana-failover-arm-probe

@@ -190,6 +190,10 @@ _fence_exit() {
 # staked, votable node left unfenced, unmonitored, its CRITICAL page journal-only; proceeding
 # on a genuinely-stopped node is idempotent-harmless (the stop path re-verifies a gone process
 # and re-writes the same marker).
+# WALL-CLOCK BY DESIGN (the ci.yml facts sentence's fence site): the compare below is file
+# MTIME vs boot epoch (now − uptime) — inherently wall-clock quantities; not a safety timer
+# (mono_now would be wrong here, and would break the daemon↔fence byte-parity asserted by
+# test_monitor_fence_integration (12b) — this comment sits OUTSIDE the extracted region).
 _marker_same_boot() {
     local f="$1" up now boot mt
     up=$(awk '{ print int($1) }' "${FENCE_PROC_ROOT:-/proc}/uptime" 2>/dev/null)
@@ -294,9 +298,10 @@ _startup_phase_evidence() {
 # §2.5 expected-and-benign — but ONLY after an ACCEPTED set-identity (issued AND rc 0):
 # fence-issued set-identity <unstaked> can make the replay loop exit the process on tower-reload
 # failure; under Restart=always the unit returns it governed by its --identity argument (an
-# invariant this script cannot verify — the arm ceremony (5.3) must verify the unit's ExecStart
-# carries the unstaked identity). Process-gone after an ACCEPTED set-identity is therefore a
-# DEMOTE OUTCOME, not an error. A FAILED set-identity (rc != 0) earns NO excuse: nothing was
+# invariant this script cannot verify — the unit's ExecStart carrying the unstaked identity is
+# verified at arm since 5.3, failover-arm.sh precondition 4). Process-gone after an ACCEPTED
+# set-identity is therefore a DEMOTE OUTCOME, not an error. A FAILED set-identity (rc != 0)
+# earns NO excuse: nothing was
 # provably applied, so proc-gone there is plain doubt → stop-fallback — and the stop path's
 # systemctl stop also CANCELS the Restart=always resurrection this excuse would otherwise wave
 # back in; its verify then finds the process gone → fenced-stopped, exit 0 — an honest claim.
@@ -555,10 +560,10 @@ main() {
             # verify sustained-unstaked and must not claim it — what it proved is an ACCEPTED
             # set-identity followed by the process exiting mid-ladder; the RETURNED process's
             # identity is governed by the unit's --identity argument, an invariant this script
-            # cannot verify (the arm ceremony (5.3) must verify the unit's ExecStart carries
-            # the unstaked identity).
+            # cannot verify (verified at arm since 5.3 — failover-arm.sh precondition 4 refuses
+            # to arm the real fence unless the unit's ExecStart carries the unstaked identity).
             if [[ -n "$_FENCE_PROC_GONE" ]]; then
-                _write_marker fenced-demoted "monitor watchdog failure; validator process exited mid-ladder after an ACCEPTED set-identity (§2.5 demote outcome) — the returned process's identity is governed by the unit's --identity argument, an invariant this script cannot verify; the arm ceremony (5.3) must verify the unit's ExecStart carries the unstaked identity"
+                _write_marker fenced-demoted "monitor watchdog failure; validator process exited mid-ladder after an ACCEPTED set-identity (§2.5 demote outcome) — the returned process's identity is governed by the unit's --identity argument, an invariant this script cannot verify; the unit's ExecStart carrying the unstaked identity is verified at arm since 5.3"
                 _fence_page "FENCED (demoted): ACCEPTED set-identity, then the validator process exited mid-ladder (§2.5). If Restart=always returns it, its identity is whatever the unit's --identity argument names. Monitor restarting into demoted monitoring."
             else
                 _write_marker fenced-demoted "monitor watchdog failure; ladder verified by $FENCE_REPOLL_SECS sustained unstaked reads"

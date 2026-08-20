@@ -5,8 +5,83 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
-- **Block 5.2 panel fix round** (5-lens adversarial verification panel; folded into the Block
+- **Block 5.3 — the `failover arm` ceremony** (`failover-arm.sh`, repo root: SHIPPABLE — in
+  SHA256SUMS, shellcheck, and the parse gate — but EXECUTED only at the v0.7 rollout,
+  upgrade-then-arm, per the release checklist; nothing in this repository runs it). Structure:
+  preconditions → probe → install → verify → token, every precondition refusing with the exact
+  fix printed. Preconditions: self-v0.7 patsub-guard check on the installed daemons (the
+  rev3.2 release condition self-enforced — the ceremony IS the upgrade-then-arm checkpoint);
+  socat hard-required (§2.6, the SOLE armed transport — no fallback); busybox-flock `-w` probe
+  (reviewer 5.2-GO: detected AT ARM and said aloud — WARN, not refuse); **unit `--identity`
+  verification** (the 5.1 proc-gone residual discharged: real-arm REFUSES unless the validator
+  unit's ExecStart carries the unstaked keypair; page-only proceeds with WARN; frankendancer
+  states the stop-only posture and skips); the §2.3 one-arm-state announcement. The
+  §2.1-rev2.1 end-to-end PROBE: a transient Type=notify pair (new `arm-probe` skeletons)
+  rendered into ARM_RUNTIME_DIR proves stopped-petting → watchdog → `failed` → OnFailure
+  ON THIS HOST before any armed state exists — the one READY pet that starts it IS the §2.6
+  socat self-test; no marker → refuse. Install renders the monitor (role fill) + exactly ONE
+  fence unit (page-only XOR real per DRY_RUN, stale sibling removed — the arm is the alignment
+  mechanism), places the fence bodies (the ceremony is the only placer), **retires the legacy
+  monitor before enabling the new one** (fix round 2 blocker: the wizards' pre-fence units
+  `solana-failover.service` / `solana-failover-standby.service` — the full set either wizard
+  writes or enables — are detected, stopped, disabled, and the retirement VERIFIED via
+  `is-active`/`is-enabled` re-reads; any failure → `REFUSE[INSTALL-legacy]` with the manual
+  commands printed, the new monitor NOT enabled, no token; the unit file stays on disk for the
+  operator to delete. Two Restart=always monitors on one host share the env + state file and
+  race set-identity — one demotes, the other re-takes inside the lockout; the fix is this
+  ceremony step, deliberately NOT a daemon-side flock, which would turn the losing notify
+  monitor into a never-READY start timeout → OnFailure → REAL fence on a healthy validator),
+  enables the monitor (the only `systemctl enable` of a Block-5 unit — supersession of the
+  legacy deploy services is an ACTION the ceremony performs, not a plan), never touches
+  the validator unit; post-install
+  verify re-classifies and must agree (render→verify). The §2.1 pairing token
+  (`v0.7|gen=N|watchdog=…|relinquish_bound=…|fence=…|host=…|crc`) bumps a persisted generation
+  counter and the arm refuses to complete without printing it. New suite
+  `tests/test_arm_ceremony.sh` (48 suites): reds-first, every actuator stubbed, every root in
+  mktemp (the hard boundary — no test touches /etc, /run/systemd, or a real systemd),
+  refuse-gate mutation controls on every gate, arm↔fence byte-parity on the reused
+  unit-discovery helpers.
+  The fence's "(the arm ceremony (5.3) must verify …)" comments/marker text now read "verified
+  at arm since 5.3" — daemon↔fence byte-parity twins untouched.
+  **5.3 panel fix round** (3-lens adversarial panel on the arm ceremony; every fix reds-first,
+  every executed attack re-run and shown dead): P1 now requires WATCHDOG CAPABILITY in each
+  installed daemon (`_watchdog_active()` + ≥1 `READY=1` + ≥10 `_watchdog_pet` sites, all
+  comment-stripped) beside the patsub guard — the panel armed a v0.6.10 daemon whose READY-less
+  monitor would have fenced a healthy validator; P4 verifies the KEY, not the path string
+  (readlink-resolve, derive the pubkey via the host's `solana-keygen`/`agave-keygen`, compare
+  to the env's `UNSTAKED_PUBKEY` — a symlink-to-staked at the configured path now refuses;
+  unverifiable refuses too, with the manual command printed and the documented dangerous
+  override `ARM_ACCEPT_UNVERIFIED_IDENTITY=1` that WARNs loudly; multiple `--identity` flags:
+  the LAST wins, said aloud); the renderer is structural (bash replace, no sed — `&`/`\`/`|`
+  paths render byte-exact, the delimiter refusal gone with the sed) with per-file post-render
+  content verification and a directory-at-destination refusal; probe markers are file-typed
+  with stale-marker announce+clean (the panel's M-A mutation survivor, now killed by a case +
+  control) and an unremovable-marker refusal; an un-removable stale fence sibling under REAL
+  intent refuses (was WARN — §2.3's one-unit invariant); the generation bump is
+  flock-serialized (bounded; absent-flock residual named) and verified to persist as a regular
+  file holding the bumped value; the "only enable" claim is scoped to the Block-5 unit set
+  everywhere it is printed or written; all five `systemd/*.skel` render sources joined
+  SHA256SUMS (integrity artifacts for root-installed units); `tests/run_all.sh` dispatches via
+  `"${BASH:-bash}"` (interpreter-drift class closed). Suite 56 → 85 checks, mutation controls
+  M1–M10. (5-lens adversarial verification panel; folded into the Block
   5.2 commit — every fix red-first, every panel mutant re-killed, every attack scenario re-run).
+  **5.3 fix round 2** (reviewer blockers, both reds observed on a tool-bearing machine —
+  docker bash:5.2 with socat/flock/util-linux installed): the arm suite's scenario PATH is now
+  `"$STUB_DIR:$TOOLDIR"` with NO system path appended — TOOLDIR is a per-run dir of symlinks
+  to the real host binaries for the arm's non-actuator commands (N-is-all by comment-stripped
+  grep), so a DELETION stub means the tool resolves NOWHERE; the old appended `/usr/bin:/bin`
+  made `STUB_NOSOCAT`/`STUB_NOFLOCK` vacuous exactly where the tools exist (every real
+  validator host): with socat installed, (2a) ARMED with a printed pairing token where
+  `REFUSE[P2-socat]` was expected (83/85, run_all 47/48 — reproduced, then fixed, then green
+  on the same machine; standing non-vacuity tripwires (B6)/(B7) — asserting the exact PATH
+  string the runner used (a snapshot at the deletion cases), never a locally rebuilt copy,
+  so a runner-side PATH regression turns them red too; the flock-absent case (3c)
+  is now exercised unconditionally on every leg). Plus the legacy-monitor retirement above
+  (suite (15a–h) + mutation control M11: retire neutered → the dual-monitor arm completes,
+  observed), and the `P1-capability` refusal now prints the failing daemon's MEASURED counts
+  against the REQUIRED floors instead of static shipped-daemon figures (the old "carry 7 and
+  35+" disagreed with the reviewer's count of the same daemons — illustrative numbers drift,
+  measurements do not). Suite 85 → 97 checks, controls M1–M11.
   **FF-B1 (false-fence blocker):** the wedged-demote paths now pet their COMPLETED timed-out
   ops — a `timeout` rc 124/137 return IS a completed bounded op (the monitor is alive and
   remediating): the primary's `switch_to_unstaked` rc-124 branches pet BEFORE entering
