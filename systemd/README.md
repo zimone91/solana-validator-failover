@@ -157,9 +157,18 @@ wording could not ship, both directions traced:
    sibling under REAL intent refuses outright (§2.3's one-unit invariant, never
    WARN-and-arm); and the generation bump is flock-serialized (bounded, residual named where
    flock is absent) and verified to have landed as a regular file holding the bumped value.
-4. Still Block-5-proper, daemon-side (NOT in 5.3): periodic holder-side re-verification of
-   effective fence properties + the `FENCE_ROT_GRACE` escalation window (§2.1-rev2.1 №2), and
-   the zero-stake verification of the unstaked key (G2's arm condition, Block 6 wiring).
+4. Daemon-side rot re-verification is BUILT (Block 5.4, the `[fence-rot]` twin block in both
+   daemons; `tests/test_fence_rot.sh`): while ARMED, the holder re-verifies its own effective
+   fence properties every `FENCE_ROT_CHECK_SECS` — fence unit files re-classified, fence
+   LoadState, monitor `Restart`/`OnFailure`/`StartLimitIntervalUSec`, and the `WatchdogSec`
+   config for the next start (`systemctl cat` — the show-side `WatchdogUSec` is runtime-only;
+   every demote-vs-page classification container-verified on systemd 249 AND 255, design
+   record `verify-rot-properties.md`, private tree). Verified fence-killing drift pages
+   CRITICAL immediately (exact element + exact fix) and, only after `FENCE_ROT_GRACE` of
+   persistence while verifiably STAKED, gracefully self-demotes via the daemon's existing
+   demote path (§2.1-rev2.1 №2). Structurally inert on every un-armed host. What remains for
+   Block 6 (deliberately NOT daemon work here): the zero-stake verification of the unstaked
+   key — it is G2's arm condition and its consumer/wiring is spare-side.
 
 ## Frankendancer: STOP-ONLY fencing in v0.7 (named limitation — reviewer-packet item)
 

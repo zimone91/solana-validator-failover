@@ -2070,6 +2070,455 @@ _consume_fence_markers() {
 }
 # ── [watchdog] end shared block ──
 
+# ── [fence-rot] holder-side fence re-verification + FENCE_ROT_GRACE escalation — BYTE-IDENTICAL in both daemons (test_fence_rot) ──
+# v0.7 (Block 5.4, §2.1-rev2.1 №2): the pairing token attests the holder's fence AT PAIRING
+# TIME only — the spare cannot see post-pairing rot (unit masked, a drop-in re-adding
+# Restart=, disarm); there is no channel, by design (DESIGN-v0.7-ADDENDUM §2.1). The load is
+# holder-side: while ARMED, this block re-verifies OUR OWN effective fence properties once per
+# FENCE_ROT_CHECK_SECS and treats armed+staked+fence-broken as fence-worthy — behind an
+# ESCALATION WINDOW, never an instant action: one systemd typo must not take down a healthy
+# production validator faster than a human can read a page.
+# STRUCTURALLY INERT outside the armed unit: every entrypoint no-ops unless _watchdog_active()
+# — on today's hosts and in every harness that is zero systemctl calls, zero pages, zero state
+# (asserted by event log in test_fence_rot (1)/(14), not by this prose).
+# Every systemd fact used below is container-VERIFIED on systemd 249 (the fleet floor) AND 255
+# — design record verify-rot-properties.md (private tree); rows cited inline. claim=check: a
+# property read must SUCCEED and show a state whose fence-kill is verified before anything arms
+# the demote clock — cannot-verify is NOT rot (the CLI is not the enforcement plane: PID 1
+# enforces WatchdogSec/OnFailure regardless of whether systemctl answers us).
+FENCE_ROT_CHECK_SECS="${FENCE_ROT_CHECK_SECS:-60}"   # armed sweep cadence (validated >= 10; raising it is drift-announced — rot is seen later)
+FENCE_ROT_GRACE="${FENCE_ROT_GRACE:-1800}"           # verified-rot window before the graceful self-demote (validated >= max(600, ALERT_THROTTLE) — see validate_numeric_config)
+ROT_MONITOR_UNIT="solana-failover-monitor.service"   # the armed monitor unit — MUST match failover-arm.sh MONITOR_UNIT_NAME (the ceremony's only monitor name); plain constant like FENCE_UNIT_REAL: no env channel, no drift vector
+
+_rot_intent=""               # fence intent captured at startup under the armed unit ("" = never captured)
+# PER-SIGNAL escalation anchors (panel fix round, ROT-DEMOTE-1 BLOCKER) — mono stamps,
+# 0-sentinels: each is the FIRST verified detection of ITS OWN signal's current contiguous rot
+# episode. WHY per-SIGNAL, not one shared anchor (the shipped v1 hole) and not per-read-GROUP:
+# a shared anchor conflates "when THIS rot began" with "when ANY rot was last seen" — a fence
+# that GENUINELY healed (LoadState read succeeded, answered loaded) under a blind sibling
+# monitor read kept the ancient anchor alive, so a FRESH masked read 50 min later demoted with
+# 0 s of the 1800 s grace (executed on both daemons: demotes=[3000] where [4800] is correct —
+# the ratified "never an instant action" contract broken). Group-level anchors reopen the same
+# hole one level down: file-GONE @t0 (S1), file restored @t0+60 (S1 positively clean) while the
+# LoadState read is blind, fresh MASKED @t0+3000 (S2) — a shared F-group anchor would still be
+# t0 → instant demote; S2's OWN anchor is fresh → full grace. Deliberately NOT persisted: a
+# daemon restart re-opens FRESH windows, which can only DELAY the demote, never fabricate one
+# (the H3 fresh-timer rule).
+_rot_s1_since=0              # S1 file-classification (which fence unit files exist vs the captured intent)
+_rot_s2_since=0              # S2 fence LoadState (masked / not-found / bad-setting)
+_rot_s3_since=0              # S3 monitor Restart (≠ no)
+_rot_s4_since=0              # S4 monitor OnFailure (no longer naming the armed fence)
+_last_rot_page=0             # demote-class CRITICAL re-page throttle stamp (repeats only)
+_last_rot_sweep=0            # sweep cadence stamp (repeats only — the first armed sweep is immediate)
+_rot_pageclass_paged=0       # a page-class drift page went out this drift episode (drives the one resolution info)
+_last_rot_pageclass_page=0   # page-class re-page throttle stamp
+_rot_cv_streak=0             # consecutive sweeps with >= 1 failed/unparseable systemctl read
+_last_rot_cv_page=0          # cannot-verify blind-page throttle stamp (the alpenglow blind-streak pattern)
+_rot_unstaked_noted=0        # expiry-while-unstaked info sent once per episode
+_last_rot_demote_try=0       # expiry demote-ATTEMPT throttle stamp (ROT-INT-2), 0-sentinel — see the expiry branch
+
+# Startup anchor: WHICH fence the arm ceremony installed is this run's INTENT — captured once,
+# from startup_checks, under the armed unit. Capturing lazily at the first sweep instead would
+# bless a deletion that happened between startup and that sweep as "intent"; the lazy call in
+# the sweep below is a fallback for partial harness drives only. real→none / real→page-only AT
+# RUNTIME then classify as "the fence is GONE". Armed with intent `none` is rot-from-startup:
+# the ceremony never installs the monitor unit without a fence, so an armed monitor with no
+# fence unit means the fence was removed while this daemon was down (the missing-unit dispatch
+# death is verify-onfailure-missing-unit.md — enqueue ignored, fence never runs).
+_rot_capture_intent() {
+    _watchdog_active || return 0
+    _rot_intent=$(_fence_unit_state)
+    log_info "[fence-rot] armed — fence intent at startup: ${_rot_intent} (sweep every ${FENCE_ROT_CHECK_SECS}s, escalation grace ${FENCE_ROT_GRACE}s)"
+    return 0
+}
+
+# The ONE bounded systemctl read funnel — every sweep read goes through here, so every read is
+# timeout-bounded AND petted structurally (a future read added through the funnel cannot forget
+# its pet). Pet-gap worst case, derived (the A3 style): a full sweep is 3 reads × (5 s + 2 s
+# kill-grace) = 21 s of BOUND plus the expiry identity read (8 s, its own timeout) ≈ 29 s of
+# bound — but the pet fires after EACH op completes, so the largest unpetted span the sweep can
+# add is ONE op's bound + glue ≈ 7–8 s, far under WatchdogSec 30 and under the daemon-wide
+# ≈ 22 s A3 worst case (the single longest admin op), which therefore still governs. The pet
+# runs inside the $()-capture subshell: WATCHDOG=1 datagrams are fire-and-forget and $$ still
+# expands to the daemon's own PID there (the [watchdog] MAINPID note), so attribution holds.
+_rot_sysread() {
+    local _rs_out _rs_rc
+    _rs_out=$(timeout -k 2 5 systemctl "$@" 2>/dev/null); _rs_rc=$?
+    _watchdog_pet   # §5 per-op pet (Block 5.4): bounded systemctl read completed — a timeout return IS completion (`timeout` returned; the monitor is alive) — no-op outside the armed unit
+    printf '%s' "$_rs_out"
+    return $_rs_rc
+}
+
+# Oldest (smallest) NONZERO mono stamp among the args — 0 when none is set. Serves the rot
+# page's "persisting Xs" (oldest anchor among currently-FIRING signals — exactly "≥ 1 firing
+# signal whose OWN window is that old") and the resolution's "resolved after Xs" (oldest anchor
+# open before the healing sweep). Plain positional args, no arrays (bash 3.2); pure — safe
+# under $() capture.
+_rot_oldest() {
+    local _ro_min=0 _ro_v
+    for _ro_v in "$@"; do
+        [[ "${_ro_v:-0}" -gt 0 ]] || continue
+        if [[ $_ro_min -eq 0 || "$_ro_v" -lt $_ro_min ]]; then _ro_min=$_ro_v; fi
+    done
+    printf '%s' "$_ro_min"
+    return 0
+}
+
+# The sweep. Classification (claim=check — never demote on a guess):
+#   demote-class = a read SUCCEEDED and shows a state whose fence-kill is container-VERIFIED
+#                  (record rows: file gone / masked / bad-setting → OnFailure enqueue refused;
+#                  Restart≠no → on systemd 249, the fleet floor, the fence NEVER dispatches —
+#                  watchdog-kill cycling included; OnFailure not naming the fence → only listed
+#                  units are ever enqueued) → opens/extends the escalation window.
+#   page-class   = verified drift that does NOT kill the fence now (WatchdogSec config drift —
+#                  the RUNNING watchdog is reload-immune, record §2; StartLimitIntervalUSec≠0
+#                  with Restart=no — single failure still reaches terminal failed + dispatch;
+#                  both-units XOR; monitor unit not loadable — its other keys are STUBS, record
+#                  §1, and must never be classified) → CRITICAL page, NO demote clock.
+#   cannot-verify = systemctl timed out/errored or a requested key was silently dropped (rc 0!
+#                  — record §1): NOT rot; page only after a 4-sweep streak; reads that DID
+#                  succeed in the same sweep still classify normally; a blind sweep neither
+#                  heals nor extends an open window (blindness must not close what it cannot see).
+# Every demote-class signal is tracked per-sweep as one of THREE states feeding its own anchor
+# (the uniform rule at the anchor-update section below): FIRING (verified rot), POSITIVELY
+# CLEAN (a read SUCCEEDED and showed the healthy value), or BLIND (failed/absent/stub read —
+# neither of the others). Signals: S1 = the file classification vs intent; S2 = fence
+# LoadState; S3/S4 = monitor Restart / OnFailure (both from the one monitor-show read, but
+# anchored separately — see the per-SIGNAL rationale at the anchor declarations).
+_fence_rot_check() {
+    _watchdog_active || return 0
+    local _rot_now _fus_now _rot_read_unit _rot_expect_unit _rot_ls _rot_rc _rot_out _rot_line
+    local _rot_found="" _rot_drift="" _rot_cv=0 _rot_lethal=0
+    local _rot_s1_rot=0 _rot_s1_clean=0 _rot_s2_rot=0 _rot_s2_clean=0
+    local _rot_s3_rot=0 _rot_s3_clean=0 _rot_s4_rot=0 _rot_s4_clean=0
+    local _rot_prev_open=0 _rot_prev_oldest=0 _rot_open_since _rot_a1 _rot_a2 _rot_a3 _rot_a4
+    local _rot_mon_ls="" _rot_mon_restart="" _rot_mon_onfail="" _rot_mon_sli="" _rot_seen_onfail=0
+    local _rot_wd_cfg _rot_wd_env _rot_val _rot_id _rot_page_due _rot_remaining
+    _rot_now=$(mono_now)   # mono clock only — the daemons are the monotonic-clock domain (CI pins the wall-clock site count)
+    if [[ ${_last_rot_sweep:-0} -gt 0 ]]; then
+        [[ $(( _rot_now - _last_rot_sweep )) -lt ${FENCE_ROT_CHECK_SECS:-60} ]] && return 0
+    fi
+    _last_rot_sweep=$_rot_now
+    [[ -z "$_rot_intent" ]] && _rot_capture_intent
+    [[ "$_rot_intent" == "real" || "$_rot_intent" == "none" ]] && _rot_lethal=1   # page-only intent has no REAL fence to lose — its drifts are page-class
+    case "$_rot_intent" in
+        real)      _rot_expect_unit="${FENCE_UNIT_REAL##*/}" ;;
+        page-only) _rot_expect_unit="${FENCE_UNIT_PAGE_ONLY##*/}" ;;
+        *)         _rot_expect_unit="" ;;
+    esac
+    # pre-sweep episode snapshot: drives the ONE-resolution-per-episode rule and the resolved-
+    # after text (the anchors themselves may be reset by this sweep's positive cleans below)
+    _rot_prev_oldest=$(_rot_oldest "${_rot_s1_since:-0}" "${_rot_s2_since:-0}" "${_rot_s3_since:-0}" "${_rot_s4_since:-0}")
+    [[ ${_rot_prev_oldest:-0} -gt 0 ]] && _rot_prev_open=1
+
+    # (1) which fence unit files exist NOW — the pure-file classifier re-run (always
+    # verifiable, so S1 is never blind under a lethal intent: it FIRES on the demote-class
+    # mismatches below and is POSITIVELY CLEAN when the classification matches the intent).
+    _fus_now=$(_fence_unit_state)
+    case "$_rot_intent" in
+        real)
+            if [[ "$_fus_now" == "none" ]]; then
+                _rot_s1_rot=1
+                _rot_found="${_rot_found}; REAL fence unit file GONE (${FENCE_UNIT_REAL}) — fix: re-run 'failover arm'"
+            elif [[ "$_fus_now" == "page-only" ]]; then
+                _rot_s1_rot=1
+                _rot_found="${_rot_found}; REAL fence unit replaced by page-only at runtime (the mutating fence is gone) — fix: re-run 'failover arm'"
+            else
+                _rot_s1_clean=1   # classification real matches intent real — the stale XOR sibling below is page-class drift, not an S1 demote signal
+                if [[ -e "$FENCE_UNIT_PAGE_ONLY" ]]; then
+                    _rot_drift="${_rot_drift}; BOTH fence unit files present (XOR violation — an arm-ceremony bug state; real dominates dispatch) — fix: re-run 'failover arm' to remove the stale sibling"
+                fi
+            fi
+            ;;
+        none)
+            # rot-from-startup: NO positive clean exists by construction — a fence unit file
+            # re-created at runtime does not re-decide the startup intent, so S1's anchor
+            # persists and the demote lands at t(armed-start)+grace (lens-B-verified; the page
+            # says so explicitly below).
+            _rot_s1_rot=1
+            _rot_found="${_rot_found}; armed monitor with NO fence unit installed (intent at startup: none — the fence was removed while the daemon was down) — fix: re-run 'failover arm', then restart the monitor unit (a fence unit file re-created WITHOUT re-running 'failover arm' + restarting the monitor will NOT clear this escalation — intent was captured none at startup)"
+            ;;
+        *)
+            if [[ "$_fus_now" == "none" ]]; then
+                _rot_drift="${_rot_drift}; page-only fence unit file GONE (${FENCE_UNIT_PAGE_ONLY}) — fix: re-run 'failover arm'"
+            elif [[ "$_fus_now" == "real" ]]; then
+                _rot_drift="${_rot_drift}; REAL fence unit appeared under a run armed page-only (the №1 deadly combination arising at RUNTIME — the startup check saw page-only) — fix: re-run 'failover arm', or restart this daemon so the №1 startup refusal re-decides"
+            else
+                _rot_s1_clean=1   # page-only present under page-only intent (no lethal fence to lose — S1 cannot fire here; the clean keeps the uniform rule total)
+            fi
+            ;;
+    esac
+
+    # (2) the installed fence unit's LoadState — the read that sees what the file test cannot:
+    # the real mask shape is the /etc unit file REPLACED by a /dev/null symlink (plain
+    # `systemctl mask` refuses on /etc-resident units and mask --runtime is precedence-shadowed
+    # — record §4), and `test -e` on that symlink is TRUE. Detection is by VALUE, not rc
+    # (missing unit: LoadState=not-found with rc 0 — record §1).
+    # S2 is BLIND when there is no file to read (_fus_now=none — S1 carries that state) and
+    # when the read fails/answers empty; ONLY a succeeded read answering `loaded` is the
+    # positive clean that closes S2's window (a verified error/merged state is page-class
+    # drift, not clean: it did not show the healthy value).
+    if [[ "$_fus_now" != "none" ]]; then
+        if [[ "$_fus_now" == "real" ]]; then _rot_read_unit="${FENCE_UNIT_REAL##*/}"; else _rot_read_unit="${FENCE_UNIT_PAGE_ONLY##*/}"; fi
+        _rot_ls=$(_rot_sysread show "$_rot_read_unit" -p LoadState --value); _rot_rc=$?
+        if [[ $_rot_rc -ne 0 || -z "$_rot_ls" ]]; then
+            _rot_cv=1
+        else
+            case "$_rot_ls" in
+                loaded) _rot_s2_clean=1 ;;
+                masked)
+                    if [[ $_rot_lethal -eq 1 ]]; then
+                        _rot_s2_rot=1
+                        _rot_found="${_rot_found}; fence unit ${_rot_read_unit} LoadState=masked (the unit file is a /dev/null mask; OnFailure enqueue is refused — dispatch dead) — fix: systemctl unmask ${_rot_read_unit} && re-run 'failover arm'"
+                    else
+                        _rot_drift="${_rot_drift}; page-only fence unit LoadState=masked — fix: systemctl unmask ${_rot_read_unit} && re-run 'failover arm'"
+                    fi
+                    ;;
+                not-found|bad-setting)
+                    if [[ $_rot_lethal -eq 1 ]]; then
+                        _rot_s2_rot=1
+                        _rot_found="${_rot_found}; fence unit ${_rot_read_unit} LoadState=${_rot_ls} (unloadable — OnFailure enqueue is refused, dispatch dead) — fix: repair the unit file and systemctl daemon-reload, or re-run 'failover arm'"
+                    else
+                        _rot_drift="${_rot_drift}; page-only fence unit LoadState=${_rot_ls} — fix: repair the unit file and systemctl daemon-reload, or re-run 'failover arm'"
+                    fi
+                    ;;
+                *)
+                    # error/merged/stub: verified drift, kill-NOW unproven in the container —
+                    # the claim=check split says page, never demote (record §3, last row)
+                    _rot_drift="${_rot_drift}; fence unit ${_rot_read_unit} LoadState=${_rot_ls} (non-loaded state whose dispatch-kill is UNVERIFIED) — fix: systemctl daemon-reload + inspect, or re-run 'failover arm'"
+                    ;;
+            esac
+        fi
+    fi
+
+    # (3) the monitor unit's dispatch contract: Restart must be `no`, OnFailure must name the
+    # armed fence, the R8 pair's StartLimitIntervalUSec must be 0. Parsed k=v and
+    # order-independent — property order AND the OnFailure list order are UNSTABLE across
+    # identical reads (record §1), so the fence check is word-CONTAINMENT, never equality.
+    _rot_out=$(_rot_sysread show "$ROT_MONITOR_UNIT" -p LoadState,Restart,OnFailure,StartLimitIntervalUSec); _rot_rc=$?
+    if [[ $_rot_rc -ne 0 || -z "$_rot_out" ]]; then
+        _rot_cv=1   # whole-read failure: S3 and S4 both BLIND — their anchors are left untouched
+    else
+        while IFS= read -r _rot_line; do
+            case "$_rot_line" in
+                (LoadState=*) _rot_mon_ls="${_rot_line#LoadState=}" ;;
+                (Restart=*) _rot_mon_restart="${_rot_line#Restart=}" ;;
+                (OnFailure=*) _rot_mon_onfail="${_rot_line#OnFailure=}"; _rot_seen_onfail=1 ;;
+                (StartLimitIntervalUSec=*) _rot_mon_sli="${_rot_line#StartLimitIntervalUSec=}" ;;
+            esac
+        done <<< "$_rot_out"
+        if [[ -z "$_rot_mon_ls" || -z "$_rot_mon_restart" || $_rot_seen_onfail -eq 0 || -z "$_rot_mon_sli" ]]; then
+            # a requested key ABSENT from the output: systemctl silently drops unknown/renamed
+            # property names with rc 0 (record §1) — that is cannot-verify, never "OK": S3/S4
+            # BLIND (this exact shape once blocked every heal forever — the ROT-DEMOTE-1 red)
+            _rot_cv=1
+        elif [[ "$_rot_mon_ls" != "loaded" ]]; then
+            # THE STUB TRAP (record §1): a not-loaded unit answers Restart=no + OnFailure= —
+            # healthy-looking AND rot-looking stubs at once; classifying them would be acting
+            # on fabricated values. Verified drift (the monitor unit itself is not loadable —
+            # next start impossible/altered), kill-NOW unverified → page-class, and the
+            # sibling keys are dropped unclassified: S3/S4 go BLIND here, not clean, not rot —
+            # a stub Restart=no must never close S3's open window.
+            _rot_drift="${_rot_drift}; monitor unit ${ROT_MONITOR_UNIT} LoadState=${_rot_mon_ls} (unit not loadable — its other properties are stubs; next start impossible from this state; current-run dispatch unverified) — fix: re-run 'failover arm'"
+        else
+            if [[ "$_rot_mon_restart" != "no" ]]; then
+                if [[ $_rot_lethal -eq 1 ]]; then
+                    _rot_s3_rot=1
+                    _rot_found="${_rot_found}; monitor Restart=${_rot_mon_restart} (must be no: with our StartLimitIntervalSec=0 the unit NEVER reaches terminal failed on systemd 249 — watchdog kills included — so the fence NEVER dispatches; on 255 it re-dispatches per restart iteration, outside the verified one-hop contract) — fix: remove the drop-in re-adding Restart= (systemctl cat ${ROT_MONITOR_UNIT} shows its path) and systemctl daemon-reload, or re-run 'failover arm'"
+                else
+                    _rot_drift="${_rot_drift}; monitor Restart=${_rot_mon_restart} (must be no — the R8 pair) — fix: remove the drop-in and systemctl daemon-reload"
+                fi
+            else
+                _rot_s3_clean=1   # read succeeded, monitor loaded (stubs excluded above), Restart=no — the positive clean
+            fi
+            if [[ -n "$_rot_expect_unit" ]]; then
+                case " $_rot_mon_onfail " in
+                    (*" $_rot_expect_unit "*) _rot_s4_clean=1 ;;   # containment on a loaded monitor's real value — the positive clean
+                    (*)
+                        if [[ $_rot_lethal -eq 1 ]]; then
+                            _rot_s4_rot=1
+                            _rot_found="${_rot_found}; monitor OnFailure no longer names ${_rot_expect_unit} (now: '${_rot_mon_onfail}') — only listed units are ever enqueued, so the fence NEVER dispatches — fix: re-run 'failover arm'"
+                        else
+                            _rot_drift="${_rot_drift}; monitor OnFailure no longer names ${_rot_expect_unit} (now: '${_rot_mon_onfail}') — fix: re-run 'failover arm'"
+                        fi
+                        ;;
+                esac
+            fi
+            if [[ "$_rot_mon_sli" != "0" ]]; then
+                _rot_drift="${_rot_drift}; monitor StartLimitIntervalUSec=${_rot_mon_sli} (the R8 pair wants 0; with Restart=no a single failure still reaches terminal failed + dispatch — record §3 — but repeated fence-driven restarts can now hit the start limit) — fix: remove the drop-in and systemctl daemon-reload, or re-run 'failover arm'"
+            fi
+            # (4) WatchdogSec CONFIG for the NEXT start vs what THIS run was armed with. The
+            # show-side WatchdogUSec property is RUNTIME-ONLY (infinity while stopped, frozen
+            # at the started value while running — record §2), so comparing it to our env would
+            # be vacuous; the config truth is `systemctl cat` (unit file + drop-ins, file-fresh
+            # even before daemon-reload), last WatchdogSec= line governing. The arm renders
+            # integer seconds — any other spelling is itself post-arm editing. The RUNNING
+            # watchdog is reload-immune (record §2), so this drift is next-start attestation
+            # rot: page-class, never a demote clock.
+            _rot_out=$(_rot_sysread cat "$ROT_MONITOR_UNIT"); _rot_rc=$?
+            if [[ $_rot_rc -ne 0 ]]; then
+                _rot_cv=1
+            else
+                _rot_wd_cfg=$(printf '%s\n' "$_rot_out" | grep '^WatchdogSec=' | tail -1 | cut -d= -f2)
+                case "${WATCHDOG_USEC:-}" in
+                    (''|*[!0-9]*) _rot_drift="${_rot_drift}; WATCHDOG_USEC env is non-numeric ('${WATCHDOG_USEC:-}') — cannot attest the armed watchdog value" ;;
+                    (*)
+                        _rot_wd_env=$(( WATCHDOG_USEC / 1000000 ))
+                        _rot_val="${_rot_wd_cfg%s}"
+                        if [[ -z "$_rot_wd_cfg" ]]; then
+                            _rot_drift="${_rot_drift}; WatchdogSec absent from the monitor unit config (the NEXT start would run UNWATCHDOGGED — the fence would never fire on that tenure) — fix: re-run 'failover arm'"
+                        elif [[ "$_rot_val" =~ ^[0-9]+$ ]] && [[ $(( WATCHDOG_USEC % 1000000 )) -eq 0 && $((10#$_rot_val)) -eq $_rot_wd_env ]]; then
+                            :
+                        else
+                            _rot_drift="${_rot_drift}; monitor WatchdogSec config is now '${_rot_wd_cfg}' but this run was armed with ${_rot_wd_env}s (WATCHDOG_USEC=${WATCHDOG_USEC}) — next-start attestation drift; the pairing token attested the armed value — fix: re-run 'failover arm' (re-render + re-pair)"
+                        fi
+                        ;;
+                esac
+            fi
+        fi
+    fi
+
+    # cannot-verify streak — the alpenglow blind-streak pattern: WARN every blind sweep, page
+    # only once the streak says it is not a blip (4 sweeps), throttled, first page immediate at
+    # the threshold; NEVER a demote clock.
+    if [[ $_rot_cv -eq 1 ]]; then
+        _rot_cv_streak=$(( ${_rot_cv_streak:-0} + 1 ))
+        log_warn "[fence-rot] systemctl read failed/unparseable this sweep (streak ${_rot_cv_streak}) — cannot-verify is NOT rot; reads that succeeded still classified"
+        if [[ ${_rot_cv_streak} -ge 4 ]]; then
+            if [[ ${_last_rot_cv_page:-0} -eq 0 || $(( _rot_now - _last_rot_cv_page )) -ge ${ALERT_THROTTLE:-600} ]]; then
+                _last_rot_cv_page=$_rot_now
+                alert_warn "⚠️ FENCE-ROT SWEEP BLIND: ${_rot_cv_streak} consecutive sweeps could not verify the fence properties (systemctl failing/timing out). NOT rot — no demote clock (PID 1 enforces the fence regardless of the CLI) — but the armed holder is flying without its rot re-verification. Check systemd/D-Bus health."
+            fi
+        fi
+    else
+        _rot_cv_streak=0
+    fi
+
+    # ── per-signal anchor update — the UNIFORM rule (ROT-DEMOTE-1): a signal FIRING this sweep
+    # sets its OWN anchor iff 0; a signal POSITIVELY CLEAN this sweep resets its anchor to 0; a
+    # BLIND signal leaves its anchor untouched (blindness must not close what it cannot see).
+    # The preserved 9d semantics falls out: a continuously-rotted signal across blind sweeps
+    # still demotes at the FIRST verified rot past grace, because no positive clean ever
+    # intervened — while a signal that WAS positively seen healthy gets a fresh window for any
+    # later re-rot, regardless of what its siblings' reads were doing (the panel's executed
+    # instant-demote hole). Four plain variables, no arrays — bash 3.2.
+    if [[ $_rot_s1_rot -eq 1 ]]; then
+        [[ ${_rot_s1_since:-0} -eq 0 ]] && _rot_s1_since=$_rot_now
+    elif [[ $_rot_s1_clean -eq 1 ]]; then
+        _rot_s1_since=0   # S1 positive-clean reset: the file classification matches the intent again
+    fi
+    if [[ $_rot_s2_rot -eq 1 ]]; then
+        [[ ${_rot_s2_since:-0} -eq 0 ]] && _rot_s2_since=$_rot_now
+    elif [[ $_rot_s2_clean -eq 1 ]]; then
+        _rot_s2_since=0   # S2 positive-clean reset: the LoadState read SUCCEEDED and answered loaded — this line closing S2's window on POSITIVE evidence (never on blindness) is what test_fence_rot (6)/(17) measure; neutering it is the stale-anchor control
+    fi
+    if [[ $_rot_s3_rot -eq 1 ]]; then
+        [[ ${_rot_s3_since:-0} -eq 0 ]] && _rot_s3_since=$_rot_now
+    elif [[ $_rot_s3_clean -eq 1 ]]; then
+        _rot_s3_since=0   # S3 positive-clean reset: loaded monitor answered Restart=no
+    fi
+    if [[ $_rot_s4_rot -eq 1 ]]; then
+        [[ ${_rot_s4_since:-0} -eq 0 ]] && _rot_s4_since=$_rot_now
+    elif [[ $_rot_s4_clean -eq 1 ]]; then
+        _rot_s4_since=0   # S4 positive-clean reset: loaded monitor's OnFailure names the armed fence
+    fi
+
+    if [[ -n "$_rot_found" ]]; then
+        _rot_found="${_rot_found#; }"
+        if [[ $_rot_prev_open -eq 0 ]]; then
+            log_warn "[fence-rot] VERIFIED fence-kill drift — escalation window OPENED (grace ${FENCE_ROT_GRACE}s): ${_rot_found}"
+        fi
+        # the page's "persisting Xs / demote in Ys" and the expiry test key on the OLDEST
+        # anchor among signals FIRING THIS SWEEP — i.e. "≥ 1 currently-verified rot whose OWN
+        # window is ≥ grace old"; a signal merely blind right now contributes nothing.
+        _rot_a1=0; [[ $_rot_s1_rot -eq 1 ]] && _rot_a1=${_rot_s1_since:-0}
+        _rot_a2=0; [[ $_rot_s2_rot -eq 1 ]] && _rot_a2=${_rot_s2_since:-0}
+        _rot_a3=0; [[ $_rot_s3_rot -eq 1 ]] && _rot_a3=${_rot_s3_since:-0}
+        _rot_a4=0; [[ $_rot_s4_rot -eq 1 ]] && _rot_a4=${_rot_s4_since:-0}
+        _rot_open_since=$(_rot_oldest "$_rot_a1" "$_rot_a2" "$_rot_a3" "$_rot_a4")
+        [[ ${_rot_open_since:-0} -eq 0 ]] && _rot_open_since=$_rot_now   # unreachable (a firing signal always has its anchor set above) — belt: an empty read here must fail toward a FULL fresh window, never toward instant
+        _rot_remaining=$(( FENCE_ROT_GRACE - (_rot_now - _rot_open_since) ))
+        [[ $_rot_remaining -lt 0 ]] && _rot_remaining=0
+        _rot_page_due=1
+        [[ ${_last_rot_page:-0} -gt 0 && $(( _rot_now - _last_rot_page )) -lt ${ALERT_THROTTLE:-600} ]] && _rot_page_due=0   # rot re-page throttle (repeats only — the 0-sentinel first page is IMMEDIATE: on a young-uptime host an unguarded now-minus-0 gate would silently delay it)
+        if [[ $_rot_page_due -eq 1 ]]; then
+            _last_rot_page=$_rot_now
+            alert "FENCE ROT (verified): ${_rot_found}. Persisting $(( _rot_now - _rot_open_since ))s; graceful self-demote in ${_rot_remaining}s unless fixed (escalation window — never instant)." "${STAKED_PUBKEY:-unknown}" "FENCE ROT — ARMED HOLDER 🚨"
+        fi
+        # §2.1-rev2.1 №2 / D3 — WHY THIS WINDOW DOES NOT REOPEN DOUBLE-SIGN (the reasoning lives
+        # AT the check, not in docs only): during the grace the holder is VOTING and PAGING —
+        # the spare's silence-based path (watchdog-elapsed) cannot fire against a voting holder,
+        # so the window adds no double-sign exposure; if the grace expires, the demote below is
+        # the GRACEFUL path the spare consumes via verified-demote proof — an automatic failover
+        # to the healthy side.
+        if [[ $(( _rot_now - _rot_open_since )) -ge $FENCE_ROT_GRACE ]]; then
+            # ROT-INT-2 demote-attempt throttle, AT the rot call site (the adapters are not
+            # reworked): the FIRST attempt at expiry is immediate; while an attempt leaves this
+            # node staked (adapter blocked/DRY_RUN/wedged), re-attempts fire once per
+            # ALERT_THROTTLE — the adapters page internally per attempt, and per-sweep retries
+            # were 60 CRITICALs/hour during an incident already ≥ 30 min old and continuously
+            # paged (the throttle doctrine). The verified-STAKED identity gate below runs per
+            # ATTEMPT, unchanged — a throttled sweep attempts nothing, so it reads nothing.
+            if [[ ${_last_rot_demote_try:-0} -gt 0 && $(( _rot_now - _last_rot_demote_try )) -lt ${ALERT_THROTTLE:-600} ]]; then
+                log_warn "[fence-rot] demote retry throttled — last attempt $(( _rot_now - _last_rot_demote_try ))s ago, next at ${ALERT_THROTTLE:-600}s (rot pages continue; the identity re-verify runs per attempt)"
+            else
+                _rot_id=$(get_local_identity 2>/dev/null) || true
+                _watchdog_pet   # §5 per-op pet (Block 5.4): bounded identity read completed (8 s own timeout) — no-op outside the armed unit
+                if [[ -n "$STAKED_PUBKEY" && "$_rot_id" == "$STAKED_PUBKEY" ]]; then
+                    # act-then-alert: the demote path performs the safety action FIRST and carries
+                    # its own alerting; the reason below IS the demote page's text.
+                    _last_rot_demote_try=$_rot_now
+                    _rot_graceful_demote "Fence rot persisted ${FENCE_ROT_GRACE}s while ARMED+STAKED: ${_rot_found}. Graceful demote — the spare takes over via the verified-demote proof; the healthy side continues."
+                elif [[ -n "$UNSTAKED_PUBKEY" && "$_rot_id" == "$UNSTAKED_PUBKEY" ]]; then
+                    if [[ ${_rot_unstaked_noted:-0} -eq 0 ]]; then
+                        _rot_unstaked_noted=1
+                        alert_info "ℹ️ fence-rot grace expired but this node is already unstaked — nothing to protect, NO demote; fix the fence (pages continue per throttle)"
+                    fi
+                else
+                    # unreadable/unclassifiable identity: demoting on that would be a GUESS — keep
+                    # paging, re-check next sweep (the demote needs a VERIFIED staked read; a
+                    # no-attempt sweep does not arm the retry throttle — the demote lands on the
+                    # next READABLE staked sweep, not one throttle later)
+                    log_warn "[fence-rot] grace expired but the local identity is unreadable/unclassifiable ('${_rot_id:-}') — NOT demoting on a guess; paging continues, re-checking next sweep"
+                fi
+            fi
+        fi
+    elif [[ ${_rot_s1_since:-0} -eq 0 && ${_rot_s2_since:-0} -eq 0 && ${_rot_s3_since:-0} -eq 0 && ${_rot_s4_since:-0} -eq 0 ]]; then
+        # nothing firing AND no window still open: every previously-open window was closed by
+        # a POSITIVE clean read on its own signal (an anchor a blind signal holds keeps this
+        # arm unreached — no resolution during blindness, exactly the 9d contract)
+        if [[ $_rot_prev_open -eq 1 ]]; then
+            alert_info "✅ fence rot resolved after $(( _rot_now - _rot_prev_oldest ))s — every open demote-class window closed by a positive clean read on its own signal; escalation window closed"
+            _last_rot_page=0; _rot_unstaked_noted=0; _last_rot_demote_try=0   # rot heal: the episode ENDS here — EPISODIC (the anchor-trap class): stale state would let a later re-rot demote at grace-minus-history or swallow its first page; test_fence_rot (6) measures the fresh window, its control the stale-anchor early fire
+        fi
+    fi
+
+    if [[ -n "$_rot_drift" ]]; then
+        _rot_drift="${_rot_drift#; }"
+        _rot_page_due=1
+        [[ ${_last_rot_pageclass_page:-0} -gt 0 && $(( _rot_now - _last_rot_pageclass_page )) -lt ${ALERT_THROTTLE:-600} ]] && _rot_page_due=0   # page-class re-page throttle (repeats only)
+        if [[ $_rot_page_due -eq 1 ]]; then
+            _last_rot_pageclass_page=$_rot_now
+            _rot_pageclass_paged=1
+            alert "FENCE CONFIG DRIFT (verified; does NOT kill the fence now — no demote clock): ${_rot_drift}" "${STAKED_PUBKEY:-unknown}" "FENCE CONFIG DRIFT (armed) 🚨"
+        fi
+    elif [[ $_rot_cv -eq 0 && ${_rot_pageclass_paged:-0} -eq 1 ]]; then
+        _rot_pageclass_paged=0; _last_rot_pageclass_page=0
+        alert_info "✅ fence config drift cleared — page-class properties back at the armed baseline"
+    fi
+    return 0
+}
+# ── [fence-rot] end shared block ──
+
+# v0.7 (Block 5.4): the [fence-rot] escalation's demote — deliberately OUTSIDE the
+# byte-identical block: each daemon reuses its OWN existing set-identity-to-unstaked path (no
+# new mutation site — the spare consumes the resulting flip/proof exactly as it consumes any
+# graceful demote). The reused function carries the standard DRY_RUN mutation guard, the
+# keypair check and the wedge/hard-stop escalation — the rot path adds NO second mutation
+# surface (defense in depth: armed-real + DRY_RUN=true is already refused at startup by
+# _enforce_one_arm_state; test_fence_rot (10) baits both layers).
+_rot_graceful_demote() { switch_to_unstaked "$1"; }
+
 # v0.6.8 (B1): the demote admin-socket call wedged (timed out). The self-fence's contract is that the
 # staked identity STOPS voting even when set-identity cannot run — so escalate to a HARD STOP of the
 # validator process (the safe direction: a dead validator cannot double-sign). Gated by SELF_FENCE_HARD_STOP.
@@ -2575,7 +3024,15 @@ get_validator_args() {
         args=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
     fi
     # Fallback: systemd unit ExecStart (full, but misses flags set inside a wrapper script).
-    [[ -z "$args" ]] && args=$(systemctl show "${VALIDATOR_SERVICE:-solana}" -p ExecStart --value 2>/dev/null)
+    # v0.7 (Block 5.4, reviewer GO condition): BOUNDED with the _rot_sysread idiom. Pre-Block-5
+    # an unbounded read here was harmless (daemon hangs, Restart=always, nobody dies); under the
+    # ARMED Type=notify unit it is the P1-capability trap from the other side — a wedged
+    # systemctl HERE blocks startup pre-READY → TimeoutStartSec expires → `failed` → OnFailure →
+    # the REAL fence fires on a HEALTHY validator. One doctrine, both call sites: the CLI is not
+    # the enforcement plane and gets no clock — bounded, the empty-args path below already
+    # handles the miss (explicit "set X in failover.env" refusals, not a hang). test_fence_rot
+    # (19) pins the bound behaviorally; the (13) allowlist census pins the spelling.
+    [[ -z "$args" ]] && args=$(timeout -k 2 5 systemctl show "${VALIDATOR_SERVICE:-solana}" -p ExecStart --value 2>/dev/null)
     _validator_args_cache="$args"
     printf '%s' "$args"
 }
@@ -2634,6 +3091,18 @@ validate_numeric_config() {
     _validate_numeric STATE_MAX_AGE_SECS 0                     # v0.6.9 (H3): baseline-restore freshness gate (0 = never restore)
     _validate_numeric STARTUP_STAKED_UNREACHABLE_ALERT_SECS 1  # v0.6.9 (H3): startup staked-unreachable page threshold
     _validate_numeric ALPENGLOW_GATE_CHECK_HOURS 0             # v0.7 (pre-Block-4, №9): tripwire probe cadence in hours (0 = off, drift-announced)
+    _validate_numeric FENCE_ROT_CHECK_SECS 10                  # v0.7 (Block 5.4): armed fence-rot sweep cadence (floor 10; drift-announced)
+    _validate_numeric FENCE_ROT_GRACE 0                         # v0.7 (Block 5.4): numeric shape first; the REAL floor is dynamic, just below
+    # v0.7 (Block 5.4): FENCE_ROT_GRACE floor = max(600, ALERT_THROTTLE) — two reasons, both
+    # load-bearing: a human must be able to read a page before an armed+staked holder
+    # self-demotes over a systemd typo, and at least one CRITICAL re-page must land INSIDE the
+    # grace (a grace shorter than the throttle would page once, then act in silence).
+    local _rot_floor=600
+    if [[ "${ALERT_THROTTLE:-600}" =~ ^[0-9]+$ && $((10#${ALERT_THROTTLE:-600})) -gt $_rot_floor ]]; then _rot_floor=$((10#${ALERT_THROTTLE:-600})); fi
+    if [[ $FENCE_ROT_GRACE -lt $_rot_floor ]]; then
+        log_error "Bad FENCE_ROT_GRACE: require an integer >= ${_rot_floor} (= max(600, ALERT_THROTTLE=${ALERT_THROTTLE:-600})) (got ${FENCE_ROT_GRACE}) — a human must be able to read a page before an armed+staked holder self-demotes, and at least one CRITICAL re-page must land inside the grace"
+        exit 1
+    fi
     if [[ "$RECOVERY_MODE" == "rpc" ]]; then
         _validate_numeric RECOVERY_DELAY 0
         _validate_numeric RECOVERY_CHECKS 1
@@ -2722,6 +3191,8 @@ announce_config_drift() {
     _drift_check SELF_FENCE_MAX_BEHIND 150 low0 "a far-behind holder keeps its staked identity longer before the getHealth demote fires"
     _drift_check SELF_FENCE_HARD_STOP true bool "a wedged demote becomes alert-only — the staked identity can keep voting through it (the exact double-sign gap the hard-stop closes)"
     _drift_check ALPENGLOW_GATE_CHECK_HOURS 6 low0 "the Alpenglow activation tripwire probes less often — or never: on activation set-identity requires a vote-history file and the observation model changes; the 4.2 audit must re-run"
+    _drift_check FENCE_ROT_CHECK_SECS 60 low "fence rot on an armed holder is detected later — the sweep re-verifies the effective fence properties on this cadence (§2.1-rev2.1 №2)"
+    _drift_check FENCE_ROT_GRACE 1800 low "an armed+staked holder with a verifiably broken fence keeps voting longer before the graceful self-demote — the spare's watchdog-elapsed soundness rests on this holder-side self-enforcement (§2.1)"
     # ── [config-drift] end shared table ──
     # ── [config-drift] role-specific safety knobs ──
     _drift_check RECOVERY_DELAY 300 high "rpc-mode recovery re-takes the staked identity sooner after going unstaked — less settle time before an automatic re-take"
@@ -2838,6 +3309,7 @@ startup_checks() {
     announce_config_drift     # v0.7 (Block 3, slice 3.5): env safety knobs laxer than THIS version's defaults — one line each (visibility, never force)
 
     _enforce_one_arm_state    # v0.7 (Block 5 skeleton, №1): refuse DRY_RUN=true + REAL fence unit — CRITICAL + exit 1; structurally inert while no fence unit exists (every host today). Runs AFTER marker consumption (fix round HOLD-1): on a fenced node this refusal must not preempt HOLD.
+    _rot_capture_intent       # v0.7 (Block 5.4): fence-intent anchor for the rot sweep — armed-unit only (structurally inert on every host today); captured HERE, at startup, so runtime real→none / real→page-only is classifiable as "the fence is GONE" (a first-sweep capture would bless an early deletion as intent)
 
     # v0.6.9 (M8): TIER2/TIER3 vantage-independence. Identical URLs silently void every "two vantages"
     # assumption (A6, the liveness fence's fallback independence, the tiered confirmations). Warn loudly
@@ -3009,6 +3481,7 @@ while $_running; do
     rotate_log
     heartbeat_ping   # v0.6.4: external watchdog ping — top of loop, before any `continue`
     _alpenglow_gate_check   # v0.7 (pre-Block-4, №9): read-only Alpenglow gate probe — self-gates on cadence; top of loop, NEVER inside a takeover/recovery/verdict path (act-then-alert untouched: this network read is nowhere near a mutation)
+    _fence_rot_check   # v0.7 (Block 5.4, §2.1-rev2.1 №2): armed holder-side fence re-verification — self-gates on _watchdog_active + cadence; bounded property reads + paging only, EXCEPT the grace-expiry graceful demote, which reuses the existing demote path (safety action first — act-then-alert holds inside it)
 
     CURRENT_IDENTITY=$(get_local_identity 2>/dev/null) || true
     _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
