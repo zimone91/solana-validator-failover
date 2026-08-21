@@ -108,6 +108,36 @@ promoted (there is no built-in assisted mode). See [SPLIT-BRAIN-RESIDUAL.md](SPL
 - **Fencing** (v0.7): watchdog self-fence on the holder + a relinquish proof on the spare (verified
   demote / watchdog-elapsed); external fence providers (STONITH-style, cloud/IPMI) remain v0.8 options
   on the same interface.
+
+### Fence rot (v0.7, armed hosts): holder-side self-enforcement
+
+The `failover arm` pairing token attests the holder's fence **at pairing time only**. **After
+pairing, `watchdog-elapsed` soundness rests on holder-side self-enforcement; the spare cannot see
+fence rot** (a masked fence unit, a drop-in re-adding `Restart=`, a disarm) — there is no channel,
+by design. The armed holder therefore re-verifies its own *effective* fence properties every
+`FENCE_ROT_CHECK_SECS` (default 60 s) and treats **armed + staked + fence-broken** as fence-worthy,
+under this escalation contract:
+
+1. **Immediate CRITICAL page** on the first *verified* fence-killing drift, naming the exact broken
+   element and the exact fix command, re-paged per `ALERT_THROTTLE`. Drift that verifiably does
+   *not* kill the fence now (e.g. a `WatchdogSec` config change that affects only the next start)
+   pages CRITICAL too but never starts a demote clock; a failing `systemctl` is *cannot-verify*,
+   not rot — it pages after a persistent blind streak and never demotes.
+2. **`FENCE_ROT_GRACE`** (default 1800 s, floor max(600, `ALERT_THROTTLE`)): the window between
+   first detection and any action — one systemd typo must not take down a healthy production
+   validator faster than a human can read a page. A healed fence closes the window; a later
+   re-rot starts a fresh one.
+3. **Graceful self-demote** only if the rot persists past the grace *and* the node still verifiably
+   holds the staked identity: the standard set-identity-to-unstaked path, which the spare consumes
+   as a verified-demote proof — an automatic failover to the healthy side. An unreadable identity
+   at expiry demotes nothing (that would be a guess); paging continues.
+
+The availability tradeoff is accepted and bounded: a broken-but-loud fence costs (at worst) one
+graceful failover to the healthy spare after ≥30 minutes of CRITICAL paging — against the
+alternative of a spare consuming `watchdog-elapsed` over a holder whose fence silently no longer
+exists, which is the double-sign class this tool exists to prevent. During the grace the holder is
+voting and paging, so the spare's silence-based path cannot fire against it: the window itself adds
+no double-sign exposure.
 - **Evidence quality** (v0.7): bind `VOTE_PUBKEY` to `STAKED_PUBKEY` via `getVoteAccounts`
   (`nodePubkey`) before acting. Landed in v0.7: the paired liveness sample is provider-pinned, and
   *any* forward movement of `lastVote` now counts as "alive" (`VOTE_LIVENESS_EPSILON=0`, which

@@ -110,6 +110,17 @@ The installer generates the env, or copy `failover.env.example` / `failover-stan
 Key knobs: `STAKED_KEYPAIR`, `UNSTAKED_KEYPAIR`, `VOTE_PUBKEY`, `TAKEOVER_DELAY`, the three RPC tiers
 (local → paid → public), and notifications. Full reference: [docs/DEPLOYMENT-MANUAL.md](docs/DEPLOYMENT-MANUAL.md).
 
+On a host armed with the v0.7 fence, the daemon also re-verifies its own effective fence
+properties every `FENCE_ROT_CHECK_SECS` (default 60 s): drift that verifiably kills the fence
+(unit gone/masked/unloadable, a drop-in re-adding `Restart=`, `OnFailure` no longer naming the
+fence) pages CRITICAL immediately with the exact fix command, and only if it persists for
+`FENCE_ROT_GRACE` (default 1800 s, floor max(600, `ALERT_THROTTLE`)) while the node still
+verifiably holds the staked identity does the holder gracefully demote itself to unstaked — the
+spare then takes over via the verified-demote proof. Never instant, never on a guess: a failing
+`systemctl` is treated as cannot-verify (page after a blind streak, no demote clock), and both
+knobs are daemon defaults with validation — no env entry needed. Un-armed hosts (everything
+before the v0.7 rollout) see zero behavior change.
+
 ## Notifications
 
 Telegram + [ntfy.sh](https://ntfy.sh) push + an external "dead-man's switch" watchdog
@@ -121,7 +132,7 @@ See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 ```bash
 cd tests && bash run_all.sh
 ```
-48 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
+49 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
 mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Note the
 limit: these are function-level tests — they do **not** prove cross-process ordering between two live
 systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.

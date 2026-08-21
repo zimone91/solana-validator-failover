@@ -5,6 +5,69 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Block 5.4 — fence-rot detection + `FENCE_ROT_GRACE` escalation (§2.1-rev2.1 №2).** The
+  pairing token attests the holder's fence at pairing time only; the spare cannot see
+  post-pairing rot — so the ARMED holder now re-verifies its own effective fence properties
+  every `FENCE_ROT_CHECK_SECS` (default 60, floor 10) in a new `[fence-rot]` twin block
+  (byte-identical in both daemons; structurally inert outside the armed unit — zero systemctl,
+  zero pages on every host today, event-log-asserted). Every demote-vs-page classification is
+  container-VERIFIED on systemd 249 (fleet floor) AND 255 (design record
+  `verify-rot-properties.md`, private tree): fence unit gone/replaced/masked/`bad-setting` and
+  monitor `Restart≠no` / `OnFailure` not naming the fence are demote-class (on 249 a
+  `Restart=always` monitor NEVER dispatches the fence — watchdog kills included; the masked
+  shape that matters is the /etc unit file replaced by a /dev/null symlink, invisible to
+  `test -e`); `WatchdogSec` config drift (read via `systemctl cat` — the show-side
+  `WatchdogUSec` is runtime-only and reload-immune), `StartLimitIntervalUSec≠0`, both-units
+  XOR and a not-loadable monitor unit (whose other show keys are STUBS — never classified) are
+  page-class: CRITICAL page, no demote clock; a failing systemctl is cannot-verify — NOT rot,
+  paged only after a 4-sweep blind streak. Demote-class drift opens an EPISODIC escalation
+  window: immediate CRITICAL page naming the exact broken element + exact fix command
+  (re-paged per `ALERT_THROTTLE`), graceful self-demote through the daemon's EXISTING demote
+  path only after `FENCE_ROT_GRACE` (default 1800, floor max(600, `ALERT_THROTTLE`) — both
+  reasons in the validation error) of persistent verified rot while verifiably STAKED
+  (unreadable identity at expiry = no demote, keep paging; heal = resolution + a FRESH window
+  for any re-rot). During the grace the holder is voting and paging, so the spare's
+  silence-based path cannot fire against it — the window adds no double-sign exposure (the
+  reasoning lives as a comment at the grace check). New suite `tests/test_fence_rot.sh`
+  (49 suites): reds-first against the pre-5.4 daemons (armed+masked-fence → zero pages, zero
+  reads, no clock — logged), per-property red→green, measured episodic table
+  (rot→heal→re-rot → demote at 240+grace, stale-anchor control at grace−history), never-instant
+  and storm and first-immediate and gate controls (all `mutate()`-loud), both pet censuses
+  (live event order + the one bounded `_rot_sysread` funnel), N-is-all systemctl census. The
+  census surfaced a pre-existing UNBOUNDED `systemctl show … -p ExecStart` fallback in
+  `get_validator_args` (both daemons) — bounded at the reviewer's GO condition with the
+  `_rot_sysread` idiom (`timeout -k 2 5`): pre-Block-5 the bare read was harmless (daemon
+  hangs, Restart=always), but under the armed Type=notify unit a wedged systemctl there
+  blocked startup pre-READY — TimeoutStartSec → `failed` → OnFailure → a REAL fence on a
+  healthy validator, the P1-capability trap from the other side. Case (19) pins the bound
+  behaviorally (red observed: the bare call hung past the deadline on both daemons); the
+  allowlist census asserts the bounded spelling. Docs: SAFETY.md holder-side self-enforcement contract, README knobs paragraph,
+  systemd/README item 4 marked BUILT (zero-stake verification explicitly deferred to Block 6).
+  **5.4 panel fix round** (3-lens adversarial panel; every fix reds-first, executed): the
+  escalation anchor is now PER-SIGNAL — four plain first-seen stamps (file classification /
+  fence LoadState / monitor Restart / monitor OnFailure) under one uniform rule: a firing
+  signal opens its own window, a POSITIVELY-clean read closes it, a blind read leaves it —
+  fixing the panel BLOCKER where a genuine fence heal under any blind sibling read kept the
+  ancient anchor and a fresh rot demoted with 0 s of the 1800 s grace (executed on both
+  daemons: demote at t=3000 where 4800 is correct; fixed = full grace + one resolution;
+  continuous-rot-across-blindness semantics preserved and re-measured). Expiry demote ATTEMPTS
+  are throttled at the rot call site (first immediate, then once per `ALERT_THROTTLE` with a
+  suppression warn per skipped sweep — the un-completable-demote adapter storm was 60
+  CRITICALs/hour; the per-attempt identity re-verify is unchanged), and the standby's
+  keypair-blocked `give_back_identity` branch now PAGES (`GIVE BACK BLOCKED` — parity with the
+  primary's `SWITCH BLOCKED`; it was silent). intent=none pages now state that a bare fence
+  file drop-in will NOT clear the escalation (re-arm + monitor restart re-captures intent).
+  Suite: the panel timelines as cases (both daemons), within-group split, never-positively-
+  clean hold, stale-anchor + retry-storm controls; young-uptime first-page positives for the
+  page-class and cannot-verify 0-sentinels (both were unkilled mutants); case 13 inverted to a
+  fail-CLOSED allowlist census (command-position `if systemctl …` injections now bite); the
+  live pet census extended through a rot+expiry sweep and the source stray-set widened
+  (`$(timeout … systemctl` beside the funnel); (10a) now asserts the `[DRY RUN]` adapter title
+  it always claimed; `_fence_rot_check`/`_rot_capture_intent` added to the HOLD baits; the
+  pre-impl vacuity census corrected to the MEASURED sets (7 at land, 4 after this round —
+  recorded in the suite header). 50→67 checks; monitor skeleton R8 comment split per the
+  container record (249: never runs; 255: re-dispatches per iteration — either way outside the
+  one-hop contract).
 - **Block 5.3 — the `failover arm` ceremony** (`failover-arm.sh`, repo root: SHIPPABLE — in
   SHA256SUMS, shellcheck, and the parse gate — but EXECUTED only at the v0.7 rollout,
   upgrade-then-arm, per the release checklist; nothing in this repository runs it). Structure:

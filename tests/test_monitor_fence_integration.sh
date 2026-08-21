@@ -232,7 +232,7 @@ drive_cycle() {
         eval "run_cycle() {
 $region
 }"
-        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }
+        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _fence_rot_check() { :; }   # 5.4: the rot sweep is its own suite (test_fence_rot); unstubbed it would hit real systemctl on systemd-bearing runners
         flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }
         window_push() { :; }; window_mostly_clear() { return 1; }
         get_local_identity() { echo "U1"; }
@@ -297,7 +297,7 @@ drive_cycle_primary() {
         eval "run_cycle() {
 $region
 }"
-        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }
+        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _fence_rot_check() { :; }   # 5.4: same stub as drive_cycle
         flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }
         window_push() { :; }; window_mostly_clear() { return 1; }
         check_internet() { echo "op:inet" >> "$EV"; return 0; }
@@ -376,6 +376,10 @@ drive_markers() {
 # monitoring logic inside the HOLD loop (the panel's M6 mutant: attempt_takeover /
 # local_check_delinquency spliced into the while-loop) trips the case. The superset covers both
 # daemons; defining a stub the script never had is harmless.
+# Block 5.4 panel fix (ROT-INT-4): the rot-sweep entrypoints are NAMED baits too — executed
+# before the fix, a _rot_capture_intent splice in the HOLD loop is pure file tests and tripped
+# NOTHING (60/60 green); _fence_rot_check was caught only INDIRECTLY (timeout-shim → the
+# systemctl bait), a chain that breaks if the sweep's gate or read path moves. Named = direct.
 _HOLD_BAITS="attempt_takeover local_check_delinquency tier1_check_local_health
 tier2_check_delinquency tier3_confirm_delinquency confirm_delinquency_external
 take_staked_identity give_back_identity check_self_fence_isolation check_identity_collision
@@ -383,7 +387,8 @@ get_local_identity verify_delinquency_tiered verify_latency_tiered tier1_check_d
 tier1_get_vote_latency switch_to_unstaked switch_to_staked attempt_safe_recovery
 check_standby_has_identity check_primary_dropped_identity staked_is_actively_voting
 get_staked_liveness_sample peer_has_relinquished _prewarm_voter_add _check_rpc_delinquency
-_check_single_rpc _selffence_hard_stop _selffence_demote curl systemctl"
+_check_single_rpc _selffence_hard_stop _selffence_demote _fence_rot_check _rot_capture_intent
+curl systemctl"
 drive_hold() {
     local script="$1"
     (
@@ -807,11 +812,11 @@ echo ""; echo "─── (13) no watchdog-transport token in CODE outside the [w
 # wait-loop/HOLD comments legitimately NAME these tokens; the contract is about CODE).
 for script in "$PRIMARY" "$STANDBY"; do
     name=$(basename "$script")
-    leaks=$(sed '/\[watchdog\] monitor-side fence integration/,/\[watchdog\] end shared block/d' "$script" \
+    leaks=$(sed -e '/\[watchdog\] monitor-side fence integration/,/\[watchdog\] end shared block/d' -e '/\[fence-rot\] holder-side fence re-verification/,/\[fence-rot\] end shared block/d' "$script" \
         | sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#[[:space:]].*$//' \
         | grep -nE 'socat|NOTIFY_SOCKET|WATCHDOG_USEC|READY=1|WATCHDOG=1|EXTEND_TIMEOUT_USEC')
     if [[ -z "$leaks" ]]; then
-        ok "(13a) $name: zero socat/NOTIFY_SOCKET/WATCHDOG_USEC/READY=1/WATCHDOG=1/EXTEND_TIMEOUT_USEC code references outside the [watchdog] block"
+        ok "(13a) $name: zero socat/NOTIFY_SOCKET/WATCHDOG_USEC/READY=1/WATCHDOG=1/EXTEND_TIMEOUT_USEC code references outside the two armed-gated twin blocks ([watchdog] + the 5.4 [fence-rot], which consumes WATCHDOG_USEC for the attestation-drift compare behind the same _watchdog_active gate)"
     else
         bad "(13a) $name: transport token in code outside the gated block: $(printf '%s' "$leaks" | head -2 | tr '\n' ' ')"
     fi
@@ -851,13 +856,15 @@ s_pets=$(grep -cE '^[[:space:]]*_watchdog_pet[[:space:]]+# §5 end-of-cycle pet'
 # line — pins are therefore calls+1. Deleting or `:`-neutering ANY pet call line (the per-op
 # one-liner class included) moves the count → red. A count change is a review-stop: a
 # legitimate new/removed site updates this pin in the same diff, with the A3 derivation
-# re-checked. Pins: primary 35 (34 calls + def), standby 36 (35 calls + def; the +1 over the
-# primary is _giveback_wedged_escalate's identity-re-read pet, FF-B1 fix round).
+# re-checked. Pins: primary 37 (36 calls + def), standby 38 (37 calls + def; the +1 over the
+# primary is _giveback_wedged_escalate's identity-re-read pet, FF-B1 fix round; +2 per daemon
+# at Block 5.4: the [fence-rot] sysread-funnel pet + the expiry identity-read pet — the sweep's
+# ops are <= 8 s bounds petted per-op, so the A3 22 s worst case still governs).
 p_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$PRIMARY")
 s_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$STANDBY")
-[[ "$p_total" == "35" && "$s_total" == "36" ]] \
-    && ok "(14b) total pet call-site pins: primary 34 calls (+def=35), standby 35 calls (+def=36) — deletion of any pet line trips this" \
-    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 35, standby=$s_total pinned 36) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
+[[ "$p_total" == "37" && "$s_total" == "38" ]] \
+    && ok "(14b) total pet call-site pins: primary 36 calls (+def=37), standby 37 calls (+def=38) — deletion of any pet line trips this" \
+    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 37, standby=$s_total pinned 38) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
 if ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$PRIMARY" && ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$STANDBY" && ! grep -qE '^[[:space:]]*sleep "\$RECOVERY_CHECK_INTERVAL"' "$PRIMARY"; then
     ok "(14c) the >=15s sleeps (STARTUP_GRACE x3, RECOVERY_CHECK_INTERVAL, hard-stop re-verify) go through _watchdog_sleep"
 else

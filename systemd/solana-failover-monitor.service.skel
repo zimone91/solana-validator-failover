@@ -30,11 +30,14 @@ Description=Solana failover monitor (v0.7, native-watchdog fenced)
 Documentation=https://github.com/zimone91/solana-validator-failover
 After=network-online.target
 # R8 (research record, assumption 2 — THE sharp edge): OnFailure= fires ONLY on the terminal
-# `failed` state. With ANY restarting Restart= the unit cycles active→activating and NEVER
-# reaches `failed` until the start limit is exhausted (systemd #34023/#27594) — the fence would
-# simply never run. The pair Restart=no (below) + StartLimitIntervalSec=0 is THE load-bearing
-# difference from a naive unit: the FIRST missed pet drives this unit to `failed` and
-# dispatches the fence, deterministically, in one hop.
+# `failed` state. With ANY restarting Restart= the unit cycles active→activating instead
+# (systemd #34023/#27594) — container-verified PER VERSION: on systemd 249 (the fleet floor)
+# the unit NEVER reaches `failed` — watchdog kills included — so the fence simply never runs;
+# on 255 each restart iteration re-dispatches OnFailure=. EITHER WAY the behavior is outside
+# the verified one-hop contract, which is why the pair Restart=no (below) +
+# StartLimitIntervalSec=0 is THE load-bearing difference from a naive unit on BOTH versions:
+# the FIRST missed pet drives this unit to `failed` and dispatches the fence,
+# deterministically, in one hop.
 OnFailure=solana-failover-fence.service solana-failover-fence-page-only.service
 StartLimitIntervalSec=0
 
