@@ -198,7 +198,13 @@ _SIM_NOW=$(( 1700050000 + 120 )); check_self_fence_isolation >/dev/null; rc_ctl=
 # ── (H1-g) structural: MAIN LOOP dispatch + v0.6.8 baseline had nothing ───────────────────────
 echo ""; echo "─── (H1-g) shipped STAKED branch dispatches the fence; v0.6.8 had zero ───"
 n_dispatch=$(sed -n '/MAIN LOOP/,$p' "$STANDBY" | grep -c 'check_self_fence_isolation')
-[[ $n_dispatch -ge 1 ]] && grep -A8 '======== STAKED (took over)' "$STANDBY" | grep -q 'STANDBY_SELF_FENCE' \
+# WINDOW: the branch head to the STANDBY_SELF_FENCE gate. Widened 8 → 16 in the v0.7 Block 6.2
+# panel fix round, when the branch gained a comment block and the L3-N1 episode close
+# (_g2_reset — a pure in-memory variable reset, zero I/O, so the self-fence is still the first
+# statement that ACTS). The claim is unchanged: the STAKED branch gates the fence on the knob.
+# The "first thing that ACTS" half is held separately: test_g2_provider (9d) pins the standby's
+# outside-region G2 sites at exactly 3, so a future I/O-bearing insertion here is a red there.
+[[ $n_dispatch -ge 1 ]] && grep -A16 '======== STAKED (took over)' "$STANDBY" | grep -q 'STANDBY_SELF_FENCE' \
     && ok "(H1-g1) main-loop STAKED branch gates check_self_fence_isolation on STANDBY_SELF_FENCE" \
     || bad "(H1-g1) dispatch missing/ungated (n=$n_dispatch)"
 if [[ -f "$V068" ]]; then

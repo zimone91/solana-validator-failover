@@ -864,6 +864,19 @@ STANDBY_TAKEOVER_DELAY=$(_envq "${CFG_STANDBY_TAKEOVER_DELAY}")
 # can't silently race the STANDBY into a two-spare take.
 WITNESS_FASTPATH_FIRST_SPARE=${CFG_WITNESS_FASTPATH_FIRST_SPARE}
 
+# --- v0.7 (Block 6.2): G2 verified-demote proof vantages (ARMED spares only; inert otherwise) ---
+# Default A=TIER2_RPC, B=TIER3_RPC (already required distinct). Uncomment ONLY to pin different
+# bank-bearing RPC providers in DISTINCT failure domains; identical/same-host values page CRITICAL
+# and leave G2 cannot-determine for the run (fail toward NOT-taking). BOTH vantages must support
+# JSON-RPC batching ([getSlot, getClusterNodes] in one POST) and must not resolve to the same
+# address — `failover arm` probes both and refuses with REFUSE[P6-batch] / REFUSE[P6-vantage].
+# RECOMMENDED: point at least ONE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN (a different
+# OPERATOR). On the defaults these ARE the vote-liveness tiers, so one compromised vantage supplies
+# BOTH halves of the double-sign condition and the proof gate's additivity does not hold; the arm
+# MEASURES and prints this, and the armed daemon warns at every start (docs/SAFETY.md).
+# G2_VANTAGE_A=""
+# G2_VANTAGE_B=""
+
 # --- Telegram ---
 TG_ENABLED=${CFG_TG_ENABLED}
 TG_BOT_TOKEN=$(_envq "${CFG_TG_TOKEN}")

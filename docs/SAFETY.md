@@ -139,6 +139,136 @@ exists, which is the double-sign class this tool exists to prevent. During the g
 voting and paging, so the spare's silence-based path cannot fire against it: the window itself adds
 no double-sign exposure.
 
+### Verified-demote (G2) — what it proves, and what it cannot see (v0.7, armed spares)
+
+The armed spare's strongest relinquish proof inverts the polarity of every check above: instead
+of evidence that the holder *looks gone* (an absence, always forgeable by a broken view), G2
+demands a **positive observation that the demoted state is live *now***. The holder's *unstaked*
+gossip identity must be observed **at the staked identity's exact endpoint** (`set-identity`
+keeps ports, so a self-fenced holder re-advertises its unstaked key at exactly the endpoint its
+staked key last used) at T1 **and still be there ≥60 s later** on the **same two pinned RPC
+vantages** from distinct failure domains. The CRDS mechanics make that hold load-bearing: a live
+publisher re-signs its unstaked ContactInfo every ~7.5 s, while a stale entry (publisher gone,
+or flipped back to staked) cannot survive 30 s in a remote table — so survival across the 60 s
+hold proves a live process holds the unstaked key on that box, and the vote gates make a box
+whose validator runs unstaked unable to sign staked votes. An entry at a *different* endpoint
+proves only that some publisher exists elsewhere and is **not** the proof.
+
+G2 treats its own environment as a suspect. Each snapshot is **one JSON-RPC batch** — a single
+POST carrying `getSlot(confirmed)` *and* `getClusterNodes`, with fresh per-request ids — so the
+freshness anchor rides **inside the very response that carries the proof**. Every one of these
+reads *cannot-determine*, never proof:
+
+| Layer | What it refuses | What it does **not** claim |
+|---|---|---|
+| batch shape | an answer that is not a 2-element JSON-RPC array (no batching, or a proxy that split our request) | — |
+| id echo | any member (or the `getBlockTime` read) not echoing the id this process just sent — a stored/replayed answer carries stored ids | it cannot stop an intermediary that *rewrites* ids in flight |
+| slot advance | a vantage whose own confirmed head, batched into the proof-bearing response, advanced fewer than 60 slots across the hold — a frozen or replayed head. **Trusts no clock** | a stalled *cluster* also lands here: cannot-determine, availability, never a take |
+| cluster-time skew | a snapshot whose `getBlockTime`(that batched slot) sits more than ±25 s from the spare's clock | it assumes **the spare's own clock is correct** (see residuals); the slot-advance layer is the clock-free backstop |
+| node-table advance | a `getClusterNodes` result byte-identical across the 60 s hold — a **totally frozen** response, i.e. a naive cache | it does **not** prove the unstaked-at-endpoint entry was re-observed live: real mainnet tables churn constantly, so a frozen proof entry riding on other nodes' churn passes this compare. Anti-replay duty belongs to the batched slot above |
+| cross-vantage identity | byte-identical node tables from the two "distinct" vantages — one source wearing two names | byte-distinctness is **necessary, not sufficient**: a source that varies anything per vantage (a nonce, a re-serialization) passes. The enforceable half is at the arm |
+| vantage distinctness (arm) | identical URLs / shared hostname (daemon startup, CRITICAL page, whole run) and identical **resolved address sets** (`REFUSE[P6-vantage]`) | two genuinely different IPs belonging to **one provider** are indistinguishable from here — an operator responsibility, stated plainly |
+| batch capability (arm) | a vantage that cannot serve the batch at all (`REFUSE[P6-batch]`) | — |
+
+Mid-hold absence on any vantage is **not-proven** plus a full restart of the attempt — the
+flip-then-flip-back kill. A spare that observes *itself* staked closes the episode outright, so an
+attempt can never span the spare's own staked tenure.
+
+**Why byte-distinctness is worth keeping even though it is not sufficient:** a single source that
+*keeps* a stale unstaked entry across the whole 60 s hold must do one of two things. Either it
+freezes its CRDS table — a local clock slow enough to reject fresh gossip stops its body churning,
+and the node-table advance and cross-vantage layers fire — or it genuinely re-signs the entry,
+which means a live publisher, i.e. the true proof. That churn-versus-purge tension is the real
+guarantee; anyone relaxing the advance layer is removing that, not a redundant checksum.
+
+**What G2 cannot see, named honestly.**
+
+1. **After T2.** The verdict rests on the T2 read. A holder that flips back to staked and votes
+   *after* T2 is invisible to any snapshot-based proof — that direction is owned by the
+   mutation-edge re-check (`_fresh_proof_recheck`'s staked-vote pin, which aborts on any vote
+   advance) plus the edge age bound (`PROOF_MAX_AGE`); the provider withdraws and re-proves a
+   verdict older than that bound rather than serving it.
+2. **An active, protocol-aware intermediary.** Binding the anchor into the batch raises the bar
+   from *passive cache / naive replay* to *active tampering*: an intermediary that splits our
+   batch, forwards `getSlot` to a live node and answers `getClusterNodes` from storage under our
+   id still mints. That was executed against this build and is **not** defended — it is the
+   named residual, and no unsigned snapshot protocol clears it. The same applies to an
+   environment that fabricates fresh cluster times for old slots.
+   **On a shared-vantage host this residual is not bounded by the composition** — see
+   *Shared vantages* below. That is the one place the severity statement further down stops
+   applying, and it is the default configuration, so it is stated here rather than in a footnote.
+3. **A slow spare clock.** The ±25 s freshness compare measures cluster time against *this
+   spare's* wall clock, so a spare whose clock drifts by R seconds would collapse the skew of an
+   R-second-old replay toward zero. The clock-free slot-advance layer is the backstop.
+4. **A slow vantage *local* clock.** The ±25 s budget bounds a vantage's **chain-head lag**, not
+   its local system clock — and CRDS purge fires on that local clock. A vantage that is caught up
+   on-chain but whose system clock is slow retains a stale unstaked entry longer than the 15 s /
+   30 s expiry math assumes. One honest vantage forces not-proven, since it purges on time; the
+   both-vantages-slow case is caught, where it is caught at all, by the churn-versus-purge
+   argument above (a clock slow enough to retain the entry is slow enough to reject fresh gossip,
+   which freezes the body), **not** by the freshness detector. See the deployed-constants note
+   below.
+5. **One provider on two addresses.** See the table.
+
+Layered refusal is still the posture — every layer above has its own red *and* a neuter control
+proving the attack falls through to a named surviving layer, plus an all-layers-neutered control
+that restores the forged acceptance (`tests/test_g2_provider.sh` §4/§5). And in v0.7 the gate is
+not yet wired into any take path at all (wiring is a later, separately reviewed step).
+
+**Severity of a false G2 proof, stated exactly.** The proof gate is an *additional* requirement in
+front of the staked mutation, never a trigger for one: the pre-existing, live-tested v0.6.x path
+(delinquency detection, the vote-frozen observation, `_fresh_proof_recheck`) must still pass on its
+own. A false PROVEN therefore cannot by itself cause a take — it can only fail to *block* a take
+that logic already authorized. A double-sign needs **both** a false G2 proof **and** a false-frozen
+vote observation of a holder that is in fact alive and voting. **Read the next section before
+relying on that sentence: on the default configuration it is true and empty.**
+
+**Shared vantages — where the additivity argument stops holding (the default config).** G2 defaults
+`G2_VANTAGE_A`/`G2_VANTAGE_B` to `TIER2_RPC`/`TIER3_RPC`, and every vote-liveness reader in the
+daemons iterates exactly those two endpoints (`for rpc in "$TIER2_RPC" "$TIER3_RPC"`). On such a
+host the two halves named above are **not independent**: the same active, protocol-aware
+intermediary that splices `getSlot`/`getClusterNodes` into a false G2 proof can equally proxy the
+tip live while freezing the staked account's `lastVote` into a false-frozen vote observation. One
+capability supplies both halves, so the composition adds nothing and residual 2 above is
+**unbounded by it**. (A *naive* freeze is still caught by the tip-guard; an active one is the same
+"passive closed, active open" boundary G2 draws everywhere else.)
+
+This is **not** refused, deliberately: most operators run exactly two RPCs, and refusing to arm
+would trade a named residual for no spare at all. It is **measured and stated**: `failover arm`
+compares each vantage against each tier — by normalized URL, by host, and by resolved address set
+where a resolver exists — and prints which vantage matched which tier by which comparison, the
+consequence, and the fix, both at precondition P6 and again in the end-of-summary; the armed
+daemon repeats a URL-level version of the same statement as a startup `WARN` (it does no DNS — the
+arm owns resolution, so a shared vantage hiding behind two hostnames is visible at the arm and
+invisible to the daemon).
+
+**The way back is a third endpoint in a separate failure domain:** point `G2_VANTAGE_A` and/or
+`G2_VANTAGE_B` in `failover-standby.env` at an RPC run by a *different operator* — not another
+hostname or another API key for one you already use — and re-run `failover arm`. The arm then
+prints the measured "vantages are SEPARATE from the vote-liveness tiers" line, and the additivity
+statement above becomes load-bearing again.
+
+**Deployed constants, and why the number moved twice.** This build deploys `G2_DELTA = 60 s` and
+`G2_CLOCK_BUDGET = 25 s` (and `G2_SLOT_ADVANCE_FLOOR = G2_DELTA` slots), derived at one site as
+30 s (the provable CRDS bound: 15 s unstaked-origin expiry + ≤ 15 s late re-insert) + 25 s clock
+budget + 5 s purge granularity and rounding. The history, recorded rather than tidied away:
+
+1. The project's own CRDS-timeout research record recommends **DELTA = 60 s with a ≥ 25 s vantage
+   clock-error budget**, and states its slow-vantage-clock residual against *that* number ("both
+   clocks being >25 s wrong simultaneously").
+2. The v0.7 design addendum §2.4 deployed **50 s / 20 s** instead, for one stated reason: to fit
+   the whole hold inside the 60 s un-armed takeover timer.
+3. That reason died when the proof gate made floors **per-provider**: `verified-demote`'s floor is
+   its own hold, never `TAKEOVER_DELAY`. Nothing had depended on the fit since, and nobody noticed
+   until the constants were re-read against the record.
+4. So the constants are back to the record's 60 s / 25 s.
+
+The cost, named: `verified-demote`'s own branch answers about 10 s later than it did. The timer
+path is **unchanged** — the gate is additive, so a later G2 answer can only delay a take the
+proof would have permitted, never enable one. What is bought is residual 4 above: a 25 s budget
+is the one the research record's residual is actually stated against, so the earlier 20 s left
+*less* headroom for a slow vantage local clock than the analysis assumed.
+
 **The stale-bound re-arm residual (v0.7, named):** the pairing token carries the holder's
 `relinquish_bound` as of pairing generation N, and the spare derives its silence (elapsed) floor
 from those stored bounds. A holder later re-armed with a **larger** bound whose operator forgets to

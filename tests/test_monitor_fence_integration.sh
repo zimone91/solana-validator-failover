@@ -856,15 +856,23 @@ s_pets=$(grep -cE '^[[:space:]]*_watchdog_pet[[:space:]]+# §5 end-of-cycle pet'
 # line — pins are therefore calls+1. Deleting or `:`-neutering ANY pet call line (the per-op
 # one-liner class included) moves the count → red. A count change is a review-stop: a
 # legitimate new/removed site updates this pin in the same diff, with the A3 derivation
-# re-checked. Pins: primary 37 (36 calls + def), standby 38 (37 calls + def; the +1 over the
+# re-checked. Pins: primary 42 (41 calls + def), standby 43 (42 calls + def; the +1 over the
 # primary is _giveback_wedged_escalate's identity-re-read pet, FF-B1 fix round; +2 per daemon
 # at Block 5.4: the [fence-rot] sysread-funnel pet + the expiry identity-read pet — the sweep's
-# ops are <= 8 s bounds petted per-op, so the A3 22 s worst case still governs).
+# ops are <= 8 s bounds petted per-op, so the A3 22 s worst case still governs; +4 per daemon
+# at Block 6.2: the [g2-provider] twin region's per-op pets — snapshot 2, baseline refresh 1,
+# hold poll 1, each a curl -m 5 petted post-op, worst added gap 24 s argued in the region's own
+# A3-style census and always in the take-LATER direction).
+# RE-MEASURED in the 6.2 PANEL FIX ROUND (the pin MOVED, deliberately, in that same diff): the
+# snapshot now sends ONE JSON-RPC batch carrying getSlot AND getClusterNodes instead of two
+# separate requests, so the region lost one curl site and its pet — G2's contribution went 5 → 4
+# and the totals 42 → 41 / 43 → 42. The region's A3 worst added gap fell 36 s → 24 s with it
+# (test_g2_provider (6a)/(6b) census both counts against the live run and the source).
 p_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$PRIMARY")
 s_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$STANDBY")
-[[ "$p_total" == "37" && "$s_total" == "38" ]] \
-    && ok "(14b) total pet call-site pins: primary 36 calls (+def=37), standby 37 calls (+def=38) — deletion of any pet line trips this" \
-    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 37, standby=$s_total pinned 38) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
+[[ "$p_total" == "41" && "$s_total" == "42" ]] \
+    && ok "(14b) total pet call-site pins: primary 40 calls (+def=41), standby 41 calls (+def=42) — deletion of any pet line trips this" \
+    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 41, standby=$s_total pinned 42) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
 if ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$PRIMARY" && ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$STANDBY" && ! grep -qE '^[[:space:]]*sleep "\$RECOVERY_CHECK_INTERVAL"' "$PRIMARY"; then
     ok "(14c) the >=15s sleeps (STARTUP_GRACE x3, RECOVERY_CHECK_INTERVAL, hard-stop re-verify) go through _watchdog_sleep"
 else
