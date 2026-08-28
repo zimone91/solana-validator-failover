@@ -5,6 +5,49 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Block 6.1 — spare-side proof-gate skeleton + pairing-token intake at the spare arm.** Block
+  6's cost model inverts Block 5's: the worst outcome is DOUBLE-SIGN (the spare taking while
+  the holder is alive), so everything below fails toward NOT-taking and toward REFUSING to arm.
+  New `[proof-gate]` twin block (byte-identical in both daemons; structurally inert today:
+  armed-gated AND role-gated, zero events on every un-armed host — census-asserted; NOT wired
+  into any take path — wiring is Block 6.4): `require_relinquish_proof` consumes STRUCTURED
+  verdicts (k=v records — proven/provider/observation_id + the Block-3 freshness triple +
+  `observed_at`), refuses with zero registered providers, and returns a distinct `bypassed`
+  outcome only under the exact-`true` `ALLOW_UNFENCED_TAKEOVER` lever (screams at every armed
+  start AND per bypassed take). Floors are PER-PROVIDER, never global: `_derive_proof_floors`
+  is the ONE derivation site — `elapsed_floor = W + B + MARGIN_ELAPSED` (=100 at the shipped
+  30/60) with `N_HEAD = slots(MARGIN_ELAPSED)` (=25) COUPLED mechanically (staleness tolerance
+  cannot be raised without visibly raising the floor); `PROOF_MAX_AGE=50` is derived from a
+  full verdict→mutation read census (the recheck's sampler worst = 2×`curl -m 10` + 2 armed
+  pets + glue = 36 s; healthy path 2–4 s — convergence proven with margin) and enforced at the
+  MUTATION EDGE by `_proof_age_edge_check`, which refuses absent/0/garbage AND future-dated
+  (negative-age) `observed_at`. The spare arm gains P5 pairing-token intake
+  (`ARM_PAIRING_TOKEN`): crc/shape re-verified with the 5.3 emission's exact mechanics (one
+  `_pairing_crc`, byte-identical in three copies), refusals with MEASURED-vs-REQUIRED texts —
+  `P5-token-crc`, `P5-bound` (BOTH directions: `relinquish_bound <= TAKEOVER_DELAY` from
+  above, and W/B bounded into `[1, PAIRING_BOUND_MAX=3600]` — the panel's L-1 blocker: a
+  crc-valid token with W near 2^63 wrapped `elapsed_floor` NEGATIVE and logged a healthy
+  PAIRED; the derivation site now also asserts floor convergence, `>0`/`>=W`/`>=B`, as an
+  intake-independent backstop), `P5-floor` (the reviewer's floor MINIMUM: `W+B+MARGIN >=
+  TAKEOVER_DELAY` — arming must never make the spare FASTER to take than not-arming;
+  watchdog-elapsed stands on time, the weakest evidence kind, so its floor must dominate the
+  un-armed timer path BY CONSTRUCTION; `MARGIN_ELAPSED` is READ from the installed daemon's
+  single derivation site, never re-declared; the twin backstop re-asserts `floor >=
+  TAKEOVER_DELAY` against on-disk-planted tokens and refuses an uncheckable delay),
+  `P5-staked-unstaked` (per-entry zero-stake verification of `PRIMARY_UNSTAKED_PUBKEY` via
+  bounded RPC — a staked "unstaked" key inherits the ~48 h CRDS extended_timeout and silently
+  breaks G2's expiry math; degenerate/empty `getVoteAccounts` bodies are cannot-verify and
+  REFUSE), and `P5-store` (tmp+mv+verify persistence). A `fence=page-only` token pairs but
+  buys NOTHING on the time path; no token / invalid token / page-only = the §2.7 LOUD
+  unpaired posture: CRITICAL page at every armed start, a standing line on the heartbeat
+  status surface, and end-of-summary warnings in the arm and the standby wizard. SAFETY.md
+  names the stale-bound re-arm residual (a holder re-armed with larger bounds + a forgotten
+  re-pair is a double-sign direction the spare cannot detect by construction; the holder's arm
+  refusing to complete without printing the token is the operational protection). New suite
+  `tests/test_proof_gate.sh` (50 suites): reds-first, forged-token matrix, per-signal
+  mutation controls (incl. the defense-in-depth pair: one neutered floor layer does NOT reopen
+  the hole, both neutered restores the red), broadened constants census
+  (`local`/`declare`/`export`/`readonly`/arithmetic spellings all bite).
 - **Block 5.4 — fence-rot detection + `FENCE_ROT_GRACE` escalation (§2.1-rev2.1 №2).** The
   pairing token attests the holder's fence at pairing time only; the spare cannot see
   post-pairing rot — so the ARMED holder now re-verifies its own effective fence properties
