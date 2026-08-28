@@ -2776,7 +2776,8 @@ _proof_role_is_spare() { return 0; }
 # un-armed path's own constant.
 PROOF_STATE_DIR="${PROOF_STATE_DIR:-/var/lib/solana-failover}"   # MUST match failover-arm.sh ARM_STATE_DIR (the spare arm stores pairing-token there — the FENCE_MARKER_DIR precedent: one canonical dir, env-overridable as the test seam)
 
-_proof_providers=""          # registered proof-provider fns, space-separated (6.2 registers verified-demote, 6.3 watchdog-elapsed; a future holder→spare channel lands here without touching the gate). EMPTY today — the gate REFUSES (fail toward not-taking).
+_proof_providers=""          # registered proof-provider fns, space-separated (6.2 registers verified-demote, 6.3 watchdog-elapsed; a future holder→spare channel lands here without touching the gate). empty registry — the gate REFUSES (fail toward not-taking).
+_proof_provider_labels=""    # human provider names parallel to the registry (registration appends both) — the PAIRED posture prints MEASURED registry content, never a remembered claim (v0.7 Block 6.2)
 _proof_last_verdict=""       # the last structured verdict the gate consumed/minted — one k=v| line, never a boolean (§3a.1/[rev3/№7])
 _proof_token_st=""           # _proof_token_scan result: none|invalid|page-only|ok
 _proof_token_gen=""          # parsed token fields (valid only when _proof_token_st is ok/page-only)
@@ -2990,8 +2991,14 @@ require_relinquish_proof() {
 # HEALTHY PATH (typical one-curl success ~1 s + glue): verdict age at the edge ≈ 2–4 s — ≥ 12x
 # under the budget; the worst REACHABLE path (39 s) clears it by 11 s: convergence proven WITH
 # margin (the slice-4 floor lesson — a bound right in meaning that never converges is a broken
-# gate). NOTE: =50 equals G2's DELTA=50 by numeric COINCIDENCE, not derivation — different
-# objects (a positive-observation hold duration vs a verdict staleness bound); do not unify.
+# gate). NOTE (reviewer condition C2, claim=check): this number and G2's DELTA were briefly EQUAL
+# (both 50) and the comment here said so — a numeric coincidence, never a derivation. G2_DELTA is
+# now 60 (the research record's figure, restored once per-provider floors retired the timer-fit
+# constraint) and the coincidence is gone. They remain DIFFERENT OBJECTS — a positive-observation
+# hold DURATION vs a verdict STALENESS bound — and nothing here reads the other: no code path
+# assumes any ordering between PROOF_MAX_AGE and G2_DELTA (the provider's own withdrawal compare
+# below is age-vs-PROOF_MAX_AGE, never hold-vs-age). Do not unify them, and do not re-derive one
+# from the other if they collide again.
 # COMPOSITION (why age-check + recheck TOGETHER, not either alone): the recheck's staked-vote
 # pin owns the flip-back-then-vote direction — a holder that re-takes and votes AFTER the
 # verdict's last read lifts lastVote above the episode's pinned min-rule baseline and ABORTS at
@@ -3045,10 +3052,11 @@ _proof_startup_check() {
         # the gate's `bypassed` outcome above).
         alert "ALLOW_UNFENCED_TAKEOVER=true on an ARMED spare — every take will BYPASS the relinquish-proof gate (no proof the holder relinquished; double-sign risk). Unset the lever unless this is a deliberate, temporary override." "${STAKED_PUBKEY:-unknown}" "PROOF GATE BYPASS ARMED 🚨"
     fi
+    _g2_register   # v0.7 (Block 6.2): register the verified-demote provider (armed+spare already gated above; self-gates on PRIMARY_UNSTAKED_PUBKEY + vantage config) BEFORE the posture lines below, so they print the real registry
     _proof_unpaired_scan
     if [[ -z "$_proof_unpaired_why" ]]; then
         if _derive_proof_floors; then
-            log_info "[proof-gate] armed spare PAIRED: token gen=${_proof_token_gen} (watchdog=${_proof_token_w}s, relinquish_bound=${_proof_token_b}s, fence=real) → elapsed_floor=${elapsed_floor}s, N_HEAD=${N_HEAD} slots (no proof provider is registered in this build; the gate is not wired into any take path)"
+            log_info "[proof-gate] armed spare PAIRED: token gen=${_proof_token_gen} (watchdog=${_proof_token_w}s, relinquish_bound=${_proof_token_b}s, fence=real) → elapsed_floor=${elapsed_floor}s, N_HEAD=${N_HEAD} slots (proof providers registered: ${_proof_provider_labels:-NONE}; the gate is not wired into any take path)"
             return 0
         fi
         # a VALID-shape fence=real token whose floor did NOT converge (the overflow/wrap backstop
@@ -3069,6 +3077,734 @@ _proof_status_line() {
     return 0
 }
 # ── [proof-gate] end shared block ──
+
+# v0.7 (Block 6.2): the [g2-provider] incident adapter — per-daemon, deliberately OUTSIDE the
+# byte-identical region below (the _proof_role_is_spare pattern: role/episode facts stay
+# per-daemon, the shared block stays byte-identical). On this SPARE daemon the G2 trigger surface
+# is the SAME one the Option-A fast path polls from: an open delinquency episode
+# (FIRST_DELINQUENT_TIME is stamped at the first delinquent sighting and cleared by the
+# episode-close resets) — "a suspected relinquish". The MAIN-LOOP call site additionally scopes
+# stepping to the UNSTAKED (spare-postured) branch, so a promoted holder never keeps polling a
+# stale episode while it holds staked.
+_g2_incident_active() { [[ ${FIRST_DELINQUENT_TIME:-0} -gt 0 ]]; }
+
+# ── [g2-provider] verified-demote (G2) proof provider — BYTE-IDENTICAL in both daemons (test_g2_provider) ──
+# v0.7 (Block 6.2, DESIGN-v0.7-ADDENDUM §2.4 + [rev3/№2], BLOCK6-PLAN §2): the first REAL proof
+# provider behind the [proof-gate] registry. COST MODEL (reviewer condition 1, binding): the worst
+# outcome is DOUBLE-SIGN — the spare taking while the holder is alive — so G2 is a PROOF provider,
+# not a detector: every ambiguity below answers cannot-determine or not-proven, NEVER proven. A
+# forged or degenerate environment (cached RPC, replayed snapshots, one provider behind two names)
+# must never mint a proven verdict; what it CAN cost is availability (G2 stays silent and the
+# un-armed timer path governs — the gate is NOT wired into any take path in this slice; 6.4 wires).
+#
+# WHAT G2 PROVES (polarity, §2.4): the holder's UNSTAKED ContactInfo observed at the STAKED
+# identity's exact gossip endpoint at T1 AND still present >= G2_DELTA later on the SAME two
+# pinned vantages proves "the demoted state is live NOW" — a live publisher re-signs its unstaked
+# ContactInfo every ~7.5 s and a stale (publisher-gone) entry cannot survive 30 s in a remote CRDS
+# table (15 s unstaked-origin expiry + <= 15 s late re-insert bound, expiry on each vantage's own
+# LOCAL wall clock — design record research-crds-staked-timeout.md, source-verified). A live
+# publisher holding the unstaked key on THAT box means the box cannot sign staked votes (the vote
+# gates). This is NOT "the flip happened once" — it is a positive, current observation, which is
+# why G2's floor is its own DELTA hold and carries NOTHING of W+B ([6.0-COND-1], per-provider).
+# WHAT G2 CANNOT SEE (D2 composition, stated again at the minting site): flip-back-then-vote after
+# the T2 read — the recheck's staked-vote pin owns that direction at the mutation edge (6.4), and
+# _proof_age_edge_check bounds this verdict's staleness there (observed_at = the T2 read).
+#
+# THE ANTI-FORGERY LAYER SET (enumerated so "complete guard set" stays a measured claim, not a
+# remembered one — the D3 multilayer controls in test_g2_provider neuter each one ALONE and prove
+# the fall-through, then neuter ALL of them and prove the forged acceptance comes back):
+#   [g2-det-batch]         the snapshot answer must BE a 2-element JSON-RPC batch response
+#   [g2-det-batch-id]      every member (and the getBlockTime read) must echo OUR fresh id
+#   [g2-det-slot-advance]  the vantage's own confirmed head, batched INTO the proof-bearing
+#                          response, must advance >= G2_SLOT_ADVANCE_FLOOR across the hold
+#   [g2-det-clock]         getBlockTime(that batched slot) within ±G2_CLOCK_BUDGET of this clock
+#   [g2-det-advance-a/-b]  the vantage's node table must not be byte-frozen across the hold
+#   [g2-det-crossvantage]  the two vantages must not serve byte-identical node tables
+# plus, at ceremony time only: REFUSE[P6-batch] (this vantage can serve the batch at all) and
+# REFUSE[P6-vantage] (the two vantage names do not resolve to one address set).
+# WHAT THE SET DOES NOT DEFEAT (named residual, design record verify-rpc-batch-and-churn.md §4,
+# private tree; restated in SAFETY.md): an ACTIVE, PROTOCOL-AWARE intermediary that splits our
+# batch, forwards getSlot to a live node and answers getClusterNodes from storage under our id.
+# Binding the anchor raises the bar from passive cache / naive replay to that; it does not clear
+# it, and no unsigned snapshot protocol can.
+#
+# EPISODE VS THE SPARE'S OWN STAKED TENURE (panel fix round, L3-N1): _g2_step is scoped to the
+# spare posture, so a promoted spare stops stepping — but the half-run attempt and its T1 anchors
+# merely PAUSED in memory. Executed: a manual set-identity interlude (staked at t=16, unstaked
+# again at t=34) let the attempt RESUME and mint within seconds of re-demotion, on T1 stamps that
+# predate the spare's own staked tenure, with every mid-hold poll of the gap skipped. The spare
+# daemon therefore calls _g2_reset at its STAKED-branch entry (a per-daemon call site, censused in
+# test_g2_provider (9d)).
+# WHY THE RESUMED HOLD WAS NOT UNSOUND, recorded per claim=check — this is hygiene, not a forgery
+# fix: the mint is T2-ANCHORED. Proven requires the unstaked entry PRESENT at a FRESH T2 read, and
+# a stale entry cannot outlive the <= 30 s CRDS bound; a holder that re-staked during the gap
+# stops re-signing it, so T2 comes back absent -> not-proven. Missed mid-hold polls remove EARLY
+# kills, they never add evidence. Resetting anyway makes the invariant checkable without that
+# argument: an attempt never spans the spare's own staked tenure.
+#
+# STRUCTURALLY INERT everywhere today: every entrypoint no-ops unless _watchdog_active AND
+# _proof_role_is_spare AND registered (PRIMARY_UNSTAKED_PUBKEY configured) — zero reads, zero
+# events, zero state on every un-armed host (census-asserted in test_g2_provider, not prose).
+# A PER-CYCLE STATE MACHINE, never a blocking wait: _g2_step advances at most ONE bounded batch
+# per main-loop cycle and NEVER sleeps (zero sleep sites in this region, census-asserted).
+# Worst added gap per cycle (the A3-style bound census, all sites in this region — re-derived in
+# the panel fix round: the JSON-RPC BATCH merges the old getSlot read into the getClusterNodes
+# read, so a snapshot is now TWO reads, not three):
+#     idle (baseline refresh, cadence-gated) : 1 x curl -m 5  + 1 pet (7 s)          = 12 s
+#     t1a/t1b/t2a/t2b (batch + getBlockTime) : 2 x curl -m 5  + 2 pets               = 24 s
+#     hold (cheap presence poll)             : 1 x curl -m 5  + 1 pet                = 12 s
+#     proven / disabled / unregistered       : zero reads                            =  0 s
+# Worst case 24 s — the same class as the existing per-cycle externals (confirm + liveness, two
+# curl -m 10 each) and always in the SAFE direction: a slow G2 cycle can only make this spare see
+# its own take gates LATER, never earlier. Each read is petted post-op (a timeout return IS
+# completion — the FF-B1 rule); _G2_READ_PACE_SECS floors the read cadence so the 1 s turbo loop
+# cannot hammer the vantages. G2 state is DELIBERATELY memory-only (never in save_state): a T1
+# anchor restored into a restarted daemon would be exactly the stale-anchor class this house
+# refuses — a restart mid-incident answers cannot-determine (no baseline) and the timer governs.
+
+# [§2.4 derivation — the ONE declaration site; census-asserted, injection-red in the suite]
+# G2_CLOCK_BUDGET: the vantage clock-error budget (seconds) — how far a vantage's view of cluster
+# wall time may sit from this spare's wall clock in EITHER direction before its snapshots are
+# untrustworthy for freshness. G2_DELTA derives FROM it, and the derivation is the project's own
+# research record's (design-records/research-crds-staked-timeout.md:94 — "Minimal provably
+# sufficient DELTA = 30s + max tolerated vantage clock error. Recommend DELTA = 60s (covers 30s
+# bound + purge granularity + a generous 25s+ vantage clock-error budget)"):
+#     30 s  provable CRDS bound: 15 s unstaked-origin expiry + <= 15 s late re-insert window
+#   + 25 s  G2_CLOCK_BUDGET — the clock-error budget that record calls for; its :95 residual
+#           ("both clocks being >25s wrong simultaneously") is stated AGAINST this number, so a
+#           SMALLER budget widens that residual instead of narrowing it
+#   +  5 s  purge granularity (the ~100 ms gossip-loop purge pass) + rounding margin
+#   = 60 s  G2_DELTA
+# WHY THIS NUMBER MOVED TWICE (recorded per claim=check; the same history is in docs/SAFETY.md):
+# the record recommended 60/25 -> §2.4 deployed 50/20 for ONE stated reason, to fit the whole hold
+# inside the 60 s un-armed timer -> [6.0-COND-1] then made proof floors PER-PROVIDER, so G2's floor
+# is its own hold and never TAKEOVER_DELAY, which retired that reason -> back to the record's
+# 60/25. THE COST, named: verified-demote's own branch answers ~10 s later than it did. The timer
+# path is UNCHANGED, because the gate is ADDITIVE — it can only fail to block a take that the
+# pre-existing logic already authorized, never cause one — so a later G2 answer is availability,
+# never safety. G2's OWN floor [6.0-COND-1]: no W+B component — it stands on a positive
+# observation (see the polarity comment above), and a global floor would punish the stronger proof
+# with the longer wait. Kill-list at this number (§2.4): flip-then-flip-back dies by the <= 30 s
+# CRDS expiry inside the 60 s hold plus the T2 absence check; correlated-fleet-lag dies because
+# expiry is wall-clock-LOCAL on each vantage (a lagged replica still purges on time).
+# WHAT THE BUDGET ACTUALLY BOUNDS (panel fix round, claim-check G2-N1 — the earlier wording said
+# the freshness detector "consumes the SAME budget", which over-claimed): the ±budget compare
+# below bounds the CHAIN-HEAD lag of a vantage's answer (getBlockTime of the slot it just served
+# vs this spare's wall clock). CRDS purge, by contrast, fires on the vantage's LOCAL SYSTEM clock
+# (research-crds-staked-timeout.md Q3) — a DIFFERENT physical clock, which the ±budget cannot
+# see. The two are the same NUMBER by design (one budget for "how wrong may a vantage's sense of
+# time be"), and mutating it moves both the hold and the compare (the N_HEAD/MARGIN_ELAPSED
+# coupling pattern), but they are not the same MEASUREMENT. The slow-vantage-LOCAL-clock case is
+# a named residual (SAFETY.md), caught — where it is caught at all — by the churn-vs-purge
+# argument at the advance detector below, never by this compare.
+G2_CLOCK_BUDGET=25
+G2_DELTA=$(( 30 + G2_CLOCK_BUDGET + 5 ))
+# G2_SLOT_ADVANCE_FLOOR (panel fix round, G2-B1 layer 2): the minimum number of slots a vantage's
+# OWN confirmed head must advance between its T1 and its T2 snapshot before either snapshot may
+# testify about NOW. DERIVATION, from DELTA and nothing else: mainnet nominal is ~2.5 slots/s
+# (400 ms slots), so an honest vantage advances ~150 slots across a 60 s hold; the floor is set at
+# ~1 slot/s x DELTA = 60 slots = 40 % of nominal, a deliberately loose tolerance so ordinary
+# cluster slowdowns and per-vantage replay lag stay green. This layer trusts NO clock — not this
+# spare's, not the cluster's — so it is the clock-free backstop for the ±budget compare above
+# (G2-N1's spare-clock assumption). DIRECTION when the cluster genuinely stalls: advance < floor
+# → cannot-determine → G2 stays silent and the un-armed timer path governs. Availability, never
+# safety.
+G2_SLOT_ADVANCE_FLOOR=$G2_DELTA
+_G2_BASELINE_REFRESH_SECS=60   # idle-state baseline re-read cadence — availability-only (a stale endpoint fails toward not-proven, never toward proven; see _g2_step), so a plain constant like FENCE_ROT_CHECK_SECS's class, no env channel
+_G2_READ_PACE_SECS=2           # minimum seconds between read-batches in the t1/hold/t2 states — bounds vantage load under the 1 s turbo loop; pacing only, never a proof input
+
+_g2_registered=0               # registration latch (one registration per process)
+_g2_disabled=""                # non-empty = the startup tripwire reason: G2 answers cannot-determine for this entire run (vantages not distinct / missing)
+_g2_state="idle"               # idle | t1a | t1b | hold | t2a | t2b | proven (one state advance per _g2_step call, at most one read-batch)
+_g2_gen=0                      # proof-attempt generation — incremented at every T1 arm; carried in observation_id so a verdict names WHICH attempt minted it
+_g2_answer="cannot"            # the provider's current verdict class: cannot | no | yes (every ambiguity initializes and fails toward cannot)
+_g2_reason="not yet evaluated" # MEASURED refusal/progress reason for the verdict record and logs (never a static figure)
+_g2_staked_endpoint=""         # the BASELINE: ip:port of STAKED_PUBKEY's own gossip ContactInfo, captured PRE-INCIDENT
+_g2_baseline_ts=0              # mono stamp of the last baseline refresh (0 = never captured)
+_g2_nobl_warned=0              # once-per-episode latch for the no-baseline warn
+_g2_t1_ts_a=0                  # per-vantage T1 mono stamps (per-vantage comparison, never cross)
+_g2_t1_ts_b=0
+_g2_t1_hash_a=""               # per-vantage T1 payload fingerprints (cksum crc-len of the getClusterNodes RESULT projection — see _g2_snap)
+_g2_t1_hash_b=""
+_g2_t1_slot_a=0                # per-vantage T1 confirmed slot, read from the SAME batched response as the T1 payload (0 = unset)
+_g2_t1_slot_b=0
+_g2_rid=0                      # JSON-RPC request-id counter (seeded mono at registration, +2 per snapshot): every batch carries ids never used before, and the echo MUST match — a replayed response is caught by its stale id alone
+_g2_t2_hash_a=""               # vantage-A T2 fingerprint, held for the cross-vantage check at t2b
+_g2_t2_slot_a=0                # vantage-A T2 batched slot, held for the PROVEN line's measured advance
+_g2_t2_ts=0                    # mono stamp of the COMPLETED T2 read — the proven verdict's observed_at
+_g2_verdict=""                 # the minted proven verdict record (stamps frozen at mint; ages via observed_at)
+_g2_last_read_ts=0             # _G2_READ_PACE_SECS anchor (mono)
+_g2_flip=0                     # alternates the baseline/hold-poll vantage so one dead vantage cannot monopolize the cheap reads
+_g2_env_alert_ts=0             # throttle anchor for the environment-suspicion pages (cache / one-source / clock-skew)
+
+# _g2_url_host — host part of an RPC URL (scheme/path/port stripped) for the distinctness tripwire.
+# Prefix/suffix parameter expansion only — no pattern-substitution expansion (the CI facts job
+# pins those lines per daemon: the bash-5.2 patsub_replacement class), no external calls.
+# BRACKETED IPv6 (panel fix round, L3-N2): a naive `%%:*` cut truncates `[::1]:8899` to `[`, so
+# ANY two bracketed-IPv6 vantages collapsed to the same host and tripped the same-host tripwire
+# with a FALSE reason ("one failure domain") — safe direction (permanent cannot-determine) but a
+# misleading page and G2 silently unavailable for the run. The bracket form is cut at the `]`.
+_g2_url_host() {
+    local _g2u="$1"
+    case "$_g2u" in *"://"*) _g2u="${_g2u#*://}" ;; esac
+    _g2u="${_g2u%%/*}"; _g2u="${_g2u%%\?*}"
+    case "$_g2u" in
+        "["*) _g2u="${_g2u%%]*}]" ;;   # [2001:db8::1]:8899 -> [2001:db8::1] (the literal IS the host)
+        *)    _g2u="${_g2u%%:*}" ;;
+    esac
+    printf '%s' "$_g2u"
+}
+
+# throttled environment-suspicion page (the _recheck_abort_alert idiom: first page immediate,
+# repeats per ALERT_THROTTLE; per-event log_warn lines are never throttled). GLOBAL, not
+# per-episode: it guards the operator channel — a cache-fronted vantage does not stop being
+# cache-fronted when the episode resets.
+_g2_env_alert() {
+    if [[ ${_g2_env_alert_ts:-0} -gt 0 ]]; then
+        [[ $(( $(mono_now) - _g2_env_alert_ts )) -ge ${ALERT_THROTTLE:-600} ]] || return 0
+    fi
+    _g2_env_alert_ts=$(mono_now)
+    alert_warn "$1"
+}
+
+# _g2_reset <why> — drop the in-flight attempt AND the verdict, back to idle. The baseline and the
+# generation counter survive (pre-incident state / attempt lineage); everything the PROOF stands on
+# dies with the reset — a withdrawn verdict must never be re-servable.
+_g2_reset() {
+    _g2_state="idle"; _g2_answer="cannot"; _g2_reason="${1:-reset}"
+    _g2_t1_ts_a=0; _g2_t1_ts_b=0; _g2_t1_hash_a=""; _g2_t1_hash_b=""
+    _g2_t1_slot_a=0; _g2_t1_slot_b=0
+    _g2_t2_hash_a=""; _g2_t2_slot_a=0; _g2_t2_ts=0; _g2_verdict=""; _g2_nobl_warned=0
+    return 0
+}
+
+# _g2_arm <why> — start (or restart) a proof attempt: fresh generation, clean T1/T2 state, T1
+# sampling begins next paced cycle. Every re-arm after a kill goes through here so observation_id
+# can never mix stamps from two attempts. Deliberately does NOT touch _g2_answer/_g2_reason: a
+# kill's not-proven verdict must stay reportable while the new attempt samples (only fresh
+# evidence may change the answer).
+_g2_arm() {
+    _g2_gen=$(( _g2_gen + 1 ))
+    _g2_t1_ts_a=0; _g2_t1_ts_b=0; _g2_t1_hash_a=""; _g2_t1_hash_b=""
+    _g2_t1_slot_a=0; _g2_t1_slot_b=0
+    _g2_t2_hash_a=""; _g2_t2_slot_a=0; _g2_t2_ts=0; _g2_verdict=""
+    _g2_state="t1a"
+    log_info "[g2-provider] proof attempt gen=${_g2_gen} armed (${1:-}) — T1 snapshot of both vantages begins (endpoint anchor ${_g2_staked_endpoint})"
+    return 0
+}
+
+# _g2_snap <vantage-url> <label> — ONE bounded per-vantage snapshot: a JSON-RPC BATCH carrying the
+# freshness anchor (the vantage's own confirmed slot) TOGETHER WITH the proof-bearing
+# getClusterNodes payload, then that slot's cluster time via getBlockTime.
+# Results via globals (this runs in the MAIN shell — a $()-captured helper would strand the state):
+#   _g2_snap_ok        1 = every read answered and parsed (0 => cannot-determine, never absent)
+#   _g2_snap_why       why ok=0 (measured)
+#   _g2_snap_present   1 = a PRIMARY_UNSTAKED_PUBKEY entry sits at EXACTLY _g2_staked_endpoint
+#   _g2_snap_misplaced non-empty = a watched entry was seen at a DIFFERENT endpoint (that endpoint)
+#   _g2_snap_hash      fingerprint (cksum crc-len) of the getClusterNodes RESULT projection
+#   _g2_snap_slot      the confirmed slot carried by the SAME response as the payload
+#   _g2_snap_skew      vantage cluster-time minus this spare's wall clock, seconds (signed)
+#   _g2_snap_fresh     1 = |skew| <= G2_CLOCK_BUDGET (inclusive both directions)
+# Each curl is bounded (-m 5, the peer_has_relinquished gossip-read bound) and petted post-op — a
+# timeout return IS completion (FF-B1). "Cache-Control: no-cache" rides every read (the C1 belt);
+# G2 does NOT trust it — the detectors below are the proof, the header is politeness.
+#
+# WHY A BATCH (panel fix round, G2-B1 BLOCKER — the shipped v1 hole): the freshness anchor used to
+# be its OWN HTTP request, so it validated a DIFFERENT object than the proof rested on. A vantage
+# serving honest live getSlot/getBlockTime while replaying only the getClusterNodes body minted
+# PROVEN (executed). One POST now carries BOTH, so the slot is CONTENT-ADDRESSED TO THE BODY that
+# carries the proof: a replayed body arrives with ITS slot, whose block time is old (skew fails)
+# and which does not advance across the hold (slot-advance fails). JSON-RPC batching verified by
+# execution against mainnet-beta/agave 4.2.1 — design record verify-rpc-batch-and-churn.md
+# (private tree): a [getSlot,getClusterNodes] batch returns a 2-element ARRAY with our ids
+# preserved. Members are matched BY id, NEVER by position (JSON-RPC 2.0 permits any order), and
+# the ids are fresh per request, so a naive cache replaying an older response is caught by the id
+# echo alone. Any malformation — not an array, wrong length, missing/duplicated id, unparseable
+# member — lands cannot-determine, never proven. The vantage's ability to serve the batch at all
+# is verified at the ARM (REFUSE[P6-batch]); this is the run-time re-check.
+# NAMED RESIDUAL (design record §4, restated in SAFETY.md): binding raises the bar from passive
+# cache / naive replay to ACTIVE, PROTOCOL-AWARE tampering (an intermediary that splits the batch,
+# forwards getSlot live and answers getClusterNodes from storage under our id). It does not defeat
+# that, and G2 does not claim to.
+_g2_snap() {
+    local _g2s_url="$1" _g2s_label="$2" _g2s_body _g2s_rc _g2s_slot _g2s_bt _g2s_wall _g2s_pk _g2s_scan _g2s_askew _g2s_ida _g2s_idb _g2s_idc _g2s_nodes
+    _g2_snap_ok=0; _g2_snap_why=""; _g2_snap_present=0; _g2_snap_misplaced=""
+    _g2_snap_hash=""; _g2_snap_slot=0; _g2_snap_skew=0; _g2_snap_fresh=0
+    # fresh ids, never reused in this process (mono-seeded at registration, +3 per snapshot: two
+    # batch members plus the getBlockTime that follows)
+    _g2_rid=$(( _g2_rid + 3 )); _g2s_ida=$_g2_rid; _g2s_idb=$(( _g2_rid + 1 )); _g2s_idc=$(( _g2_rid + 2 ))
+    _g2s_body=$(curl -s -m 5 "$_g2s_url" -X POST -H "Content-Type: application/json" -H "Cache-Control: no-cache" -d "[{\"jsonrpc\":\"2.0\",\"id\":${_g2s_ida},\"method\":\"getSlot\",\"params\":[{\"commitment\":\"confirmed\"}]},{\"jsonrpc\":\"2.0\",\"id\":${_g2s_idb},\"method\":\"getClusterNodes\"}]" 2>/dev/null)
+    _g2s_rc=$?
+    _watchdog_pet   # §5 per-op pet: bounded op completed (rc captured above); no-op outside the armed unit
+    if [[ $_g2s_rc -ne 0 ]]; then
+        _g2_snap_why="vantage ${_g2s_label} snapshot batch unreachable (curl rc=${_g2s_rc})"
+        return 0
+    fi
+    # [g2-det-batch]: the answer MUST be a JSON-RPC batch response — a 2-element array. Anything
+    # else (a single object, a split answer, an HTML error page, truncated JSON) means the anchor
+    # is not bound to the payload, so nothing here may testify: cannot-determine.
+    if ! printf '%s' "$_g2s_body" | jq -e 'type == "array" and length == 2' >/dev/null 2>&1; then
+        _g2_snap_why="vantage ${_g2s_label} did not answer the [getSlot,getClusterNodes] BATCH with a 2-element array — the freshness anchor is not bound to the proof payload (batching unsupported, split by an intermediary, or unparseable), cannot-determine"
+        return 0
+    fi
+    # [g2-det-batch-id]: match members BY OUR ID (never by position — JSON-RPC permits any order),
+    # and require EXACTLY ONE member per id. A stale/replayed response carries stale ids and dies
+    # here on the echo alone, before any content is looked at.
+    _g2s_slot=$(printf '%s' "$_g2s_body" | jq -r --arg id "$_g2s_ida" '[.[] | select((.id|tostring) == $id)] | if length == 1 then (.[0].result // empty) else empty end' 2>/dev/null)
+    case "$_g2s_slot" in ''|*[!0-9]*)
+        _g2_snap_why="vantage ${_g2s_label} batch carried no usable getSlot member echoing our id=${_g2s_ida} ('${_g2s_slot}') — id mismatch (a replayed/cached response) or an unusable slot"
+        return 0
+    ;; esac
+    _g2s_nodes=$(printf '%s' "$_g2s_body" | jq -c --arg id "$_g2s_idb" '[.[] | select((.id|tostring) == $id)] | if length == 1 then (.[0].result) else empty end' 2>/dev/null)
+    if [[ -z "$_g2s_nodes" || "$_g2s_nodes" == "null" ]]; then
+        _g2_snap_why="vantage ${_g2s_label} batch carried no usable getClusterNodes member echoing our id=${_g2s_idb} — id mismatch (a replayed/cached response), an error member, or no result"
+        return 0
+    fi
+    _g2_snap_slot=$_g2s_slot
+    # The fingerprint is over the getClusterNodes RESULT projection, canonicalised by jq -c — NOT
+    # over the raw HTTP body. Deliberate: the raw body now carries OUR OWN per-request id, which
+    # would make every body differ and render the advance / cross-vantage layers vacuous by our
+    # own hand. What this hash witnesses is stated at the advance detector below.
+    _g2_snap_hash=$(printf '%s' "$_g2s_nodes" | cksum 2>/dev/null | awk '{print $1 "-" $2}')
+    # presence at EXACTLY the baseline endpoint. The endpoint match is LOAD-BEARING: it proves the
+    # demoted state is live on THAT box (agave set-identity keeps ports, so a self-fenced holder
+    # re-advertises its unstaked identity at exactly the endpoint its staked identity last used —
+    # the F-A anchor, live-tested). A watched key present SOMEWHERE ELSE proves only that a
+    # publisher exists elsewhere (a non-holder peer in a multi-node topology) — recorded in
+    # _g2_snap_misplaced for the refusal text, NEVER counted as the proof.
+    # ALL gossip values are scanned (panel fix round, G2-N2): present iff ANY entry for the watched
+    # key sits at the baseline endpoint. The old `head -1` decided on the FIRST entry, so a
+    # topology listing the key elsewhere-first read as not-proven while the real entry sat further
+    # down — a false NEGATIVE (safe direction, availability only), fixed here.
+    # shellcheck disable=SC2086
+    for _g2s_pk in $PRIMARY_UNSTAKED_PUBKEY; do
+        _g2s_scan=$(printf '%s' "$_g2s_nodes" | jq -r --arg pk "$_g2s_pk" --arg ep "$_g2_staked_endpoint" '[ .[]? | select(.pubkey == $pk) | .gossip // empty ] | (if (index($ep) != null) then "1" else "0" end) + " " + ((map(select(. != $ep)) | .[0]) // "")' 2>/dev/null)
+        case "$_g2s_scan" in
+            "1 "*) _g2_snap_present=1 ;;
+            "0 "?*) [[ -z "$_g2_snap_misplaced" ]] && _g2_snap_misplaced="${_g2s_scan#0 }" ;;
+        esac
+        [[ $_g2_snap_present -eq 1 ]] && break
+    done
+    # freshness anchor [MY-2, snapshot-freshness vs the clock budget — reviewer-flagged addition]:
+    # getClusterNodes carries NO wallclock field (RpcContactInfo: pubkey/gossip/rpc/version/…— the
+    # §2.4 "wallclocks move constantly" is WHY live payloads churn, not a readable field), so the
+    # snapshot's time signature is the chain head the vantage returned IN THE SAME RESPONSE as the
+    # payload, resolved to cluster time by getBlockTime. getBlockTime is CONTENT-ADDRESSED by slot:
+    # an honest answer about an old slot is an OLD time, so a body replayed together with its own
+    # slot fails here. ASSUMES A CORRECT SPARE CLOCK (panel fix round, G2-N1): the compare's
+    # reference is this host's wall clock, so a spare whose clock drifts by ~R seconds would
+    # collapse the skew of an R-seconds-old replay toward 0. The clock-FREE backstop is the
+    # slot-advance layer (G2_SLOT_ADVANCE_FLOOR, checked at T2) — it trusts neither clock.
+    # Residual (named in SAFETY.md): an environment that actively FORGES fresh times for old slots
+    # defeats this — no unsigned snapshot protocol can beat a full forger.
+    # This read carries a fresh id too and REQUIRES the echo: every G2 request in this region is
+    # id-bound, so no G2 answer can be a stored copy of an earlier one ([g2-det-batch-id]).
+    _g2s_bt=$(curl -s -m 5 "$_g2s_url" -X POST -H "Content-Type: application/json" -H "Cache-Control: no-cache" -d "{\"jsonrpc\":\"2.0\",\"id\":${_g2s_idc},\"method\":\"getBlockTime\",\"params\":[${_g2s_slot}]}" 2>/dev/null | jq -r --arg id "$_g2s_idc" 'if ((.id|tostring) == $id) then (.result // empty) else empty end' 2>/dev/null)
+    _watchdog_pet   # §5 per-op pet: bounded op completed; no-op outside the armed unit
+    case "$_g2s_bt" in ''|*[!0-9]*)
+        _g2_snap_why="vantage ${_g2s_label} getBlockTime(${_g2s_slot}) gave no usable time echoing our id=${_g2s_idc} ('${_g2s_bt}')"
+        return 0
+    ;; esac
+    # the daemons' ONE G2 wall-clock read (the mono rule stands everywhere else in this region):
+    # cluster time is Unix wall time, so ONLY a wall-clock compare is meaningful here. Counted by
+    # the CI facts job's per-daemon wall-clock line pin (.github/workflows/ci.yml) — this line IS
+    # the Block-6.2 pin bump (primary 20->21, standby 21->22), updated with the pin's comment.
+    _g2s_wall=$(date +%s)
+    _g2_snap_skew=$(( _g2s_bt - _g2s_wall ))
+    # both directions, INCLUSIVE at the budget (the (1i)/(1l) boundary convention): a snapshot
+    # frozen in the past fails LOW (replay), one from the future fails HIGH (clock inversion) —
+    # either way it cannot testify about NOW. [g2-det-clock]
+    _g2s_askew=$_g2_snap_skew; [[ $_g2s_askew -lt 0 ]] && _g2s_askew=$(( 0 - _g2s_askew ))
+    [[ $_g2s_askew -le $G2_CLOCK_BUDGET ]] && _g2_snap_fresh=1
+    _g2_snap_ok=1
+    return 0
+}
+
+# _g2_register — called from _proof_startup_check (armed + spare role already gated there).
+# Registration is what makes G2 exist at all: unconfigured (no PRIMARY_UNSTAKED_PUBKEY) spares
+# get NO provider, zero events, zero reads — the same structural-inertness bar as un-armed.
+_g2_register() {
+    _watchdog_active || return 0
+    _proof_role_is_spare || return 0
+    [[ "$_g2_registered" == "0" ]] || return 0
+    [[ -n "${PRIMARY_UNSTAKED_PUBKEY:-}" ]] || return 0   # nothing to watch — silent by design (the §2.7 posture line carries the registry state)
+    # vantage pinning: env knobs first, else the EXISTING distinct tiers (TIER2 = paid provider,
+    # TIER3 = public RPC — distinct failure domains the wizards already enforce and startup
+    # already checks; G2 inherits that grounding instead of inventing a third pair of URLs).
+    G2_VANTAGE_A="${G2_VANTAGE_A:-${TIER2_RPC:-}}"
+    G2_VANTAGE_B="${G2_VANTAGE_B:-${TIER3_RPC:-}}"
+    # the vantage distinctness tripwire (startup, armed): identical URLs or one shared host make
+    # "present on BOTH vantages" a single witness wearing two names — G2 is then permanently
+    # cannot-determine for this run (fail toward not-taking; a CRITICAL page names the fix). The
+    # deeper CNAME/IP-level case cannot be seen from here — it belongs to the Block-6 panel and,
+    # where it matters (a shared cache serving shared bytes), to the cross-vantage detector below.
+    if [[ -z "$G2_VANTAGE_A" || -z "$G2_VANTAGE_B" ]]; then
+        _g2_disabled="fewer than two vantages configured (A='${G2_VANTAGE_A:-}' B='${G2_VANTAGE_B:-}')"
+    elif [[ "$(_norm_rpc_url "$G2_VANTAGE_A")" == "$(_norm_rpc_url "$G2_VANTAGE_B")" ]]; then
+        _g2_disabled="G2_VANTAGE_A == G2_VANTAGE_B (one vantage wearing two names)"
+    elif [[ -n "$(_g2_url_host "$G2_VANTAGE_A")" && "$(_g2_url_host "$G2_VANTAGE_A")" == "$(_g2_url_host "$G2_VANTAGE_B")" ]]; then
+        _g2_disabled="G2 vantages share one host '$(_g2_url_host "$G2_VANTAGE_A")' — one failure domain"
+    fi
+    # SHARED VANTAGE with the vote-liveness tiers (reviewer condition C1, item 4 — FLAGGED FOR
+    # RATIFICATION: mine, not the reviewer's words). The arm ceremony owns the loud version and the
+    # fix text; this exists because the arm is a ONE-TIME ceremony while this daemon runs forever,
+    # and the operator reading a running spare's log deserves the same statement. A log_warn, never
+    # a page: the condition is a CONFIG property, constant for the whole run, so §2.7's "loud, not
+    # documentary" class is a warn — paging it at every start would train the operator to ignore
+    # pages. URL-LEVEL ONLY, deliberately: the daemon performs NO DNS (a resolver call is an
+    # unbounded external read inside the monitor loop, and resolution belongs to arm time, where
+    # REFUSE[P6-vantage] and the arm's overlap notice both do it). A shared vantage hiding behind
+    # two hostnames is therefore INVISIBLE here and visible at the arm — said plainly in the text.
+    local _g2r_pair _g2r_vl _g2r_tl _g2r_u _g2r_t _g2r_h _g2r_shared=""
+    for _g2r_pair in A:2 A:3 B:2 B:3; do
+        _g2r_vl="${_g2r_pair%%:*}"; _g2r_tl="${_g2r_pair##*:}"
+        if [[ "$_g2r_vl" == "A" ]]; then _g2r_u="$G2_VANTAGE_A"; else _g2r_u="$G2_VANTAGE_B"; fi
+        if [[ "$_g2r_tl" == "2" ]]; then _g2r_t="${TIER2_RPC:-}"; else _g2r_t="${TIER3_RPC:-}"; fi
+        [[ -n "$_g2r_u" && -n "$_g2r_t" ]] || continue
+        _g2r_h=$(_g2_url_host "$_g2r_u")
+        if [[ "$(_norm_rpc_url "$_g2r_u")" == "$(_norm_rpc_url "$_g2r_t")" ]]; then
+            _g2r_shared="${_g2r_shared:+$_g2r_shared; }G2_VANTAGE_${_g2r_vl} == TIER${_g2r_tl}_RPC by identical normalized URL"
+        elif [[ -n "$_g2r_h" && "$_g2r_h" == "$(_g2_url_host "$_g2r_t")" ]]; then
+            _g2r_shared="${_g2r_shared:+$_g2r_shared; }G2_VANTAGE_${_g2r_vl} == TIER${_g2r_tl}_RPC by same host '${_g2r_h}'"
+        fi
+    done
+    if [[ -n "$_g2r_shared" ]]; then
+        log_warn "[g2-provider] SHARED VANTAGE (degraded, not disabled): ${_g2r_shared} — MEASURED by normalized-URL and host compare only (this daemon does no DNS; the arm ceremony resolves). The liveness readers iterate TIER2_RPC then TIER3_RPC, so one compromised vantage supplies BOTH halves of the double-sign condition: a false verified-demote proof AND a false-frozen vote observation. The proof gate's additivity does NOT hold on this host (docs/SAFETY.md, verified-demote residual 2). Fix: point G2_VANTAGE_A/G2_VANTAGE_B at a third endpoint in a SEPARATE failure domain, then re-run 'failover arm'"
+    fi
+    if [[ -n "$_g2_disabled" ]]; then
+        _g2_answer="cannot"; _g2_reason="vantage tripwire: ${_g2_disabled}"
+        alert "G2 verified-demote vantages are NOT distinct — ${_g2_disabled}. verified-demote is permanently cannot-determine for this run (fail toward NOT-TAKING). Fix G2_VANTAGE_A/G2_VANTAGE_B (or TIER2_RPC/TIER3_RPC) to two bank-bearing RPC providers in DISTINCT failure domains." "${STAKED_PUBKEY:-unknown}" "G2 VANTAGES NOT DISTINCT 🚨"
+    else
+        _g2_answer="cannot"; _g2_reason="registered — no baseline yet"
+    fi
+    _proof_providers="${_proof_providers:+$_proof_providers }_g2_provider"
+    _proof_provider_labels="${_proof_provider_labels:+$_proof_provider_labels }verified-demote"
+    _g2_registered=1
+    _g2_rid=$(mono_now)   # request-id seed: a restarted daemon starts ABOVE its own previous ids (mono is boot-monotonic), so no run can be answered with the previous run's stored responses
+    log_info "[g2-provider] registered: verified-demote — vantage A host=$(_g2_url_host "$G2_VANTAGE_A") B host=$(_g2_url_host "$G2_VANTAGE_B") (URLs withheld from logs: they may carry keys), watching ${PRIMARY_UNSTAKED_PUBKEY} at the holder's staked endpoint, DELTA=${G2_DELTA}s (30s CRDS bound + ${G2_CLOCK_BUDGET}s clock budget + 5s purge/rounding)${_g2_disabled:+ — DISABLED: ${_g2_disabled}}"
+    return 0
+}
+
+# ── _g2_step — the per-cycle state machine advance (called from the main loop, spare posture;
+#    "main loop" stays lowercase HERE: the test harness cuts each daemon at the first line
+#    matching the uppercase marker — a premature match would truncate the seam mid-region) ──
+# One call = at most one bounded read-batch, never a wait: DELTA elapses across CYCLES on the mono
+# clock while the loop keeps doing its normal work. State map (each transition logged):
+#   idle   no incident: refresh the baseline endpoint on cadence; on incident -> arm T1
+#   t1a/t1b  T1 snapshot of vantage A then B (paced): present on BOTH at the baseline endpoint ->
+#            hold; on ONE -> cannot-determine, retry (blind-ish); ABSENT (parsed, not there) ->
+#            not-proven, re-arm; unreachable/stale-clock -> cannot-determine, retry
+#   hold   until T2 >= T1+G2_DELTA (per vantage — gated on the LATER T1 stamp): one cheap
+#          alternating presence poll per paced cycle; an OBSERVED absence -> NOT-PROVEN + full
+#          reset (the flip-then-flip-back kill: a re-staked holder stops re-signing the unstaked
+#          entry, CRDS purges it <= 30 s — inside the hold by derivation); an unreachable poll is
+#          BLINDNESS, not absence — it kills nothing and proves nothing (T2 owns the proving)
+#   t2a/t2b  T2 re-snapshot of the SAME pinned vantages (per-vantage comparison, never cross) +
+#            every detector, slot-advance FIRST (the clock-free one); all pass -> mint proven;
+#            else per-detector cannot/no
+#   proven  dormant (zero reads): the verdict ages via observed_at; past PROOF_MAX_AGE it is
+#           WITHDRAWN and the machine re-arms — a provider must never serve a verdict the
+#           mutation edge would refuse anyway
+_g2_step() {
+    _watchdog_active || return 0
+    _proof_role_is_spare || return 0
+    [[ "$_g2_registered" == "1" ]] || return 0
+    [[ -z "$_g2_disabled" ]] || return 0
+    local _g2p_now _g2p_hold_a _g2p_hold_b _g2p_url _g2p_lab
+    _g2p_now=$(mono_now)
+    if ! _g2_incident_active; then
+        [[ "$_g2_state" != "idle" ]] && { log_info "[g2-provider] episode closed — attempt gen=${_g2_gen} dropped (state ${_g2_state})"; _g2_reset "idle (no incident)"; }
+        _g2_answer="cannot"; _g2_reason="idle (no incident)"
+        # baseline capture/refresh — PRE-INCIDENT ONLY (§2.4 state 1): the endpoint is pinned from
+        # the era the holder was healthy. It is not proof-critical in the dangerous direction: the
+        # unstaked ContactInfo is CRDS-SIGNED by the unstaked key itself (no third party can
+        # fabricate it — research-setidentity-gossip-semantics.md condition 4), so a wrong/forged
+        # baseline endpoint can only make the real entry NOT match -> not-proven, never proven.
+        if [[ $_g2_baseline_ts -eq 0 || $(( _g2p_now - _g2_baseline_ts )) -ge $_G2_BASELINE_REFRESH_SECS ]]; then
+            _g2_flip=$(( 1 - _g2_flip ))
+            if [[ $_g2_flip -eq 1 ]]; then _g2p_url="$G2_VANTAGE_A"; _g2p_lab="A"; else _g2p_url="$G2_VANTAGE_B"; _g2p_lab="B"; fi
+            local _g2p_body _g2p_rc _g2p_ep
+            _g2p_body=$(curl -s -m 5 "$_g2p_url" -X POST -H "Content-Type: application/json" -H "Cache-Control: no-cache" -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' 2>/dev/null)
+            _g2p_rc=$?
+            _watchdog_pet   # §5 per-op pet: bounded op completed (rc captured above); no-op outside the armed unit
+            _g2_baseline_ts=$_g2p_now
+            if [[ $_g2p_rc -eq 0 ]] && echo "$_g2p_body" | jq -e '.result' &>/dev/null; then
+                _g2p_ep=$(echo "$_g2p_body" | jq -r --arg sp "$STAKED_PUBKEY" '.result[]? | select(.pubkey == $sp) | .gossip // empty' 2>/dev/null | head -1)
+                if [[ -n "$_g2p_ep" && "$_g2p_ep" != "$_g2_staked_endpoint" ]]; then
+                    log_info "[g2-provider] baseline: holder's STAKED ContactInfo at ${_g2p_ep} (vantage ${_g2p_lab}${_g2_staked_endpoint:+; was ${_g2_staked_endpoint}})"
+                    _g2_staked_endpoint="$_g2p_ep"
+                fi
+                # staked entry absent on this read: KEEP the captured baseline — the staked entry
+                # lingers ~48 h in CRDS, so visible-then-gone means vantage trouble, not a demote.
+            fi
+        fi
+        return 0
+    fi
+    case "$_g2_state" in
+        idle)
+            if [[ -z "$_g2_staked_endpoint" ]]; then
+                _g2_answer="cannot"; _g2_reason="no baseline captured pre-incident — endpoint anchor unknown"
+                if [[ $_g2_nobl_warned -eq 0 ]]; then
+                    _g2_nobl_warned=1
+                    log_warn "[g2-provider] incident open but NO baseline endpoint was captured pre-incident (daemon started mid-episode?) — verified-demote answers cannot-determine for this episode; the timer path governs"
+                fi
+                return 0
+            fi
+            _g2_arm "incident open (the Option-A trigger surface: a suspected relinquish episode)"
+            _g2_answer="cannot"; _g2_reason="attempt gen=${_g2_gen} armed — T1 sampling"
+            ;;
+        t1a|t2a)
+            # pace guard (the _recheck_abort_alert 0-sentinel idiom: the FIRST read is never made
+            # to wait; only repeats are paced)
+            if [[ ${_g2_last_read_ts:-0} -gt 0 ]]; then
+                [[ $(( _g2p_now - _g2_last_read_ts )) -lt $_G2_READ_PACE_SECS ]] && return 0
+            fi
+            _g2_last_read_ts=$_g2p_now
+            _g2_snap "$G2_VANTAGE_A" "A"
+            if [[ $_g2_snap_ok -ne 1 ]]; then
+                _g2_answer="cannot"; _g2_reason="${_g2_snap_why} (${_g2_state})"
+                return 0
+            fi
+            if [[ $_g2_snap_fresh -ne 1 ]]; then
+                _g2_answer="cannot"; _g2_reason="vantage A cluster-time skew ${_g2_snap_skew}s outside ±${G2_CLOCK_BUDGET}s budget (${_g2_state}) — snapshot cannot testify about NOW (replay/frozen view)"
+                log_warn "[g2-provider] ${_g2_reason}"
+                _g2_env_alert "⚠️ G2 vantage A answers with cluster time ${_g2_snap_skew}s off this spare's clock (budget ±${G2_CLOCK_BUDGET}s) — replayed/frozen view or broken clock; verified-demote holds cannot-determine."
+                return 0
+            fi
+            if [[ $_g2_snap_present -ne 1 ]]; then
+                _g2_answer="no"; _g2_reason="unstaked entry ABSENT at ${_g2_staked_endpoint} on vantage A (${_g2_state})${_g2_snap_misplaced:+ — seen at DIFFERENT endpoint ${_g2_snap_misplaced}: a publisher elsewhere proves nothing about THIS box}"
+                if [[ "$_g2_state" == "t2a" ]]; then
+                    log_warn "[g2-provider] T2 absence on vantage A after $(( _g2p_now - _g2_t1_ts_a ))s of hold — NOT-PROVEN, full reset (flip-back kill): ${_g2_reason}"
+                    _g2_arm "re-arm after T2 absence on A"
+                fi
+                return 0
+            fi
+            if [[ "$_g2_state" == "t1a" ]]; then
+                _g2_t1_ts_a=$_g2p_now; _g2_t1_hash_a="$_g2_snap_hash"; _g2_t1_slot_a=$_g2_snap_slot
+                _g2_state="t1b"; _g2_reason="T1 vantage A captured — sampling B"
+            else
+                # slot-advance, vantage A [g2-det-slot-advance] (panel fix round, G2-B1 layer 2):
+                # the confirmed head this vantage returned IN THE SAME RESPONSE as the T2 payload
+                # must be at least G2_SLOT_ADVANCE_FLOOR slots ahead of the one it returned with
+                # its T1 payload. This is the anti-replay/anti-cache duty, moved here from the
+                # whole-body compare below: a stored answer replays ITS slot, and a stored slot
+                # does not advance. Clock-free — it trusts neither this spare's clock nor the
+                # cluster's. A genuinely stalled cluster (or a vantage stuck in replay) advances
+                # too little and lands cannot-determine: availability, never safety.
+                if [[ $(( _g2_snap_slot - _g2_t1_slot_a )) -lt $G2_SLOT_ADVANCE_FLOOR ]]; then
+                    _g2_answer="cannot"; _g2_reason="vantage A confirmed head advanced only $(( _g2_snap_slot - _g2_t1_slot_a )) slots across $(( _g2p_now - _g2_t1_ts_a ))s (T1 slot ${_g2_t1_slot_a} -> T2 slot ${_g2_snap_slot}); REQUIRED: >= ${G2_SLOT_ADVANCE_FLOOR} — a frozen/replayed head or a stalled cluster cannot testify about NOW, cannot-determine"
+                    log_warn "[g2-provider] ${_g2_reason}"
+                    _g2_env_alert "⚠️ G2 vantage A advanced only $(( _g2_snap_slot - _g2_t1_slot_a )) slots in $(( _g2p_now - _g2_t1_ts_a ))s (floor ${G2_SLOT_ADVANCE_FLOOR}) — a replayed/frozen chain head or a stalled cluster; verified-demote holds cannot-determine."
+                    _g2_arm "re-arm after slot-advance floor on A"
+                    return 0
+                fi
+                # node-table advance, vantage A [g2-det-advance-a]. WHAT THIS CATCHES, EXACTLY
+                # (panel fix round, G2-B2 — the shipped v1 comment claimed more than the mechanism
+                # delivers): the fingerprint is over the WHOLE getClusterNodes result, so identity
+                # across the hold catches a TOTALLY FROZEN response — a naive whole-payload cache.
+                # It does NOT prove the unstaked-at-endpoint entry was re-observed live: on real
+                # mainnet the body churns constantly (measured: three consecutive reads differ in
+                # size — verify-rpc-batch-and-churn.md, private tree), so a frozen proof entry
+                # riding on other nodes' churn passes this compare. That case is owned by the
+                # slot-advance layer above, not here. Hashing the proof projection instead would
+                # NOT help: in the honest case the projection is IDENTICAL at T1 and T2 — that
+                # identity IS the hold being proven.
+                # WHY BYTE-DISTINCTNESS STILL MATTERS (the physical argument, B2.3): a single
+                # source that KEEPS the stale unstaked entry across the whole G2_DELTA hold must
+                # either FREEZE its CRDS table — a local clock slow enough to reject fresh gossip
+                # stops the body churning, and this layer plus the cross-vantage compare fire — or
+                # genuinely re-sign it, which means a LIVE publisher, i.e. the true proof. That
+                # churn-vs-purge tension is what this layer is really buying. A future maintainer
+                # relaxing it is removing that, not removing a redundant cksum.
+                if [[ "$_g2_snap_hash" == "$_g2_t1_hash_a" ]]; then
+                    _g2_answer="cannot"; _g2_reason="vantage A payload BYTE-IDENTICAL across $(( _g2p_now - _g2_t1_ts_a ))s (fingerprint ${_g2_snap_hash}) — cache suspected, cannot-determine"
+                    log_warn "[g2-provider] ${_g2_reason}"
+                    _g2_env_alert "⚠️ G2 vantage A served a byte-identical getClusterNodes payload $(( _g2p_now - _g2_t1_ts_a ))s apart — a cache in front of the RPC; verified-demote holds cannot-determine. Pin a non-cached vantage."
+                    _g2_arm "re-arm after cache suspicion on A"
+                    return 0
+                fi
+                _g2_t2_hash_a="$_g2_snap_hash"; _g2_t2_slot_a=$_g2_snap_slot
+                _g2_state="t2b"; _g2_reason="T2 vantage A verified — sampling B"
+            fi
+            ;;
+        t1b|t2b)
+            if [[ ${_g2_last_read_ts:-0} -gt 0 ]]; then
+                [[ $(( _g2p_now - _g2_last_read_ts )) -lt $_G2_READ_PACE_SECS ]] && return 0
+            fi
+            _g2_last_read_ts=$_g2p_now
+            _g2_snap "$G2_VANTAGE_B" "B"
+            if [[ $_g2_snap_ok -ne 1 ]]; then
+                _g2_answer="cannot"; _g2_reason="${_g2_snap_why} (${_g2_state})"
+                return 0
+            fi
+            if [[ $_g2_snap_fresh -ne 1 ]]; then
+                _g2_answer="cannot"; _g2_reason="vantage B cluster-time skew ${_g2_snap_skew}s outside ±${G2_CLOCK_BUDGET}s budget (${_g2_state}) — snapshot cannot testify about NOW (replay/frozen view)"
+                log_warn "[g2-provider] ${_g2_reason}"
+                _g2_env_alert "⚠️ G2 vantage B answers with cluster time ${_g2_snap_skew}s off this spare's clock (budget ±${G2_CLOCK_BUDGET}s) — replayed/frozen view or broken clock; verified-demote holds cannot-determine."
+                return 0
+            fi
+            if [[ $_g2_snap_present -ne 1 ]]; then
+                if [[ "$_g2_state" == "t1b" ]]; then
+                    # present on ONE vantage only — a half-witnessed world is blind-ish, not proof
+                    # and not disproof: cannot-determine, and the whole T1 pair re-samples (the two
+                    # T1 reads must be near-contemporaneous or the "both vantages" claim is a splice).
+                    _g2_answer="cannot"; _g2_reason="unstaked entry on vantage A but ABSENT on B at T1${_g2_snap_misplaced:+ (B sees it at ${_g2_snap_misplaced})} — one-vantage view, retrying the T1 pair"
+                    _g2_state="t1a"
+                else
+                    _g2_answer="no"; _g2_reason="unstaked entry ABSENT at ${_g2_staked_endpoint} on vantage B at T2${_g2_snap_misplaced:+ — seen at DIFFERENT endpoint ${_g2_snap_misplaced}}"
+                    log_warn "[g2-provider] T2 absence on vantage B after $(( _g2p_now - _g2_t1_ts_b ))s of hold — NOT-PROVEN, full reset (flip-back kill): ${_g2_reason}"
+                    _g2_arm "re-arm after T2 absence on B"
+                fi
+                return 0
+            fi
+            # cross-vantage identity [MY-1, reviewer-flagged addition] [g2-det-crossvantage]: two
+            # DISTINCT bank-bearing vantages each hold a private CRDS table and serialize it in
+            # their own iteration order — byte-identical node tables from both are not
+            # "agreement", they are ONE source wearing two names.
+            # WHAT THIS CATCHES, EXACTLY (panel fix round, G2-B2 — the shipped v1 comment claimed
+            # more): byte-identity across vantages catches a shared source that serves the SAME
+            # bytes to both. It does NOT catch one source that varies anything per vantage (a
+            # request-id echo, a re-serialization, an injected nonce) — that was executed and
+            # minted. Byte-distinctness is therefore NECESSARY, NOT SUFFICIENT, for "two failure
+            # domains". The enforceable part of that requirement lives at the ARM: identical URLs
+            # / identical hostnames (the startup tripwire below) and identical RESOLVED ADDRESS
+            # SETS (REFUSE[P6-vantage]). Two genuinely different IPs belonging to one provider
+            # remain an OPERATOR responsibility — stated plainly here and in the manual, not
+            # pretended away.
+            if [[ "$_g2_state" == "t1b" && -n "$_g2_t1_hash_a" && "$_g2_t1_hash_a" == "$_g2_snap_hash" ]]; then
+                _g2_answer="cannot"; _g2_reason="T1 payloads BYTE-IDENTICAL across vantages A and B (fingerprint ${_g2_snap_hash}) — one source suspected behind two names"
+                log_warn "[g2-provider] ${_g2_reason}"
+                _g2_env_alert "⚠️ G2 vantages A and B served BYTE-IDENTICAL getClusterNodes payloads — they are likely one provider/cache behind two names (no independent corroboration); verified-demote holds cannot-determine. Use two genuinely distinct providers."
+                _g2_arm "re-arm after cross-vantage identity at T1"
+                return 0
+            fi
+            if [[ "$_g2_state" == "t2b" && -n "$_g2_t2_hash_a" && "$_g2_t2_hash_a" == "$_g2_snap_hash" ]]; then
+                _g2_answer="cannot"; _g2_reason="T2 payloads BYTE-IDENTICAL across vantages A and B (fingerprint ${_g2_snap_hash}) — one source suspected behind two names"
+                log_warn "[g2-provider] ${_g2_reason}"
+                _g2_env_alert "⚠️ G2 vantages A and B served BYTE-IDENTICAL getClusterNodes payloads — they are likely one provider/cache behind two names (no independent corroboration); verified-demote holds cannot-determine. Use two genuinely distinct providers."
+                _g2_arm "re-arm after cross-vantage identity at T2"
+                return 0
+            fi
+            if [[ "$_g2_state" == "t1b" ]]; then
+                _g2_t1_ts_b=$_g2p_now; _g2_t1_hash_b="$_g2_snap_hash"; _g2_t1_slot_b=$_g2_snap_slot
+                _g2_state="hold"
+                _g2_answer="cannot"; _g2_reason="hold 0s/${G2_DELTA}s — T1 stamps A=${_g2_t1_ts_a} B=${_g2_t1_ts_b}"
+                log_info "[g2-provider] T1 complete gen=${_g2_gen}: unstaked entry at ${_g2_staked_endpoint} on BOTH vantages (stamps A=${_g2_t1_ts_a} B=${_g2_t1_ts_b}, batched slots A=${_g2_t1_slot_a} B=${_g2_t1_slot_b}) — holding ${G2_DELTA}s"
+            else
+                # slot-advance, vantage B [g2-det-slot-advance] (same mechanism as A)
+                if [[ $(( _g2_snap_slot - _g2_t1_slot_b )) -lt $G2_SLOT_ADVANCE_FLOOR ]]; then
+                    _g2_answer="cannot"; _g2_reason="vantage B confirmed head advanced only $(( _g2_snap_slot - _g2_t1_slot_b )) slots across $(( _g2p_now - _g2_t1_ts_b ))s (T1 slot ${_g2_t1_slot_b} -> T2 slot ${_g2_snap_slot}); REQUIRED: >= ${G2_SLOT_ADVANCE_FLOOR} — a frozen/replayed head or a stalled cluster cannot testify about NOW, cannot-determine"
+                    log_warn "[g2-provider] ${_g2_reason}"
+                    _g2_env_alert "⚠️ G2 vantage B advanced only $(( _g2_snap_slot - _g2_t1_slot_b )) slots in $(( _g2p_now - _g2_t1_ts_b ))s (floor ${G2_SLOT_ADVANCE_FLOOR}) — a replayed/frozen chain head or a stalled cluster; verified-demote holds cannot-determine."
+                    _g2_arm "re-arm after slot-advance floor on B"
+                    return 0
+                fi
+                # node-table advance, vantage B [g2-det-advance-b] (same mechanism and the same
+                # narrowed claim as A: a TOTALLY frozen response, not a re-observed proof entry)
+                if [[ "$_g2_snap_hash" == "$_g2_t1_hash_b" ]]; then
+                    _g2_answer="cannot"; _g2_reason="vantage B payload BYTE-IDENTICAL across $(( _g2p_now - _g2_t1_ts_b ))s (fingerprint ${_g2_snap_hash}) — cache suspected, cannot-determine"
+                    log_warn "[g2-provider] ${_g2_reason}"
+                    _g2_env_alert "⚠️ G2 vantage B served a byte-identical getClusterNodes payload $(( _g2p_now - _g2_t1_ts_b ))s apart — a cache in front of the RPC; verified-demote holds cannot-determine. Pin a non-cached vantage."
+                    _g2_arm "re-arm after cache suspicion on B"
+                    return 0
+                fi
+                # ── the verdict-minting site (all detectors passed on both vantages) ──
+                # D2 COMPOSITION (the D4-arithmetic class, stated where the verdict is born): this
+                # snapshot pair CANNOT see flip-back-then-vote after this read — the recheck's
+                # staked-vote pin (_fresh_proof_recheck) owns that direction at the mutation edge
+                # (6.4 wiring), and _proof_age_edge_check bounds THIS verdict's staleness there:
+                # observed_at below is the T2 read stamp, so the edge check measures exactly the
+                # window this proof has been aging. Different objects — the pin bounds BEHAVIOR,
+                # the edge bounds STALENESS — they compose, they never merge.
+                # SEVERITY OF A FALSE PROOF (panel fix round, B3 — verified by reading BLOCK6-PLAN
+                # §5 and §6.4 before stating it): the gate is an ADDITIONAL requirement placed IN
+                # FRONT of the staked mutation, never a trigger for one. The pre-existing,
+                # live-tested v0.6.x path — delinquency detection, the vote-frozen observation and
+                # _fresh_proof_recheck — must still pass on its own. So a false PROVEN here cannot
+                # BY ITSELF cause a take; it can only fail to BLOCK a take that logic already
+                # authorized. A double-sign therefore needs BOTH a false G2 proof AND a
+                # false-frozen vote observation of a holder that is in fact alive and voting.
+                _g2_t2_ts=$_g2p_now
+                _g2p_hold_a=$(( _g2_t2_ts - _g2_t1_ts_a )); _g2p_hold_b=$(( _g2_t2_ts - _g2_t1_ts_b ))
+                _g2_verdict="proven=yes|provider=verified-demote|observation_id=g2:gen=${_g2_gen}:t1=${_g2_t1_ts_a}:t2=${_g2_t2_ts}|vantage=${_liveness_first_provider:-}|obs_since=${_liveness_obs_since:-0}|blind_until=${_last_blind_end:-0}|observed_at=${_g2_t2_ts}"
+                _g2_state="proven"; _g2_answer="yes"
+                _g2_reason="proven gen=${_g2_gen}: held ${_g2p_hold_a}s(A)/${_g2p_hold_b}s(B) >= ${G2_DELTA}s"
+                log_warn "[g2-provider] verified-demote PROVEN gen=${_g2_gen}: holder's unstaked identity at ${_g2_staked_endpoint} held ${_g2p_hold_a}s (A) / ${_g2p_hold_b}s (B) >= ${G2_DELTA}s on both pinned vantages, confirmed heads advanced $(( _g2_t2_slot_a - _g2_t1_slot_a )) (A) / $(( _g2_snap_slot - _g2_t1_slot_b )) (B) slots >= ${G2_SLOT_ADVANCE_FLOOR} with each slot batched INTO the response carrying the proof, node tables advanced per vantage, cross-vantage distinct, cluster-time within ±${G2_CLOCK_BUDGET}s — the demoted state is live NOW (observed_at=${_g2_t2_ts}; the gate is not wired into any take path in this build)"
+            fi
+            ;;
+        hold)
+            if [[ $(( _g2p_now - _g2_t1_ts_b )) -ge $G2_DELTA ]]; then
+                _g2_state="t2a"
+                _g2_reason="hold complete ($(( _g2p_now - _g2_t1_ts_b ))s >= ${G2_DELTA}s) — T2 re-snapshot"
+                return 0
+            fi
+            _g2_answer="cannot"; _g2_reason="hold $(( _g2p_now - _g2_t1_ts_b ))s/${G2_DELTA}s"
+            if [[ ${_g2_last_read_ts:-0} -gt 0 ]]; then
+                [[ $(( _g2p_now - _g2_last_read_ts )) -lt $_G2_READ_PACE_SECS ]] && return 0
+            fi
+            _g2_last_read_ts=$_g2p_now
+            _g2_flip=$(( 1 - _g2_flip ))
+            if [[ $_g2_flip -eq 1 ]]; then _g2p_url="$G2_VANTAGE_A"; _g2p_lab="A"; else _g2p_url="$G2_VANTAGE_B"; _g2p_lab="B"; fi
+            local _g2p_body2 _g2p_rc2 _g2p_pk2 _g2p_ep2 _g2p_seen2
+            _g2p_body2=$(curl -s -m 5 "$_g2p_url" -X POST -H "Content-Type: application/json" -H "Cache-Control: no-cache" -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' 2>/dev/null)
+            _g2p_rc2=$?
+            _watchdog_pet   # §5 per-op pet: bounded op completed (rc captured above); no-op outside the armed unit
+            if [[ $_g2p_rc2 -ne 0 ]] || ! echo "$_g2p_body2" | jq -e '.result' &>/dev/null; then
+                return 0   # blind poll: unreachable is NOT absence — it kills nothing and proves nothing (T2 owns the proving)
+            fi
+            _g2p_seen2=0
+            # ALL gossip values scanned, same rule as _g2_snap (panel fix round, G2-N2): present
+            # iff ANY entry for the watched key sits at the baseline endpoint. `head -1` here made
+            # an elsewhere-first ordering read as a mid-hold ABSENCE, which KILLS the attempt —
+            # the same false negative as the T1/T2 site, and louder.
+            # shellcheck disable=SC2086
+            for _g2p_pk2 in $PRIMARY_UNSTAKED_PUBKEY; do
+                _g2p_ep2=$(echo "$_g2p_body2" | jq -r --arg pk "$_g2p_pk2" --arg ep "$_g2_staked_endpoint" '[ .result[]? | select(.pubkey == $pk) | .gossip // empty ] | if (index($ep) != null) then "1" else "0" end' 2>/dev/null)
+                [[ "$_g2p_ep2" == "1" ]] && { _g2p_seen2=1; break; }
+            done
+            if [[ $_g2p_seen2 -ne 1 ]]; then
+                _g2_answer="no"; _g2_reason="unstaked entry ABSENT at ${_g2_staked_endpoint} on vantage ${_g2p_lab} mid-hold ($(( _g2p_now - _g2_t1_ts_b ))s in) — flip-back"
+                log_warn "[g2-provider] mid-hold absence on vantage ${_g2p_lab} — NOT-PROVEN, full reset (the flip-then-flip-back kill): ${_g2_reason}"
+                _g2_arm "re-arm after mid-hold absence"
+            fi
+            ;;
+        proven)
+            # dormant (zero reads): staleness is the mutation edge's job [6.0-COND-2]. But a
+            # verdict older than PROOF_MAX_AGE would be refused there anyway — serving it is
+            # noise, so it is WITHDRAWN and the machine re-proves from a fresh T1 (a withdrawal,
+            # never an extension: nothing here can make old evidence younger).
+            case "${PROOF_MAX_AGE:-}" in ''|*[!0-9]*) : ;; *)
+                if [[ $(( _g2p_now - _g2_t2_ts )) -gt $PROOF_MAX_AGE ]]; then
+                    log_info "[g2-provider] proven verdict gen=${_g2_gen} aged $(( _g2p_now - _g2_t2_ts ))s > PROOF_MAX_AGE=${PROOF_MAX_AGE}s — WITHDRAWN; re-proving from a fresh T1"
+                    _g2_arm "re-prove after verdict aged out"
+                fi
+            ;; esac
+            ;;
+    esac
+    return 0
+}
+
+# ── _g2_provider — the registered provider fn (consumed by require_relinquish_proof) ──────────
+# The gate runs providers in a $() SUBSHELL, so this is a pure STATE REPORTER: zero network, zero
+# writes (a write here would be stranded in the subshell), one structured verdict line on stdout.
+# proven=yes is served ONLY from the minted verdict record (stamps frozen at T2); every other
+# state answers its measured cannot/no with the reason — never a boolean, never a default-yes.
+_g2_provider() {
+    _watchdog_active || return 0
+    _proof_role_is_spare || return 0
+    [[ "$_g2_registered" == "1" ]] || return 0
+    if [[ -n "$_g2_disabled" ]]; then
+        printf 'proven=cannot|provider=verified-demote|observation_id=|vantage=%s|obs_since=%s|blind_until=%s|observed_at=0|g2_state=disabled|g2_reason=%s\n' "${_liveness_first_provider:-}" "${_liveness_obs_since:-0}" "${_last_blind_end:-0}" "vantage tripwire: ${_g2_disabled}"
+        return 0
+    fi
+    if [[ "$_g2_state" == "proven" && -n "$_g2_verdict" ]]; then
+        printf '%s\n' "$_g2_verdict"
+        return 0
+    fi
+    printf 'proven=%s|provider=verified-demote|observation_id=|vantage=%s|obs_since=%s|blind_until=%s|observed_at=0|g2_state=%s|g2_reason=%s\n' "$_g2_answer" "${_liveness_first_provider:-}" "${_liveness_obs_since:-0}" "${_last_blind_end:-0}" "$_g2_state" "$_g2_reason"
+    return 0
+}
+# ── [g2-provider] end shared block ──
 
 # ── [fence-rot] holder-side fence re-verification + FENCE_ROT_GRACE escalation — BYTE-IDENTICAL in both daemons (test_fence_rot) ──
 # v0.7 (Block 5.4, §2.1-rev2.1 №2): the pairing token attests the holder's fence AT PAIRING
@@ -4538,6 +5274,8 @@ while $_running; do
     if [[ "$CURRENT_IDENTITY" == "$UNSTAKED_PUBKEY" ]]; then
         # ======== UNSTAKED (normal): 3-tier monitoring for takeover ========
 
+        _g2_step   # v0.7 (Block 6.2): the verified-demote (G2) per-cycle state-machine advance — self-gates on armed+spare+registered; at most ONE bounded read-batch, never a wait (the loop keeps its cadence). Inside the UNSTAKED branch by design: a promoted holder must not keep polling a stale episode. Zero events on every un-armed/unconfigured host (census-asserted in test_g2_provider).
+
         # --- Tier 1: Am I healthy enough to take over? ---
         if ! tier1_check_local_health; then
             # Our node isn't ready — alert with throttle
@@ -4615,6 +5353,13 @@ while $_running; do
 
     elif [[ "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]]; then
         # ======== STAKED (took over): self-fence, then hold or give back ========
+
+        # v0.7 (Block 6.2 panel fix round, L3-N1): close any G2 episode the moment this spare sees
+        # ITSELF staked — window_reset's episode semantics, mirrored. Pure in-memory reset, zero
+        # I/O, so the self-fence below is still the first thing that ACTS. Why, and why the
+        # resumed hold was not unsound: [g2-provider] region comment, "EPISODE VS THE SPARE'S OWN
+        # STAKED TENURE".
+        _g2_reset "spare is STAKED — episode closed (an attempt must never span our own staked tenure)"
 
         # v0.6.9 (H1): PROMOTED-holder self-fence — the primary's isolation checks (frozen confirmed
         # slot / silent LOCAL RPC / N6 own-vote-lag / getHealth), LOCAL signals only, demote =

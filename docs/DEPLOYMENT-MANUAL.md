@@ -479,6 +479,63 @@ startup banner prints the live fast-path state (`ARMED` / `DISABLED (fail-closed
 > guardrail was warn-only when this was written; **since v0.6.9 it is FATAL at startup** unless
 > `ALLOW_UNSAFE_TIMING=true`.)
 
+### G2 verified-demote vantages (`failover-standby.env`, v0.7 — ARMED spares only)
+| Knob | Default | Meaning |
+|---|---|---|
+| `G2_VANTAGE_A` | `TIER2_RPC` | First pinned vantage for the verified-demote (G2) proof provider on an **armed** spare: the holder's unstaked identity must be observed at the staked identity's exact endpoint on **both** vantages at T1 and still be there ≥60 s later. Any bank-bearing RPC node works. **Recommended override: a third endpoint in a separate failure domain** — see the note below. |
+| `G2_VANTAGE_B` | `TIER3_RPC` | Second pinned vantage — **must be a distinct provider in a distinct failure domain**. Identical or same-host values page CRITICAL at startup and leave G2 *cannot-determine* for the whole run (fail toward not-taking). |
+
+**Recommended: point at least one vantage at a THIRD endpoint in a separate failure domain.** On
+the defaults, G2's vantages *are* `TIER2_RPC`/`TIER3_RPC` — the same two endpoints every
+vote-liveness check reads. One compromised vantage then supplies **both** halves of the
+double-sign condition (a false verified-demote proof *and* a false-frozen vote observation), so
+the proof gate's additivity does not hold on that host. This is **not** refused — most operators
+run exactly two RPCs — but `failover arm` measures it, names which vantage matched which tier by
+which comparison, and repeats it in the end-of-summary; the armed daemon warns at every start.
+A different *operator* is what separates the failure domain: another hostname or another API key
+for a provider you already use is the same domain. Full statement: `docs/SAFETY.md`.
+
+**Both vantages must support JSON-RPC batching.** Each G2 snapshot is one POST carrying
+`[getSlot, getClusterNodes]`, so the freshness anchor rides in the same response as the proof
+payload. `failover arm` probes this per vantage and refuses with `REFUSE[P6-batch]` (printing the
+measured response shape) if a vantage answers with anything but a 2-element array echoing the
+arm's own ids. Verify by hand:
+
+```bash
+curl -s <RPC-URL> -X POST -H 'Content-Type: application/json' \
+  -d '[{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"confirmed"}]},
+       {"jsonrpc":"2.0","id":2,"method":"getClusterNodes"}]' | jq 'type, length'
+# expect:  "array"  then  2
+```
+
+`failover arm` also resolves both vantage hostnames and refuses with `REFUSE[P6-vantage]` when they
+land on the **same address set** — the CNAME/anycast case the daemon's name-level tripwire cannot
+see. If no resolver (`getent`/`dig`/`host`) is available, or a name does not resolve, the arm warns
+loudly and proceeds; the check is simply not made that run.
+
+G2 activates only on an armed spare with `PRIMARY_UNSTAKED_PUBKEY` set (the same watch-list Option A
+uses); un-armed or unconfigured hosts perform **zero** G2 reads. Cached, replayed, and degenerate
+vantage data reads as *cannot-determine* — never as proof. What each run-time layer actually
+catches, stated exactly (the full table with the residuals is in `docs/SAFETY.md`):
+
+- the answer must **be** a 2-element batch, and every member must echo the fresh id this cycle sent
+  — a stored/replayed answer carries stored ids;
+- the vantage's own confirmed head, batched into that same response, must advance ≥ 60 slots across
+  the hold — this layer trusts **no** clock;
+- each snapshot's cluster time (`getBlockTime` of that batched slot) must sit within ±25 s of the
+  spare's clock;
+- each vantage's `getClusterNodes` result must not be **byte-identical** across the hold. This
+  catches a *totally frozen* response (a naive cache). It does **not** prove the unstaked entry was
+  re-observed live — real tables churn constantly, so a frozen entry riding on other nodes' churn
+  passes it. Anti-replay duty belongs to the batched slot above;
+- the two vantages must not serve **byte-identical** results. Byte-distinctness is *necessary, not
+  sufficient*, for two failure domains: a single source that varies anything per vantage passes it.
+  The enforceable part is the arm's resolved-address check, and two different IPs belonging to one
+  provider remain **your** responsibility, not something this software can detect.
+
+In this release the proof gate is **not wired into any take path**; the knobs exist so armed-spare
+configs are complete before the wiring lands.
+
 ---
 
 ## Recommended settings (3-server)

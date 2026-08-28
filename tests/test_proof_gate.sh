@@ -38,6 +38,10 @@
 #        REFUSE[P5-staked-unstaked] with the ~48 h CRDS extended_timeout reason + MEASURED
 #        stake, after the clean entry verified; (2c) RPC down → REFUSE with the manual
 #        getVoteAccounts command + retry-when-reachable fix
+#   (2n–2q) C1 shared vantage: the G2 vantages measured against TIER2_RPC/TIER3_RPC — matched
+#        pairs named with the comparison that matched (URL / host / resolved address set), the
+#        consequence and the fix printed, RE-STATED at the end of the summary (before the pairing
+#        posture, which stays last), never a refusal; (2p) the off-tier control must stay silent
 #   (3)  parity: (3a) _pairing_crc BYTE-IDENTICAL across failover-arm.sh + BOTH daemons
 #        (extract+cmp; count==1 per file); (3b) a token emitted by the SHIPPED holder arm
 #        round-trips through the SHIPPED spare intake (green + stored); (3c) same payload →
@@ -136,12 +140,37 @@ cat > "$STUB_DIR/solana-keygen" <<'STUB'
 [ -f "$2" ] || exit 1
 tr -d '\n' < "$2"
 STUB
-# curl: the P5 zero-stake seam — rpc.down = unreachable (rc 7, no output); else rpc.json
+# curl: the P5 zero-stake seam AND the P6 batch-probe seam. rpc.down = unreachable (rc 7, no
+# output). A request body starting with '[' is the P6 [getSlot,getClusterNodes] BATCH → served
+# from batch.json with @IDA@/@IDB@ replaced by the ids the ARM actually sent (never ids the test
+# invented); batch.down makes only the batch unreachable. Everything else is the P5 getVoteAccounts
+# read → rpc.json.
 cat > "$STUB_DIR/curl" <<'STUB'
 #!/bin/sh
 echo "curl $*" >> "$EVENTS"
 [ -f "$MOCK_DIR/rpc.down" ] && exit 7
-cat "$MOCK_DIR/rpc.json" 2>/dev/null
+body=""
+while [ $# -gt 0 ]; do
+    if [ "$1" = "-d" ]; then body="$2"; shift 2; else shift; fi
+done
+case "$body" in
+    "["*)
+        [ -f "$MOCK_DIR/batch.down" ] && exit 7
+        ida=${body#*\"id\":}; ida=${ida%%,*}
+        idb=${body##*\"id\":}; idb=${idb%%,*}
+        sed "s/@IDA@/$ida/g; s/@IDB@/$idb/g" "$MOCK_DIR/batch.json" 2>/dev/null
+        ;;
+    *)  cat "$MOCK_DIR/rpc.json" 2>/dev/null ;;
+esac
+exit 0
+STUB
+# getent: the P6 resolver seam — `getent hosts <h>` prints $MOCK_DIR/dns.<h> (one "ADDR name" row
+# per line), rc 2 when the file is absent (an unresolvable name)
+cat > "$STUB_DIR/getent" <<'STUB'
+#!/bin/sh
+[ "$1" = "hosts" ] || exit 2
+[ -f "$MOCK_DIR/dns.$2" ] || exit 2
+cat "$MOCK_DIR/dns.$2"
 exit 0
 STUB
 chmod 755 "$STUB_DIR"/*
@@ -150,7 +179,7 @@ chmod 755 "$STUB_DIR"/*
 # test_arm_ceremony N-is-all list + jq for the P5 zero-stake parse). PATH = STUB:TOOLDIR only.
 TOOLDIR="$STUB_PARENT/tools"
 mkdir -p "$TOOLDIR"
-PG_REAL_TOOLS="awk basename cat chmod cksum cp cut date dirname grep head hostname mkdir mv readlink rm sed tail touch tr jq"
+PG_REAL_TOOLS="awk basename cat chmod cksum cp cut date dirname grep head hostname mkdir mv readlink rm sed sort tail touch tr jq"
 for _t in $PG_REAL_TOOLS; do
     _tp=$(command -v "$_t" 2>/dev/null)
     if [[ -z "$_tp" || ! -x "$_tp" ]]; then
@@ -189,6 +218,11 @@ new_mock() {
     { echo '[Service]'; echo "ExecStart=/usr/bin/agave-validator --ledger /l --identity $MOCK_DIR/opt/unstaked.json --rpc-port 8899"; } > "$MOCK_DIR/unitfile"
     # healthy-cluster RPC fixture: PKCLEAN present with zero stake; PKSTAKED carries stake
     printf '%s\n' '{"jsonrpc":"2.0","result":{"current":[{"nodePubkey":"PKCLEAN","votePubkey":"V1","activatedStake":0,"lastVote":100}],"delinquent":[{"nodePubkey":"PKSTAKED","votePubkey":"V2","activatedStake":123456789,"lastVote":50}]},"id":1}' > "$MOCK_DIR/rpc.json"
+    # P6 fixtures: a healthy batch answer (2-element array echoing the arm's own ids) and two
+    # vantage hostnames on DISTINCT addresses
+    printf '%s\n' '[{"jsonrpc":"2.0","id":@IDA@,"result":442455002},{"jsonrpc":"2.0","id":@IDB@,"result":[{"pubkey":"N1","gossip":"1.1.1.1:8001"},{"pubkey":"N2","gossip":"2.2.2.2:8001"}]}]' > "$MOCK_DIR/batch.json"
+    printf '%s\n' '203.0.113.10 t2.mock' > "$MOCK_DIR/dns.t2.mock"
+    printf '%s\n' '198.51.100.20 t3.mock' > "$MOCK_DIR/dns.t3.mock"
     if [[ "$role" == "standby" ]]; then write_env_standby; else write_env_primary; fi
 }
 write_env_standby() {   # extra KEY=VAL lines append (later lines override on source)
@@ -481,6 +515,181 @@ if [[ "$RC" == "0" ]] && out_has "zero-stake VERIFIED for PRIMARY_UNSTAKED_PUBKE
     ok "(2e) real-shape zero (populated current with the key absent) still VERIFIED — the structural gate preserves the true-zero case"
 else
     bad "(2e) rc=$RC tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# ── (2f)–(2q) precondition P6: the G2 vantage ceremony (Block 6.2 panel fix round + C1) ─────────
+echo ""; echo "─── (2f–2q) P6: batch capability + resolved distinctness (REFUSE[P6-*]) + shared-vantage degradation ───"
+
+# (2f) the green path, and the PROOF that P6 actually ran (its MEASURED lines, not a silent pass)
+new_mock standby
+write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"'
+run_arm
+if [[ "$RC" == "0" ]] && out_has 'G2 vantage A BATCH VERIFIED' && out_has 'G2 vantage B BATCH VERIFIED' \
+   && out_has 'confirmed slot 442455002, 2 cluster nodes in the same response' \
+   && out_has 'RESOLVED DISTINCTNESS verified via getent' && out_has '203.0.113.10' && out_has '198.51.100.20'; then
+    ok "(2f) P6 green: BOTH vantages answered the [getSlot,getClusterNodes] batch as a 2-element array echoing the arm's OWN ids, and the log prints the MEASURED evidence (slot 442455002, 2 cluster nodes, resolved 203.0.113.10 vs 198.51.100.20) — never a silent pass"
+else
+    bad "(2f) rc=$RC tail: $(tail -5 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# (2g) a vantage that cannot batch: it answers with ONE object (no batching, or a proxy that
+# split the batch). G2's whole freshness binding is impossible there → REFUSE with the shape.
+new_mock standby
+write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"'
+printf '%s\n' '{"jsonrpc":"2.0","id":@IDB@,"result":[{"pubkey":"N1","gossip":"1.1.1.1:8001"}]}' > "$MOCK_DIR/batch.json"
+run_arm
+if [[ "$RC" == "1" ]] && out_has 'REFUSE\[P6-batch\]' && out_has 'cannot serve a JSON-RPC BATCH' \
+   && out_has "response shape 'object'" && out_has 'REQUIRED: a 2-element ARRAY' \
+   && out_has 'supports JSON-RPC batching' && out_has 'verify by hand'; then
+    ok "(2g) a vantage answering the batch with ONE object → REFUSE[P6-batch] naming the MEASURED shape ('object') and the exact fix (point the vantage at a batching provider / remove the proxy), with a by-hand verification command"
+else
+    bad "(2g) rc=$RC tail: $(tail -4 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# (2h) an intermediary that rewrites ids: the array shape is right, the echo is not — and the
+# echo is exactly what makes a replayed answer detectable at run time.
+new_mock standby
+write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"'
+printf '%s\n' '[{"jsonrpc":"2.0","id":7,"result":442455002},{"jsonrpc":"2.0","id":8,"result":[{"pubkey":"N1","gossip":"1.1.1.1:8001"}]}]' > "$MOCK_DIR/batch.json"
+run_arm
+if [[ "$RC" == "1" ]] && out_has 'REFUSE\[P6-batch\]' && out_has "response shape 'array/2'" && out_has 'ids echoed \[7,8\]'; then
+    ok "(2h) an answer of the right SHAPE whose members echo foreign ids (7,8) → REFUSE[P6-batch] printing both the shape and the MEASURED id echo against the ids this arm sent — id matching, not array position, is what the daemon relies on"
+else
+    bad "(2h) rc=$RC tail: $(tail -4 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# (2i) unreachable vantage at ceremony time → refuse (cannot-verify fails toward not arming)
+new_mock standby
+write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"'
+touch "$MOCK_DIR/batch.down"
+run_arm
+if [[ "$RC" == "1" ]] && out_has 'REFUSE\[P6-batch\]' && out_has 'did not answer the batch probe' && out_has 'curl rc=7'; then
+    ok "(2i) vantage unreachable for the batch probe → REFUSE[P6-batch] with the MEASURED curl rc — cannot-verify at CEREMONY time fails toward refusing (an unreachable vantage is silent unavailability during an incident)"
+else
+    bad "(2i) rc=$RC tail: $(tail -4 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# (2j) THE CNAME CASE: two distinct hostnames, ONE address. The daemon's URL/host tripwire cannot
+# see this and the run-time cross-vantage byte compare does not catch a source that varies
+# per-request (executed panel finding) — so it is refused HERE, where it is checkable.
+new_mock standby
+write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"'
+printf '%s\n' '203.0.113.10 t2.mock' > "$MOCK_DIR/dns.t2.mock"
+printf '%s\n' '203.0.113.10 t3.mock' > "$MOCK_DIR/dns.t3.mock"
+run_arm
+if [[ "$RC" == "1" ]] && out_has 'REFUSE\[P6-vantage\]' && out_has 'resolve to the SAME address set' \
+   && out_has '203.0.113.10' && out_has 'ONE witness wearing two names' && out_has 'DIFFERENT failure domains'; then
+    ok "(2j) two distinct vantage HOSTNAMES resolving to ONE address (the CNAME/anycast case) → REFUSE[P6-vantage] naming the MEASURED address set and the exact fix — the case the daemon's name-level tripwire is blind to"
+else
+    bad "(2j) rc=$RC tail: $(tail -4 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# (2k) CONTROL for (2j): the ONLY difference is one address byte. Same rig, distinct addresses →
+# green. So (2j)'s refusal observes the address compare, not some other precondition.
+new_mock standby
+write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"'
+printf '%s\n' '203.0.113.10 t2.mock' > "$MOCK_DIR/dns.t2.mock"
+printf '%s\n' '203.0.113.11 t3.mock' > "$MOCK_DIR/dns.t3.mock"
+run_arm
+if [[ "$RC" == "0" ]] && out_has 'RESOLVED DISTINCTNESS verified' && ! out_has 'REFUSE\[P6-vantage\]'; then
+    ok "(2k) CONTROL: the SAME rig with the addresses differing in one byte (…10 vs …11) arms green — (2j) refuses on the address compare itself, not on an unrelated gate"
+else
+    bad "(2k) rc=$RC tail: $(tail -4 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# (2l) unresolvable name → loud WARN, recorded, NOT a refusal (a broken resolver proves nothing
+# about distinctness; refusing there would block arming on a transient DNS fault)
+new_mock standby
+write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"'
+rm -f "$MOCK_DIR/dns.t3.mock"
+run_arm
+if [[ "$RC" == "0" ]] && out_has 'WARN: precondition P6' && out_has 'did not RESOLVE via getent' \
+   && out_has 'unresolved' && out_has 'stays UNCHECKED for this arm' && ! out_has 'REFUSE\[P6'; then
+    ok "(2l) an unresolvable vantage hostname → loud WARN naming the MEASURED resolution result and that the CNAME case stays unchecked; the arm PROCEEDS (the one named exception to P6's fail-toward-refusing rule)"
+else
+    bad "(2l) rc=$RC tail: $(tail -4 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# ── (2n)–(2q) C1: G2 vantages vs the vote-liveness tiers — a DEGRADATION, never a refusal ───────
+# The daemons' liveness readers iterate `for rpc in "$TIER2_RPC" "$TIER3_RPC"` and _g2_register
+# DEFAULTS the vantages to exactly those, so on the default config one compromised vantage supplies
+# BOTH halves of the double-sign condition (a false G2 proof AND a false-frozen vote observation)
+# and the proof gate's additivity does not hold. Most operators run exactly two RPCs — refusing
+# would be sabotage — so this is measured, named loudly, re-stated at the end of the summary, and
+# armed anyway.
+#
+# (2n) the DEFAULT config (no G2_VANTAGE_* set): the vantages ARE the tiers.
+new_mock standby
+write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"'
+run_arm
+if [[ "$RC" == "0" ]] && out_has 'WARN: precondition P6 — DEGRADED, NOT REFUSED' \
+   && out_has "G2_VANTAGE_A (host 't2.mock') == TIER2_RPC (host 't2.mock') by identical URL" \
+   && out_has "G2_VANTAGE_B (host 't3.mock') == TIER3_RPC (host 't3.mock') by identical URL" \
+   && out_has 'resolved-address compares via getent on every pair' \
+   && out_has 'ONE compromised vantage supplies BOTH halves of the double-sign condition' \
+   && out_has "additivity does NOT hold" && out_has 'residual 2' \
+   && out_has 'THIRD endpoint in a SEPARATE FAILURE DOMAIN' && out_has 'G2_VANTAGE_A and/or G2_VANTAGE_B' \
+   && ! out_has 'REFUSE\[P6'; then
+    ok "(2n) DEFAULT config (vantages derived from the tiers) → a LOUD, MEASURED degradation: each matching pair named with the comparison that matched ('by identical URL'), the comparisons this host could make named ('resolved-address compares via getent on every pair'), the consequence stated (one compromised vantage supplies BOTH halves; additivity does NOT hold; SAFETY residual 2), and the way back named with the env keys and the file — and the arm still COMPLETES (rc 0, no REFUSE)"
+else
+    bad "(2n) rc=$RC tail: $(grep -c 'precondition P6' "$MOCK_DIR/out") P6 lines; $(tail -4 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+# (2o) the same degradation is RE-STATED at the end of the summary, after the ARMED line, so it
+# survives a long transcript — and the pairing posture still comes last (§2.7 (c)).
+armed_ln=$(grep -n 'ARMED (' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
+g2sum_ln=$(grep -n 'G2 vantage summary: SHARED WITH VOTE-LIVENESS' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
+pair_ln=$(grep -n 'pairing summary:' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
+if [[ -n "$armed_ln" && -n "$g2sum_ln" && -n "$pair_ln" ]] && [[ "$armed_ln" -lt "$g2sum_ln" && "$g2sum_ln" -lt "$pair_ln" ]] \
+   && out_has 'G2 vantage summary: SHARED WITH VOTE-LIVENESS' && out_has 'separate failure domain'; then
+    ok "(2o) the degradation is re-stated in the END-OF-SUMMARY, in order: ARMED (line $armed_ln) → G2 vantage summary (line $g2sum_ln) → pairing posture (line $pair_ln, still LAST per §2.7 (c)) — it cannot scroll away with the rest of the ceremony"
+else
+    bad "(2o) summary ordering: armed=$armed_ln g2=$g2sum_ln pairing=$pair_ln"
+fi
+# (2p) CONTROL: the SAME rig with the vantages pinned OFF both tiers (a third and fourth provider,
+# each with its own address) → the MEASURED no-overlap line, no degradation, no end-of-summary
+# warn. Without this, (2n) would be green for an unconditional warn.
+new_mock standby
+printf '%s\n' '192.0.2.30 t4.mock' > "$MOCK_DIR/dns.t4.mock"
+printf '%s\n' '192.0.2.40 t5.mock' > "$MOCK_DIR/dns.t5.mock"
+write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"' 'G2_VANTAGE_A="http://t4.mock"' 'G2_VANTAGE_B="http://t5.mock"'
+run_arm
+if [[ "$RC" == "0" ]] && out_has 'G2 vantages are SEPARATE from the vote-liveness tiers' \
+   && out_has "no G2 vantage matched TIER2_RPC (host 't2.mock') or TIER3_RPC (host 't3.mock')" \
+   && out_has "additivity HOLDS on this host" \
+   && ! out_has 'DEGRADED, NOT REFUSED' && ! out_has 'G2 vantage summary'; then
+    ok "(2p) CONTROL: vantages pinned off both tiers (t4.mock/t5.mock vs TIER2 t2.mock / TIER3 t3.mock) → the MEASURED no-overlap line naming both tiers, 'additivity HOLDS', and ZERO degradation output (no P6 warn, no end-of-summary line) — (2n) observes the vantage-vs-tier compare, not an unconditional warning"
+else
+    bad "(2p) rc=$RC tail: $(tail -5 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+# (2q) the compare is not URL-only: two DIFFERENT hostnames landing on the tier's address set is
+# still one failure domain. The resolver seam supplies the collision, and the notice must name the
+# comparison that actually matched — 'same resolved address set', not 'identical URL'.
+new_mock standby
+printf '%s\n' '203.0.113.10 t6.mock' > "$MOCK_DIR/dns.t6.mock"     # == dns.t2.mock's address
+printf '%s\n' '192.0.2.40 t5.mock'   > "$MOCK_DIR/dns.t5.mock"
+write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"' 'G2_VANTAGE_A="http://t6.mock"' 'G2_VANTAGE_B="http://t5.mock"'
+run_arm
+if [[ "$RC" == "0" ]] && out_has 'DEGRADED, NOT REFUSED' \
+   && out_has "G2_VANTAGE_A (host 't6.mock') == TIER2_RPC (host 't2.mock') by same resolved address set \[203.0.113.10\]" \
+   && ! out_has 'by identical URL' && ! out_has "TIER3_RPC (host 't3.mock') by"; then
+    ok "(2q) a vantage on a DIFFERENT hostname that resolves to TIER2_RPC's address → still degraded, and the notice names the comparison that MATCHED ('by same resolved address set [203.0.113.10]', not 'by identical URL') for that pair only — the URL compare alone would have missed this one"
+else
+    bad "(2q) rc=$RC tail: $(grep 'DEGRADED' "$MOCK_DIR/out" | head -1)"
+fi
+
+# (2m) scope: a holder (primary-role) arm and a spare with no PRIMARY_UNSTAKED_PUBKEY must run
+# ZERO P6 probes — G2 does not exist on either, so a probe there would be ceremony theatre.
+new_mock primary
+run_arm
+p6_pri=$(grep -c 'precondition P6' "$MOCK_DIR/out")
+new_mock standby
+run_arm
+p6_unconf=$(grep -c 'precondition P6: PRIMARY_UNSTAKED_PUBKEY is empty' "$MOCK_DIR/out")
+p6_probe=$(grep -c 'BATCH VERIFIED\|RESOLVED DISTINCTNESS' "$MOCK_DIR/out")
+if [[ "$p6_pri" == "0" && "$p6_unconf" == "1" && "$p6_probe" == "0" ]]; then
+    ok "(2m) scope: a HOLDER arm runs no P6 at all (0 lines); a spare with PRIMARY_UNSTAKED_PUBKEY empty announces the SKIP once and runs zero probes — P6 exists exactly where G2 registers"
+else
+    bad "(2m) primary P6 lines=$p6_pri unconfigured-skip=$p6_unconf probes-run=$p6_probe"
 fi
 
 # ── (3) emission↔intake parity (the 5.3 mechanics, never a reimplementation) ────────────────────

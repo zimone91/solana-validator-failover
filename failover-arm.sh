@@ -357,6 +357,7 @@ _pairing_field() { printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut 
 PAIRING_BOUND_MAX=3600
 
 _ARM_PAIR_SUMMARY=""   # set by _pre_pairing_intake; _arm_pairing_summary prints it at the end
+_ARM_G2_SHARED=""      # set by _pre_g2_tier_overlap (C1): the MEASURED vantage/tier overlap list ("" = none); _arm_g2_summary re-states it at the end
 
 _pre_pairing_intake() {
     local tokf="$ARM_STATE_DIR/pairing-token" tok src="" crc payload gen w b fence thost tmp delay shape_ok=1 _p5_margin _p5_floor
@@ -543,6 +544,219 @@ _pre_zero_stake_verify() {
         _arm_log "precondition P5: zero-stake VERIFIED for PRIMARY_UNSTAKED_PUBKEY entry '$_zs_pk' via ${_zs_ok} (getVoteAccounts: no vote account lists it as nodePubkey with activatedStake > 0; absence = zero)"
     done
     _arm_log "precondition P5: zero-stake verification complete — entries verified: ${_zs_done} (per entry, N-is-all over the space-separated list)"
+    return 0
+}
+
+# ── precondition P6: the G2 vantage ceremony — batch capability + resolved distinctness ─────────
+# v0.7 (Block 6.2 panel fix round, G2-B1.3 / G2-B2.2). TWO ceremony-time facts the daemon cannot
+# establish for itself, both load-bearing for verified-demote:
+#   (1) BATCH CAPABILITY. G2's soundness now rests on the freshness anchor riding in the SAME
+#       response as the proof payload — one POST carrying [getSlot, getClusterNodes], matched by
+#       id. Batching was verified by execution against mainnet-beta/agave 4.2.1 (design record
+#       verify-rpc-batch-and-churn.md, private tree), but NOT against every paid provider, and a
+#       JSON-RPC-aware intermediary may split batches. A vantage that cannot serve one makes G2
+#       permanently cannot-determine at run time — silent unavailability. The ceremony refuses
+#       instead, so the operator learns it here rather than during an incident.
+#   (2) RESOLVED DISTINCTNESS. The daemon's startup tripwire sees only URLs and hostnames; the
+#       CNAME/anycast case (two names, one address) is invisible to it and, per the executed
+#       panel finding, the cross-vantage byte compare does NOT catch a single source that varies
+#       anything per vantage. Resolution is checkable HERE, once, on a real host.
+# SCOPE: spare (standby-role) arms with PRIMARY_UNSTAKED_PUBKEY configured — exactly the condition
+# under which the daemon registers G2 at all. Bounded reads, arm-time only; the daemons never run
+# this. COST MODEL: cannot-verify at ceremony time fails toward REFUSING (an arm refusal costs a
+# re-run, not a vote) — with ONE named exception, unresolvable hostnames, which are a loud WARN:
+# refusing there would make a temporarily broken resolver un-armable while proving nothing about
+# distinctness. What this canNOT enforce, stated plainly: two genuinely different IPs belonging to
+# ONE provider are indistinguishable from here and remain an OPERATOR responsibility.
+
+# host part of an RPC URL — MIRRORS the daemons' _g2_url_host, bracketed-IPv6 form included
+# (test_g2_provider drives BOTH implementations over the same URL table and compares, so this copy
+# cannot drift silently). Prefix/suffix expansion only; no external calls.
+_p6_url_host() {
+    local _p6u="$1"
+    case "$_p6u" in *"://"*) _p6u="${_p6u#*://}" ;; esac
+    _p6u="${_p6u%%/*}"; _p6u="${_p6u%%\?*}"
+    case "$_p6u" in
+        "["*) _p6u="${_p6u%%]*}]" ;;
+        *)    _p6u="${_p6u%%:*}" ;;
+    esac
+    printf '%s' "$_p6u"
+}
+
+# _p6_resolver — the resolution tool actually available here, by availability, named in the log
+# (no new hard dependency: "none" is a WARN path, never a refusal).
+_p6_resolver() {
+    if command -v getent >/dev/null 2>&1; then printf 'getent'
+    elif command -v dig >/dev/null 2>&1; then printf 'dig'
+    elif command -v host >/dev/null 2>&1; then printf 'host'
+    else printf 'none'; fi
+}
+
+# normalized RPC URL — MIRRORS the daemons' _norm_rpc_url (trailing slashes stripped, nothing
+# else: a URL may carry an API key, and this comparison must not be clever about it).
+# test_g2_provider drives BOTH implementations over the same URL table, so this copy cannot drift.
+_p6_norm_url() { local _p6n="$1"; while [[ "$_p6n" == */ ]]; do _p6n="${_p6n%/}"; done; printf '%s' "$_p6n"; }
+
+# _p6_share_kind <url-x> <url-y> <host-x> <host-y> <addrs-x> <addrs-y> — the STRONGEST overlap
+# actually MEASURED between two endpoints, on stdout ("" = no overlap found by any comparison this
+# host could make). Ordered strongest-first so the notice names the comparison that matched, never
+# a generic resemblance. Address sets may be empty (no resolver / unresolvable) — that comparison
+# is then simply not made, and the caller says so.
+_p6_share_kind() {
+    if [[ -n "$1" && "$(_p6_norm_url "$1")" == "$(_p6_norm_url "$2")" ]]; then printf 'identical URL'; return 0; fi
+    if [[ -n "$3" && "$3" == "$4" ]]; then printf "same host '%s'" "$3"; return 0; fi
+    if [[ -n "$5" && "$5" == "$6" ]]; then printf 'same resolved address set [%s]' "$5"; return 0; fi
+    return 0
+}
+
+# _p6_resolve <host> <tool> — sorted, de-duplicated address set on stdout (empty = unresolvable).
+# A literal address (v4 or bracketed v6) resolves to itself — nothing to look up.
+_p6_resolve() {
+    local _p6h="$1" _p6t="$2"
+    case "$_p6h" in
+        "["*"]") printf '%s\n' "${_p6h%]}" | sed 's/^\[//' ; return 0 ;;
+        *[!0-9.]*) : ;;
+        *) printf '%s\n' "$_p6h"; return 0 ;;
+    esac
+    case "$_p6t" in
+        getent) timeout -k 5 10 getent hosts "$_p6h" 2>/dev/null | awk '{print $1}' | sort -u ;;
+        dig)    timeout -k 5 10 dig +short "$_p6h" 2>/dev/null | grep -E '^[0-9a-fA-F.:]+$' | sort -u ;;
+        host)   timeout -k 5 10 host "$_p6h" 2>/dev/null | awk '/has (IPv6 )?address/{print $NF}' | sort -u ;;
+        *)      : ;;
+    esac
+}
+
+_pre_g2_vantage_probe() {
+    local _p6_va _p6_vb _p6_url _p6_lab _p6_id _p6_resp _p6_rc _p6_shape _p6_ids _p6_slot _p6_n
+    local _p6_tool _p6_ha _p6_hb _p6_seed
+    local _p6_aa="" _p6_ab=""      # empty = that side was never resolved (no resolver / no answer)
+    [[ "$ARM_ROLE" == "standby" ]] || return 0
+    if [[ -z "${PRIMARY_UNSTAKED_PUBKEY:-}" ]]; then
+        _arm_log "precondition P6: PRIMARY_UNSTAKED_PUBKEY is empty in $ARM_ENV_FILE — G2 vantage ceremony SKIPPED: the armed daemon registers no verified-demote provider (nothing to probe; scope derived from the env, §2.4)"
+        return 0
+    fi
+    # the daemon's own vantage derivation, mirrored: env knobs first, else the existing tiers
+    _p6_va="${G2_VANTAGE_A:-${TIER2_RPC:-}}"
+    _p6_vb="${G2_VANTAGE_B:-${TIER3_RPC:-}}"
+    if [[ -z "$_p6_va" || -z "$_p6_vb" ]]; then
+        _arm_warn "precondition P6: fewer than two G2 vantages configured (A='${_p6_va:-}' B='${_p6_vb:-}') — the ARMED daemon's startup tripwire will DISABLE verified-demote for the whole run and page CRITICAL, so this spare arms with NO proof provider and only the un-armed timer path. Set G2_VANTAGE_A/G2_VANTAGE_B (or TIER2_RPC/TIER3_RPC) to two bank-bearing RPC providers in DISTINCT failure domains in $ARM_ENV_FILE and re-run 'failover arm'."
+        return 0
+    fi
+    command -v curl >/dev/null 2>&1 || _arm_refuse "P6-batch" "cannot verify G2 vantage batch capability: curl is not installed (the probe is one bounded JSON-RPC read per vantage; cannot-verify at CEREMONY time fails toward refusing)" "install curl, then re-run 'failover arm'"
+    command -v jq   >/dev/null 2>&1 || _arm_refuse "P6-batch" "cannot verify G2 vantage batch capability: jq is not installed (the batch answer is JSON; cannot-verify at CEREMONY time fails toward refusing)" "install jq, then re-run 'failover arm'"
+    # (1) batch probe, per vantage. Ids are process-derived and distinct per request, exactly as
+    # the daemon does it — the echo is part of what is being verified.
+    _p6_seed=$$
+    for _p6_lab in A B; do
+        if [[ "$_p6_lab" == "A" ]]; then _p6_url="$_p6_va"; else _p6_url="$_p6_vb"; fi
+        _p6_seed=$(( _p6_seed + 2 )); _p6_id=$_p6_seed
+        _p6_resp=$(curl -s -m 10 "$_p6_url" -X POST -H "Content-Type: application/json" -H "Cache-Control: no-cache" -d "[{\"jsonrpc\":\"2.0\",\"id\":${_p6_id},\"method\":\"getSlot\",\"params\":[{\"commitment\":\"confirmed\"}]},{\"jsonrpc\":\"2.0\",\"id\":$(( _p6_id + 1 )),\"method\":\"getClusterNodes\"}]" 2>/dev/null)
+        _p6_rc=$?
+        if [[ $_p6_rc -ne 0 || -z "$_p6_resp" ]]; then
+            _arm_refuse "P6-batch" "G2 vantage ${_p6_lab} did not answer the batch probe — MEASURED: curl rc=${_p6_rc}, ${#_p6_resp} bytes returned from '${_p6_url}'; REQUIRED: a JSON-RPC batch response. Cannot-verify at CEREMONY time fails toward refusing (§2.4): an unreachable vantage makes verified-demote permanently cannot-determine at run time, which is silent unavailability during an incident" "fix reachability for this endpoint (or point G2_VANTAGE_${_p6_lab} at a reachable bank-bearing RPC) in $ARM_ENV_FILE, then re-run 'failover arm'"
+        fi
+        _p6_shape=$(printf '%s' "$_p6_resp" | jq -r 'if type == "array" then "array/" + (length|tostring) else type end' 2>/dev/null)
+        [[ -n "$_p6_shape" ]] || _p6_shape="unparseable"
+        _p6_ids=$(printf '%s' "$_p6_resp" | jq -r '[.[]? | .id | tostring] | join(",")' 2>/dev/null)
+        _p6_slot=$(printf '%s' "$_p6_resp" | jq -r --arg id "$_p6_id" '[.[]? | select((.id|tostring) == $id)] | if length == 1 then (.[0].result // empty) else empty end' 2>/dev/null)
+        _p6_n=$(printf '%s' "$_p6_resp" | jq -r --arg id "$(( _p6_id + 1 ))" '[.[]? | select((.id|tostring) == $id)] | if length == 1 then ((.[0].result // empty) | length) else empty end' 2>/dev/null)
+        case "$_p6_slot" in ''|*[!0-9]*) _p6_slot="" ;; esac
+        case "$_p6_n"    in ''|*[!0-9]*) _p6_n="" ;; esac
+        if [[ "$_p6_shape" != "array/2" || -z "$_p6_slot" || -z "$_p6_n" ]]; then
+            _arm_refuse "P6-batch" "G2 vantage ${_p6_lab} cannot serve a JSON-RPC BATCH — MEASURED: response shape '${_p6_shape}', ids echoed [${_p6_ids:-none}] for our ids [${_p6_id},$(( _p6_id + 1 ))], getSlot result '${_p6_slot:-none}', getClusterNodes entries '${_p6_n:-none}'; REQUIRED: a 2-element ARRAY whose members echo BOTH of our ids and carry usable results. verified-demote binds its freshness anchor INTO the proof-bearing response by batching [getSlot, getClusterNodes] in ONE POST — without batching that binding is impossible and G2 would answer cannot-determine forever (silent unavailability). Cannot-verify at CEREMONY time fails toward refusing" "point G2_VANTAGE_${_p6_lab} in $ARM_ENV_FILE at an RPC provider that supports JSON-RPC batching (mainnet-beta/agave answers this batch with a 2-element array — verify by hand:  curl -s <RPC-URL> -X POST -H 'Content-Type: application/json' -d '[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSlot\",\"params\":[{\"commitment\":\"confirmed\"}]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"getClusterNodes\"}]' | jq 'type, length'   — expect \"array\" then 2), or remove the caching/proxy layer in front of it, then re-run 'failover arm'"
+        fi
+        _arm_log "precondition P6: G2 vantage ${_p6_lab} BATCH VERIFIED — MEASURED: array/2, our ids [${_p6_id},$(( _p6_id + 1 ))] echoed back, confirmed slot ${_p6_slot}, ${_p6_n} cluster nodes in the same response (the freshness anchor can be bound to the proof payload)"
+    done
+    # (2) resolved distinctness. Unresolvable is a WARN (see the scope note above), identical
+    # address sets are a REFUSE — that is the literal CNAME-to-one-address case. The WARN branches
+    # no longer RETURN: step (3) below must run on every reachable spare arm, resolver or not (it
+    # degrades to URL/host comparisons and SAYS which comparisons it was able to make).
+    _p6_tool=$(_p6_resolver)
+    _p6_ha=$(_p6_url_host "$_p6_va"); _p6_hb=$(_p6_url_host "$_p6_vb")
+    if [[ "$_p6_tool" == "none" ]]; then
+        _arm_warn "precondition P6: no resolver tool on this host (looked for getent, dig, host) — the G2 vantages' RESOLVED distinctness could NOT be checked (hosts '${_p6_ha}' and '${_p6_hb}'). Recorded, not refused: the daemon's URL/hostname tripwire still runs, but two names pointing at ONE address would go unnoticed. Install one of getent/dig/host and re-run 'failover arm' to get this checked."
+    else
+        _p6_aa=$(_p6_resolve "$_p6_ha" "$_p6_tool" | tr '\n' ' '); _p6_aa="${_p6_aa% }"
+        _p6_ab=$(_p6_resolve "$_p6_hb" "$_p6_tool" | tr '\n' ' '); _p6_ab="${_p6_ab% }"
+        if [[ -z "$_p6_aa" || -z "$_p6_ab" ]]; then
+            _arm_warn "precondition P6: a G2 vantage hostname did not RESOLVE via ${_p6_tool} — MEASURED: '${_p6_ha}' -> [${_p6_aa:-unresolved}], '${_p6_hb}' -> [${_p6_ab:-unresolved}]. Recorded, not refused (a broken resolver proves nothing about distinctness, and refusing here would block arming on a transient DNS fault) — but the CNAME/anycast case stays UNCHECKED for this arm. Fix resolution and re-run 'failover arm' to get it checked."
+        elif [[ "$_p6_aa" == "$_p6_ab" ]]; then
+            _arm_refuse "P6-vantage" "the two G2 vantages resolve to the SAME address set — MEASURED (via ${_p6_tool}): '${_p6_ha}' -> [${_p6_aa}], '${_p6_hb}' -> [${_p6_ab}]; REQUIRED: different addresses. They are ONE witness wearing two names: 'present on BOTH vantages' would be a single observation counted twice, and the run-time cross-vantage byte compare does NOT catch a source that varies anything per request (executed panel finding). verified-demote's whole premise is two INDEPENDENT views" "point G2_VANTAGE_A and G2_VANTAGE_B in $ARM_ENV_FILE at two RPC providers in DIFFERENT failure domains (different operators, not two names or two API keys for one), then re-run 'failover arm'"
+        else
+            _arm_log "precondition P6: G2 vantage RESOLVED DISTINCTNESS verified via ${_p6_tool} — MEASURED: '${_p6_ha}' -> [${_p6_aa}], '${_p6_hb}' -> [${_p6_ab}] (different address sets). NOTE, and it is the operator's to own: different addresses belonging to ONE provider are indistinguishable from here — this check kills the CNAME/anycast-to-one-address case, not shared ownership"
+        fi
+    fi
+    # (3) SHARED VANTAGE with the vote-liveness tiers (reviewer condition C1) — a DEGRADATION
+    # NOTICE, never a refusal, by explicit instruction: the daemon DEFAULTS G2_VANTAGE_A/B to
+    # TIER2_RPC/TIER3_RPC and most operators run exactly two RPCs, so refusing here would be
+    # sabotage. It is loud and RECORDED because on such a host the B3 severity statement stops
+    # meaning anything (see _pre_g2_tier_overlap).
+    _pre_g2_tier_overlap "$_p6_va" "$_p6_vb" "$_p6_ha" "$_p6_hb" "$_p6_aa" "$_p6_ab" "$_p6_tool"
+    return 0
+}
+
+# ── _pre_g2_tier_overlap <va> <vb> <host-a> <host-b> <addrs-a> <addrs-b> <resolver-tool> ────────
+# C1, the honesty statement made true. The B3 severity claim — "a double-sign needs BOTH a false
+# G2 proof AND a false-frozen vote observation" — is formally true but MEANINGLESS when G2's
+# vantages ARE the vote-liveness tiers, which is the DEFAULT config: _g2_register defaults
+# G2_VANTAGE_A/B to TIER2_RPC/TIER3_RPC, and every liveness reader in the daemons iterates
+# `for rpc in "$TIER2_RPC" "$TIER3_RPC"`. One protocol-aware intermediary in front of that single
+# endpoint supplies BOTH halves: it splices getSlot/getClusterNodes into a false verified-demote
+# proof, and it proxies the tip live while freezing the staked account's lastVote into a
+# false-frozen vote observation. A naive freeze is caught by the tip-guard; an active one is the
+# same "passive closed, active open" boundary G2 already draws honestly (SAFETY.md residual 2).
+# So: measure it, name it, print the way back — and arm anyway.
+# Every pair is compared strongest-first (normalized URL, then host, then resolved address set)
+# and the OUTPUT NAMES THE COMPARISON THAT MATCHED. The no-overlap line is printed too, with the
+# comparisons this host could actually make, so a clean result is never a silent pass.
+_pre_g2_tier_overlap() {
+    local _p6o_va="$1" _p6o_vb="$2" _p6o_ha="$3" _p6o_hb="$4" _p6o_aa="$5" _p6o_ab="$6" _p6o_tool="$7"
+    local _p6o_h2 _p6o_h3 _p6o_a2 _p6o_a3 _p6o_hits="" _p6o_k _p6o_pair _p6o_vl _p6o_tl
+    local _p6o_vu _p6o_vh _p6o_vaddr _p6o_tu _p6o_th _p6o_taddr _p6o_how
+    _p6o_h2=$(_p6_url_host "${TIER2_RPC:-}"); _p6o_h3=$(_p6_url_host "${TIER3_RPC:-}")
+    _p6o_a2=""; _p6o_a3=""
+    if [[ "$_p6o_tool" != "none" ]]; then
+        if [[ -n "$_p6o_h2" ]]; then _p6o_a2=$(_p6_resolve "$_p6o_h2" "$_p6o_tool" | tr '\n' ' '); _p6o_a2="${_p6o_a2% }"; fi
+        if [[ -n "$_p6o_h3" ]]; then _p6o_a3=$(_p6_resolve "$_p6o_h3" "$_p6o_tool" | tr '\n' ' '); _p6o_a3="${_p6o_a3% }"; fi
+    fi
+    for _p6o_pair in A:2 A:3 B:2 B:3; do
+        _p6o_vl="${_p6o_pair%%:*}"; _p6o_tl="${_p6o_pair##*:}"
+        if [[ "$_p6o_vl" == "A" ]]; then _p6o_vu="$_p6o_va"; _p6o_vh="$_p6o_ha"; _p6o_vaddr="$_p6o_aa"
+        else                             _p6o_vu="$_p6o_vb"; _p6o_vh="$_p6o_hb"; _p6o_vaddr="$_p6o_ab"; fi
+        if [[ "$_p6o_tl" == "2" ]]; then _p6o_tu="${TIER2_RPC:-}"; _p6o_th="$_p6o_h2"; _p6o_taddr="$_p6o_a2"
+        else                             _p6o_tu="${TIER3_RPC:-}"; _p6o_th="$_p6o_h3"; _p6o_taddr="$_p6o_a3"; fi
+        [[ -n "$_p6o_tu" ]] || continue
+        _p6o_k=$(_p6_share_kind "$_p6o_vu" "$_p6o_tu" "$_p6o_vh" "$_p6o_th" "$_p6o_vaddr" "$_p6o_taddr")
+        if [[ -n "$_p6o_k" ]]; then
+            _p6o_hits="${_p6o_hits:+$_p6o_hits; }G2_VANTAGE_${_p6o_vl} (host '${_p6o_vh}') == TIER${_p6o_tl}_RPC (host '${_p6o_th}') by ${_p6o_k}"
+        fi
+    done
+    # which comparisons this host was ABLE to make — so "no overlap" never over-claims
+    if [[ "$_p6o_tool" == "none" ]]; then
+        _p6o_how="normalized-URL and host compares ONLY — no resolver on this host, so the resolved-address compare was NOT made"
+    elif [[ -z "$_p6o_aa" || -z "$_p6o_ab" || ( -n "${TIER2_RPC:-}" && -z "$_p6o_a2" ) || ( -n "${TIER3_RPC:-}" && -z "$_p6o_a3" ) ]]; then
+        _p6o_how="normalized-URL and host compares, plus resolved-address compares via ${_p6o_tool} only where BOTH sides resolved (at least one name did not resolve: that comparison is INCOMPLETE)"
+    else
+        _p6o_how="normalized-URL and host compares, plus resolved-address compares via ${_p6o_tool} on every pair"
+    fi
+    if [[ -z "$_p6o_hits" ]]; then
+        _ARM_G2_SHARED=""
+        _arm_log "precondition P6: G2 vantages are SEPARATE from the vote-liveness tiers — MEASURED (${_p6o_how}): no G2 vantage matched TIER2_RPC (host '${_p6o_h2}') or TIER3_RPC (host '${_p6o_h3}'). The proof gate's additivity HOLDS on this host: a double-sign needs a false G2 proof AND a false-frozen vote observation, and those two rest on different endpoints"
+        return 0
+    fi
+    _ARM_G2_SHARED="$_p6o_hits"
+    _arm_warn "precondition P6 — DEGRADED, NOT REFUSED: G2 and vote-liveness SHARE VANTAGES. MEASURED (${_p6o_how}): ${_p6o_hits}. The daemons' liveness readers iterate TIER2_RPC then TIER3_RPC, so ONE compromised vantage supplies BOTH halves of the double-sign condition — the same protocol-aware intermediary can splice getSlot/getClusterNodes into a false verified-demote proof AND proxy the tip live while freezing the staked account's lastVote into a false-frozen vote observation. On this host the proof gate's additivity does NOT hold, and docs/SAFETY.md residual 2 (an active, protocol-aware intermediary) is NOT bounded by that composition. Not refused, deliberately: most operators run exactly two RPCs and refusing would leave this spare un-armed. THE WAY BACK: point G2_VANTAGE_A and/or G2_VANTAGE_B in $ARM_ENV_FILE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN — a different operator, not another hostname or another API key for one you already use — then re-run 'failover arm'."
+    return 0
+}
+
+# end-of-summary G2 vantage posture (C1): the degradation must survive a long arm transcript, so
+# the MEASURED overlap is re-stated on the final screen next to the pairing state. Silent when the
+# vantages are separate (the green case already printed its own MEASURED line at P6) and on any arm
+# where P6 never ran (holder role, or a spare with no PRIMARY_UNSTAKED_PUBKEY) — those leave
+# _ARM_G2_SHARED empty. Printed BEFORE the pairing posture, which stays last by §2.7 (c).
+_arm_g2_summary() {
+    [[ -n "$_ARM_G2_SHARED" ]] || return 0
+    _arm_warn "G2 vantage summary: SHARED WITH VOTE-LIVENESS — ${_ARM_G2_SHARED}. This spare is armed and the proof gate runs, but its additivity does NOT hold here: one compromised vantage supplies both a false verified-demote proof and a false-frozen vote observation (docs/SAFETY.md, 'Verified-demote (G2)' residual 2). Fix by pointing G2_VANTAGE_A/G2_VANTAGE_B in $ARM_ENV_FILE at a third endpoint in a separate failure domain, then re-run 'failover arm'."
     return 0
 }
 
@@ -869,11 +1083,13 @@ main() {
     _pre_identity_check
     _announce_arm_state
     _pre_pairing_intake       # P5 (Block 6.1): pairing-token intake + zero-stake verification — spare (standby-role) arms only; REFUSE[P5-*] on crc/shape, bound-vs-delay, staked-"unstaked"/cannot-verify
+    _pre_g2_vantage_probe     # P6 (Block 6.2 panel fix round): G2 vantage batch capability + resolved distinctness — spare arms with PRIMARY_UNSTAKED_PUBKEY only; REFUSE[P6-batch] / REFUSE[P6-vantage]
     _arm_probe
     _arm_install
     _arm_verify
     _arm_token
     _arm_log "ARMED ($ARM_INTENT): ceremony complete — the pairing token above goes to EVERY spare (re-pair is ceremony, not advice)."
+    _arm_g2_summary           # (Block 6.2 C1): the shared-vantage DEGRADATION, re-stated on the final screen (silent when the vantages are separate)
     _arm_pairing_summary      # (Block 6.1): §2.7 (c) — the pairing posture is the LAST thing on the operator's screen (spare arms only)
 }
 

@@ -35,7 +35,7 @@ done
 echo ""
 echo "═══ (2) RUN gate: execute every suite ═══"
 # A vanished/misnamed suite must FAIL this gate, not silently shrink it (bump when adding a suite).
-EXPECTED_SUITES=50
+EXPECTED_SUITES=51
 run_pass=0; run_fail=0; failed=""
 _suite_out=$(mktemp)
 for t in test_*.sh; do

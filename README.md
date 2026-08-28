@@ -46,6 +46,19 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
 - The STANDBY takes only after `TAKEOVER_DELAY` (default **60s** = the PRIMARY's ~30s self-fence + a 30s
   cross-node margin) **and** a vote-liveness check that the previous holder's vote account has stopped
   advancing. A hand-edited delay below the safe floor **refuses to start**.
+- On a v0.7 **armed** spare, a relinquish-proof gate additionally decides *how* the old holder is known
+  to be gone. Its strongest proof is **verified-demote (G2)**: the holder's *unstaked* identity observed
+  in gossip at the staked identity's exact endpoint, and still there ≥60s later on two pinned RPC
+  vantages from distinct failure domains — a positive "the demoted state is live *now*", not an absence
+  guess. Each snapshot is one JSON-RPC batch, so the freshness anchor (the vantage's own confirmed
+  slot) rides *inside* the response that carries the proof: cached and replayed vantage data reads as
+  *cannot-determine*, never as proof. `failover arm` refuses to arm a spare whose vantages cannot serve
+  that batch, or whose two vantage names resolve to one address. By default those vantages *are*
+  `TIER2_RPC`/`TIER3_RPC` — the same endpoints the vote-liveness check reads — and on such a host one
+  compromised vantage can supply both halves of a double-sign; the arm measures that, says so, and
+  recommends a third endpoint in a separate failure domain. What each layer does and does **not**
+  catch — including an active protocol-aware intermediary, which it does not — is enumerated in
+  [`docs/SAFETY.md`](docs/SAFETY.md). Un-armed hosts see none of this.
 - A promoted STANDBY that later isolates self-fences too, with a 600s re-take lockout.
 
 **Where the strength comes from.** The protection is strongest where the failing node can detect its
@@ -132,7 +145,7 @@ See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 ```bash
 cd tests && bash run_all.sh
 ```
-50 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
+51 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
 mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Note the
 limit: these are function-level tests — they do **not** prove cross-process ordering between two live
 systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.

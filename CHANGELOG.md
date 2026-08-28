@@ -5,6 +5,119 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Block 6.2 — the G2 verified-demote proof provider (§2.4 + [rev3/№2]).** The first real
+  provider behind the Block-6.1 proof gate, in a new `[g2-provider]` twin region (byte-identical
+  in both daemons; armed+spare+configured-gated — zero reads, zero events on every un-armed or
+  unconfigured host, census-asserted). G2 inverts the proof's polarity: instead of "the holder
+  looks gone", it demands a POSITIVE observation that the demoted state is live NOW — the
+  holder's unstaked ContactInfo at the staked identity's exact gossip endpoint (the F-A anchor:
+  `set-identity` keeps ports) observed at T1 and STILL present ≥ `G2_DELTA=60 s` later on the
+  SAME two pinned vantages from distinct failure domains (`G2_VANTAGE_A`/`G2_VANTAGE_B`, default
+  `TIER2_RPC`/`TIER3_RPC`). A live publisher re-signs its unstaked ContactInfo every ~7.5 s and a
+  stale entry cannot survive 30 s in a remote CRDS table, so survival across the hold proves a
+  live publisher holds the unstaked key on that box — which, by the vote gates, means the box
+  cannot sign staked votes. DELTA = 30 s provable CRDS bound + `G2_CLOCK_BUDGET=25 s` vantage
+  clock budget + 5 s purge granularity/rounding, derived at ONE census-guarded site; G2's floor carries NOTHING of W+B
+  ([6.0-COND-1] per-provider floors). Implemented as a per-cycle STATE MACHINE (baseline → T1 →
+  hold → T2 → proven): the main loop is never blocked for DELTA — one bounded, petted read-batch
+  per cycle (`curl -m 5` class), paced, zero sleeps, memory-only state (a restart mid-incident is
+  cannot-determine, never a restored anchor). Every ambiguity fails toward cannot-determine or
+  not-proven, NEVER proven; an environment must not be able to forge acceptance. Each snapshot is
+  ONE JSON-RPC **batch** — a single POST carrying `getSlot(confirmed)` AND `getClusterNodes` with
+  fresh per-request ids — so the freshness anchor is bound INTO the response that carries the
+  proof (batching verified by execution against mainnet-beta/agave 4.2.1; members matched by id,
+  never by array position). The layers: **batch shape** (not a 2-element array ⇒ cannot-determine
+  — the anchor is unbound); **id echo** (any member, or the following `getBlockTime`, not echoing
+  the id this cycle sent ⇒ cannot-determine: a stored/replayed answer carries stored ids);
+  **slot-advance floor** (`G2_SLOT_ADVANCE_FLOOR = G2_DELTA = 60` slots — the vantage's own
+  confirmed head, batched into the proof-bearing response, must advance across the hold; this
+  layer trusts NO clock, and a stalled cluster lands cannot-determine: availability, never a
+  take); **snapshot-freshness** (`getBlockTime` of that batched slot within ±25 s of the spare's
+  wall clock — the block's ONE wall-clock read, pinned in CI); **[rev3/№2] node-table advance**
+  (a byte-identical `getClusterNodes` RESULT 60 s apart is a TOTALLY frozen response, i.e. a
+  naive cache ⇒ cannot-determine — the ratified control is red-first in the suite);
+  **cross-vantage identity** (byte-identical node tables from both "distinct" vantages = one
+  source wearing two names ⇒ cannot-determine + throttled page); **endpoint match** (a watched
+  key at a DIFFERENT endpoint proves a publisher elsewhere, not this box ⇒ not-proven); **vantage
+  distinctness tripwire** (identical/same-host vantage URLs at startup ⇒ CRITICAL page + G2
+  permanently cannot-determine for the run); and, at the ARM only, `REFUSE[P6-batch]` (a vantage
+  that cannot serve the batch) and `REFUSE[P6-vantage]` (both vantage names resolving to one
+  address set). Two layers state their limits explicitly rather than over-claiming: node-table
+  advance catches a totally frozen response but does NOT prove the unstaked entry was re-observed
+  live (mainnet tables churn constantly — anti-replay duty belongs to the batched slot), and
+  cross-vantage byte-distinctness is NECESSARY-NOT-SUFFICIENT for two failure domains (a source
+  varying anything per vantage passes it; the enforceable half is the arm's resolved-address
+  check, and two IPs of one provider remain an operator responsibility). Mid-hold absence on any
+  vantage ⇒ NOT-PROVEN +
+  full reset (the flip-then-flip-back kill: the ≤ 30 s CRDS expiry sits inside the 60 s hold); a
+  proven verdict older than `PROOF_MAX_AGE` is WITHDRAWN and re-proven, never extended. The
+  provider registers into the gate's registry at armed-spare startup and returns the structured
+  verdict (observation_id carries gen + T1/T2 mono stamps; `observed_at` = the T2 read) — the
+  gate's acceptance path gets its first real exerciser; the PAIRED posture line now prints the
+  MEASURED registry (`proof providers registered: …`). The gate stays UNWIRED into any take path
+  (wiring is Block 6.4); what G2 cannot see — flip-back-then-vote after T2 — belongs to the
+  mutation-edge recheck's staked-vote pin, and the composition is stated at the verdict-minting
+  site, and the SEVERITY of a false proof is stated there too: the gate is an ADDITIONAL
+  requirement in front of the staked mutation, so a false PROVEN cannot by itself cause a take —
+  it can only fail to BLOCK a take the pre-existing v0.6.x logic already authorized, and a
+  double-sign needs BOTH a false G2 proof AND a false-frozen vote observation. New suite
+  `tests/test_g2_provider.sh` (51 suites): reds-first per detector, the ratified №2 control, the
+  multilayer rule over the enumerated layer set (each layer neutered alone → the attack falls
+  through to a NAMED surviving layer; ALL neutered → the forged acceptance red restored),
+  boundedness/pet censuses from live event order, inertness censuses, constants census extended
+  to `G2_DELTA`/`G2_CLOCK_BUDGET`/`G2_SLOT_ADVANCE_FLOOR` with injection reds, twin byte-parity.
+  **Panel fix round (blockers + notes, in this same entry — the claims above describe the SHIPPED
+  mechanism, not the first cut).** Two blockers were found by executing attacks against the first
+  cut and are closed here. (1) The freshness anchor was a SEPARATE HTTP request from the
+  proof-bearing read, so a vantage serving honest live `getSlot`/`getBlockTime` while replaying
+  only `getClusterNodes` minted PROVEN; the batch + id echo + slot-advance layers above replace
+  it. The earlier claim that "even a partially replayed vantage answers with the old slot's old
+  time" was FALSE as shipped and has been removed everywhere it appeared. (2) The advance and
+  cross-vantage detectors fingerprinted the WHOLE body while the proof is one extracted fact, so
+  a frozen proof entry riding on mainnet churn — and one cache behind two names with a
+  per-vantage nonce — both passed; the duty moved to the batched slot, the two layers kept their
+  place with narrowed claims, and vantage distinctness gained the arm-time resolved-address
+  refusal. Named residual, executed and NOT defended: an ACTIVE, PROTOCOL-AWARE intermediary that
+  splits the batch, forwards `getSlot` live and answers `getClusterNodes` from storage under our
+  id. Binding raises the bar from passive cache/naive replay to that; it does not clear it, and
+  no unsigned snapshot protocol can. Also in this round: presence now scans ALL gossip values for
+  the watched key (the old `head -1` read an elsewhere-first topology as absent — a false
+  negative that also killed attempts mid-hold); `_g2_url_host` handles bracketed IPv6 (two IPv6
+  vantages used to collapse to host `[` and trip the same-host tripwire with a false reason); the
+  spare closes its G2 episode when it observes ITSELF staked, so an attempt can never span the
+  spare's own staked tenure; and the clock-budget attribution is corrected — the ±budget compare
+  bounds a vantage's CHAIN-HEAD lag, not the local system clock CRDS purge depends on, which is
+  now a named residual in `docs/SAFETY.md`. The batch merged two reads into one, so the region's
+  per-op pet census moved 5 → 4 per daemon (totals 42/43 → 41/42) and its worst added per-cycle
+  gap fell 36 s → 24 s; the CI wall-clock pins were re-derived and are UNCHANGED at 21/22.
+  **Reviewer conditions (second fix round, in this same entry).** (C1) The severity statement
+  above — "a double-sign needs BOTH a false G2 proof AND a false-frozen vote observation" — is
+  formally true but MEANINGLESS on the default config, where `G2_VANTAGE_A`/`G2_VANTAGE_B` derive
+  from `TIER2_RPC`/`TIER3_RPC` and every vote-liveness reader iterates exactly those: one
+  protocol-aware intermediary in front of a shared vantage supplies BOTH halves, so the gate's
+  additivity does not hold there and the named active-intermediary residual is not bounded by the
+  composition. That is now MEASURED and said out loud rather than left implied. `failover arm`
+  compares each vantage against each tier (normalized URL, host, and resolved address set where a
+  resolver exists), prints which vantage matched which tier BY WHICH COMPARISON plus the
+  consequence and the fix, and re-states it in the end-of-summary; the distinct case prints its own
+  measured "vantages are SEPARATE" line, so a clean result is never a silent pass. It is a
+  DEGRADATION, never a refusal — most operators run exactly two RPCs, and refusing would leave the
+  spare un-armed. The armed daemon logs a URL-level version at startup (`log_warn`, not a page: the
+  condition is config, constant for the run; no DNS in the daemon — the arm owns resolution, said
+  so in the text). The recommendation — a THIRD endpoint in a SEPARATE FAILURE DOMAIN, meaning a
+  different operator — is in `docs/SAFETY.md`, the manual's knob table, the standby env template
+  and the installer's rendered env. (C2) The constants return to the project's own CRDS research
+  record: `G2_DELTA` 50 → **60 s**, `G2_CLOCK_BUDGET` 20 → **25 s**, `G2_SLOT_ADVANCE_FLOOR` 50 →
+  **60** slots (coupled as before). §2.4 deployed 50/20 for ONE reason — to fit the hold inside
+  the 60 s un-armed timer — and that reason died when [6.0-COND-1] made proof floors PER-PROVIDER:
+  `verified-demote`'s floor is its own hold, never `TAKEOVER_DELAY`. The record's residual
+  ("both clocks >25 s wrong simultaneously") is stated against 25 s, so the smaller budget was
+  widening the residual it was meant to bound. Cost, named: `verified-demote`'s branch answers
+  ~10 s later; the timer path is unchanged because the gate is additive. The stale comment
+  claiming `PROOF_MAX_AGE=50` equals G2's DELTA "by numeric COINCIDENCE" is corrected — the
+  coincidence dissolved, and no code path assumes any ordering between the two (audited). Every
+  suite fixture sized for the 50 s hold was re-derived above 60 s, and the coupling controls'
+  mutant numbers with them (budget 25→35 ⇒ DELTA 70, the decoupled control static at 60).
 - **Block 6.1 — spare-side proof-gate skeleton + pairing-token intake at the spare arm.** Block
   6's cost model inverts Block 5's: the worst outcome is DOUBLE-SIGN (the spare taking while
   the holder is alive), so everything below fails toward NOT-taking and toward REFUSING to arm.
