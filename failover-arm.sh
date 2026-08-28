@@ -320,6 +320,223 @@ _announce_arm_state() {
     fi
 }
 
+# ── precondition P5: pairing-token intake + zero-stake verification at the SPARE arm ────────────
+# v0.7 (Block 6.1, BLOCK6-PLAN §1): the operator hands THIS spare the holder's pairing token
+# line via ARM_PAIRING_TOKEN (env — ceremony-friendly and testable; the holder's arm prints the
+# line as its last act, see _arm_token). NUMBERING NOTE: the §2.3 alignment announcement above
+# kept its historical "precondition 5" label; THIS gate is P5 per BLOCK6-PLAN §1 (refusal ids
+# REFUSE[P5-*]) — do not renumber either.
+# ROLE SCOPE, derived from the ceremony's own role detection (not guesswork): intake runs on
+# ARM_ROLE=standby (the spare posture — the daemon that consumes the token); a primary-role arm
+# GENERATES tokens (_arm_token) and never consumes one — a stray ARM_PAIRING_TOKEN there is
+# announced and ignored, never a silent default. The zero-stake verification (§2.4 G2 arm
+# condition, deferred from 5.4) scopes on the ENV: it runs for EACH space-separated entry of
+# PRIMARY_UNSTAKED_PUBKEY (the spare's G2/fast-path holder-key inputs; empty = nothing to
+# verify, announced — N-is-all over the list).
+# COST MODEL (Block 6, binding): the worst outcome is DOUBLE-SIGN — every ambiguity below fails
+# toward REFUSING to arm; cannot-verify at CEREMONY time is a refusal with the manual command
+# printed, never a shrug (this inverts nothing here: an arm refusal costs a re-run, not a vote).
+
+# crc helper — BYTE-PARITY with the daemons' [proof-gate] copy (test_proof_gate cmp's all three
+# files): the 5.3 token emission's exact crc mechanics (`cksum | awk`; INTEGRITY against
+# copy/paste truncation, NOT security — anyone can recompute it). _arm_token below emits
+# THROUGH this same helper, so intake and emission cannot drift (the S-1 twin class).
+_pairing_crc() { printf '%s' "$1" | cksum 2>/dev/null | awk '{print $1}'; }
+# one k=v field from the |-separated token line (the house `field` idiom)
+_pairing_field() { printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d= -f2-; }
+
+# PAIRING_BOUND_MAX — the intake ceiling on BOTH token bounds (watchdog W and relinquish_bound B),
+# in seconds. REVIEWER-TUNABLE. Derivation: a WatchdogSec or a holder relinquish bound beyond ONE
+# HOUR is definitionally not a fast self-fence (the whole G2/elapsed premise is a tight fence
+# measured in tens of seconds), so a value above it is a corrupted or forged token, not a real
+# pairing. 3600 also sits ~15 orders of magnitude below the 2^63 signed-int wrap, so once BOTH W
+# and B are held in [1, PAIRING_BOUND_MAX] the daemon's elapsed_floor = W+B+MARGIN_ELAPSED cannot
+# overflow (worst case ~7210) — overflow is STRUCTURALLY impossible here, not merely unlikely. The
+# daemon still keeps an independent convergence backstop at its derivation site (defense in depth:
+# a token planted straight on disk or fed from a future env source bypasses THIS gate).
+PAIRING_BOUND_MAX=3600
+
+_ARM_PAIR_SUMMARY=""   # set by _pre_pairing_intake; _arm_pairing_summary prints it at the end
+
+_pre_pairing_intake() {
+    local tokf="$ARM_STATE_DIR/pairing-token" tok src="" crc payload gen w b fence thost tmp delay shape_ok=1
+    if [[ "$ARM_ROLE" != "standby" ]]; then
+        [[ -n "${ARM_PAIRING_TOKEN:-}" ]] && _arm_warn "ARM_PAIRING_TOKEN is set on a '${ARM_ROLE}' arm — IGNORED: the holder GENERATES pairing tokens (this ceremony prints one below); only a spare (standby-role) arm consumes one (Block 6.1 P5)."
+        return 0
+    fi
+    tok="${ARM_PAIRING_TOKEN:-}"
+    if [[ -n "$tok" ]]; then
+        src="ARM_PAIRING_TOKEN (handed this run)"
+    elif [[ -f "$tokf" ]]; then
+        tok=$(head -1 "$tokf" 2>/dev/null)
+        src="stored at $tokf (a previous pairing — re-validated at every arm, §2.1 condition 3)"
+    fi
+    if [[ -z "$tok" ]]; then
+        _ARM_PAIR_SUMMARY="unpaired"
+        _arm_log "precondition P5: NO pairing token (ARM_PAIRING_TOKEN unset; nothing stored at $tokf) — the arm PROCEEDS; the ARMED daemon runs the §2.7 UNPAIRED posture (proof providers verified-demote ONLY; silence-based take disabled; CRITICAL page at every daemon start). See the end-of-summary warning."
+        _pre_zero_stake_verify
+        return 0
+    fi
+    # shape + crc — the 5.3 emission's exact shape (never changed silently; the grep-consumers
+    # rule): v0.7|gen=<N>|watchdog=<W>|relinquish_bound=<B>|fence=<real|page-only>|host=<H>|<crc>
+    case "$tok" in "v0.7|gen="*) : ;; *) shape_ok=0 ;; esac
+    crc="${tok##*|}"; payload="${tok%|*}"
+    case "$crc" in ''|*[!0-9]*) shape_ok=0 ;; esac
+    if [[ $shape_ok -eq 1 && "$(_pairing_crc "$payload")" != "$crc" ]]; then shape_ok=0; fi
+    gen=""; w=""; b=""; fence=""; thost=""
+    if [[ $shape_ok -eq 1 ]]; then
+        gen=$(_pairing_field "$tok" gen); w=$(_pairing_field "$tok" watchdog)
+        b=$(_pairing_field "$tok" relinquish_bound); fence=$(_pairing_field "$tok" fence)
+        thost=$(_pairing_field "$tok" host)
+        case "$gen" in ''|*[!0-9]*) shape_ok=0 ;; esac
+        case "$w"   in ''|*[!0-9]*) shape_ok=0 ;; esac
+        case "$b"   in ''|*[!0-9]*) shape_ok=0 ;; esac
+        case "$fence" in real|page-only) : ;; *) shape_ok=0 ;; esac
+        [[ -n "$thost" ]] || shape_ok=0
+    fi
+    if [[ $shape_ok -ne 1 ]]; then
+        case "$src" in
+            "ARM_PAIRING_TOKEN"*)
+                _arm_refuse "P5-token-crc" "the handed pairing token fails crc/shape verification (token: '$tok') — a truncated or hand-edited copy/paste is the usual cause; the crc is cksum over the payload before the last field (INTEGRITY, not security)" "re-copy the FULL token line from the holder's 'failover arm' output (one line, seven |-fields ending in the numeric crc) into ARM_PAIRING_TOKEN and re-run this arm; if the holder's output is lost, re-run 'failover arm' on the holder (it refuses to complete without printing a fresh token) and pair with THAT line"
+            ;;
+            *)
+                # a rotted STORED token with no fresh one handed: proceed UNPAIRED, loudly —
+                # the file is left in place (the armed daemon's classifier reads it invalid and
+                # screams the same §2.7 posture; deleting operator evidence is not this gate's job).
+                _ARM_PAIR_SUMMARY="stored-invalid"
+                _arm_warn "precondition P5: the STORED pairing token at $tokf fails crc/shape re-validation (disk rot or a hand edit) — treating this spare as UNPAIRED (file left in place; the ARMED daemon classifies it invalid and pages the §2.7 posture at every start). Re-pair: copy the holder's token line into ARM_PAIRING_TOKEN and re-run this arm."
+                _pre_zero_stake_verify
+                return 0
+            ;;
+        esac
+    fi
+    gen=$((10#$gen)); w=$((10#$w)); b=$((10#$b))   # octal-safe normalization (the F6 idiom)
+    # bounds ceiling + zero-floor (Block 6.1, panel L-1) — the double-sign refusal, mirrored onto
+    # W: watchdog(W) and relinquish_bound(B) must EACH sit in [1, PAIRING_BOUND_MAX]. The intake's
+    # only prior numeric gate was B-vs-delay; W was unbounded, and elapsed_floor = W+B+MARGIN wraps
+    # past 2^63 for a huge W — a forged/degenerate token then derives a NEGATIVE floor the 6.3
+    # predicate reads as "any silence proves relinquish" (the exact double-sign), while a 0 bound
+    # derives a floor a spare clears with ZERO proven silence. Bounding BOTH here makes the wrap
+    # structurally impossible (PAIRING_BOUND_MAX) AND excludes the zero floor. Reuse the P5-bound id
+    # (same class); a rejected token is an INVALID pairing (REFUSE), never stored as PAIRED.
+    if [[ $w -lt 1 || $w -gt $PAIRING_BOUND_MAX ]]; then
+        _arm_refuse "P5-bound" "token watchdog is out of range — MEASURED: watchdog=${w}s; REQUIRED: 1 <= watchdog <= ${PAIRING_BOUND_MAX}s (PAIRING_BOUND_MAX). A watchdog of 0 or above an hour is not a fast self-fence: the spare's silence-based elapsed floor derives from watchdog + relinquish_bound, so an out-of-range watchdog yields an UNSOUND floor (0 → a floor cleared with no proven silence; huge → arithmetic overflow to a negative/non-converging floor). This is a corrupted or forged token, not a valid pairing. No override exists for this refusal" "re-arm the HOLDER (its WatchdogSec is read from the installed monitor unit at arm time) and re-pair this spare with the FRESH token it prints; if the line was hand-edited or truncated, re-copy the full token line"
+    fi
+    if [[ $b -lt 1 || $b -gt $PAIRING_BOUND_MAX ]]; then
+        _arm_refuse "P5-bound" "token relinquish_bound is out of range — MEASURED: relinquish_bound=${b}s; REQUIRED: 1 <= relinquish_bound <= ${PAIRING_BOUND_MAX}s (PAIRING_BOUND_MAX). A relinquish_bound of 0 or above an hour is not a fast fence: the spare's elapsed floor derives from watchdog + relinquish_bound, so an out-of-range bound yields an UNSOUND floor (0 → no proven-silence floor; huge → a non-converging/overflowing floor). Corrupted or forged token, not a valid pairing. No override exists for this refusal" "re-arm the HOLDER with a sane EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS (their sum is this bound) and re-pair this spare with the FRESH token; if the line was hand-edited or truncated, re-copy the full token line"
+    fi
+    # bound-vs-delay consistency — the double-sign refusal; NO override exists, deliberately:
+    # a spare whose TAKEOVER_DELAY < the holder's worst-case relinquish bound can take BEFORE
+    # the holder's relinquish completes (the exact overlap G2/N1 exist to prevent).
+    delay="${TAKEOVER_DELAY:-}"
+    case "$delay" in ''|*[!0-9]*)
+        _arm_refuse "P5-bound" "cannot check the token's relinquish_bound against this spare's takeover delay: TAKEOVER_DELAY='${delay:-unset}' in $ARM_ENV_FILE is not numeric (cannot-verify at ceremony time fails toward refusing)" "set TAKEOVER_DELAY to this spare's real takeover delay (seconds) in $ARM_ENV_FILE, then re-run 'failover arm'"
+    ;; esac
+    delay=$((10#$delay))
+    if [[ $b -gt $delay ]]; then
+        _arm_refuse "P5-bound" "token relinquish_bound EXCEEDS this spare's takeover delay — MEASURED: relinquish_bound=${b}s (the holder's worst-case relinquish, from the token) vs TAKEOVER_DELAY=${delay}s (this spare); REQUIRED: relinquish_bound <= TAKEOVER_DELAY. This spare could take BEFORE the holder's worst-case relinquish completes — the exact double-sign G2 exists to prevent. No override exists for this refusal" "EITHER raise this spare's delay to >= ${b}s:  sed -i 's/^TAKEOVER_DELAY=.*/TAKEOVER_DELAY=${b}/' $ARM_ENV_FILE  and re-run 'failover arm' here — OR re-arm the holder with a tighter bound: lower its EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS so their sum is <= ${delay}, re-run 'failover arm' THERE, and pair this spare with the NEW token"
+    fi
+    # store ATOMICALLY (tmp+mv+verify — the 5.3 gen-counter discipline, incl. the A10
+    # directory-swallows-mv trap: stored is only real if a REGULAR FILE now holds the line)
+    mkdir -p "$ARM_STATE_DIR" 2>/dev/null
+    tmp="$tokf.tmp.$$"
+    if printf '%s\n' "$tok" > "$tmp" 2>/dev/null && mv -f "$tmp" "$tokf" 2>/dev/null; then :; else
+        rm -f "$tmp" 2>/dev/null
+        _arm_refuse "P5-store" "could not store the pairing token at $tokf (write or move failed)" "make $ARM_STATE_DIR writable, then re-run 'failover arm' with the same ARM_PAIRING_TOKEN"
+    fi
+    if [[ ! -f "$tokf" ]] || [[ "$(head -1 "$tokf" 2>/dev/null)" != "$tok" ]]; then
+        _arm_refuse "P5-store" "the pairing token did not persist: $tokf is not a regular file holding the token line after the write (a pre-existing directory at that path swallows the mv while reporting success)" "inspect $tokf, clean it BY HAND (this script never uses rm -rf), then re-run 'failover arm' with the same ARM_PAIRING_TOKEN"
+    fi
+    if [[ "$fence" == "page-only" ]]; then
+        _ARM_PAIR_SUMMARY="page-only gen=$gen watchdog=${w}s relinquish_bound=${b}s holder=$thost"
+        _arm_log "precondition P5: pairing token VERIFIED and stored (gen=$gen, watchdog=${w}s, relinquish_bound=${b}s, fence=page-only, holder=$thost; source: $src) — but fence=page-only RELINQUISHES NOTHING (it pages): elapsed (silence-based) attestation is REFUSED, and the ARMED daemon runs the §2.7 posture (verified-demote ONLY) until the holder is re-armed with the REAL fence and re-paired."
+    else
+        _ARM_PAIR_SUMMARY="paired gen=$gen watchdog=${w}s relinquish_bound=${b}s holder=$thost"
+        _arm_log "precondition P5: pairing token VERIFIED and stored (gen=$gen, watchdog=${w}s, relinquish_bound=${b}s, fence=real, holder=$thost; source: $src) — the ARMED daemon derives its watchdog-elapsed floor from these bounds at its ONE derivation site (W+B+MARGIN_ELAPSED). A re-armed holder prints a NEW token: re-pair this spare on every holder arm (ceremony, not advice)."
+    fi
+    _pre_zero_stake_verify
+    return 0
+}
+
+# zero-stake verification (§2.4 G2 arm condition): for EACH PRIMARY_UNSTAKED_PUBKEY entry, a
+# bounded (curl -m 10 class) getVoteAccounts read proving the pubkey carries ZERO activated
+# stake — no vote account lists it as nodePubkey with activatedStake > 0; ABSENCE = zero. WHY
+# this refuses (the mechanical reason, printed too): a staked "unstaked" key's gossip values
+# are STAKED-ORIGIN — they inherit the ~48 h CRDS extended_timeout (max(15 s, epoch_duration))
+# instead of the 15 s unstaked expiry, so its ContactInfo entry can linger for DAYS after the
+# publisher dies, silently breaking G2's 15 s/30 s expiry math (a present entry would no longer
+# prove a LIVE publisher holds the key). Arm-time-only network; the daemons never run this.
+_pre_zero_stake_verify() {
+    local _zs_pk _zs_rpc _zs_resp _zs_n _zs_amt _zs_ok _zs_manual _zs_done=0
+    if [[ -z "${PRIMARY_UNSTAKED_PUBKEY:-}" ]]; then
+        _arm_log "precondition P5: PRIMARY_UNSTAKED_PUBKEY is empty in $ARM_ENV_FILE — zero-stake verification SKIPPED: nothing to verify (the G2/fast-path holder-key inputs are absent on this arm; scope derived from the env, §2.4)"
+        return 0
+    fi
+    command -v curl >/dev/null 2>&1 || _arm_refuse "P5-staked-unstaked" "cannot verify zero stake for PRIMARY_UNSTAKED_PUBKEY: curl is not installed (the check is a bounded getVoteAccounts read; cannot-verify at CEREMONY time fails toward refusing)" "install curl, then re-run 'failover arm'"
+    command -v jq   >/dev/null 2>&1 || _arm_refuse "P5-staked-unstaked" "cannot verify zero stake for PRIMARY_UNSTAKED_PUBKEY: jq is not installed (the getVoteAccounts answer is JSON; cannot-verify at CEREMONY time fails toward refusing)" "install jq, then re-run 'failover arm'"
+    # shellcheck disable=SC2086
+    for _zs_pk in $PRIMARY_UNSTAKED_PUBKEY; do
+        _zs_ok=""; _zs_n=""
+        for _zs_rpc in "${TIER2_RPC:-}" "${TIER3_RPC:-}"; do
+            [[ -z "$_zs_rpc" ]] && continue
+            _zs_resp=$(curl -s -m 10 "$_zs_rpc" -X POST -H "Content-Type: application/json" -H "Cache-Control: no-cache" -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts"}' 2>/dev/null)
+            [[ -n "$_zs_resp" ]] || continue
+            printf '%s' "$_zs_resp" | jq -e '.result' >/dev/null 2>&1 || continue
+            # structural completeness (panel L-3): a healthy mainnet-beta getVoteAccounts ALWAYS
+            # populates .result.current with thousands of vote accounts. An empty/absent/non-array
+            # current (a cached or CDN-fronted HTTP-200 body, a truncated answer) carries NO
+            # vote-account data, so "absence = zero" would be cannot-verify dressed as proof — the
+            # exact degenerate-RPC vector this ceremony check must reject. Require current to be a
+            # NON-EMPTY array AND delinquent an array before trusting absence; anything else is
+            # cannot-verify → skip like an unusable answer (try the next RPC; the "no usable
+            # answer" REFUSE below fires if none is usable), NEVER counted as zero-stake. This
+            # preserves the true-zero case (a POPULATED current with the key absent) and the
+            # delinquent-only-staked catch (the union is unchanged below).
+            printf '%s' "$_zs_resp" | jq -e '((.result.current | type) == "array") and ((.result.current | length) > 0) and ((.result.delinquent | type) == "array")' >/dev/null 2>&1 || continue
+            # DECISION value = the COUNT of vote accounts listing this pubkey as nodePubkey
+            # with activatedStake > 0 (a small integer — robust against huge-lamport
+            # formatting); the largest stake is fetched below for the refusal text only. A
+            # string-typed activatedStake compares string>number = true in jq → counted as
+            # staked → REFUSE: a mis-typed payload fails toward NOT arming, manual command printed.
+            _zs_n=$(printf '%s' "$_zs_resp" | jq -r --arg pk "$_zs_pk" '[(.result.current + .result.delinquent)[]? | select(.nodePubkey == $pk) | select(.activatedStake > 0)] | length' 2>/dev/null)
+            case "$_zs_n" in ''|*[!0-9]*) _zs_n=""; continue ;; esac
+            _zs_ok="$_zs_rpc"
+            break
+        done
+        _zs_manual="curl -s <RPC-URL> -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getVoteAccounts\"}' | jq '[(.result.current + .result.delinquent)[] | select(.nodePubkey == \"$_zs_pk\") | .activatedStake]'   (expect [] or all zeros)"
+        if [[ -z "$_zs_ok" ]]; then
+            _arm_refuse "P5-staked-unstaked" "cannot VERIFY zero stake for PRIMARY_UNSTAKED_PUBKEY entry '$_zs_pk': no external RPC gave a usable getVoteAccounts answer (TIER2_RPC='${TIER2_RPC:-unset}', TIER3_RPC='${TIER3_RPC:-unset}' — unreachable, unparseable, or structurally incomplete: no populated .result.current[] vote-account list, which a healthy mainnet-beta RPC always returns). Cannot-verify at CEREMONY time fails toward refusing (§2.4)" "verify by hand:  $_zs_manual  — then fix the RPC endpoints/reachability in $ARM_ENV_FILE and RETRY 'failover arm' when an RPC is reachable"
+        fi
+        if [[ "$_zs_n" != "0" ]]; then
+            _zs_amt=$(printf '%s' "$_zs_resp" | jq -r --arg pk "$_zs_pk" '[(.result.current + .result.delinquent)[]? | select(.nodePubkey == $pk) | .activatedStake] | max // 0 | tostring' 2>/dev/null)
+            _arm_refuse "P5-staked-unstaked" "PRIMARY_UNSTAKED_PUBKEY entry '$_zs_pk' carries ACTIVATED STAKE — MEASURED: ${_zs_n} vote account(s) list it as nodePubkey with activatedStake > 0 (largest activatedStake=${_zs_amt} lamports, via ${_zs_ok}); REQUIRED: 0. A staked \"unstaked\" key's gossip values are STAKED-ORIGIN: they inherit the ~48 h CRDS extended_timeout (max(15 s, epoch_duration)) instead of the 15 s unstaked expiry, so its ContactInfo entry can linger for DAYS after its publisher dies — silently breaking G2's 15 s/30 s expiry math (a present entry would no longer prove a LIVE publisher holds the key)" "point this entry at the holder's genuinely UNSTAKED identity (zero activated stake) in $ARM_ENV_FILE — or de-stake that key and wait for the deactivation to land (epoch boundary) — then re-run 'failover arm'"
+        fi
+        _zs_done=$((_zs_done + 1))
+        _arm_log "precondition P5: zero-stake VERIFIED for PRIMARY_UNSTAKED_PUBKEY entry '$_zs_pk' via ${_zs_ok} (getVoteAccounts: no vote account lists it as nodePubkey with activatedStake > 0; absence = zero)"
+    done
+    _arm_log "precondition P5: zero-stake verification complete — entries verified: ${_zs_done} (per entry, N-is-all over the space-separated list)"
+    return 0
+}
+
+# end-of-summary pairing posture (§2.7 (c) [6.0-COND-4]): printed LAST — after the ARMED
+# completion line — so the operator's final screen carries the pairing state; never a silent
+# default. Empty summary = a primary-role arm (no intake ran).
+_arm_pairing_summary() {
+    case "$_ARM_PAIR_SUMMARY" in
+        "") : ;;
+        paired*)
+            _arm_log "pairing summary: PAIRED (${_ARM_PAIR_SUMMARY}) — re-pair on EVERY holder re-arm: a re-armed holder prints a NEW token and this spare's stored bounds go stale (the stale-bound residual, docs/SAFETY.md); the holder's arm refuses to complete without printing it."
+        ;;
+        page-only*)
+            _arm_warn "pairing summary: token stored but fence=page-only (${_ARM_PAIR_SUMMARY}) — page-only relinquishes NOTHING: elapsed (silence-based) attestation REFUSED; the ARMED daemon runs the §2.7 posture (proof providers verified-demote ONLY — holder not attested) and pages it at every start. Re-arm the holder with DRY_RUN=false (the REAL fence), then re-pair this spare with the new token."
+        ;;
+        *)
+            _arm_warn "pairing summary: UNPAIRED SPARE — no valid pairing token stored: the ARMED daemon runs proof providers verified-demote ONLY (holder not attested; silence-based take disabled) and pages CRITICAL at every start until paired. Pair: run 'failover arm' on the HOLDER first (upgrade order: holder first), copy the token line it prints, then re-run this arm with ARM_PAIRING_TOKEN='<that line>'."
+        ;;
+    esac
+    return 0
+}
+
 # ── skel renderer: header-discipline check → RENDERED header + line replacements → atomic mv
 #    → content verification ────────────────────────────────────────────────────────────────────
 # Every skel carries the 3-line SKELETON paragraph + a bare '#' on line 4 (the repo's header
@@ -604,7 +821,11 @@ _arm_token() {
     bound=$((EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS))
     host=$(hostname 2>/dev/null); host="${host:-unknown-host}"
     payload="v0.7|gen=$gen|watchdog=$watchdog|relinquish_bound=$bound|fence=$ARM_INTENT|host=$host"
-    crc=$(printf '%s' "$payload" | cksum 2>/dev/null | awk '{print $1}')
+    # v0.7 (Block 6.1): the crc is emitted THROUGH the same _pairing_crc helper the P5 intake
+    # verifies with (and the daemons' [proof-gate] twin copy re-verifies with) — one algorithm,
+    # structurally incapable of emit↔intake drift (test_proof_gate round-trips a shipped-arm
+    # token through the shipped intake and cmp's the helper across all three files).
+    crc=$(_pairing_crc "$payload")
     case "$crc" in ''|*[!0-9]*) _arm_refuse "TOKEN-crc" "cksum failed — cannot produce the token's integrity field" "ensure coreutils/busybox cksum is on PATH, then re-run 'failover arm'" ;; esac
     _arm_log "pairing token (§2.1-rev2.1 conditions 2–3 — hand this line to EVERY spare; re-pair on every arm; Block-6 spares validate freshness at their own arm):"
     printf '%s|%s\n' "$payload" "$crc"
@@ -619,11 +840,13 @@ main() {
     _pre_flock_check
     _pre_identity_check
     _announce_arm_state
+    _pre_pairing_intake       # P5 (Block 6.1): pairing-token intake + zero-stake verification — spare (standby-role) arms only; REFUSE[P5-*] on crc/shape, bound-vs-delay, staked-"unstaked"/cannot-verify
     _arm_probe
     _arm_install
     _arm_verify
     _arm_token
     _arm_log "ARMED ($ARM_INTENT): ceremony complete — the pairing token above goes to EVERY spare (re-pair is ceremony, not advice)."
+    _arm_pairing_summary      # (Block 6.1): §2.7 (c) — the pairing posture is the LAST thing on the operator's screen (spare arms only)
 }
 
 main "$@"

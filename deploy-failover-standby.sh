@@ -1014,6 +1014,18 @@ if [[ "$CFG_ROLE" == "BACKUP" ]]; then
     echo -e "    ${DIM}not a blind takeover.${NC}"
 fi
 
+# v0.7 (Block 6.1, §2.7 (c) [6.0-COND-4]): this wizard writes a SPARE config with NO pairing
+# attestation concept — the end-of-install summary must say so out loud (the loud unpaired
+# state), never leave it to a doc. Un-armed hosts (everything this wizard installs today):
+# zero behavior change — the note is about what happens once 'failover arm' runs.
+echo ""
+echo -e "  ${BOLD}${YELLOW}ATTESTATION NOTE (v0.7)${NC}"
+echo -e "    ${DIM}This config carries NO pairing attestation. Once this spare is ARMED ('failover arm'),${NC}"
+echo -e "    ${DIM}it runs proof providers: verified-demote ONLY — holder not attested; silence-based${NC}"
+echo -e "    ${DIM}take disabled — and pages CRITICAL at every start until paired. Upgrade+arm the${NC}"
+echo -e "    ${DIM}HOLDER first (its arm prints the pairing token), then re-run this spare's arm with${NC}"
+echo -e "    ${DIM}ARM_PAIRING_TOKEN='<token line>'. Un-armed hosts: no behavior change.${NC}"
+
 sleep 2
 
 echo ""

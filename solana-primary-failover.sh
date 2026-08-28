@@ -2070,6 +2070,315 @@ _consume_fence_markers() {
 }
 # ── [watchdog] end shared block ──
 
+# v0.7 (Block 6.1): the [proof-gate] role adapter — deliberately OUTSIDE the byte-identical
+# block below (the _rot_graceful_demote pattern: role facts stay per-daemon, the shared block
+# stays byte-identical). The PRIMARY daemon is the HOLDER posture: its arm GENERATES pairing
+# tokens (failover-arm.sh prints one at every holder arm) and never consumes one, and it has no
+# attempt_takeover take path for the gate to guard. SCOPE, precise (panel N1, claim=check): post-
+# failover a DEMOTED primary runs unstaked/spare-postured and CAN re-take the staked identity via
+# attempt_safe_recovery under RECOVERY_MODE=rpc — a live, frozen/silence-flavored re-take. That
+# re-take is DELIBERATELY outside this gate's scope: it is fenced by the pre-existing Block-2
+# vote-liveness "frozen" check (v0.6.3) on the operator-gated recovery ladder, NOT by the proof
+# gate — a deliberate scoping decision, not an oversight, and the seam Block 6.4 must honor when it
+# wires the gate (6.4 owns that wording). Every [proof-gate] entrypoint below therefore no-ops
+# here — the §2.7 unpaired scream must never page a healthy holder.
+_proof_role_is_spare() { return 1; }
+
+# ── [proof-gate] spare-side relinquish-proof gate skeleton — BYTE-IDENTICAL in both daemons (test_proof_gate) ──
+# v0.7 (Block 6.1, BLOCK6-PLAN §0/§5): the gate that will stand in front of the STAKED mutation
+# on the ARMED spare. COST MODEL (reviewer condition 1, binding for the whole block): Block 6's
+# worst outcome is DOUBLE-SIGN — the spare taking while the holder is alive — so every ambiguity
+# below fails toward NOT-TAKING and toward REFUSING (the inverse of Block 5's availability-first
+# calculus). NOT WIRED into any take path in this slice (wiring is 6.4, the Block-5 skeleton
+# pattern): every function here exists, is unit-tested, and is INERT everywhere today —
+# armed-gated (first-line `_watchdog_active || return 0`) AND role-gated (_proof_role_is_spare,
+# the per-daemon adapter defined just above this block — the _rot_graceful_demote pattern), so
+# un-armed hosts see ZERO behavior change (census-asserted in test_proof_gate, not prose).
+# PER-PROVIDER FLOORS [6.0-COND-1]: the gate imposes NO floor of its own — a floor is a
+# property of what each proof STANDS ON, so floors live in the providers (6.2 verified-demote:
+# its own DELTA hold + post-proof re-sample, NOTHING of W+B — it stands on a positive
+# observation that the demoted state is live NOW, the polarity inversion G2 exists for; 6.3
+# watchdog-elapsed: the token-derived elapsed_floor — it stands on time, the longer chain). A
+# global floor would punish the stronger proof with the longer wait and would move the
+# live-tested un-armed 60 s path; TAKEOVER_DELAY is untouched by the whole block — it stays the
+# un-armed path's own constant.
+PROOF_STATE_DIR="${PROOF_STATE_DIR:-/var/lib/solana-failover}"   # MUST match failover-arm.sh ARM_STATE_DIR (the spare arm stores pairing-token there — the FENCE_MARKER_DIR precedent: one canonical dir, env-overridable as the test seam)
+
+_proof_providers=""          # registered proof-provider fns, space-separated (6.2 registers verified-demote, 6.3 watchdog-elapsed; a future holder→spare channel lands here without touching the gate). EMPTY today — the gate REFUSES (fail toward not-taking).
+_proof_last_verdict=""       # the last structured verdict the gate consumed/minted — one k=v| line, never a boolean (§3a.1/[rev3/№7])
+_proof_token_st=""           # _proof_token_scan result: none|invalid|page-only|ok
+_proof_token_gen=""          # parsed token fields (valid only when _proof_token_st is ok/page-only)
+_proof_token_w=""
+_proof_token_b=""
+_proof_token_fence=""
+_proof_unpaired_why=""       # _proof_unpaired_scan result ("" = paired ok)
+_proof_floor_why=""          # _derive_proof_floors failure reason ("" = floor converged); names the non-converging/overflowed floor for the §2.7 page
+
+# crc helper — BYTE-PARITY with failover-arm.sh's _pairing_crc (test_proof_gate cmp's all three
+# copies): the 5.3 token emission's exact mechanics (`cksum | awk`; INTEGRITY, not security).
+# The arm EMITS through its copy and the intake VERIFIES through it; this copy re-verifies at
+# every read. A reimplementation here would let parse and emit drift — the S-1 twin class.
+_pairing_crc() { printf '%s' "$1" | cksum 2>/dev/null | awk '{print $1}'; }
+
+# one k=v field from a |-separated record (token line or verdict record) — the house `field`
+# idiom (tests/lib/harness.sh field() speaks the same shape).
+_proof_field() { printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d= -f2-; }
+
+# _proof_token_scan — classify the STORED pairing token into _proof_token_st (none | invalid |
+# page-only | ok) and fill _proof_token_gen/_w/_b/_fence (variables, not echo: callers need the
+# fields in THIS shell — a $()-captured classifier would strand them in a subshell). The token
+# is the 5.3 emission's exact shape: v0.7|gen=N|watchdog=W|relinquish_bound=B|fence=F|host=H|crc.
+# crc re-verified at EVERY scan (claim=check: the intake verified at store time, but a file can
+# rot on disk like any other; an unverifiable token is an INVALID token → the loud unpaired
+# posture, never a silently-derived floor). fence=page-only is a VALID pairing that buys
+# NOTHING on the time path (page-only relinquishes nothing — it pages), classified apart so the
+# posture text can say why.
+_proof_token_scan() {
+    local _pts_f="$PROOF_STATE_DIR/pairing-token" _pts_line _pts_crc _pts_payload _pts_gen _pts_w _pts_b _pts_fence
+    _proof_token_st=""; _proof_token_gen=""; _proof_token_w=""; _proof_token_b=""; _proof_token_fence=""
+    if [[ ! -f "$_pts_f" ]]; then _proof_token_st="none"; return 0; fi
+    _pts_line=$(head -1 "$_pts_f" 2>/dev/null)
+    case "$_pts_line" in "v0.7|gen="*) : ;; *) _proof_token_st="invalid"; return 0 ;; esac
+    _pts_crc="${_pts_line##*|}"; _pts_payload="${_pts_line%|*}"
+    case "$_pts_crc" in ''|*[!0-9]*) _proof_token_st="invalid"; return 0 ;; esac
+    [[ "$(_pairing_crc "$_pts_payload")" == "$_pts_crc" ]] || { _proof_token_st="invalid"; return 0; }
+    _pts_gen=$(_proof_field "$_pts_line" gen); _pts_w=$(_proof_field "$_pts_line" watchdog)
+    _pts_b=$(_proof_field "$_pts_line" relinquish_bound); _pts_fence=$(_proof_field "$_pts_line" fence)
+    case "$_pts_gen" in ''|*[!0-9]*) _proof_token_st="invalid"; return 0 ;; esac
+    case "$_pts_w"   in ''|*[!0-9]*) _proof_token_st="invalid"; return 0 ;; esac
+    case "$_pts_b"   in ''|*[!0-9]*) _proof_token_st="invalid"; return 0 ;; esac
+    _proof_token_gen=$((10#$_pts_gen)); _proof_token_w=$((10#$_pts_w)); _proof_token_b=$((10#$_pts_b))
+    _proof_token_fence="$_pts_fence"
+    case "$_pts_fence" in
+        real)      _proof_token_st="ok" ;;
+        page-only) _proof_token_st="page-only" ;;
+        *)         _proof_token_st="invalid" ;;
+    esac
+    return 0
+}
+
+# _proof_unpaired_scan — sets _proof_unpaired_why from a fresh token scan ("" = paired ok, i.e.
+# a valid fence=real token). Everything else is the §2.7 unpaired posture, with the reason.
+_proof_unpaired_scan() {
+    _proof_token_scan
+    case "$_proof_token_st" in
+        ok)        _proof_unpaired_why="" ;;
+        none)      _proof_unpaired_why="no pairing token stored" ;;
+        page-only) _proof_unpaired_why="token fence=page-only — page-only relinquishes nothing" ;;
+        *)         _proof_unpaired_why="stored pairing token invalid (crc/shape)" ;;
+    esac
+    return 0
+}
+
+# ── _derive_proof_floors — THE derivation site (§3a.3: derived, not configured) ────────────────
+# ONE site per daemon (twin): NO other script re-declares elapsed_floor / MARGIN_ELAPSED /
+# N_HEAD — test_proof_gate censuses the assignment sites (the N-is-all rule applied to
+# constants, allowlist style). Armed-only and token-fed: the floors exist ONLY when a valid
+# fence=real token is stored — the right to use time as proof is exactly what attestation buys
+# (the condition-4 comment at the gate below). G2's DELTA does NOT live here — it is 6.2's,
+# per-provider (a positive-observation hold; no W+B component).
+_derive_proof_floors() {
+    _watchdog_active || return 0
+    _proof_token_scan
+    _proof_floor_why=""
+    [[ "$_proof_token_st" == "ok" ]] || { _proof_floor_why="no valid fence=real pairing token (state=${_proof_token_st})"; return 1; }
+    # MARGIN_ELAPSED — the slack between the elapsed floor and W+B. It IS the staleness
+    # allowance the independent-head cross-check enforces: the two are COUPLED BY DERIVATION
+    # (N_HEAD below is computed FROM this value), so raising the staleness tolerance visibly
+    # raises the floor — never one without the other.
+    MARGIN_ELAPSED=10
+    # elapsed_floor = W + B + MARGIN_ELAPSED (=100 at the shipped W=30/B=60): the
+    # watchdog-elapsed provider's floor — silence measured on the spare's mono clock must reach
+    # this before attested time counts as proof (provider lands in 6.3).
+    elapsed_floor=$(( _proof_token_w + _proof_token_b + MARGIN_ELAPSED ))
+    # N_HEAD [6.0-COND-3] — derived from what the cross-check GUARDS, never from B: a liveness
+    # view lagging the true head by X seconds freezes the spare's last-seen-liveness stamp, so
+    # measured silence OVERSTATES true silence by <= X; soundness of the elapsed floor needs
+    # measured - X >= W + B, i.e. X <= MARGIN_ELAPSED. N_HEAD = slots(MARGIN_ELAPSED) =
+    # 2.5 slots/s x MARGIN_ELAPSED (integer form *5/2; = 25 slots = 10 s today). Staleness
+    # beyond the allowance reads as BLIND (wait) — availability, never safety.
+    N_HEAD=$(( MARGIN_ELAPSED * 5 / 2 ))
+    # convergence backstop [6.0-COND-1] (panel L-1): in honest arithmetic the floor W+B+MARGIN is
+    # ALWAYS > 0 and >= W and >= B (W,B >= 0, MARGIN > 0), so a violation PROVES 64-bit integer
+    # overflow — a token whose watchdog (or bound) is large enough that the sum wrapped past 2^63.
+    # BOTH wrap directions are fatal and BOTH fail toward NOT-TAKING: a non-positive floor makes the
+    # 6.3 predicate `measured_silence >= floor` true for ANY silence incl. 0 (take-on-no-silence,
+    # the double-sign), and a floor that no longer dominates its own inputs is the "never converges
+    # = broken gate" the plan pre-registered against. Correct REGARDLESS of the arm ceiling (defense
+    # in depth): a token planted straight on disk, or fed from any future env source, that bypassed
+    # intake still fails safe HERE. On failure the floor is INVALID → return non-zero;
+    # _proof_startup_check routes to the §2.7 unpaired posture + a CRITICAL page that names the
+    # non-converging floor, NEVER a healthy PAIRED line.
+    if [[ $elapsed_floor -le 0 || $elapsed_floor -lt $_proof_token_w || $elapsed_floor -lt $_proof_token_b ]]; then
+        _proof_floor_why="derived watchdog-elapsed floor ${elapsed_floor} did not converge (watchdog=${_proof_token_w}, relinquish_bound=${_proof_token_b}, margin ${MARGIN_ELAPSED}) — arithmetic overflow: the floor must be > 0 and >= watchdog and >= relinquish_bound"
+        return 1
+    fi
+    return 0
+}
+
+# ── require_relinquish_proof — the gate shell (BLOCK6-PLAN §0) ─────────────────────────────────
+# THE CONDITION-4 COMMENT (at the gate, where the temptation lives): attestation buys exactly
+# ONE thing — the RIGHT to use time as proof, at the bounds the token carries. The token is
+# pairing METADATA, not holder state: it says the holder was ARMED with (watchdog,
+# relinquish_bound, fence=real) at pairing generation N; it does NOT say the fence is alive NOW
+# (rot is invisible to the spare by design, §2.1 — the holder self-enforces via [fence-rot]).
+# The tempting shortcut — "we are paired, therefore the holder is v0.7, therefore its watchdog
+# will fence it" — is CLOSED here: pairing speaks of configuration at generation N, never of
+# what that box is doing now.
+# Consumes/mints a STRUCTURED verdict, never a boolean (§3a.1/[rev3/№7]) — one k=v| line:
+#   proven= provider= observation_id= vantage= obs_since= blind_until= observed_at=
+# where vantage/obs_since/blind_until are the Block-3 freshness triple fed FROM the existing
+# seam globals (_liveness_first_provider / _liveness_obs_since / _last_blind_end — NO second
+# freshness system; suites read the triple ONLY via dump_freshness, the S-1 twin-drift rule)
+# and observed_at is a MONO stamp of the LAST read the verdict rests on (0 = none).
+# Returns: 0 = accepted proof — or the gate does not exist behaviorally (un-armed / non-spare:
+# v0.6.x take semantics unchanged, zero new reads, zero new refusals); 1 = REFUSED (no accepted
+# proof → no take); 2 = BYPASSED (ALLOW_UNFENCED_TAKEOVER=true, the existing double-opt-in
+# lever) — a DISTINCT outcome so the 6.4 wiring inherits the per-take scream point without
+# redesign: the CRITICAL page fires HERE at the bypass itself (§2.6 every-start-scream class;
+# the every-START half lives in _proof_startup_check). 6.4 must case on 2 explicitly — a bare
+# `|| return 1` would read bypassed as refused (safe direction, but not the lever's contract).
+require_relinquish_proof() {
+    _watchdog_active || return 0
+    _proof_role_is_spare || return 0
+    local _rrp_prov _rrp_v _rrp_n=0 _rrp_posture
+    if [[ "${ALLOW_UNFENCED_TAKEOVER:-false}" == "true" ]]; then
+        _proof_last_verdict="proven=bypassed|provider=operator-override|observation_id=|vantage=${_liveness_first_provider:-}|obs_since=${_liveness_obs_since:-0}|blind_until=${_last_blind_end:-0}|observed_at=$(mono_now)"
+        alert "ALLOW_UNFENCED_TAKEOVER=true — this take BYPASSES the relinquish-proof gate (no proof the holder relinquished; double-sign risk). Unset the lever unless this is a deliberate, temporary override." "${STAKED_PUBKEY:-unknown}" "PROOF GATE BYPASSED 🚨"
+        return 2
+    fi
+    for _rrp_prov in $_proof_providers; do
+        _rrp_n=$((_rrp_n + 1))
+        _rrp_v=$("$_rrp_prov") || _rrp_v=""
+        [[ -n "$_rrp_v" ]] || continue
+        _proof_last_verdict="$_rrp_v"
+        if [[ "$(_proof_field "$_rrp_v" proven)" == "yes" ]]; then
+            log_info "[proof-gate] relinquish proof ACCEPTED — provider=$(_proof_field "$_rrp_v" provider) observation=$(_proof_field "$_rrp_v" observation_id) (the freshness age bound is enforced at the MUTATION EDGE by _proof_age_edge_check, not here)"
+            return 0
+        fi
+    done
+    # no provider proved (today: zero providers are registered — the skeleton refuses).
+    # claim=check on the posture text: the §2.7 line describes the UNPAIRED posture; a PAIRED
+    # spare that merely lacks providers gets the factual variant instead.
+    _proof_token_scan
+    if [[ "$_proof_token_st" == "ok" ]]; then
+        _rrp_posture="holder attested (token gen=${_proof_token_gen}) but no registered provider proved relinquish"
+    else
+        _rrp_posture="proof providers: verified-demote ONLY — holder not attested; silence-based take disabled — upgrade/pair the holder (arm prints the token)"
+    fi
+    _proof_last_verdict="proven=no|provider=none|observation_id=|vantage=${_liveness_first_provider:-}|obs_since=${_liveness_obs_since:-0}|blind_until=${_last_blind_end:-0}|observed_at=0"
+    log_warn "[proof-gate] REFUSE: no accepted relinquish proof — MEASURED: providers registered=${_rrp_n}, proven verdicts=0; REQUIRED: >=1 accepted proof (fail toward NOT-TAKING). ${_rrp_posture}"
+    return 1
+}
+
+# ── _proof_age_edge_check [6.0-COND-2] — verdict freshness enforced AT THE MUTATION EDGE ───────
+# Designed to sit AFTER _fresh_proof_recheck, INSIDE the zero-network span, immediately before
+# set-identity (wiring is 6.4) — a clock-only (mono) comparison, because the recheck itself
+# reads the network and an acceptance-time check would leave the proof up to
+# PROOF_MAX_AGE + R_worst old at set-identity.
+#
+# PROOF_MAX_AGE — DERIVED, not picked (the [6.0-COND-2] verdict→mutation arithmetic), from a
+# census of EVERY read between verdict acceptance and set-identity in the CURRENT standby take
+# path (attempt_takeover → take_staked_identity → _fresh_proof_recheck → mutation; the slice-5
+# A8 census holds: zero network after the recheck's return-0):
+#   R_worst — the edge-REACHABLE worst of the ONE read in the span, the recheck's sampler call
+#   (get_staked_liveness_sample), under the ARMED unit (the gate only exists armed):
+#       2 x curl -m 10                    = 20 s   (T2 full timeout + T3 slow SUCCESS; a
+#                                                   both-timeout run ABORTS the recheck, so the
+#                                                   edge is never reached on that path)
+#       2 x per-op pet (timeout -k 2 5)   = 14 s   (5 s + 2 s kill-grace each, the house
+#                                                   bound-counting)
+#       parse/clock glue (3 jq + mono_now) =  2 s
+#                                  R_worst = 36 s
+#   acceptance_slack (gate-accept → recheck entry: tier_summary string glue; bounded ops
+#   censused ZERO)                          =  3 s
+#   margin (scheduler/load headroom, ~28 % of the 39 s worst reachable span, rounded to land
+#   the budget on a round figure; rounding UP loosens the budget — the unsafe direction — by
+#   < 1 s, absorbed by the composition below) = 11 s
+#   PROOF_MAX_AGE = 36 + 3 + 11             = 50 s
+# HEALTHY PATH (typical one-curl success ~1 s + glue): verdict age at the edge ≈ 2–4 s — ≥ 12x
+# under the budget; the worst REACHABLE path (39 s) clears it by 11 s: convergence proven WITH
+# margin (the slice-4 floor lesson — a bound right in meaning that never converges is a broken
+# gate). NOTE: =50 equals G2's DELTA=50 by numeric COINCIDENCE, not derivation — different
+# objects (a positive-observation hold duration vs a verdict staleness bound); do not unify.
+# COMPOSITION (why age-check + recheck TOGETHER, not either alone): the recheck's staked-vote
+# pin owns the flip-back-then-vote direction — a holder that re-takes and votes AFTER the
+# verdict's last read lifts lastVote above the episode's pinned min-rule baseline and ABORTS at
+# the final re-check; NO snapshot-based verdict can see that direction. The edge check owns the
+# other axis: it bounds how stale the verdict's newest evidence may be at the mutation instant
+# (the recheck cannot know what the verdict rested on). The pin bounds BEHAVIOR; the edge check
+# bounds STALENESS — they compose, they do not merge (each system reads ONCE per decision; the
+# recheck's staked-lastVote pin and the verdict's observation stay DIFFERENT OBJECTS).
+PROOF_MAX_AGE=50
+_proof_age_edge_check() {
+    _watchdog_active || return 0
+    _proof_role_is_spare || return 0
+    local _pae_obs _pae_age
+    _pae_obs=$(_proof_field "${_proof_last_verdict:-}" observed_at)
+    # no 0-sentinel arithmetic (the reviewer's Block-3 class note): observed_at absent/0/garbage
+    # means NO read backs the verdict — refuse outright, never compute now-0.
+    case "$_pae_obs" in ''|0|*[!0-9]*)
+        log_warn "[proof-gate] edge check REFUSE: the verdict carries no usable observed_at ('${_pae_obs:-}') — a proof with no read behind it is not fresh, it is absent (fail toward NOT-TAKING)"
+        return 1
+    ;; esac
+    _pae_age=$(( $(mono_now) - _pae_obs ))
+    # symmetric clamp (panel L-2): observed_at absent/0/garbage is refused above; the MIRROR case is
+    # observed_at > mono_now (age < 0) — a verdict stamped AHEAD of this spare's mono clock. A verdict
+    # from the future is not fresh, it is impossible (clock inversion / vantage skew); like the
+    # 0-sentinel case it fails toward NOT-TAKING rather than reading "fresh". Closed now, before
+    # 6.2/6.3 mint observed_at from independent network/vantage reads (the plan's own skew attacks).
+    if [[ $_pae_age -lt 0 ]]; then
+        log_warn "[proof-gate] edge check REFUSE: verdict observed_at is in the FUTURE — MEASURED: verdict age ${_pae_age}s (observed_at ahead of this spare's mono clock); REQUIRED: age >= 0. A proof from the future is impossible, not fresh (clock inversion / skew) — fail toward NOT-TAKING"
+        return 1
+    fi
+    if [[ $_pae_age -le $PROOF_MAX_AGE ]]; then
+        return 0
+    fi
+    log_warn "[proof-gate] edge check REFUSE: proof STALE at the mutation edge — MEASURED: verdict age ${_pae_age}s; REQUIRED: <= ${PROOF_MAX_AGE}s (PROOF_MAX_AGE, derived above). The take must re-prove (fail toward NOT-TAKING)"
+    return 1
+}
+
+# ── the §2.7 LOUD unpaired state [6.0-COND-4] — every-start scream + standing status line ──────
+# An armed spare with no (or invalid) pairing token — or a fence=page-only token, for the time
+# path — can still take via verified-demote (6.2) but NEVER on silence, and that must SCREAM,
+# not sit in a doc: (a) a CRITICAL page at EVERY daemon startup (the safety-page channel;
+# called from startup_checks in both daemons — deliberately UNTHROTTLED across restarts, the
+# §2.6 every-start-scream rule, same class as ALLOW_UNFENCED_TAKEOVER), and (b) a standing
+# line on the periodic status surface (the v0.6.4 ♥ Heartbeat block — called from the main
+# loop's heartbeat site, once per HEARTBEAT_INTERVAL, same wording every interval).
+_proof_startup_check() {
+    _watchdog_active || return 0
+    _proof_role_is_spare || return 0
+    if [[ "${ALLOW_UNFENCED_TAKEOVER:-false}" == "true" ]]; then
+        # the 6.1 half of the lever integration: the every-START scream (the per-take half is
+        # the gate's `bypassed` outcome above).
+        alert "ALLOW_UNFENCED_TAKEOVER=true on an ARMED spare — every take will BYPASS the relinquish-proof gate (no proof the holder relinquished; double-sign risk). Unset the lever unless this is a deliberate, temporary override." "${STAKED_PUBKEY:-unknown}" "PROOF GATE BYPASS ARMED 🚨"
+    fi
+    _proof_unpaired_scan
+    if [[ -z "$_proof_unpaired_why" ]]; then
+        if _derive_proof_floors; then
+            log_info "[proof-gate] armed spare PAIRED: token gen=${_proof_token_gen} (watchdog=${_proof_token_w}s, relinquish_bound=${_proof_token_b}s, fence=real) → elapsed_floor=${elapsed_floor}s, N_HEAD=${N_HEAD} slots (no proof provider is registered in this build; the gate is not wired into any take path)"
+            return 0
+        fi
+        # a VALID-shape fence=real token whose floor did NOT converge (the overflow/wrap backstop
+        # above): an INVALID pairing, not a healthy PAIRED spare — the §2.7 CRITICAL page, naming
+        # the non-converging floor, NEVER the PAIRED line (fail toward NOT-TAKING).
+        alert "armed spare pairing INVALID — the token-derived watchdog-elapsed floor did not converge (${_proof_floor_why}); this is a corrupted/forged or overflowing token, NOT a healthy pairing — silence-based take stays DISABLED. Re-arm the holder and re-pair this spare with a fresh token." "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
+        return 0
+    fi
+    alert "proof providers: verified-demote ONLY — holder not attested (${_proof_unpaired_why}); silence-based take disabled — upgrade/pair the holder (arm prints the token)" "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
+    return 0
+}
+_proof_status_line() {
+    _watchdog_active || return 0
+    _proof_role_is_spare || return 0
+    _proof_unpaired_scan
+    [[ -z "$_proof_unpaired_why" ]] && return 0
+    log_info "[proof-gate] proof providers: verified-demote ONLY — holder not attested (${_proof_unpaired_why}); silence-based take disabled — upgrade/pair the holder (arm prints the token)"
+    return 0
+}
+# ── [proof-gate] end shared block ──
+
 # ── [fence-rot] holder-side fence re-verification + FENCE_ROT_GRACE escalation — BYTE-IDENTICAL in both daemons (test_fence_rot) ──
 # v0.7 (Block 5.4, §2.1-rev2.1 №2): the pairing token attests the holder's fence AT PAIRING
 # TIME only — the spare cannot see post-pairing rot (unit masked, a drop-in re-adding
@@ -3310,6 +3619,7 @@ startup_checks() {
 
     _enforce_one_arm_state    # v0.7 (Block 5 skeleton, №1): refuse DRY_RUN=true + REAL fence unit — CRITICAL + exit 1; structurally inert while no fence unit exists (every host today). Runs AFTER marker consumption (fix round HOLD-1): on a fenced node this refusal must not preempt HOLD.
     _rot_capture_intent       # v0.7 (Block 5.4): fence-intent anchor for the rot sweep — armed-unit only (structurally inert on every host today); captured HERE, at startup, so runtime real→none / real→page-only is classifiable as "the fence is GONE" (a first-sweep capture would bless an early deletion as intent)
+    _proof_startup_check      # v0.7 (Block 6.1, §2.7 [6.0-COND-4]): the LOUD unpaired/bypass state — CRITICAL page at EVERY armed-spare start (no/invalid/page-only pairing token, and the ALLOW_UNFENCED_TAKEOVER every-start scream); armed+spare only — a no-op on this HOLDER daemon (_proof_role_is_spare returns 1) and on every un-armed host
 
     # v0.6.9 (M8): TIER2/TIER3 vantage-independence. Identical URLs silently void every "two vantages"
     # assumption (A6, the liveness fence's fallback independence, the tiered confirmations). Warn loudly
@@ -3711,6 +4021,7 @@ while $_running; do
         done
 
         log_info "♥ Heartbeat: ${id_label} | Internet: ${ping_ok}| Checks: $STAT_CHECKS | Switches: $STAT_SWITCHES | T2 calls: $STAT_TIER2_CHECKS | FP: $STAT_FALSE_POSITIVES | Window: [${_delinq_window:-empty}]"
+        _proof_status_line   # v0.7 (Block 6.1, §2.7 (b)): the standing unpaired line — rides the v0.6.4 status-log cadence (this ♥ Heartbeat block, every HEARTBEAT_INTERVAL); a no-op on this HOLDER daemon (_proof_role_is_spare returns 1) and on every un-armed host — kept at the same surface in both daemons so the call sites stay symmetric
         _last_heartbeat=$now_hb
     fi
 

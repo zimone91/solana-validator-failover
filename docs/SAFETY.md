@@ -138,6 +138,18 @@ alternative of a spare consuming `watchdog-elapsed` over a holder whose fence si
 exists, which is the double-sign class this tool exists to prevent. During the grace the holder is
 voting and paging, so the spare's silence-based path cannot fire against it: the window itself adds
 no double-sign exposure.
+
+**The stale-bound re-arm residual (v0.7, named):** the pairing token carries the holder's
+`relinquish_bound` as of pairing generation N, and the spare derives its silence (elapsed) floor
+from those stored bounds. A holder later re-armed with a **larger** bound whose operator forgets to
+re-pair leaves the spare's elapsed floor resting on the old, smaller bounds — the spare could then
+take on silence before the holder's real worst-case relinquish completes: a double-sign direction.
+The spare **cannot detect this by construction**: the token is configuration, not state — there is
+no holder→spare channel (the same by-design gap as fence rot above). The protection is operational
+and mechanical on the holder side: the holder's `failover arm` refuses to complete without printing
+the new token ("re-pair every spare" is ceremony, not advice — Block 5.3), and the spare's own arm
+re-validates its stored token at every arm. The residual stays and is stated plainly: between a
+holder re-arm and the next spare re-pair, the spare's elapsed floor rests on stale bounds.
 - **Evidence quality** (v0.7): bind `VOTE_PUBKEY` to `STAKED_PUBKEY` via `getVoteAccounts`
   (`nodePubkey`) before acting. Landed in v0.7: the paired liveness sample is provider-pinned, and
   *any* forward movement of `lastVote` now counts as "alive" (`VOTE_LIVENESS_EPSILON=0`, which
