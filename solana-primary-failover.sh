@@ -2098,7 +2098,9 @@ _proof_role_is_spare() { return 1; }
 # property of what each proof STANDS ON, so floors live in the providers (6.2 verified-demote:
 # its own DELTA hold + post-proof re-sample, NOTHING of W+B — it stands on a positive
 # observation that the demoted state is live NOW, the polarity inversion G2 exists for; 6.3
-# watchdog-elapsed: the token-derived elapsed_floor — it stands on time, the longer chain). A
+# watchdog-elapsed: the token-derived elapsed_floor — it stands on time, the WEAKEST of the
+# three evidence kinds, its chain made longer BY CONSTRUCTION: elapsed_floor >= TAKEOVER_DELAY
+# is REFUSED at intake and re-asserted in _derive_proof_floors — never presumed). A
 # global floor would punish the stronger proof with the longer wait and would move the
 # live-tested un-armed 60 s path; TAKEOVER_DELAY is untouched by the whole block — it stays the
 # un-armed path's own constant.
@@ -2211,6 +2213,25 @@ _derive_proof_floors() {
     # non-converging floor, NEVER a healthy PAIRED line.
     if [[ $elapsed_floor -le 0 || $elapsed_floor -lt $_proof_token_w || $elapsed_floor -lt $_proof_token_b ]]; then
         _proof_floor_why="derived watchdog-elapsed floor ${elapsed_floor} did not converge (watchdog=${_proof_token_w}, relinquish_bound=${_proof_token_b}, margin ${MARGIN_ELAPSED}) — arithmetic overflow: the floor must be > 0 and >= watchdog and >= relinquish_bound"
+        return 1
+    fi
+    # floor-vs-timer MINIMUM backstop (6.1 reviewer condition; defense in depth like the
+    # convergence assert above — the intake refuses this pairing at P5, so reaching here means
+    # the token bypassed intake, the daemon was re-configured after pairing, or a future feed
+    # skipped the ceremony): arming must never make the spare FASTER to take than not-arming.
+    # watchdog-elapsed stands on time — the WEAKEST of the three evidence kinds — so its floor
+    # must be >= the un-armed timer path's TAKEOVER_DELAY by construction, not by presumption.
+    # A non-numeric/unset TAKEOVER_DELAY is cannot-verify -> invalid floor (fail toward
+    # NOT-TAKING; on the holder-role daemon the section-2.7 consumer is role-gated, so an
+    # invalid floor stays inert data there).
+    local _pdf_delay
+    _pdf_delay="${TAKEOVER_DELAY:-}"
+    case "$_pdf_delay" in ''|*[!0-9]*)
+        _proof_floor_why="cannot check the elapsed floor against the un-armed timer path: TAKEOVER_DELAY='${_pdf_delay:-unset}' is not numeric (cannot-verify fails toward NOT-TAKING)"
+        return 1
+    ;; esac
+    if [[ $elapsed_floor -lt $((10#$_pdf_delay)) ]]; then
+        _proof_floor_why="derived elapsed_floor ${elapsed_floor}s is SHORTER than the un-armed timer path TAKEOVER_DELAY=${_pdf_delay}s (watchdog=${_proof_token_w}, relinquish_bound=${_proof_token_b}, margin ${MARGIN_ELAPSED}) — arming must never make the spare FASTER to take than not-arming; the intake refuses this pairing, so this token bypassed intake or the delay changed after pairing"
         return 1
     fi
     return 0
@@ -2363,7 +2384,7 @@ _proof_startup_check() {
         # a VALID-shape fence=real token whose floor did NOT converge (the overflow/wrap backstop
         # above): an INVALID pairing, not a healthy PAIRED spare — the §2.7 CRITICAL page, naming
         # the non-converging floor, NEVER the PAIRED line (fail toward NOT-TAKING).
-        alert "armed spare pairing INVALID — the token-derived watchdog-elapsed floor did not converge (${_proof_floor_why}); this is a corrupted/forged or overflowing token, NOT a healthy pairing — silence-based take stays DISABLED. Re-arm the holder and re-pair this spare with a fresh token." "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
+        alert "armed spare pairing INVALID — ${_proof_floor_why}; a corrupted/forged, overflowing, or mis-bounded token is NOT a healthy pairing — silence-based take stays DISABLED. Re-arm the holder and re-pair this spare with a fresh token." "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
         return 0
     fi
     alert "proof providers: verified-demote ONLY — holder not attested (${_proof_unpaired_why}); silence-based take disabled — upgrade/pair the holder (arm prints the token)" "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"

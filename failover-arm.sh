@@ -359,7 +359,7 @@ PAIRING_BOUND_MAX=3600
 _ARM_PAIR_SUMMARY=""   # set by _pre_pairing_intake; _arm_pairing_summary prints it at the end
 
 _pre_pairing_intake() {
-    local tokf="$ARM_STATE_DIR/pairing-token" tok src="" crc payload gen w b fence thost tmp delay shape_ok=1
+    local tokf="$ARM_STATE_DIR/pairing-token" tok src="" crc payload gen w b fence thost tmp delay shape_ok=1 _p5_margin _p5_floor
     if [[ "$ARM_ROLE" != "standby" ]]; then
         [[ -n "${ARM_PAIRING_TOKEN:-}" ]] && _arm_warn "ARM_PAIRING_TOKEN is set on a '${ARM_ROLE}' arm — IGNORED: the holder GENERATES pairing tokens (this ceremony prints one below); only a spare (standby-role) arm consumes one (Block 6.1 P5)."
         return 0
@@ -435,6 +435,34 @@ _pre_pairing_intake() {
     delay=$((10#$delay))
     if [[ $b -gt $delay ]]; then
         _arm_refuse "P5-bound" "token relinquish_bound EXCEEDS this spare's takeover delay — MEASURED: relinquish_bound=${b}s (the holder's worst-case relinquish, from the token) vs TAKEOVER_DELAY=${delay}s (this spare); REQUIRED: relinquish_bound <= TAKEOVER_DELAY. This spare could take BEFORE the holder's worst-case relinquish completes — the exact double-sign G2 exists to prevent. No override exists for this refusal" "EITHER raise this spare's delay to >= ${b}s:  sed -i 's/^TAKEOVER_DELAY=.*/TAKEOVER_DELAY=${b}/' $ARM_ENV_FILE  and re-run 'failover arm' here — OR re-arm the holder with a tighter bound: lower its EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS so their sum is <= ${delay}, re-run 'failover arm' THERE, and pair this spare with the NEW token"
+    fi
+    # floor-vs-timer MINIMUM (6.1 reviewer condition — the mirror of the B<=delay refusal above,
+    # the same check from the other end: one bound from above, one from below): arming must
+    # never make the spare FASTER to take than not-arming. watchdog-elapsed stands on time —
+    # the WEAKEST of the three evidence kinds — so its floor (W+B+MARGIN_ELAPSED) must be >=
+    # the un-armed timer path's TAKEOVER_DELAY BY CONSTRUCTION, not by presumption ("the longer
+    # chain" was an assumption; this refusal and the twin _derive_proof_floors backstop make it
+    # true). A short floor is an ordinary MISCONFIGURED holder (WatchdogSec=10 + a 10+10
+    # self-fence pair), not a forgery — the holder's drift announcer warns there, and the spare
+    # must refuse to pair HERE. MARGIN_ELAPSED is READ from the installed role daemon's single
+    # derivation site (comment-stripped, the P1 idiom) — never re-declared in this script: one
+    # source of truth, no drift vector, the constants census stays exact; an unreadable margin
+    # is cannot-verify at ceremony time and REFUSES. This validation is ARM-TIME: if the
+    # installed daemon is upgraded after arming and its MARGIN changes, this check goes stale —
+    # deliberately fine: the twin _derive_proof_floors backstop re-derives the floor with the
+    # daemon's OWN margin at EVERY start, so the drift is caught at the next restart, never
+    # ridden silently (do not hunt for a hole here).
+    _p5_margin=$(grep -v '^[[:space:]]*#' "$ARM_INSTALL_DIR/solana-${ARM_ROLE}-failover.sh" 2>/dev/null | grep -m1 -E '^[[:space:]]*MARGIN_ELAPSED=' | cut -d= -f2- | sed 's/#.*//' | tr -d '[:space:]')
+    case "$_p5_margin" in ''|*[!0-9]*)
+        _arm_refuse "P5-floor" "cannot READ MARGIN_ELAPSED from the installed role daemon ($ARM_INSTALL_DIR/solana-${ARM_ROLE}-failover.sh) — the elapsed-floor minimum cannot be checked (cannot-verify at ceremony time fails toward refusing; got '${_p5_margin:-nothing}')" "install the v0.7 role daemon (it carries the single MARGIN_ELAPSED derivation site), then re-run 'failover arm'"
+    ;; esac
+    _p5_margin=$((10#$_p5_margin))
+    if [[ $_p5_margin -lt 1 || $_p5_margin -gt $PAIRING_BOUND_MAX ]]; then
+        _arm_refuse "P5-floor" "MARGIN_ELAPSED read from the installed daemon is out of range — MEASURED: ${_p5_margin}; REQUIRED: 1..${PAIRING_BOUND_MAX} (the token-bounds ceiling class)" "the installed daemon is doctored or corrupted — reinstall the v0.7 daemon, then re-run 'failover arm'"
+    fi
+    _p5_floor=$(( w + b + _p5_margin ))
+    if [[ $_p5_floor -lt $delay ]]; then
+        _arm_refuse "P5-floor" "the token-derived watchdog-elapsed floor is SHORTER than this spare's un-armed timer path — MEASURED: floor=${_p5_floor}s (watchdog=${w}s + relinquish_bound=${b}s + MARGIN_ELAPSED=${_p5_margin}s) vs TAKEOVER_DELAY=${delay}s; REQUIRED: floor >= TAKEOVER_DELAY. Arming must never make the spare FASTER to take than not-arming — watchdog-elapsed stands on time, the weakest evidence kind, so its floor must dominate the timer path (the mirror of the relinquish_bound<=TAKEOVER_DELAY refusal above). No override exists for this refusal" "EITHER re-arm the holder with larger bounds so watchdog+relinquish_bound >= $(( delay - _p5_margin ))s (the token carries $(( w + b ))s), re-run 'failover arm' THERE, and pair this spare with the NEW token — OR lower this spare's TAKEOVER_DELAY into [${b}, ${_p5_floor}]:  sed -i 's/^TAKEOVER_DELAY=.*/TAKEOVER_DELAY=${_p5_floor}/' $ARM_ENV_FILE  and re-run 'failover arm' here (keep TAKEOVER_DELAY >= relinquish_bound=${b}s — the refusal above)"
     fi
     # store ATOMICALLY (tmp+mv+verify — the 5.3 gen-counter discipline, incl. the A10
     # directory-swallows-mv trap: stored is only real if a REGULAR FILE now holds the line)

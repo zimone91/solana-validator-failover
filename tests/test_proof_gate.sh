@@ -168,6 +168,10 @@ write_daemon() {   # v0.7-shaped daemon fixture (P1: patsub guard + watchdog cap
         echo '_watchdog_active() { [ -n "$WATCHDOG_USEC" ]; }'
         echo '_watchdog_pet() { _sd_notify "WATCHDOG=1"; }'
         echo '_sd_notify_ready() { _sd_notify "READY=1"; }'
+        # fixture mirror of the daemons' SINGLE derivation-site assignment — the arm's P5
+        # floor-minimum check READS this line from the installed role daemon (never re-declares
+        # it); case (1m) deletes it to exercise the cannot-verify refusal
+        echo 'MARGIN_ELAPSED=10'
         local _i=1
         while [ "$_i" -le 12 ]; do echo "op$_i() { _watchdog_pet; }"; _i=$((_i+1)); done
     } > "$1"
@@ -338,6 +342,53 @@ else
     bad "(1j) z_w=$z_w z_b=$z_b"
 fi
 
+# (1k) floor-vs-timer MINIMUM (6.1 reviewer condition — the mirror of the B<=delay refusal, the
+# same check from the other end): a crc-valid, IN-CEILING token from a misconfigured holder
+# (W=10/B=20 — an ordinary wrong setup, not a forgery: the holder's drift announcer would warn,
+# but the spare must refuse to pair) derives floor 40 < TAKEOVER_DELAY=60. Arming must never
+# make the spare FASTER to take than not-arming. Red observed on 390527d: both tokens below
+# armed PAIRED with the short floor.
+TOK_LOW=$(mk_token 9 10 20 real holder1)
+new_mock standby
+run_arm ARM_PAIRING_TOKEN="$TOK_LOW"
+lo_rc=$RC; lo_stored=$([[ -e "$MOCK_DIR/state/pairing-token" ]] && echo yes || echo no)
+lo_ok=0
+if [[ "$lo_rc" == "1" && "$lo_stored" == "no" ]] && out_has 'REFUSE\[P5-floor\]' && out_has 'MEASURED: floor=40s' && out_has 'TAKEOVER_DELAY=60' && out_has 'FASTER to take than not-arming' && out_has 'EITHER re-arm the holder' && ! out_has 'pairing summary: PAIRED'; then lo_ok=1; fi
+TOK_TINY=$(mk_token 9 1 1 real holder1)
+new_mock standby
+run_arm ARM_PAIRING_TOKEN="$TOK_TINY"
+ti_ok=0
+if [[ "$RC" == "1" ]] && out_has 'REFUSE\[P5-floor\]' && out_has 'MEASURED: floor=12s'; then ti_ok=1; fi
+if [[ $lo_ok -eq 1 && $ti_ok -eq 1 ]]; then
+    ok "(1k) short-floor tokens (W10/B20→40s; W1/B1→12s) vs TAKEOVER_DELAY=60 → REFUSE[P5-floor] with MEASURED floor + the arming-never-faster principle + BOTH fix commands; nothing stored, no PAIRED"
+else
+    bad "(1k) lo_rc=$lo_rc lo_stored=$lo_stored lo_ok=$lo_ok ti_ok=$ti_ok tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# (1l) boundary is INCLUSIVE: floor == TAKEOVER_DELAY pairs (W25/B25 → 25+25+10 = 60 == 60);
+# the shipped 30/60 → 100 case is (1a). Preservation case, green before AND after the fix.
+TOK_EDGE=$(mk_token 9 25 25 real holder1)
+new_mock standby
+run_arm ARM_PAIRING_TOKEN="$TOK_EDGE"
+if [[ "$RC" == "0" ]] && out_has 'pairing summary: PAIRED' && [[ "$(cat "$MOCK_DIR/state/pairing-token" 2>/dev/null)" == "$TOK_EDGE" ]]; then
+    ok "(1l) boundary floor==TAKEOVER_DELAY (60==60) → accepted + stored PAIRED (inclusive >=, mirroring the inclusive ceiling boundary (1i))"
+else
+    bad "(1l) rc=$RC tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# (1m) MARGIN unreadable from the installed role daemon → cannot-verify at ceremony → REFUSE
+# (the P1-idiom read is load-bearing: the arm never re-declares MARGIN_ELAPSED — one derivation
+# site, no drift vector, and the constants census stays exact — so an unreadable line must
+# REFUSE, never default).
+new_mock standby
+grep -v '^MARGIN_ELAPSED=' "$MOCK_DIR/opt/solana-standby-failover.sh" > "$MOCK_DIR/opt/d.tmp" && mv "$MOCK_DIR/opt/d.tmp" "$MOCK_DIR/opt/solana-standby-failover.sh"
+run_arm ARM_PAIRING_TOKEN="$TOK_OK"
+if [[ "$RC" == "1" ]] && out_has 'REFUSE\[P5-floor\]' && out_has 'cannot READ MARGIN_ELAPSED'; then
+    ok "(1m) MARGIN_ELAPSED unreadable from the installed daemon → REFUSE[P5-floor] (cannot-verify at ceremony fails toward refusing; the arm reads the daemon's single derivation site, never re-declares)"
+else
+    bad "(1m) rc=$RC tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
 TOK_PO=$(mk_token 9 30 60 page-only holder1)
 new_mock standby
 run_arm ARM_PAIRING_TOKEN="$TOK_PO"
@@ -485,6 +536,7 @@ drive_gate() {
         load_seam "$script"
         STAKED_PUBKEY=S1; UNSTAKED_PUBKEY=U1
         ALERT_THROTTLE=600
+        TAKEOVER_DELAY=60   # the un-armed timer path — the floor-minimum backstop compares against it; case (4g) unsets it
         if [[ "$armed" == "1" ]]; then NOTIFY_SOCKET="$PROOF_STATE_DIR/n.sock"; WATCHDOG_USEC=30000000; else unset NOTIFY_SOCKET; unset WATCHDOG_USEC; fi
         ALLOW_UNFENCED_TAKEOVER="${lever:-false}"
         case "$tokmode" in
@@ -493,6 +545,7 @@ drive_gate() {
             invalid)   printf 'v0.7|gen=7|watchdog=30|relinquish_bound=60|fence=real|host=h|999\n' > "$PROOF_STATE_DIR/pairing-token" ;;
             b61)       printf '%s\n' "$(mk_token 8 30 61 real holder1)" > "$PROOF_STATE_DIR/pairing-token" ;;
             wrapw)     printf '%s\n' "$(mk_token 7 9223372036854775800 60 real holder1)" > "$PROOF_STATE_DIR/pairing-token" ;;   # crc-valid, W near 2^63 → floor W+B+MARGIN wraps NEGATIVE (planted on disk, bypassing the arm ceiling)
+            lowfloor)  printf '%s\n' "$(mk_token 9 10 20 real holder1)" > "$PROOF_STATE_DIR/pairing-token" ;;   # crc-valid, in-ceiling, honest-looking — floor 10+20+10=40 < TAKEOVER_DELAY=60 (the reviewer's misconfigured-holder table; planted on disk, bypassing the intake floor-minimum)
             none)      : ;;
         esac
         PAGES=0; PAGE_TITLES=""; LASTPAGE=""; WARNCT=0; LASTWARN=""; INFOCT=0; LASTINFO=""; SLINES=0
@@ -554,6 +607,36 @@ else
     bad "(4d) $r"
 fi
 
+# (4f) floor-vs-timer MINIMUM backstop (6.1 reviewer condition; defense in depth like (4d)): a
+# crc-valid in-ceiling short-floor token planted ON DISK (bypassing the intake refusal (1k)) —
+# the twin derivation must classify the pairing INVALID (floor 40 < TAKEOVER_DELAY=60) and the
+# §2.7 CRITICAL page must name SHORTER, never PAIRED. Red observed on 390527d: drc=0 floor=40
+# with the healthy PAIRED line.
+r=$(drive_gate "$STANDBY" 1 "" lowfloor case_floors_and_start | tail -1)
+if [[ "$(field "$r" drc)" == "1" && "$(field "$r" floor)" == "40" ]] \
+   && [[ "$(field "$r" pages)" == "1" && "$(field "$r" titles)" == *"ARMED SPARE NOT ATTESTED 🚨"* ]] \
+   && [[ "$(field "$r" lastpage)" == *"SHORTER than the un-armed timer path"* ]] \
+   && [[ "$(field "$r" lastinfo)" != *"armed spare PAIRED"* ]]; then
+    ok "(4f) planted short-floor token (bypasses intake) → derivation INVALID (rc 1, floor=40 < delay=60) + §2.7 CRITICAL naming SHORTER; NO PAIRED line — arming never makes the spare faster than not-arming, by construction at BOTH layers"
+else
+    bad "(4f) $r"
+fi
+
+# (4g) TAKEOVER_DELAY unset/non-numeric in the daemon env → the floor minimum is UNCHECKABLE →
+# cannot-verify → invalid floor (fail toward NOT-TAKING; on the holder-role daemon this stays
+# inert data — the §2.7 consumer is role-gated).
+case_floors_nodelay() {
+    unset TAKEOVER_DELAY
+    _derive_proof_floors; local rc=$?
+    echo "rc=$rc|floor=${elapsed_floor:-unset}|why=${_proof_floor_why:-}"
+}
+r=$(drive_gate "$STANDBY" 1 "" ok case_floors_nodelay | tail -1)
+if [[ "$(field "$r" rc)" == "1" && "$(field "$r" why)" == *"TAKEOVER_DELAY"* ]]; then
+    ok "(4g) TAKEOVER_DELAY unset → derivation INVALID (cannot-verify the floor minimum fails toward NOT-TAKING), why names the missing delay"
+else
+    bad "(4g) $r"
+fi
+
 # (5) coupling: MARGIN_ELAPSED 10→20 mutant → floor AND N_HEAD move TOGETHER
 mutate "$STANDBY" 's/^    MARGIN_ELAPSED=10$/    MARGIN_ELAPSED=20/' "$WORK/margin20.sh"
 r=$(drive_gate "$WORK/margin20.sh" 1 "" ok case_floors | tail -1)
@@ -570,15 +653,51 @@ if [[ "$(field "$r" floor)" == "110" && "$(field "$r" nhead)" == "25" ]]; then
 else
     bad "(5b) double mutant gave: $r — the coupling control cannot be trusted"
 fi
-# (5c) control: the convergence assert NEUTERED (guard → `if false`) → the SAME wrapping-W token
-# derives a NEGATIVE floor at rc 0 and logs the healthy 'armed spare PAIRED' line — the exact
-# 340996d red, observed on the mutant, so (4d) is green because the assert exists.
+# (5c) control, REFRAMED at the 6.1 floor-minimum round (an interaction the round itself
+# surfaced): with the floor-vs-timer backstop in place, neutering the convergence assert ALONE
+# no longer restores the PAIRED red — every reachable overflow wraps NEGATIVE (a bash-parseable
+# W cannot push W+B+MARGIN past 2^64 into positive territory), and a negative floor is always
+# < TAKEOVER_DELAY, so the SECOND layer catches it. That shadowing is defense-in-depth WORKING,
+# and (5c) now observes it; (5c2) neuters BOTH layers and restores the 340996d PAIRED red —
+# proving the two layers are the COMPLETE guard set (no hidden third guard, and no gap).
 mutate "$STANDBY" 's/^    if \[\[ \$elapsed_floor -le 0 .*then$/    if false; then/' "$WORK/noconv.sh"
 r=$(drive_gate "$WORK/noconv.sh" 1 "" wrapw case_floors_and_start | tail -1)
-if [[ "$(field "$r" drc)" == "0" && "$(field "$r" floor)" == -* && "$(field "$r" lastinfo)" == *"armed spare PAIRED"* && "$(field "$r" titles)" != *"ARMED SPARE NOT ATTESTED"* ]]; then
-    ok "(5c) convergence-assert neutered → wrapping-W token derives rc 0 with a NEGATIVE floor ($(field "$r" floor)) and logs 'armed spare PAIRED' (no §2.7 page): the (4d) red restored on the mutant"
+if [[ "$(field "$r" drc)" == "1" && "$(field "$r" floor)" == -* && "$(field "$r" lastpage)" == *"SHORTER than the un-armed timer path"* && "$(field "$r" lastinfo)" != *"armed spare PAIRED"* ]]; then
+    ok "(5c) convergence-assert neutered → the wrapping-W token is STILL refused by the floor-minimum layer (negative floor < delay, why=SHORTER): defense-in-depth observed — one neutered layer does not reopen the hole"
 else
-    bad "(5c) mutant did not restore the negative-floor PAIRED red: $r"
+    bad "(5c) single-neuter did not fall through to the floor-minimum layer: $r"
+fi
+# (5c2) BOTH layers neutered → the 340996d red restored (negative floor, healthy PAIRED, no page)
+mutate "$WORK/noconv.sh" 's/\$elapsed_floor -lt \$((10#\$_pdf_delay))/$elapsed_floor -lt -9223372036854775807/' "$WORK/noconv2.sh"
+r=$(drive_gate "$WORK/noconv2.sh" 1 "" wrapw case_floors_and_start | tail -1)
+if [[ "$(field "$r" drc)" == "0" && "$(field "$r" floor)" == -* && "$(field "$r" lastinfo)" == *"armed spare PAIRED"* && "$(field "$r" titles)" != *"ARMED SPARE NOT ATTESTED"* ]]; then
+    ok "(5c2) BOTH layers neutered → wrapping-W derives rc 0 with a NEGATIVE floor ($(field "$r" floor)) and logs 'armed spare PAIRED' (no §2.7 page): the 340996d red restored — the two layers are the complete guard set"
+else
+    bad "(5c2) double mutant did not restore the negative-floor PAIRED red: $r"
+fi
+
+# (5f) control: the INTAKE floor-minimum neutered → the short-floor token arms PAIRED (the 390527d
+# red restored on the mutant — (1k) genuinely observes the intake comparison)
+mutate "$ARM" 's/if \[\[ \$_p5_floor -lt \$delay \]\]; then/if [[ $_p5_floor -lt 0 ]]; then/' "$WORK/arm-nofloor.sh"
+new_mock standby
+ARM_OVERRIDE="$WORK/arm-nofloor.sh" run_arm ARM_PAIRING_TOKEN="$TOK_LOW"
+# the (1b-ctrl) pattern: the $WORK mutant has no skels beside it, so the ceremony dies later at
+# the probe render — the control asserts the P5-LEVEL escape (token accepted+stored, no floor
+# refusal), which is exactly what (1k) guards
+if [[ "$(cat "$MOCK_DIR/state/pairing-token" 2>/dev/null)" == "$TOK_LOW" ]] && out_has 'precondition P5: pairing token VERIFIED and stored' && ! out_has 'REFUSE\[P5-floor\]'; then
+    ok "(5f) CONTROL: intake floor-minimum neutered → the W10/B20 token is ACCEPTED+STORED at P5 with no floor refusal (red restored; (1k) observes the live comparison, not a parallel one)"
+else
+    bad "(5f) mutant did not restore the short-floor P5 escape: rc=$RC stored='$(cat "$MOCK_DIR/state/pairing-token" 2>/dev/null)' tail: $(tail -2 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# (5g) control: the twin BACKSTOP floor-minimum neutered → the planted short-floor token derives
+# a healthy PAIRED line (the (4f) red restored on the mutant)
+mutate "$STANDBY" 's/\$elapsed_floor -lt \$((10#\$_pdf_delay))/$elapsed_floor -lt 0/' "$WORK/standby-nofloor.sh"
+r=$(drive_gate "$WORK/standby-nofloor.sh" 1 "" lowfloor case_floors_and_start | tail -1)
+if [[ "$(field "$r" drc)" == "0" && "$(field "$r" floor)" == "40" && "$(field "$r" lastinfo)" == *"armed spare PAIRED"* ]]; then
+    ok "(5g) CONTROL: backstop floor-minimum neutered → planted W10/B20 derives PAIRED with floor=40 (red restored; (4f) observes the live backstop)"
+else
+    bad "(5g) mutant did not restore the backstop red: $r"
 fi
 
 # ── (6) the §2.7 loud unpaired state ────────────────────────────────────────────────────────────
