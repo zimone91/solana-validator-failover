@@ -626,7 +626,7 @@ if [[ "$RC" == "0" ]] && out_has 'WARN: precondition P6 — DEGRADED, NOT REFUSE
    && out_has "G2_VANTAGE_A (host 't2.mock') == TIER2_RPC (host 't2.mock') by identical URL" \
    && out_has "G2_VANTAGE_B (host 't3.mock') == TIER3_RPC (host 't3.mock') by identical URL" \
    && out_has 'resolved-address compares via getent on every pair' \
-   && out_has 'ONE compromised vantage supplies BOTH halves of the double-sign condition' \
+   && out_has 'G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition' \
    && out_has "additivity does NOT hold" && out_has 'residual 2' \
    && out_has 'THIRD endpoint in a SEPARATE FAILURE DOMAIN' && out_has 'G2_VANTAGE_A and/or G2_VANTAGE_B' \
    && ! out_has 'REFUSE\[P6'; then
@@ -637,10 +637,10 @@ fi
 # (2o) the same degradation is RE-STATED at the end of the summary, after the ARMED line, so it
 # survives a long transcript — and the pairing posture still comes last (§2.7 (c)).
 armed_ln=$(grep -n 'ARMED (' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
-g2sum_ln=$(grep -n 'G2 vantage summary: SHARED WITH VOTE-LIVENESS' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
+g2sum_ln=$(grep -n 'G2 vantage summary — G2 and vote-liveness SHARE VANTAGES' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
 pair_ln=$(grep -n 'pairing summary:' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
 if [[ -n "$armed_ln" && -n "$g2sum_ln" && -n "$pair_ln" ]] && [[ "$armed_ln" -lt "$g2sum_ln" && "$g2sum_ln" -lt "$pair_ln" ]] \
-   && out_has 'G2 vantage summary: SHARED WITH VOTE-LIVENESS' && out_has 'separate failure domain'; then
+   && out_has 'G2 vantage summary — G2 and vote-liveness SHARE VANTAGES' && out_has 'separate failure domain'; then
     ok "(2o) the degradation is re-stated in the END-OF-SUMMARY, in order: ARMED (line $armed_ln) → G2 vantage summary (line $g2sum_ln) → pairing posture (line $pair_ln, still LAST per §2.7 (c)) — it cannot scroll away with the rest of the ceremony"
 else
     bad "(2o) summary ordering: armed=$armed_ln g2=$g2sum_ln pairing=$pair_ln"

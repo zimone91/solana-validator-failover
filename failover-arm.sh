@@ -745,7 +745,7 @@ _pre_g2_tier_overlap() {
         return 0
     fi
     _ARM_G2_SHARED="$_p6o_hits"
-    _arm_warn "precondition P6 — DEGRADED, NOT REFUSED: G2 and vote-liveness SHARE VANTAGES. MEASURED (${_p6o_how}): ${_p6o_hits}. The daemons' liveness readers iterate TIER2_RPC then TIER3_RPC, so ONE compromised vantage supplies BOTH halves of the double-sign condition — the same protocol-aware intermediary can splice getSlot/getClusterNodes into a false verified-demote proof AND proxy the tip live while freezing the staked account's lastVote into a false-frozen vote observation. On this host the proof gate's additivity does NOT hold, and docs/SAFETY.md residual 2 (an active, protocol-aware intermediary) is NOT bounded by that composition. Not refused, deliberately: most operators run exactly two RPCs and refusing would leave this spare un-armed. THE WAY BACK: point G2_VANTAGE_A and/or G2_VANTAGE_B in $ARM_ENV_FILE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN — a different operator, not another hostname or another API key for one you already use — then re-run 'failover arm'."
+    _arm_warn "precondition P6 — DEGRADED, NOT REFUSED: G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host. MEASURED (${_p6o_how}): ${_p6o_hits}. The daemons' liveness readers iterate TIER2_RPC then TIER3_RPC, so the same protocol-aware intermediary can splice getSlot/getClusterNodes into the false proof AND proxy the tip live while freezing the staked account's lastVote into the false-frozen observation; docs/SAFETY.md residual 2 (an active, protocol-aware intermediary) is NOT bounded by that composition. Not refused, deliberately: most operators run exactly two RPCs and refusing would leave this spare un-armed. THE WAY BACK: point G2_VANTAGE_A and/or G2_VANTAGE_B in $ARM_ENV_FILE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN — a different operator, not another hostname or another API key for one you already use — then re-run 'failover arm'."
     return 0
 }
 
@@ -756,7 +756,7 @@ _pre_g2_tier_overlap() {
 # _ARM_G2_SHARED empty. Printed BEFORE the pairing posture, which stays last by §2.7 (c).
 _arm_g2_summary() {
     [[ -n "$_ARM_G2_SHARED" ]] || return 0
-    _arm_warn "G2 vantage summary: SHARED WITH VOTE-LIVENESS — ${_ARM_G2_SHARED}. This spare is armed and the proof gate runs, but its additivity does NOT hold here: one compromised vantage supplies both a false verified-demote proof and a false-frozen vote observation (docs/SAFETY.md, 'Verified-demote (G2)' residual 2). Fix by pointing G2_VANTAGE_A/G2_VANTAGE_B in $ARM_ENV_FILE at a third endpoint in a separate failure domain, then re-run 'failover arm'."
+    _arm_warn "G2 vantage summary — G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host. MEASURED: ${_ARM_G2_SHARED}. This spare is armed and the proof gate runs (docs/SAFETY.md, 'Verified-demote (G2)' residual 2). Fix by pointing G2_VANTAGE_A/G2_VANTAGE_B in $ARM_ENV_FILE at a third endpoint in a separate failure domain, then re-run 'failover arm'."
     return 0
 }
 

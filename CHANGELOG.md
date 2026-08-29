@@ -5,6 +5,25 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Ratification follow-ups (Block 6.2).** The shared-vantage STANDING CONDITION now reads
+  word-identically at every site an operator can meet it — `failover arm` precondition P6, the
+  arm's end-of-summary, the armed spare daemon's startup WARN, and `docs/SAFETY.md` — so the
+  sentence seen once at the ceremony is the sentence found by `grep` in a log a month later;
+  each site keeps its own MEASURED clause and fix text around it, and a suite assert
+  (`test_g2_provider` (9e)) fails on a reworded copy (guarded duplication, the `_pairing_crc`
+  precedent). The `N_HEAD` coupling gains its condition AT the derivation site, recorded before
+  anyone is under pressure: if Block 10 measures vantages failing the head cross-check and
+  takeovers starving, the response is to raise `MARGIN_ELAPSED` — which raises the elapsed floor
+  with it — never to relax `N_HEAD` alone; the coupling is the property the derivation exists
+  for. And `tests/run_all.sh` gains SYMMETRIC failure diagnosis: the 4.4 "diagnosis, not just
+  detection" fix had landed only on the printed-FAIL-but-exit-0 branch, so a plain non-zero exit
+  recorded a bare suite name while the single reusable `$_suite_out` was overwritten by the next
+  suite — a one-off failure left nothing to analyse. That branch now prints the exit code, the
+  `❌` lines if any, and the output tail (a suite killed mid-run by `set -e`, a syntax error or a
+  crash prints no `❌` at all — its last lines carry the reason), and EVERY diagnostic line in
+  both branches is tagged with the suite that produced it (`exit rc=1 [test_x.sh]`,
+  `tail [test_x.sh]: …`) — an untagged line in a log of 51 suites is unattached, and a grep by
+  suite name missed it and read as "the diagnostics did not fire".
 - **Block 6.2 — the G2 verified-demote proof provider (§2.4 + [rev3/№2]).** The first real
   provider behind the Block-6.1 proof gate, in a new `[g2-provider]` twin region (byte-identical
   in both daemons; armed+spare+configured-gated — zero reads, zero events on every un-armed or

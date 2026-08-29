@@ -1316,5 +1316,25 @@ else
     bad "(9d) outside-region G2 sites: primary=$o_pri (pin 2) standby=$o_sby (pin 3) staked-branch reset=$staked_reset (pin 1)"
 fi
 
+# ── (9e) the shared-vantage STANDING CONDITION reads word-identically everywhere ────────────────
+# Reviewer ratification of the daemon WARN (6.2): "стоячее условие узнаётся по формулировке" — the
+# operator who meets the phrase at the ceremony must find THAT phrase by grep in the logs a month
+# later. The sentence is therefore ONE literal at four sites (arm P6, arm end-of-summary, the twin
+# daemon WARN, SAFETY.md); each site keeps its own MEASURED clause and fix text around it. Guarded
+# duplication needs a parity assert (the _pairing_crc / _p6_url_host precedent): a reworded copy
+# must go RED, not silently break the grep. grep -F, never a regex — the sentence carries em
+# dashes and an apostrophe.
+CANON="G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host."
+_CANON_ARM="$HARNESS_DIR/failover-arm.sh"   # this suite drives the daemons; the arm path is not otherwise needed here
+c_arm=$(grep -Fc "$CANON" "$_CANON_ARM" 2>/dev/null | tr -d '[:space:]')
+c_pri=$(grep -Fc "$CANON" "$PRIMARY" 2>/dev/null | tr -d '[:space:]')
+c_sby=$(grep -Fc "$CANON" "$STANDBY" 2>/dev/null | tr -d '[:space:]')
+c_saf=$(grep -Fc "$CANON" "$HARNESS_DIR/docs/SAFETY.md" 2>/dev/null | tr -d '[:space:]')
+if [[ "$c_arm" == "2" && "$c_pri" == "1" && "$c_sby" == "1" && "$c_saf" == "1" ]]; then
+    ok "(9e) the standing condition is WORD-IDENTICAL at all four operator-facing sites: failover-arm.sh ×2 (P6 + end-of-summary), both daemons ×1 (the twin WARN), docs/SAFETY.md ×1 — one grep finds every one"
+else
+    bad "(9e) standing-condition drift: arm=$c_arm (want 2) primary=$c_pri standby=$c_sby SAFETY=$c_saf (want 1 each) — a reworded copy breaks the operator's grep"
+fi
+
 rm -rf "$WORK"
 results_banner

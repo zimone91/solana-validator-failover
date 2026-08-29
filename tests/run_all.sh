@@ -38,6 +38,14 @@ echo "═══ (2) RUN gate: execute every suite ═══"
 EXPECTED_SUITES=51
 run_pass=0; run_fail=0; failed=""
 _suite_out=$(mktemp)
+# Every diagnostic line carries the NAME of the suite that produced it (reviewer, 6.2 GO nit): an
+# untagged "tail: …" line is unattached in a log of 51 suites — a grep by suite name misses it and
+# reads as "the diagnostics did not fire" (the reviewer nearly reported exactly that). printf, not
+# sed, so no suite name can ever act as a sed metacharacter.
+_diag_tag() {   # $1 = label, $2 = suite name; stdin = the lines to tag
+    local _dl
+    while IFS= read -r _dl; do printf '      %s [%s]: %s\n' "$1" "$2" "$_dl"; done
+}
 for t in test_*.sh; do
     # Cross-check printed FAILs against the exit code: a suite that prints ❌ but exits 0 (a broken
     # tail, a stray exit 0) must count as FAILED, not pass silently.
@@ -52,12 +60,23 @@ for t in test_*.sh; do
             # paths — the full site list: tests/HARNESS.md); if the lines below are captured
             # DAEMON output, the fix is to stub that suite's log/alert sinks — NEVER to suppress
             # the suite's own output.
-            grep "❌" "$_suite_out" | head -3 | sed 's/^/      offending: /'
+            grep "❌" "$_suite_out" | head -3 | _diag_tag "offending" "$t"
         else
             run_pass=$((run_pass+1))
         fi
     else
+        _suite_rc=$?
         run_fail=$((run_fail+1)); failed="$failed $t"
+        # v0.7 (Block 6.2, reviewer): SYMMETRIC diagnosis. The 4.4 fix printed the offending
+        # lines only in the twin branch above (printed-FAIL-but-exit-0); a plain non-zero exit
+        # recorded a bare NAME, and $_suite_out — ONE reusable temp file — was overwritten by the
+        # next suite, so a one-off failure left nothing to analyse (the reviewer hit exactly that:
+        # 1 run fail in 5 full runs, unreproducible, the suite unnameable from the log). Print the
+        # rc, the ❌ lines if any, and the tail — a suite that dies mid-run (set -e, a syntax
+        # error, a crash) prints no ❌ at all and its LAST lines carry the reason.
+        echo "      exit rc=$_suite_rc [$t]"
+        grep "❌" "$_suite_out" 2>/dev/null | head -3 | _diag_tag "offending" "$t"
+        tail -5 "$_suite_out" 2>/dev/null | _diag_tag "tail" "$t"
     fi
 done
 rm -f "$_suite_out"
