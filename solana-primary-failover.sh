@@ -2200,6 +2200,13 @@ _derive_proof_floors() {
     # measured - X >= W + B, i.e. X <= MARGIN_ELAPSED. N_HEAD = slots(MARGIN_ELAPSED) =
     # 2.5 slots/s x MARGIN_ELAPSED (integer form *5/2; = 25 slots = 10 s today). Staleness
     # beyond the allowance reads as BLIND (wait) — availability, never safety.
+    # [6.3 reviewer pre-registration, recorded here BEFORE anyone is under pressure] N_HEAD may
+    # NOT be loosened alone. 25 slots is ~10 s of chain — tight for public RPC, and Block 10 may
+    # well measure vantages failing this cross-check with takeovers starving. The correct response
+    # is then to raise MARGIN_ELAPSED, which raises the elapsed floor WITH it through the line
+    # below; relaxing N_HEAD on its own would buy availability by silently widening the staleness
+    # a sound floor must exclude. The coupling IS the property this derivation exists for —
+    # decoupling it under availability pressure is the most natural and the most wrong move.
     N_HEAD=$(( MARGIN_ELAPSED * 5 / 2 ))
     # convergence backstop [6.0-COND-1] (panel L-1): in honest arithmetic the floor W+B+MARGIN is
     # ALWAYS > 0 and >= W and >= B (W,B >= 0, MARGIN > 0), so a violation PROVES 64-bit integer
@@ -2797,7 +2804,7 @@ _g2_register() {
         fi
     done
     if [[ -n "$_g2r_shared" ]]; then
-        log_warn "[g2-provider] SHARED VANTAGE (degraded, not disabled): ${_g2r_shared} — MEASURED by normalized-URL and host compare only (this daemon does no DNS; the arm ceremony resolves). The liveness readers iterate TIER2_RPC then TIER3_RPC, so one compromised vantage supplies BOTH halves of the double-sign condition: a false verified-demote proof AND a false-frozen vote observation. The proof gate's additivity does NOT hold on this host (docs/SAFETY.md, verified-demote residual 2). Fix: point G2_VANTAGE_A/G2_VANTAGE_B at a third endpoint in a SEPARATE failure domain, then re-run 'failover arm'"
+        log_warn "[g2-provider] SHARED VANTAGE (degraded, not disabled): G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host. MEASURED: ${_g2r_shared} — by normalized-URL and host compare only (this daemon does no DNS; the arm ceremony resolves). The liveness readers iterate TIER2_RPC then TIER3_RPC (docs/SAFETY.md, verified-demote residual 2). Fix: point G2_VANTAGE_A/G2_VANTAGE_B at a third endpoint in a SEPARATE failure domain, then re-run 'failover arm'"
     fi
     if [[ -n "$_g2_disabled" ]]; then
         _g2_answer="cannot"; _g2_reason="vantage tripwire: ${_g2_disabled}"

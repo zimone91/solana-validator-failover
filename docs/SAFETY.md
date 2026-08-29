@@ -223,7 +223,8 @@ that logic already authorized. A double-sign needs **both** a false G2 proof **a
 vote observation of a holder that is in fact alive and voting. **Read the next section before
 relying on that sentence: on the default configuration it is true and empty.**
 
-**Shared vantages — where the additivity argument stops holding (the default config).** G2 defaults
+**Shared vantages — where the additivity argument stops holding (the default config).** The
+standing condition, in the words the ceremony and the daemon log print verbatim: *G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host.* Mechanically: G2 defaults
 `G2_VANTAGE_A`/`G2_VANTAGE_B` to `TIER2_RPC`/`TIER3_RPC`, and every vote-liveness reader in the
 daemons iterates exactly those two endpoints (`for rpc in "$TIER2_RPC" "$TIER3_RPC"`). On such a
 host the two halves named above are **not independent**: the same active, protocol-aware
