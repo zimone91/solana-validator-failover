@@ -5,6 +5,23 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Install-verification claims aligned to the mechanism (docs, comments and one runtime output
+  line; no logic change).** `install.sh`'s header, `SECURITY.md` ("Verifying what you install") and the README
+  install paragraph promised more than exists: a signed release tag verified with `git tag -v`
+  against a maintainer key at zim.one, and fail-closed `SHA256SUMS` verification with "no
+  continue-without-verification path". The facts, checked against the tags themselves: `v0.6.9`
+  and `v0.6.10` carry NO signature (annotated tags, zero signature blocks) and NO `SHA256SUMS`
+  (neither tag contains a manifest), so for both — including the installer's default version —
+  downloads are checked by SYNTAX ONLY, and the installer's own code already says so aloud
+  (`PRECHECKSUM_VERSIONS` warning); the script verifies no signature at all. The texts now say
+  exactly that: v0.6.x tags are unsigned and will stay so (published tags are never rewritten);
+  checksum verification is fail-closed from the first manifest-bearing release on; tag signing
+  starts with v0.7, after the maintainer key is published outside GitHub. The one line every
+  install prints was wrong too: "Newer releases are checksum-verified; consider installing the
+  latest version" — no release is checksum-verified today, and the latest IS v0.6.10, so the
+  advice led nowhere. It now reads "Checksum verification starts with the first release that
+  ships a SHA256SUMS manifest (v0.7)" — true now and after v0.7 (output text only, no logic).
+
 - **Ratification follow-ups (Block 6.2).** The shared-vantage STANDING CONDITION now reads
   word-identically at every site an operator can meet it — `failover arm` precondition P6, the
   arm's end-of-summary, the armed spare daemon's startup WARN, and `docs/SAFETY.md` — so the
