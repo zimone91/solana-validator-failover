@@ -84,7 +84,7 @@ Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 ```bash
 sh -c "$(curl -sSfL https://zim.one/failover/v0.6.10)"
 ```
-Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, verifies them against the version's `SHA256SUMS` manifest (fail-closed), and runs the installer (interactive; starts in DRY_RUN). This tool hot-swaps your staked identity — read `install.sh` before running it. The paranoid path (recommended for a root-level tool):
+Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, verifies them (against the version's `SHA256SUMS` manifest, fail-closed, from the first manifest-bearing release on — `v0.6.9`/`v0.6.10` predate the manifest and are syntax-checked only, which the installer says aloud; no v0.6.x tag is signed), and runs the installer (interactive; starts in DRY_RUN). This tool hot-swaps your staked identity — read `install.sh` before running it. The paranoid path (recommended for a root-level tool):
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.6.10/install.sh
