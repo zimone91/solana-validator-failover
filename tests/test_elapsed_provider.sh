@@ -882,7 +882,7 @@ echo ""; echo "─── (11) D0: the own-bank veto, the timing race, the interm
 # stamp the daemon takes after it.
 # SLOT RATE (T3 — an explicit knob): head slot(t) = HEAD0 + t x SLOT_NUM/SLOT_DEN, default 5/2 = 2.5
 # slots/s (400 ms slots — the rate every seconds figure in this build ASSUMES; mainnet MEASURED ~3.7
-# slots/s on 2026-09-26, design-records/mainnet-slot-time-2026-09-26.md). EVERY seconds figure in (11)
+# slots/s on 2026-09-26, docs/SAFETY.md 'Slot time'). EVERY seconds figure in (11)
 # and (12) is at 2.5 slots/s unless a case names another rate. The boundaries in SLOTS: the own bank's
 # delinquency rule 128; finalized = processed − 32 (a landed vote reaches the finalized bank ceil(32 /
 # rate) s later — 13 s at 2.5/s); getHealth's distance 128; N_HEAD 25; the minority vote-bank FREEZE 8.
