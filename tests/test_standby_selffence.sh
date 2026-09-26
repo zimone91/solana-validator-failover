@@ -17,7 +17,9 @@
 #   (H1-g) structural: the shipped MAIN LOOP STAKED branch dispatches check_self_fence_isolation
 #          under STANDBY_SELF_FENCE (v0.6.8 baseline had zero check_self_fence references)
 #   (H1-h) 6.3 fix round 2, R6: a PRESENT but non-canonical LOCAL slot / numSlotsBehind / own lastVote
-#          fails toward the fencing condition (frozen / behind / lagging), never healthy, never no-answer
+#          fails toward the fencing condition (frozen / behind / lagging), never healthy, never the
+#          no-answer path's returns; (H1-h4/h5) fix round 3, S1: a garbage slot is no canonical answer —
+#          it keeps the no-answer clock (and a restored backdate) running, in the loop and across a restore
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
@@ -231,6 +233,54 @@ if [[ $rc1 -eq 1 && $rc2 -eq 0 && "$(cat "$_ID_FILE")" == "$UNSTAKED_PUBKEY" ]];
     ok "(H1-h3) a NON-CANONICAL own lastVote (\"abc\") after a healthy baseline counts as LAGGING: the N6 sustain timer runs from +5 and the REAL demote fires at +25 (>= SELF_FENCE_VOTE_LAG_SECS 20). Pre-fix: cannot determine (HOLD) — NO fence"
 else
     bad "(H1-h3) +5 rc=$rc1 :: +25 rc=$rc2 id=$(cat "$_ID_FILE")"
+fi
+
+# ── (H1-h4/h5) 6.3 fix round 3, S1 (H-R6-SILENCE): a garbage slot is NOT a canonical answer ───────────
+# It keeps (or starts, or backdates from the restored start) the no-answer clock and fences when that
+# clock is due, while its frozen clock runs too; only a canonical answer clears either. 5 s cycles,
+# NOANSWER 30, ISOLATION 30; a canonical advancing baseline from t0 (C), garbage (G), silence (S; the
+# last letter repeats). Pre-fix red (e917c04): garbage CLEARED the no-answer clock and the restored
+# backdate — 1..5 garbage cycles then silence fenced at 55/60/65/70/75 s where f22d492 fences at 50
+# (de21927: 50 for the text class, 55..75 for the digit class); restored silence 20 s + 1 / 3 garbage
+# reads fenced at 35 / 45 s where f22d492 and de21927 fence at 10.
+s1_run() {   # $1 = letters, $2 = the garbage JSON token → the fence second from t0, or never
+    local seq="$1" i L t0=$_SIM_NOW
+    for (( i = 0; i < 40; i++ )); do
+        L=${seq:$(( i < ${#seq} ? i : ${#seq} - 1 )):1}
+        case "$L" in C) _MODE="slot"; _LOCAL_SLOT=$(( 100000 + i * 12 )) ;; G) _MODE="slot"; _LOCAL_SLOT="$2" ;; S) _MODE="noanswer" ;; esac
+        check_self_fence_isolation >/dev/null
+        [[ "$(cat "$_ID_FILE")" == "$UNSTAKED_PUBKEY" ]] && { echo $(( _SIM_NOW - t0 )); return; }
+        _SIM_NOW=$(( _SIM_NOW + 5 ))
+    done
+    echo never
+}
+echo ""; echo "─── (H1-h4/h5) S1: garbage keeps the no-answer clock (in the loop and across a restore) ───"
+s1_ok=1; s1_rows=""
+for tok in '"abc"' '"0400000123"'; do
+    for n in 1 2 3 4 5; do
+        _SIM_NOW=1700090000; reset_all
+        g=$(printf "%${n}s" | tr ' ' G)
+        got=$(s1_run "CCCC${g}S" "$tok")
+        [[ "$got" == "50" ]] || { s1_ok=0; bad "(H1-h4) CCCC${g}S $tok: fence at $got, want 50"; }
+    done
+    s1_rows="$s1_rows ${tok}→50;"
+done
+[[ $s1_ok -eq 1 ]] && ok "(H1-h4) 1..5 garbage cycles then silence fence at t50 —$s1_rows the no-answer clock starts at the first garbage read (= f22d492; de21927 50 / 55..75). Pre-fix: 55/60/65/70/75"
+s1_ok=1
+for n in 1 3; do
+    _SIM_NOW=1700100000; reset_all; _last_confirmed_slot=100000                  # a restored baseline, restart at t0
+    _selffence_noanswer_restore_pending=1; _selffence_restored_noanswer_since=$(( _SIM_NOW - 20 ))   # load_state: staked and silent 20 s at the save
+    g=$(printf "%${n}s" | tr ' ' G)
+    got=$(s1_run "${g}S" '"abc"')
+    [[ "$got" == "10" ]] || { s1_ok=0; bad "(H1-h5) restored silence 20 s + ${n} garbage read(s) then silence: fence at $got, want 10"; }
+done
+_SIM_NOW=1700110000; reset_all; _last_confirmed_slot=100000
+_selffence_noanswer_restore_pending=1; _selffence_restored_noanswer_since=$(( _SIM_NOW - 25 ))   # silent 25 s at the save; the stall younger than a window (no advance backdate)
+got_steady=$(s1_run "G" '"abc"')
+if [[ $s1_ok -eq 1 && "$got_steady" == "5" ]]; then
+    ok "(H1-h5) across a restore: persisted silence 20 s + 1 / 3 garbage reads then silence → fence at t10 (= f22d492 and de21927; pre-fix 35 / 45: the garbage dropped the restored backdate); persisted silence 25 s + STEADY garbage → fence at t5, the restored clock due on a garbage read (f22d492: t5; pre-fix and the panel's one-hunk mutant: t30, via the fresh frozen clock)"
+else
+    [[ "$got_steady" == "5" ]] || bad "(H1-h5) restored silence 25 s + steady garbage: fence at $got_steady, want 5"
 fi
 
 # ── (H1-g) structural: MAIN LOOP dispatch + v0.6.8 baseline had nothing ───────────────────────

@@ -5,6 +5,59 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Block 6.3 fix round 3 (delta panel 2, wf_e6692704-d74) — the holder's silence clock survives
+  garbage, a corrupted stall stamp restores as ancient behind the first read, the pairing token
+  follows symlinks, and the heredoc guard closes its two blind spellings.** Each holder-fence change
+  proven by DIFFERENTIAL runs against BOTH de21927 and e917c04 (never later than either, for every
+  input class; never fencing a holder whose first post-restart read is healthy); each mechanism red
+  first on e917c04, green after; twins byte-identical where they were.
+  (S1 — H-R6-SILENCE, BLOCKER) `check_self_fence_isolation` in both daemons: a non-canonical LOCAL
+  slot is **not a canonical answer** — it keeps (or starts, or backdates from the persisted start) the
+  no-answer clock exactly as silence does and fences when that clock is due, while its frozen clock
+  still runs; only a canonical answer clears the clock and its restored backdate. Round 2 let garbage
+  clear both, so garbage-then-silence fenced 55/60/65/70/75 s (1–5 garbage cycles) where f22d492 fences
+  at 50, and a restart dropped the persisted silence (t35/t45 vs t10/t12); now t50 / t10, never later
+  than de21927 or f22d492 in any sequence, and the 288-row self-fence matrix is identical to e917c04
+  except where it fences earlier. (S2 — H-R5-RESIDUAL-SCOPE; reverses round-2 ratification item 4) a
+  present non-canonical stall / silence / lag STAMP restores as ANCIENT (the oldest mono stamp) behind
+  H3's first-read continuity evidence — the backdate applies only if the first read after the restore
+  still shows the condition, the exposure a canonical-but-old stamp already has, and a healthy first
+  read drops it; a non-canonical SLOT restores as 0 with the stall backdate held PENDING across the
+  first two reads (the second advanced past the first → healthy, dropped; not → the persisted stall
+  applied). At the shipped `STARTUP_GRACE`=30 this fences at the first evidence read where round 2
+  started the timer fresh (silence 60 → 30 s, lag 50/51 → 30, the slot member 60 → 35), never later
+  than f22d492 or de21927, never on a healthy first read. The non-canonical `SAVE_TS` over a silent
+  LOCAL maps into the pre-existing fresh-start / stale no-answer gap (the "never on a fresh start"
+  rule, `docs/SPLIT-BRAIN-RESIDUAL.md` no-answer sub-check) — no mechanism change for that gap this
+  round. (S3 — P3-R4-1) `_elapsed_tok_ident` keys the file the token path RESOLVES to (`stat -L`), so a
+  symlinked token no longer hides every rewrite of its target; the residual is restated as a rewrite
+  back to identical bytes within one ctime granule (a kernel tick on ns-timestamp filesystems, 1 s on
+  ext4-128 / ext3 / HFS+ — "inode kept" dropped, ext4 recycles it), and (3l-R4b) gains the symlink case
+  (red on e917c04: proved at +100; green: not before +200, as for a regular file). (S4 — CC2-1 /
+  P3-R9-1) guard (27): the census joins backslash-newline continuations before scanning and adds `$[`
+  to the expansion class; the render bakes its rec-log path into each canary (never reads `CANARY_LOG`
+  from the environment), runs with its CWD in the temp dir, and disables the write/kill-capable builtins
+  restricted bash still allows (`enable -n history kill ulimit suspend`); (27)/(27-ctl)/(27-ctl-r) gain
+  the continuation / `$[1+1]` / `CANARY_LOG=` / `history -w` / `kill` mutants (pre-fix: census 0, guard
+  GREEN, and the continuation ran its command / wrote outside the temp dir / killed the sentinel), and
+  the PASS texts now state exactly what the two layers guarantee. Texts (measured, mechanism unchanged):
+  (S5 — CC2-2 / P3-R3-1) the hidden-lag bound covers only the payload's post-delivery interval; the
+  payload's own snapshot → delivery adds rate × that (up to its `curl -m 10` = 25 / 37 slots), a
+  documented residual reachable only with a stale-on-arrival view — stated in `docs/SAFETY.md` and both
+  `[elapsed-provider]` twins, "(the one op no stamp covers)" dropped, no change to
+  `ELAPSED_HEAD_GAP_MAX`. (S6 — CC2-3; twin, byte-identical) the `_canon_uint` header states what
+  non-canonical means per caller class (take path / providers unusable; holder self-fence the fencing
+  condition; `load_state` per R5/S2). (S7 — P3-R2-1) the R2 inertness text: the own-bank reference read
+  is MOVED on every check and ADDED only on the checks the payload ends early, with the measured
+  dead-holder detection cost (0 s at loopback, one cycle at 2 s LOCAL reads) and the TIER2 re-read's
+  external-read condition. (S8 — H-LAT-BIAS, reviewer call, text only) where `MAX_VOTE_LATENCY` is
+  documented: `tier1_get_vote_latency` reads its reference first, so the latency demote can come up to
+  ~27 s later (within B = 60 s) and a holder lagging within rate × gap of the limit never demotes on
+  that path — off by default, availability only, not the relinquish B bounds. Not in this round (NOT
+  list): flipping `tier1_get_vote_latency`'s read order, the N7 fresh-start gap, `ELAPSED_HEAD_GAP_MAX`,
+  the payload request-stamped gap variant. `SHA256SUMS`: the two daemon rows regenerated; `install.sh`
+  untouched.
+
 - **Block 6.3 fix round 2 (delta panel wf_5cea260d-efc) — M3 reverted, the own bank's latency
   reference read first, the elapsed head compare bounded by its gap, token adoption keyed on the full
   token, persisted and holder-side garbage failing toward held / the fence.** Mechanism, each red first
@@ -22,8 +75,11 @@ All notable changes are documented here. Versions follow the project's internal 
   measured, not shipped); (R3) watchdog-elapsed answers BLIND when its head read lands more than
   `ELAPSED_HEAD_GAP_MAX` = 1 s after the payload (a new derived constant at the one derivation site —
   the constants census is five names): the pre-fix tree minted with the spare's bank 50–55 slots behind
-  the view; the hidden lag is now under 6 / 9 slots (2.5 / 3.7 slots/s) on a healthy host, under 23 / 35
-  with the payload's pet stalled at 7 s; (R4) N4's adoption is keyed on the full classified token line
+  the view; the hidden lag from the STAMPED interval (payload delivery → head answer) is now under 6 / 9
+  slots (2.5 / 3.7 slots/s) on a healthy host, under 23 / 35 with the payload's pet stalled at 7 s
+  (fix round 3, S5 states the part the stamp does NOT cover — the payload's own snapshot → delivery, up
+  to rate × its curl -m 10 = 25 / 37 slots — as a documented residual reachable only with a stale-on-
+  arrival view; no change to `ELAPSED_HEAD_GAP_MAX`); (R4) N4's adoption is keyed on the full classified token line
   and the stored file's identity (a same-gen re-pair to a lower floor proved at +121 s, now not before
   +221 s; a reporter-only flap and a same-gen other-host swap under a dormant verdict are a new
   adoption / a withdrawal); (R5) `load_state` reads every persisted number through `_canon_uint`: a
@@ -32,10 +88,11 @@ All notable changes are documented here. Versions follow the project's internal 
   discarded the rest of the startup command); a non-canonical baseline value is not restored, per value
   — the rest of the fresh save restores, a slot as 0 (a baseline existed: the no-answer gate stays
   armed). Measured on a 30-world fence matrix, both daemons: the holder fences no later than on
-  f22d492 except where a non-canonical stall / silence / lag stamp itself now starts its timer fresh
-  (0 → 30 s — f22d492 read "0777" as octal 511, an ancient stall; a residual for the reviewer), and a
-  healthy holder with a leading-zero slot is no longer fenced (f22d492: at 0–30 s); discarding the whole
-  snapshot for one bad value had fenced later or never (30 s → never); (R6) on the holder, a present but
+  f22d492 for every garbage class (the R5 residual — a non-canonical stall / silence / lag stamp
+  starting its timer fresh — was **reversed in fix round 3, S2**, which restores such a stamp as
+  ANCIENT behind the first read's evidence), and a healthy holder with a leading-zero slot is no
+  longer fenced (f22d492: at 0–30 s); discarding the whole snapshot for one bad value had fenced later
+  or never (30 s → never); (R6) on the holder, a present but
   non-canonical LOCAL slot / `numSlotsBehind` / own or cluster `lastVote` counts as frozen / behind /
   lagging — never healthy, never the no-answer path (the panel's 288-row matrix, both daemons: every
   canonical row identical to de21927, every non-canonical row fencing no later than de21927, 114 of
@@ -57,8 +114,12 @@ All notable changes are documented here. Versions follow the project's internal 
   2–47 s before its own take). 18 are R2's added reference read re-phasing the cycle (1–8 s sooner,
   `MAX_DELINQUENT_SLOTS`=15 with reads or pets that cost time, each a take f22d492 also made;
   TIER2's re-read shape in its place re-phased 3 worlds, one by 56 s). 1 is R3's head-gap blindness
-  re-phasing a timer-path take by 28 s (2 s pets). The phase and cadence residuals, both ways — for
-  the reviewer to ratify.
+  re-phasing a timer-path take by 28 s (2 s pets). The phase and cadence residuals, both ways: the
+  three-lens panel **ratified items 1–3 (the R1 revert, R2's reference-first read, R3's gap bound) as
+  phase-only** — the acceptance predicate is strictly tighter at every instant and the sooner takes are
+  the re-mint / cycle-count window re-phasing in worlds the pre-fix build also took. Item 4 (R5's
+  restore-input classification) was judged a PREDICATE change by all three lenses and is **reversed in
+  fix round 3, S2** (below), not ratified as phase.
 
 - **Block 6.3 fix round 1 (panel wf_4c899880-d5b) — the provider's standing verdict follows the
   token in force, silence starts are stamped after the answer, non-canonical integers are unusable,

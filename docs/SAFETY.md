@@ -372,8 +372,12 @@ stored token (6.3 fix round 2): the adoption is keyed on its full classified lin
 host, crc) and on the stored file's identity (inode, size, change time), so a new gen, a same-gen
 re-pair with other bounds, another host's token with the same bounds, and a rewrite back to the same
 bytes that no evaluation saw are all new adoptions (measured: a same-gen re-pair to a lower floor at
-+121 s proves no earlier than +221 s; before, it proved at +121 s). Not visible: a rewrite back to
-identical bytes within the filesystem's timestamp granularity with the inode kept.
++121 s proves no earlier than +221 s; before, it proved at +121 s). Since 6.3 fix round 3 the identity
+is that of the file the token path **resolves to** (`stat -L`), so a symlinked token is keyed on its
+target and a rewrite of that target is seen too (before, a symlinked token hid every target rewrite and
+proved at +100 s, as on the pre-R4 tree). Not visible: a rewrite back to identical bytes within one
+ctime granule — a kernel tick on ns-timestamp filesystems, 1 s on ext4 with 128-byte inodes, ext3 or
+HFS+ (the inode number does not help: ext4 recycles it across a tmp+mv).
 
 **Where composition does add an independent input — and how much.**
 
@@ -430,10 +434,20 @@ TIME (a vote reaches the finalized bank 32 slots after it lands — ≈ 13 s at 
 in how long a cycle takes — a pet that costs time, `CHECK_INTERVAL`, read latency — re-phases vetoes
 and window closes, both ways, on every tree (de21927 included). The proof's re-mint cycle
 (`PROOF_MAX_AGE` from `observed_at`) is phase too. Measured over a 1,115-world sweep against the
-build before fix round 2: the own-bank reference read that round added to every check (at
+build before fix round 2: the own-bank reference read that round moved to before the payload (at
 `MAX_DELINQUENT_SLOTS` > 0) re-phased 18 takes 1–8 s sooner and 49 later; moving `observed_at` back
 10 s re-phased 43 takes sooner and 55 later — 22 of them takes where the previous build vetoed, as
-that build takes the same family's holders at other resume instants. Measured in one world (the
+that build takes the same family's holders at other resume instants.
+That reference read is **moved on every check that reaches the latency compare, and ADDED only on the
+checks the payload ends early** — the holder listed delinquent, the RPC unreachable, or no `.result`
+— not "added to every check": measured, a healthy live holder's steady-state read multiset is
+identical to the previous build's (80 = 80 `getSlot` over 40 cycles; only the getSlot/getVoteAccounts
+order changes). The detection cost of a dead holder is **0 s at loopback latency** (the episode opens
+on the same cycle as before) and **up to one cycle later when the LOCAL reads cost ~2 s each**
+(one extra loopback read, plus a pet on armed units, per listed-delinquent or unreachable cycle). The
+`TIER2` latency re-read adds an **external** `getVoteAccounts` only when TIER2's latency verdict fires
+on a not-yet-listed holder (alive-but-lagging or intermittent); for a holder already delinquent since
+the episode start `TIER2` lists it and never re-reads. Measured in one world (the
 holder's one vote at t141, `TIER2` 10 s late during t73–t118, `MAX_DELINQUENT_SLOTS`=0, an armed
 spare on the shipped timer path): pets that cost nothing take at t125, 1 s pets at t254, 2 s pets at t218
 (de21927: t125 / t152 / t284 — its 2 s-pet take is 66 s later than this build's); with free pets,
@@ -491,7 +505,19 @@ therefore under 2.2 s on a healthy host (a pet is one datagram — 4 ms measured
 under 23 slots at 2.5/s, under 35 at 3.7. (The text before this round said "≤ 7 s, ~17 slots"; it
 missed the head read's own `curl -m 5` + pet, which nothing bounded: with every read at its bound and
 every pet 7 s, the pre-fix tree minted with the spare's bank 50–55 slots behind the view — twice
-`N_HEAD`. That world now reads blind.)
+`N_HEAD`. That world now reads blind.) The stamps bound only the part **after the payload's
+delivery**. The sampler's answer is computed at the server at request time and arrives up to its
+own `curl -m 10` later, so the view it reports is a snapshot up to that much older than the arrival
+the stamp records: a hidden lag of the slot rate × (the payload's snapshot → its delivery), up to
+25 slots at 2.5/s and 37 at 3.7. This is only reachable when the view itself is stale-on-arrival —
+a slow or early-snapshot external provider — which is exactly the **bank and view lagging together**
+residual above; a live-and-current view carries a snapshot within its transfer time. It is a
+**documented residual**, not bounded by `ELAPSED_HEAD_GAP_MAX` (that stamp is taken at the answer's
+arrival, not its snapshot): a provider that snapshots getVoteAccounts at request and delivers 9 s
+later, with instant free pets, minted here with the bank ~47 slots (≈19 s) behind the live chain
+(measured, both trees — no regression). Bounding it would need the sampler to stamp before its own
+call and treat (head answer − payload request) as the gap, which fails toward blind on every slow
+tier; deferred with the gate's wiring (6.4).
 
 ### Availability-side starvation (blind or flapping externals)
 

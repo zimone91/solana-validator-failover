@@ -18,6 +18,9 @@
 #   (N2)  no-answer fire → switch_to_unstaked runs BEFORE any external alert (notifiers mocked to
 #         sleep): 0 notifier calls complete before the demote, 0 added latency. A negative control
 #         replays the old alert-first order to prove the measurement is non-vacuous (observes 2).
+# v0.7 Block 6.3 fix round 2 (R6a–c): a non-canonical LOCAL value → the fencing condition; fix round 3
+# (S1a–b): a garbage slot is no canonical answer — the no-answer clock (and a restored backdate) keeps
+# running through it, in the loop and across a restore.
 # Non-vacuous: (a) fires only because the frozen-slot timer trips; (F1a) only because the no-answer
 # timer trips; (c)/(d)/(F1b)/(F1c) prove it does NOT fire when advancing, briefly silent, or fresh.
 
@@ -215,6 +218,52 @@ if [[ "$r6c" == 0/1/*"own votes not landing"*"NON-CANONICAL"* && "$r6cc" == "1/0
     ok "(R6c) a NON-CANONICAL own lastVote (\"abc\") under a running N6 sustain timer counts as LAGGING → self-fence ('own votes not landing (lag a NON-CANONICAL lastVote …)'); the canonical control (lag 5) → no fence. Pre-fix: cannot determine (HOLD), NO fence"
 else
     bad "(R6c) garbage=$r6c :: canonical-lag5=$r6cc"
+fi
+
+# ── (S1) 6.3 fix round 3 (H-R6-SILENCE): a garbage slot is NOT a canonical answer ───────────────────
+# It keeps (or starts, or backdates from the restored start) the no-answer clock and fences when that clock
+# is due, while its frozen clock runs too; only a canonical answer clears either. The REAL function on a
+# fake clock (a subshell), 5 s cycles, NOANSWER 30, ISOLATION 30: C canonical advancing, G garbage, S
+# silent (the last letter repeats). Pre-fix red (e917c04): 1..5 garbage cycles then silence fenced at
+# 55/60/65/70/75 s where f22d492 fences at 50 (de21927: 50 text / 55..75 digits); a restored 20 s silence
+# + 1 / 3 garbage reads fenced at 35 / 45 where f22d492 and de21927 fence at 10; a restored 25 s silence +
+# steady garbage at 30 where f22d492 fences at 5.
+s1_run() {   # $1 = letters, $2 = the garbage JSON token, $3 = restored silence age (s; "" = none) → the fence second, or never
+  (
+    _S1T=100000; _S1F=""
+    mono_now() { echo "$_S1T"; }
+    date() { if [[ "$1" == "+%s" ]]; then echo "$_S1T"; return 0; fi; command date "$@"; }
+    switch_to_unstaked() { _S1F=$(( _S1T - 100000 )); return 0; }
+    alert() { :; }; log_info() { :; }; log_warn() { :; }
+    DRY_RUN=false; CURRENT_IDENTITY="$STAKED_PUBKEY"; SELF_FENCE_MAX_BEHIND=0; SELF_FENCE_NOANSWER_SECS=30; SELF_FENCE_ISOLATION_SECS=30
+    VOTE_PUBKEY=""; _LOCAL_GVA=""
+    _selffence_reset
+    if [[ -n "$3" ]]; then _last_confirmed_slot=400000000; _selffence_noanswer_restore_pending=1; _selffence_restored_noanswer_since=$(( _S1T - $3 )); fi
+    local i L
+    for (( i = 0; i < 40; i++ )); do
+      L=${1:$(( i < ${#1} ? i : ${#1} - 1 )):1}
+      case "$L" in C) _LOCAL_SLOT=$(( 400000000 + i * 12 )) ;; G) _LOCAL_SLOT="$2" ;; S) _LOCAL_SLOT="" ;; esac
+      check_self_fence_isolation >/dev/null 2>&1
+      [[ -n "$_S1F" ]] && { echo "$_S1F"; return; }
+      _S1T=$(( _S1T + 5 ))
+    done
+    echo never
+  )
+}
+echo ""; echo "─── (S1) garbage keeps the no-answer clock (in the loop and across a restore) ───"
+s1_ok=1
+for tok in '"abc"' '"0400000123"'; do
+  for n in 1 2 3 4 5; do
+    got=$(s1_run "CCCC$(printf "%${n}s" | tr ' ' G)S" "$tok" "")
+    [[ "$got" == "50" ]] || { s1_ok=0; bad "(S1a) $n garbage cycle(s) $tok then silence: fence at $got, want 50"; }
+  done
+done
+[[ $s1_ok -eq 1 ]] && ok "(S1a) 1..5 garbage cycles (\"abc\" and \"0400000123\") then silence fence at t50: the no-answer clock starts at the first garbage read (= f22d492; de21927 50 / 55..75). Pre-fix: 55/60/65/70/75"
+r1=$(s1_run "GS" '"abc"' 20); r3=$(s1_run "GGGS" '"abc"' 20); rst=$(s1_run "G" '"abc"' 25)
+if [[ "$r1" == "10" && "$r3" == "10" && "$rst" == "5" ]]; then
+  ok "(S1b) across a restore: a restored 20 s silence + 1 / 3 garbage reads then silence → fence at t10 (= f22d492 and de21927; pre-fix 35 / 45 — the garbage dropped the restored backdate); a restored 25 s silence + STEADY garbage → fence at t5, the restored clock due on a garbage read (f22d492 t5; pre-fix and the panel's one-hunk mutant t30)"
+else
+  bad "(S1b) restored 20 s + 1 G → $r1 (want 10); + 3 G → $r3 (want 10); restored 25 s + steady G → $rst (want 5)"
 fi
 
 # ── (N2) v0.6.6: the demote runs BEFORE any external alert in the no-answer branch ─────────────
