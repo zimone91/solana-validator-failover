@@ -16,6 +16,8 @@
 #          "hold forever unfenced" behavior returns — no demote, still staked
 #   (H1-g) structural: the shipped MAIN LOOP STAKED branch dispatches check_self_fence_isolation
 #          under STANDBY_SELF_FENCE (v0.6.8 baseline had zero check_self_fence references)
+#   (H1-h) 6.3 fix round 2, R6: a PRESENT but non-canonical LOCAL slot / numSlotsBehind / own lastVote
+#          fails toward the fencing condition (frozen / behind / lagging), never healthy, never no-answer
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
@@ -73,7 +75,7 @@ curl(){
     local data=""; while [[ $# -gt 0 ]]; do [[ "$1" == "-d" ]] && { data="$2"; shift 2; continue; }; shift; done
     case "$data" in
         *getSlot*)   [[ "$_MODE" == "noanswer" ]] && return 7; printf '{"jsonrpc":"2.0","result":%s,"id":1}' "$_LOCAL_SLOT"; return 0 ;;
-        *getHealth*) printf '{"jsonrpc":"2.0","result":"ok","id":1}'; return 0 ;;
+        *getHealth*) if [[ -n "${_BEHIND:-}" ]]; then printf '{"jsonrpc":"2.0","error":{"code":-32005,"message":"Node is behind","data":{"numSlotsBehind":%s}},"id":1}' "$_BEHIND"; else printf '{"jsonrpc":"2.0","result":"ok","id":1}'; fi; return 0 ;;   # _BEHIND: (R6) only when a case sets it
         *getVoteAccounts*)
             printf '{"jsonrpc":"2.0","result":{"current":[{"votePubkey":"Cluster111","lastVote":%s},{"votePubkey":"%s","lastVote":%s}],"delinquent":[]},"id":1}' \
                 "$_CLUSTER_MAX" "$VOTE_PUBKEY" "$_OWN_LV"; return 0 ;;
@@ -83,7 +85,7 @@ curl(){
 
 reset_all(){
     echo "$STAKED_PUBKEY" > "$_ID_FILE"; CURRENT_IDENTITY="$STAKED_PUBKEY"
-    _alert_log=""; _RC_SETID=0; _RC_REMOVE=0; _MODE="slot"
+    _alert_log=""; _RC_SETID=0; _RC_REMOVE=0; _MODE="slot"; _BEHIND=""; _LOCAL_SLOT=100000; _OWN_LV=99995; _CLUSTER_MAX=100000
     SELF_FENCE_DEMOTE_TIME=0; _last_lockout_log=0
     _selffence_reset; _delinq_window=""
     STANDBY_SELF_FENCE=true
@@ -194,6 +196,42 @@ _SIM_NOW=$(( 1700050000 + 120 )); check_self_fence_isolation >/dev/null; rc_ctl=
 [[ $rc_ctl -eq 1 && -z "$_alert_log" && "$(cat "$_ID_FILE")" == "$STAKED_PUBKEY" ]] \
     && ok "(H1-f) 120s frozen with the knobs zeroed → still staked, no page (proves H1-a/b/c bite)" \
     || bad "(H1-f) control fenced anyway (rc=$rc_ctl alerts='$_alert_log')"
+
+# ── (H1-h) 6.3 fix round 2, R6 (REG-D): a PRESENT but non-canonical LOCAL value fails toward the fence ─
+# Garbage from the holder's own node fails toward "nobody holds the stake": the fencing condition (frozen
+# / behind / lagging) — never healthy, never the no-answer path that SELF_FENCE_NOANSWER_SECS=0 disables.
+# Pre-fix red (f22d492, M4 "unusable" = no answer): NO fence in all three (the no-answer path at 0; the
+# count ignored; "cannot determine" HOLD). Canonical inputs: unchanged (the controls).
+echo ""; echo "─── (H1-h) R6: non-canonical LOCAL values → frozen / behind / lagging (never healthy, never no-answer) ───"
+reset_all; _SIM_NOW=1700060000; SELF_FENCE_NOANSWER_SECS=0
+check_self_fence_isolation >/dev/null                                   # canonical baseline: tracking 100000
+_LOCAL_SLOT='"0100000"'                                                 # the JSON string — non-canonical
+_SIM_NOW=$(( 1700060000 + 25 )); check_self_fence_isolation >/dev/null; rc1=$?; tr1="$_last_confirmed_slot"
+_SIM_NOW=$(( 1700060000 + 30 )); check_self_fence_isolation >/dev/null; rc2=$?
+if [[ $rc1 -eq 1 && "$tr1" == "100000" && $rc2 -eq 0 && "$(cat "$_ID_FILE")" == "$UNSTAKED_PUBKEY" && "$_alert_log" == *"SELF-FENCE"* ]]; then
+    ok "(H1-h1) a NON-CANONICAL confirmed slot (the JSON string \"0100000\") at SELF_FENCE_NOANSWER_SECS=0 counts as NOT advancing: +25 s no fence (the tracker stays 100000), +30 s → REAL demote (identity flipped, page). Pre-fix: the no-answer path, disabled at 0 — NO fence"
+else
+    bad "(H1-h1) +25 rc=$rc1 tracker=$tr1 :: +30 rc=$rc2 id=$(cat "$_ID_FILE") alerts='$_alert_log'"
+fi
+reset_all; _SIM_NOW=1700070000; SELF_FENCE_MAX_BEHIND=150; adv; _BEHIND='"0000300"'
+check_self_fence_isolation >/dev/null; rc1=$?; id1=$(cat "$_ID_FILE")
+reset_all; _SIM_NOW=1700070000; SELF_FENCE_MAX_BEHIND=150; adv; _BEHIND=100
+check_self_fence_isolation >/dev/null; rc2=$?
+if [[ $rc1 -eq 0 && "$id1" == "$UNSTAKED_PUBKEY" && $rc2 -eq 1 && "$(cat "$_ID_FILE")" == "$STAKED_PUBKEY" ]]; then
+    ok "(H1-h2) a NON-CANONICAL numSlotsBehind (\"0000300\") counts as BEHIND → REAL demote at once; the canonical control (100 <= 150) → still staked. Pre-fix: ignored — NO fence"
+else
+    bad "(H1-h2) garbage rc=$rc1 id=$id1 :: canonical-100 rc=$rc2 id=$(cat "$_ID_FILE")"
+fi
+reset_all; _SIM_NOW=1700080000
+adv; check_self_fence_isolation >/dev/null                               # healthy N6 baseline (lag 5)
+_OWN_LV='"abc"'
+adv; _SIM_NOW=$(( 1700080000 + 5 )); check_self_fence_isolation >/dev/null; rc1=$?
+adv; _SIM_NOW=$(( 1700080000 + 25 )); check_self_fence_isolation >/dev/null; rc2=$?
+if [[ $rc1 -eq 1 && $rc2 -eq 0 && "$(cat "$_ID_FILE")" == "$UNSTAKED_PUBKEY" ]]; then
+    ok "(H1-h3) a NON-CANONICAL own lastVote (\"abc\") after a healthy baseline counts as LAGGING: the N6 sustain timer runs from +5 and the REAL demote fires at +25 (>= SELF_FENCE_VOTE_LAG_SECS 20). Pre-fix: cannot determine (HOLD) — NO fence"
+else
+    bad "(H1-h3) +5 rc=$rc1 :: +25 rc=$rc2 id=$(cat "$_ID_FILE")"
+fi
 
 # ── (H1-g) structural: MAIN LOOP dispatch + v0.6.8 baseline had nothing ───────────────────────
 echo ""; echo "─── (H1-g) shipped STAKED branch dispatches the fence; v0.6.8 had zero ───"

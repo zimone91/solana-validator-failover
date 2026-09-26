@@ -300,8 +300,8 @@ after 8 s).
 
 | Input | What reads it on the take path |
 |---|---|
-| **the spare's own node** (`LOCAL_RPC`) | Tier-1 health (`getHealth`); the own-bank delinquency check that opens the episode and fills the 7-of-10 window (`getVoteAccounts` at the RPC default commitment, *finalized* — then, when `MAX_DELINQUENT_SLOTS` > 0, a separate `getSlot` read AFTER that payload, also finalized: the gap between them can only inflate the measured latency toward "delinquent", by at most its `curl -m 3`); watchdog-elapsed's head cross-check (`getSlot`, *processed* = the tower's vote bank); the local identity that selects the take branch (the admin socket's contact info; `getIdentity` on frankendancer) |
-| **`TIER2_RPC` / `TIER3_RPC`** | external confirm; the vote-FROZEN observation, its pinned first sample and the freshness seam they write; the mutation-edge re-check; the gossip advisory (logged, never a gate); the fast-path timer skip (`peer_has_relinquished`, `getClusterNodes` — only with `WITNESS_FASTPATH=true`, default off: it skips the remaining delay, never Gate 2 or 3); watchdog-elapsed's silence — on **every** configuration; G2's two vantages **on the default configuration** |
+| **the spare's own node** (`LOCAL_RPC`) | Tier-1 health (`getHealth`); the own-bank delinquency check that opens the episode and fills the 7-of-10 window (`getVoteAccounts` at the RPC default commitment, *finalized* — and, when `MAX_DELINQUENT_SLOTS` > 0, a separate `getSlot` reference, also finalized, read FIRST (6.3 fix round 2): any gap between the two answers — a pet, a stall, a slow read — can only make the holder look MORE current, failing toward NOT opening an episode. Read after the payload, as before, the gap pushed a current holder toward "delinquent": a 3 s reference + a 7 s pet read a holder voting every slot as "Latency 25 > 15", and an armed spare took that live holder at t577, measured); watchdog-elapsed's head cross-check (`getSlot`, *processed* = the tower's vote bank); the local identity that selects the take branch (the admin socket's contact info; `getIdentity` on frankendancer) |
+| **`TIER2_RPC` / `TIER3_RPC`** | external confirm (`TIER2`'s `MAX_DELINQUENT_SLOTS` latency verdict re-reads the holder's `lastVote` AFTER its reference before it can confirm — 6.3 fix round 2); the vote-FROZEN observation, its pinned first sample and the freshness seam they write; the mutation-edge re-check; the gossip advisory (logged, never a gate); the fast-path timer skip (`peer_has_relinquished`, `getClusterNodes` — only with `WITNESS_FASTPATH=true`, default off: it skips the remaining delay, never Gate 2 or 3); watchdog-elapsed's silence — on **every** configuration; G2's two vantages **on the default configuration** |
 | **`G2_VANTAGE_A` / `G2_VANTAGE_B`** pinned elsewhere | G2 only |
 | **the pairing token** | the proof-gate posture; the derived floors (`elapsed_floor`, `N_HEAD`); watchdog-elapsed's registration, and its re-classification at every evaluation and every serve of a standing verdict |
 | **the spare's monotonic clock** | the re-take lockout, the cooldown, the takeover delay and its anchor, the observation-span floor, `VOTE_LIVENESS_MIN_INTERVAL`, `EXTERNAL_CONFIRM_THROTTLE`, the fast-path stagger floor, G2's hold, the silence floor, the proof age edge |
@@ -367,7 +367,13 @@ suspend or VM pause that the uptime clock counts (`/proc/uptime` includes suspen
 meets the floor with no observation in between and ends on one post-resume read. The standing
 verdict is served only while the stored token still licenses it — re-classified at every serve; a
 token removed, rotted, turned page-only or re-paired withdraws it at once, and a token adopted
-mid-episode restarts the silence — and never after `PROOF_MAX_AGE`.
+mid-episode restarts the silence — and never after `PROOF_MAX_AGE`. "Adopted" means ANY change to the
+stored token (6.3 fix round 2): the adoption is keyed on its full classified line (gen, bounds, fence,
+host, crc) and on the stored file's identity (inode, size, change time), so a new gen, a same-gen
+re-pair with other bounds, another host's token with the same bounds, and a rewrite back to the same
+bytes that no evaluation saw are all new adoptions (measured: a same-gen re-pair to a lower floor at
++121 s proves no earlier than +221 s; before, it proved at +121 s). Not visible: a rewrite back to
+identical bytes within the filesystem's timestamp granularity with the inode kept.
 
 **Where composition does add an independent input — and how much.**
 
@@ -389,8 +395,14 @@ mid-episode restarts the silence — and never after `PROOF_MAX_AGE`.
    taken over unless its votes reach the spare's finalized bank before the take cycle's own-bank
    read. The exposure is **the own bank's commitment lag (32 slots at finalized) PLUS every tier
    read between that read and `set-identity`** — bounded by those reads' `curl -m` on the timer
-   path, and on the armed path by the proof's age (up to `PROOF_MAX_AGE`) as well. Measured, the
-   tiers as the intermediary, the take scheduled at t125 on the timer path:
+   path, and on the armed path by the proof's age (up to `PROOF_MAX_AGE`) as well; **on an armed
+   unit Σ also counts one per-op pet per read** (a pet is `timeout -k 2 5` — 7 s at the house
+   counting). Measured on an armed spare, every take-cycle tier read answered at its `curl -m` − 1 s
+   and every pet 7 s: the own-bank read at t489, the attempt at t496, three `TIER2` reads answering
+   +4, +9 and +9 s, each followed by a 7 s pet, the mutation at t539 — Σ = 50 s, 22 s of reads + 28 s
+   of pets (the reads' bounds alone imply about 35 s); a holder that resumed at t477 was taken 62 s
+   into its voting (t476: vetoed). Measured, the tiers as the intermediary, the take scheduled at
+   t125 on the timer path:
    - zero latency: resumed at t112 → vetoed; at t113 → taken at t125 after **12 s** of renewed
      voting. Armed (proof minted at t171): t158 → vetoed; t159 → the gate accepts watchdog-elapsed
      and the take mutates at t171 — the proof matures before the own bank sees the resumption;
@@ -411,6 +423,24 @@ mid-episode restarts the silence — and never after `PROOF_MAX_AGE`.
      and never sees the vote the tiers withhold — and the proof-gated take mutated at t126, **86 s**
      after a vote the spare's own bank saw: the verdict's "100 s of silence" overstated the true
      silence by 14 s, more than `MARGIN_ELAPSED` (10 s).
+
+**Cadence residual (documented, 6.3 fix round 2).** The episode window opens, triggers and closes on
+a COUNT of cycles (7-of-10; "mostly clear"), while the own bank's view of a holder vote is a matter of
+TIME (a vote reaches the finalized bank 32 slots after it lands — ≈ 13 s at 2.5 slots/s). So any change
+in how long a cycle takes — a pet that costs time, `CHECK_INTERVAL`, read latency — re-phases vetoes
+and window closes, both ways, on every tree (de21927 included). The proof's re-mint cycle
+(`PROOF_MAX_AGE` from `observed_at`) is phase too. Measured over a 1,115-world sweep against the
+build before fix round 2: the own-bank reference read that round added to every check (at
+`MAX_DELINQUENT_SLOTS` > 0) re-phased 18 takes 1–8 s sooner and 49 later; moving `observed_at` back
+10 s re-phased 43 takes sooner and 55 later — 22 of them takes where the previous build vetoed, as
+that build takes the same family's holders at other resume instants. Measured in one world (the
+holder's one vote at t141, `TIER2` 10 s late during t73–t118, `MAX_DELINQUENT_SLOTS`=0, an armed
+spare on the shipped timer path): pets that cost nothing take at t125, 1 s pets at t254, 2 s pets at t218
+(de21927: t125 / t152 / t284 — its 2 s-pet take is 66 s later than this build's); with free pets,
+`CHECK_INTERVAL` 4 / 5 / 6 takes at t138 / t125 / t126 on every tree. On a real host a pet costs
+milliseconds, far below RPC jitter: the class is the phase, not the pet. It flips when the
+episode-close rule becomes time-based (the "mostly clear" window spanning at least the own bank's
+visibility period for a vote) — a reviewed change, not in this build (`test_elapsed_provider` (13f)).
 
 **A partitioned or lagging spare.** Agave's `getHealth` (v4.2.1, `rpc/src/rpc_health.rs`) compares
 the node's own optimistically confirmed slot with the latest optimistic slot its **own blockstore**
@@ -449,9 +479,19 @@ bank reads blind (a lagged fleet), and that bank more than `N_HEAD` behind a liv
 stale reference — the cut-off or lagging spare above). Both cost availability, never a take. It does
 not see the bank and the view lagging or frozen **together** (Finding 2's co-frozen form), a bank at
 the same height on another fork (the compare is on slot numbers), or an intermediary that proxies the
-head live (it passes by construction). The head is read after the payload and its per-op pet, so the
-gap (≤ 7 s at the house counting, ~17 slots at 2.5/s) deflates the bank-behind side: a bank lagging a
-live view by up to about `N_HEAD` + 17 slots can still pass.
+head live (it passes by construction). The head is read after the payload, and the bank moves while
+the time between the two answers runs: that time deflates the bank-behind side, so a bank lagging a
+live view by up to `N_HEAD` + (slot rate × that time) still passes — the hidden lag. Since 6.3 fix
+round 2 the provider stamps the sampler's return and the head read's completion and answers BLIND
+when the head landed more than `ELAPSED_HEAD_GAP_MAX` = 1 s (measured on the truncating monotonic
+clock; < 2 s true) after the payload. Not stamped: the payload read's own pet and the sampler's parse
+(~0.11 s measured on the test box, a 2,001-account payload). The time between the answers is
+therefore under 2.2 s on a healthy host (a pet is one datagram — 4 ms measured) — a hidden lag under 6 slots at
+2.5 slots/s and under 9 at 3.7 — and under 9.2 s with the payload's pet stalled at its full 7 s:
+under 23 slots at 2.5/s, under 35 at 3.7. (The text before this round said "≤ 7 s, ~17 slots"; it
+missed the head read's own `curl -m 5` + pet, which nothing bounded: with every read at its bound and
+every pet 7 s, the pre-fix tree minted with the spare's bank 50–55 slots behind the view — twice
+`N_HEAD`. That world now reads blind.)
 
 ### Availability-side starvation (blind or flapping externals)
 

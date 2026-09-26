@@ -886,11 +886,20 @@ s_pets=$(grep -cE '^[[:space:]]*_watchdog_pet[[:space:]]+# §5 end-of-cycle pet'
 # (house counting: getSlot 3 + T2 10 + pet 7). With both petted the gap is one op + one pet: MEASURED
 # 17 s at MAX_DELINQUENT_SLOTS 0 and 15, and each removal alone measured back at 20 s
 # (test_elapsed_provider (12f)). The PRIMARY has neither read: its pin is unchanged. Totals 42 / 43 → 42 / 45.
+# +1 on the STANDBY at the Block 6.3 FIX ROUND 2 (R2 census — the pin MOVED, deliberately, in that
+# diff): tier2_check_delinquency's lastVote RE-READ after its MAX_DELINQUENT_SLOTS reference — a TIER2
+# getVoteAccounts at curl -m 15 (5 in turbo), petted post-op. A3 re-derived: one bounded op + its pet,
+# inside the 22 s worst case (the single longest op, SETIDENTITY_TIMEOUT 15 + kill-grace 5, still
+# governs); it runs only when the first latency already exceeds MAX_DELINQUENT_SLOTS, so it can only
+# DELAY a delinquent confirmation (MEASURED over the round's 1,115-world sweep: 7 takes later, none
+# sooner). local_check_delinquency's reference moved AHEAD of its payload (R2) and its pet moved with
+# it — count unchanged: it now separates the reference from the own-bank payload (curl -m 5; unpetted,
+# the pair measured 15 s — test_elapsed_provider (12f)). The PRIMARY is unchanged. Totals 42 / 45 → 42 / 46.
 p_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$PRIMARY")
 s_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$STANDBY")
-[[ "$p_total" == "42" && "$s_total" == "45" ]] \
-    && ok "(14b) total pet call-site pins: primary 41 calls (+def=42), standby 44 calls (+def=45) — deletion of any pet line trips this" \
-    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 42, standby=$s_total pinned 45) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
+[[ "$p_total" == "42" && "$s_total" == "46" ]] \
+    && ok "(14b) total pet call-site pins: primary 41 calls (+def=42), standby 45 calls (+def=46) — deletion of any pet line trips this" \
+    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 42, standby=$s_total pinned 46) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
 if ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$PRIMARY" && ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$STANDBY" && ! grep -qE '^[[:space:]]*sleep "\$RECOVERY_CHECK_INTERVAL"' "$PRIMARY"; then
     ok "(14c) the >=15s sleeps (STARTUP_GRACE x3, RECOVERY_CHECK_INTERVAL, hard-stop re-verify) go through _watchdog_sleep"
 else

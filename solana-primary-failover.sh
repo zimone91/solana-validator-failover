@@ -708,9 +708,24 @@ window_mostly_clear() {
 # genuine persisted value — we never initialize LAST_SWITCH_TIME to "now", which
 # would enforce the cooldown right after a restart and block a legitimate switch.
 
-# v0.6.9 (H3): fetch one numeric field from STATE_FILE (last occurrence wins; strict ^KEY=[0-9]+$ so a
-# corrupt/partial line is silently ignored — restore only genuine values).
-_state_get() { grep -E "^${1}=[0-9]+$" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2; }
+# v0.6.9 (H3): fetch one numeric field from STATE_FILE (the key's LAST line wins).
+# v0.7 (Block 6.3 fix round 2, R5 — P2-INERT-4): through the ONE canonical-integer validator. rc 0 +
+# the value when that line holds a canonical integer; rc 1 (nothing printed) when the key is absent or
+# its value empty (save_state writes "" for "none"); rc 2 (nothing printed) when a value is PRESENT but
+# non-canonical — a hand edit or corruption: "0777" is read by bash as OCTAL 511 (a lockout/cooldown
+# that silently expired while the log said it was restored), "0999" is an arithmetic error that discards
+# the rest of the enclosing startup command (on an armed holder: READY never sent), 20 digits wrap.
+# The caller picks the fail-toward direction for rc 2 (a lockout/cooldown re-holds IN FULL; a SAVE_TS
+# makes the whole save stale; a self-fence baseline value is not restored — per value, see load_state);
+# no caller ever does arithmetic on a raw persisted value.
+_state_get() {
+    local _sg_v
+    _sg_v=$(grep -E "^${1}=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
+    [[ -n "$_sg_v" ]] || return 1
+    _canon_uint "$_sg_v" || return 2
+    printf '%s' "$_sg_v"
+    return 0
+}
 
 load_state() {
     # v0.6.9 (M10): one-time migration of the legacy shared ".../state" file to the role-specific
@@ -752,10 +767,19 @@ load_state() {
             _same_boot=1   # harness fallback: mono_now == wall clock → values comparable
         fi
     fi
-    local v
+    local v _sg
     # v0.7 (Block 3, dual-write): prefer the *_MONO twin; legacy = wall for rollback, >0-signal only.
-    v=$(_state_get LAST_SWITCH_MONO)
-    [[ -z "$v" ]] && { v=$(_state_get LAST_SWITCH_TIME); [[ -n "$v" && $v -gt 0 ]] && v=$_mono_now; }
+    # v0.7 (Block 6.3 fix round 2, R5): a value PRESENT but non-canonical (_state_get rc 2) re-holds the
+    # recovery cooldown IN FULL from now — fail toward HELD, the cross-boot rule's direction — and says so.
+    v=$(_state_get LAST_SWITCH_MONO); _sg=$?
+    if [[ $_sg -eq 1 ]]; then
+        v=$(_state_get LAST_SWITCH_TIME); _sg=$?
+        [[ $_sg -eq 0 && $v -gt 0 ]] && v=$_mono_now
+    fi
+    if [[ $_sg -eq 2 ]]; then
+        v=$_mono_now
+        log_warn "State: a persisted LAST_SWITCH stamp in $STATE_FILE is NON-CANONICAL (a hand edit or corruption) — the recovery cooldown re-holds IN FULL from now (fail toward HELD; never arithmetic on the raw value)"
+    fi
     if [[ -n "$v" ]]; then
         # v0.7 (Block 3): different boot + a real (>0) stamp → the recovery delay/cooldown re-held in
         # full from now (see above). A 0 stamp ("no switch yet") restores as 0 — never invent a
@@ -780,9 +804,13 @@ load_state() {
     # CONTINUOUS. FAILURE DIRECTION: ambiguity discards state → fresh timers (pre-H3 behavior), never
     # an invented stall.
     local save_ts role now age
-    save_ts=$(_state_get SAVE_TS)
+    save_ts=$(_state_get SAVE_TS); _sg=$?
     role=$(grep -E '^ROLE_AT_SAVE=(staked|unstaked)$' "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2)
     [[ -n "$role" ]] && _persisted_role="$role"   # read regardless of age: drives the startup staked-unreachable page (a long-dead monitor over a staked validator is exactly the case to page about)
+    if [[ $_sg -eq 2 ]]; then   # v0.7 (Block 6.3 fix round 2, R5): a non-canonical SAVE_TS counts as STALE — no restore, never arithmetic
+        log_warn "State: SAVE_TS in $STATE_FILE is NON-CANONICAL (a hand edit or corruption) — the persisted self-fence baseline counts as STALE and is NOT restored (timers start fresh)"
+        return 0
+    fi
     [[ -n "$save_ts" ]] || return 0
     now=$(date +%s)
     age=$(( now - save_ts ))
@@ -794,8 +822,22 @@ load_state() {
         return 0
     fi
     if [[ "$PRIMARY_SELF_FENCE" == "true" ]]; then
-        local ps pa pn pv pb ph
-        ps=$(_state_get SF_LAST_CONFIRMED_SLOT); pa=$(_state_get SF_ADVANCE_MONO)
+        local ps pa pn pv pb ph _sg_bad="" _sg_k
+        # v0.7 (Block 6.3 fix round 2, R5): a non-canonical baseline value is NOT restored — PER VALUE,
+        # as a non-digit value never was (_state_get prints nothing for either), so it never reaches
+        # arithmetic; the rest of this fresh save restores as usual. Per value, not the whole snapshot:
+        # discarding the snapshot for one bad value made the holder fence LATER or NEVER where the
+        # pre-fix tree fenced (MEASURED — a non-canonical SF_NOANSWER_MONO over a silent LOCAL: 30 s →
+        # never; SF_VOTELAG_HEALTHY over a frozen slot: 0 → 30 s). The slot is the one exception: its
+        # key in a FRESH save proves a baseline existed, so a non-canonical slot restores as 0 — every
+        # live slot is past it (no stall is ever inferred from it; the frozen clock restarts at the
+        # first answer, as for an absent slot) while the no-answer gate stays armed, as it was.
+        for _sg_k in SF_LAST_CONFIRMED_SLOT SF_ADVANCE_MONO SF_NOANSWER_MONO SF_VOTELAG_MONO SF_VOTELAG_BASELINE SF_VOTELAG_HEALTHY; do
+            _state_get "$_sg_k" >/dev/null; [[ $? -eq 2 ]] && _sg_bad="${_sg_bad:+$_sg_bad }$_sg_k"
+        done
+        [[ -n "$_sg_bad" ]] && log_warn "State: self-fence baseline value(s) NON-CANONICAL in $STATE_FILE (${_sg_bad}) — each is NOT restored (its timer starts fresh; a non-canonical slot restores as 0: a baseline existed, its value is unknown); never arithmetic on a raw persisted value"
+        ps=$(_state_get SF_LAST_CONFIRMED_SLOT); [[ $? -eq 2 ]] && ps=0
+        pa=$(_state_get SF_ADVANCE_MONO)
         pn=$(_state_get SF_NOANSWER_MONO);       pv=$(_state_get SF_VOTELAG_MONO)
         # Old-format fallback (no *_MONO twins): the legacy wall clocks cannot join mono arithmetic;
         # leave the pendings unarmed (timers restart fresh — can delay a demote, never invent one).
@@ -1141,28 +1183,26 @@ check_standby_has_identity() {
 # now? Topology-independent — it does not care which IP/port holds the identity, only whether
 # SOMEONE is voting it. PRIMARY re-takes only when this says "frozen" (nobody voting).
 
-# Echo "<lastVote> <tip> <read_ts> <tier>" for the staked vote account AND the answering RPC's own cluster tip,
+# Echo "<lastVote> <tip> <tier>" for the staked vote account AND the answering RPC's own cluster tip,
 # both from the SAME external RPC (Tier2 → Tier3) at commitment=processed, plus the tier label
 # ("T2"/"T3") of the provider that answered (v0.7 Block 3 slice 2 — see below). The tip is an
 # RPC-freshness reference (a stalled/cached RPC returns a frozen tip → cannot determine). Fields
 # 1–2 are unchanged from v0.6.3, so two-field consumers keep working.
-# v0.7 (Block 6.3 fix round): the line is "<lastVote> <ref> <read_ts> <tier>" — <read_ts> (M3) is
-# the mono stamp taken IMMEDIATELY BEFORE the read that produced this answer, inserted BEFORE the
-# tier so every consumer that takes field 1, field 2 and the LAST field (all of them) is unchanged;
-# both numbers pass the ONE canonical-integer validator (M4) — see the standby copy.
+# v0.7 (Block 6.3 fix round): both numbers pass the ONE canonical-integer validator (M4) — see the
+# standby copy. (Fix round 2, R1: the fix round's fourth field — the answering read's own pre-read
+# stamp — is gone again, as in the standby copy. The line is three fields, as in v0.7 Block 3.)
 get_staked_liveness_sample() {
-    local rpc vote_result lv ref tier _gls_rc _gls_ts
+    local rpc vote_result lv ref tier _gls_rc
     # v0.7 (Block 3, slice 2 / AUDIT-5 A2): label WHICH tier answered. A liveness pair is only
     # comparable same-vantage (a lagging fallback provider can collapse a live holder's advance to
     # ≤ EPSILON → false FROZEN), so the verdict logic must know when a pair mixed providers. The
     # label travels two ways: the global _liveness_sample_provider (set on every successful return)
-    # and the LAST stdout field after "<lastVote> <ref> <read_ts>" — $() callers run this function
-    # in a subshell, so they re-derive the global from that field.
+    # and a THIRD (last) stdout field after "<lastVote> <ref>" — $() callers run this function in a
+    # subshell, so they re-derive the global from that field.
     _liveness_sample_provider=""
     for rpc in "$TIER2_RPC" "$TIER3_RPC"; do
         [[ -z "$rpc" ]] && continue
         tier="T3"; [[ "$rpc" == "$TIER2_RPC" ]] && tier="T2"
-        _gls_ts=$(mono_now)   # M3: immediately before THIS read — the earliest instant its answer can reflect
         vote_result=$(curl -s -m 10 "$rpc" -X POST \
             -H "Content-Type: application/json" -H "Cache-Control: no-cache" \
             -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts","params":[{"commitment":"processed"}]}' 2>/dev/null)
@@ -1181,7 +1221,7 @@ get_staked_liveness_sample() {
             '[(.result.current + .result.delinquent)[]? | .lastVote] | map(numbers) | max // empty' 2>/dev/null)
         _canon_uint "$ref" || continue   # M4
         _liveness_sample_provider="$tier"
-        printf '%s %s %s %s\n' "$lv" "$ref" "$_gls_ts" "$tier"
+        printf '%s %s %s\n' "$lv" "$ref" "$tier"
         return 0
     done
     return 1
@@ -1870,15 +1910,16 @@ _sd_notify() {
 #     webhook -m 10) stack past ~170 s of bound inside ONE cycle.
 # Therefore, per the A3 rule (worst case ≫ 15 s): pets fire ADDITIONALLY after EVERY bounded
 # network/admin op (≥ 5 s bound — and, since the Block 6.3 fix round (M6), the standby's two
-# curl -m 3 LOCAL getSlot reads too: each preceded a petted TIER2 read, and the unpetted pair
-# measured a 20 s inter-pet gap) COMPLETES on the main-loop paths, EVERY main-loop/HOLD sleep
-# goes through _watchdog_sleep (≤ 10 s chunks + a pet per completed chunk under the armed
-# unit — so ANY legal CHECK_INTERVAL/TURBO_INTERVAL value is safe; no interval ceiling exists
-# or is needed, and nothing here depends on the 3–5 s defaults), and an end-of-cycle pet
-# closes every loop iteration. Resulting max inter-pet gap = the single longest bounded op +
-# glue = (SETIDENTITY_TIMEOUT 15 + kill-grace 5) + ~2 ≈ 22 s < WatchdogSec 30 — at ZERO
-# datagram loss. Honest residual, named: across a maximal 20 s op the gap exceeds
-# WatchdogSec/2, so ONE discarded datagram immediately before such an op can stretch the
+# curl -m 3 LOCAL getSlot reads too: Tier-1's precedes a petted TIER2 read, and the unpetted pair
+# measured a 20 s inter-pet gap; the MAX_DELINQUENT_SLOTS reference, read FIRST since fix round 2,
+# precedes the own-bank payload, and the unpetted pair measured 15 s) COMPLETES on the main-loop
+# paths, EVERY main-loop/HOLD sleep goes through _watchdog_sleep (≤ 10 s chunks + a pet per
+# completed chunk under the armed unit — so ANY legal CHECK_INTERVAL/TURBO_INTERVAL value is
+# safe; no interval ceiling exists or is needed, and nothing here depends on the 3–5 s
+# defaults), and an end-of-cycle pet closes every loop iteration. Resulting max inter-pet gap =
+# the single longest bounded op + glue = (SETIDENTITY_TIMEOUT 15 + kill-grace 5) + ~2 ≈ 22 s <
+# WatchdogSec 30 — at ZERO datagram loss. Honest residual, named: across a maximal 20 s op the
+# gap exceeds WatchdogSec/2, so ONE discarded datagram immediately before such an op can stretch the
 # observed gap past 30 s → a false fence. The discard class is kernel-local (PID 1
 # notify-socket pressure / the record's fork-exit attribution race), not network loss.
 # WHY THIS RESIDUAL NEEDS NO FIX (reviewer, 5.2 GO — the full argument, so the next reader does
@@ -2171,8 +2212,10 @@ _pairing_crc() { printf '%s' "$1" | cksum 2>/dev/null | awk '{print $1}'; }
 _proof_field() { printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d= -f2-; }
 
 # _proof_token_scan — classify the STORED pairing token into _proof_token_st (none | invalid |
-# page-only | ok) and fill _proof_token_gen/_w/_b/_fence (variables, not echo: callers need the
-# fields in THIS shell — a $()-captured classifier would strand them in a subshell). The token
+# page-only | ok) and fill _proof_token_gen/_w/_b/_fence/_line (variables, not echo: callers need the
+# fields in THIS shell — a $()-captured classifier would strand them in a subshell; _line is the
+# exact classified line, set once the crc and the canonical fields verify — watchdog-elapsed keys
+# its token adoption on it, 6.3 fix round 2 R4). The token
 # is the 5.3 emission's exact shape: v0.7|gen=N|watchdog=W|relinquish_bound=B|fence=F|host=H|crc.
 # crc re-verified at EVERY scan (claim=check: the intake verified at store time, but a file can
 # rot on disk like any other; an unverifiable token is an INVALID token → the loud unpaired
@@ -2181,7 +2224,7 @@ _proof_field() { printf '%s' "$1" | tr '|' '\n' | grep "^$2=" | head -1 | cut -d
 # posture text can say why.
 _proof_token_scan() {
     local _pts_f="$PROOF_STATE_DIR/pairing-token" _pts_line _pts_crc _pts_payload _pts_gen _pts_w _pts_b _pts_fence
-    _proof_token_st=""; _proof_token_gen=""; _proof_token_w=""; _proof_token_b=""; _proof_token_fence=""
+    _proof_token_st=""; _proof_token_gen=""; _proof_token_w=""; _proof_token_b=""; _proof_token_fence=""; _proof_token_line=""
     if [[ ! -f "$_pts_f" ]]; then _proof_token_st="none"; return 0; fi
     _pts_line=$(head -1 "$_pts_f" 2>/dev/null)
     case "$_pts_line" in "v0.7|gen="*) : ;; *) _proof_token_st="invalid"; return 0 ;; esac
@@ -2199,7 +2242,7 @@ _proof_token_scan() {
     _canon_uint "$_pts_w"   || { _proof_token_st="invalid"; return 0; }
     _canon_uint "$_pts_b"   || { _proof_token_st="invalid"; return 0; }
     _proof_token_gen=$((10#$_pts_gen)); _proof_token_w=$((10#$_pts_w)); _proof_token_b=$((10#$_pts_b))
-    _proof_token_fence="$_pts_fence"
+    _proof_token_fence="$_pts_fence"; _proof_token_line="$_pts_line"
     case "$_pts_fence" in
         real)      _proof_token_st="ok" ;;
         page-only) _proof_token_st="page-only" ;;
@@ -2223,8 +2266,8 @@ _proof_unpaired_scan() {
 
 # ── _derive_proof_floors — THE derivation site (§3a.3: derived, not configured) ────────────────
 # ONE site per daemon (twin): NO other script re-declares elapsed_floor / MARGIN_ELAPSED /
-# N_HEAD — test_proof_gate censuses the assignment sites (the N-is-all rule applied to
-# constants, allowlist style). Armed-only and token-fed: the floors exist ONLY when a valid
+# N_HEAD / ELAPSED_HEAD_GAP_MAX — test_proof_gate censuses the assignment sites (the N-is-all rule
+# applied to constants, allowlist style). Armed-only and token-fed: the floors exist ONLY when a valid
 # fence=real token is stored — the right to use time as proof is exactly what attestation buys
 # (the condition-4 comment at the gate below). G2's DELTA does NOT live here — it is 6.2's,
 # per-provider (a positive-observation hold; no W+B component).
@@ -2273,6 +2316,24 @@ _derive_proof_floors() {
     # a sound floor must exclude. The coupling IS the property this derivation exists for —
     # decoupling it under availability pressure is the most natural and the most wrong move.
     N_HEAD=$(( MARGIN_ELAPSED * 5 / 2 ))
+    # ELAPSED_HEAD_GAP_MAX (6.3 fix round 2, R3 — FX-2) — the most MONO seconds watchdog-elapsed's
+    # head read may land after its payload read, measured op to op (each stamp taken right after its
+    # op's post-op pet, so the span holds the head read's pet, the LOCAL getSlot and a few string
+    # ops), for its two-sided head compare to mean anything: the bank advances while the gap runs,
+    # so a gap of g seconds shifts that compare by the slot rate x g. DERIVED: a pet (one socat
+    # datagram under `timeout`) and a LOCAL getSlot (a loopback curl) are each milliseconds on a
+    # healthy host — MEASURED 4 ms and 4-5 ms (20 runs each, docker bash:5.2 on the test box, a
+    # local responder standing in for the node) — so the true span is well under 1 s; mono_now
+    # truncates both stamps to whole seconds, so a true span under 1 s MEASURES 0 or 1 — a bound of
+    # 0 would blind a healthy host at every second boundary it straddles, so 1 is the smallest bound
+    # that never blinds a healthy host. A measured span <= 1 s is a true span < 2 s (< 5 slots at
+    # the assumed 2.5 slots/s, < 7.4 at the measured ~3.7); 2 or more — a stalled pet, a slow or
+    # timed-out local read (the house bound-counting: pet 7 + curl -m 5 = 12 s) — reads BLIND:
+    # availability, never a take. Deliberately NOT derived from MARGIN_ELAPSED: it bounds a gap
+    # between two reads, not the view's staleness. What the gap does NOT cover — the payload read's
+    # own pet and parse, which run inside the sampler before the first stamp — is named in
+    # [elapsed-provider].
+    ELAPSED_HEAD_GAP_MAX=1
     # convergence backstop [6.0-COND-1] (panel L-1): in honest arithmetic the floor W+B+MARGIN is
     # ALWAYS > 0 and >= W and >= B (W,B >= 0, MARGIN > 0), so a violation PROVES 64-bit integer
     # overflow — a token whose watchdog (or bound) is large enough that the sum wrapped past 2^63.
@@ -2392,9 +2453,17 @@ require_relinquish_proof() {
 #   < 1 s, absorbed by the composition below) = 11 s
 #   PROOF_MAX_AGE = 36 + 3 + 11             = 50 s
 # HEALTHY PATH (typical one-curl success ~1 s + glue): verdict age at the edge ≈ 2–4 s — ≥ 12x
-# under the budget; the worst REACHABLE path (39 s) clears it by 11 s: convergence proven WITH
-# margin (the slice-4 floor lesson — a bound right in meaning that never converges is a broken
-# gate). NOTE (reviewer condition C2, claim=check): this number and G2's DELTA were briefly EQUAL
+# under the budget; the worst REACHABLE path of THIS span (39 s, acceptance → recheck → set-identity)
+# clears it by 11 s: convergence proven WITH margin FOR THAT SPAN — i.e. for a verdict that is fresh
+# when the gate accepts it (the slice-4 floor lesson — a bound right in meaning that never converges
+# is a broken gate). SCOPE, named (6.3 fix round 2, R10): the census covers the acceptance→mutation
+# span only, never a provider's own evaluation before it. watchdog-elapsed's verdict is already 35 s
+# old at its mint in its worst MINTING evaluation (its observed_at is the evaluation start; MEASURED
+# on a file clock at the house bound-counting — test_elapsed_provider (12c-tail) — and 74 s at this
+# edge) — THE ELAPSED PROVIDER'S WORST EVALUATION DOES NOT CONVERGE UNDER PROOF_MAX_AGE; 6.4 decides
+# (re-derive, or accept the non-convergence as availability — the edge refuses, never a take): the
+# tail census at the [elapsed-provider] mint site. PROOF_MAX_AGE is not changed by that note.
+# NOTE (reviewer condition C2, claim=check): this number and G2's DELTA were briefly EQUAL
 # (both 50) and the comment here said so — a numeric coincidence, never a derivation. G2_DELTA is
 # now 60 (the research record's figure, restored once per-provider floors retired the timer-fit
 # constraint) and the coincidence is gone. They remain DIFFERENT OBJECTS — a positive-observation
@@ -3267,7 +3336,8 @@ _elapsed_incident_active() { return 1; }
 # (_derive_proof_floors), checked at registration, at every evaluation AND at every serve of a
 # standing verdict (6.3 fix round, M1: a token removed, turned page-only, rotted or re-paired under a
 # dormant verdict withdraws it at once — the gate never sees a proof the token in force does not
-# support), and only for silence observed AFTER the token now in force was adopted (N4).
+# support), and only for silence observed AFTER the token now in force was adopted (N4 — "the token
+# now in force" is its FULL classified line plus the stored file's identity since fix round 2, R4).
 #
 # WHAT A PROVEN VERDICT STANDS ON — the layer set, enumerated so "complete" stays a measured claim
 # (test_elapsed_provider (5) neuters each layer ALONE and observes the fall-through to a NAMED surviving
@@ -3276,11 +3346,15 @@ _elapsed_incident_active() { return 1; }
 #   [elapsed-token]  the stored token classifies ok through _derive_proof_floors (fence=real, crc-valid,
 #                    canonical fields, floor converged and >= TAKEOVER_DELAY) — the floors are READ from
 #                    that one site, never re-derived here (the constants census in test_proof_gate stays
-#                    exact); at serve time it must still classify ok with the gen the verdict carries (M1);
-#                    and the silence counts only from when this provider first saw the token now in force —
-#                    a provider-local mono stamp per gen (a re-adoption after a not-ok classification
-#                    counts as new), so a re-pair never lends its bounds to silence measured under
-#                    another token (N4)
+#                    exact); at serve time it must still classify ok with the gen the verdict carries (M1)
+#                    and still BE the token the verdict was minted under (fix round 2, R4 — the same full
+#                    key as below); and the silence counts only from when this provider first saw the
+#                    token now in force — a provider-local mono stamp per TOKEN, keyed on its full
+#                    classified line (gen, watchdog, relinquish_bound, fence, host, crc) AND the stored
+#                    file's identity (inode, size, change time), so ANY change — a same-gen re-pair with
+#                    other bounds, another host's token, a rewrite back to the same bytes that no step saw
+#                    — is a new adoption, and a withdrawal for a token reason clears it: a re-pair never
+#                    lends its bounds to silence measured under another token (N4, R4)
 #   [elapsed-blind]  no STAMPED blindness since the start: the Block-3 seam shows an observed span this
 #                    episode (_liveness_obs_since > 0 — a stamped blind cycle zeroes it) and a blind_until
 #                    newer than a floor refuses on its OWN line (defense in depth under a seam whose
@@ -3291,6 +3365,11 @@ _elapsed_incident_active() { return 1; }
 #                    elapsed_floor = W + B + MARGIN_ELAPSED (the derivation site says why each term) — at
 #                    the mint; and at every serve the re-derived floor must not exceed the silence the
 #                    verdict was minted on (M1: a raised bound withdraws the verdict it no longer covers)
+#   [elapsed-gap]    the head read landed within ELAPSED_HEAD_GAP_MAX (derived at the ONE derivation
+#                    site) of the payload read — measured op to op, each stamp taken right after its op's
+#                    post-op pet; the bank moves while the gap runs, so a wider gap shifts the two-sided
+#                    compare below by the slot rate × the gap and the compare is not meaningful → BLIND
+#                    (fix round 2, R3 — FX-2; see the head paragraph below for what it bounds)
 #   [elapsed-head]   the liveness payload's cluster-max lastVote within ±N_HEAD slots of an INDEPENDENT
 #                    head: this spare's OWN bank (LOCAL_RPC getSlot, commitment=processed)
 #   [elapsed-seam]   at every SERVE (the reporter's _elapsed_verdict_why — the dormant step's re-check
@@ -3317,11 +3396,24 @@ _elapsed_incident_active() { return 1; }
 # REFERENCE — a lagging or cut-off spare, which the Tier-1 gate does not catch (agave's getHealth
 # compares the node against what its OWN blockstore has observed, so a node that cannot observe the
 # cluster moving on reads ok — test_elapsed_provider (11e)/(11h)). Both read BLIND: availability,
-# never safety. The head is read AFTER the payload AND its pet: the gap (<= the payload's pet, 7 s at
-# the house bound-counting — ~17 slots at the assumed 2.5 slots/s) inflates the view-behind side but
-# DEFLATES the bank-behind side, so a bank lagging a live view by up to about N_HEAD + 17 slots can
-# still pass (panel N5 — a named residual; the remedy, a head stamp compensating the gap, is a
-# reviewed change). WHAT IT DOES NOT SEE, named: this bank and the view lagging or FROZEN TOGETHER —
+# never safety. THE GAP (6.3 fix round 2, R3 — FX-2): the head is read AFTER the payload, and the
+# bank moves while the time between the two answers runs — that time inflates the view-behind side
+# and DEFLATES the bank-behind side by the slot rate x the time, so a bank lagging a live view by up
+# to N_HEAD + rate x (that time) slots still passes: the HIDDEN LAG. [elapsed-gap] bounds the part a
+# stamp can see — from the sampler's return (after the payload op's post-op pet and its parse) to
+# the head read's completion (after its pet): <= ELAPSED_HEAD_GAP_MAX = 1 s measured on the
+# truncating mono clock, < 2 s true, or BLIND. Not stamped, named: the payload op's OWN pet and the
+# sampler's parse — they run inside the sampler's $() (the stamp that sat there was M3's field,
+# reverted in R1); the parse MEASURED ~0.11 s (mac test box, bash 3.2: the real sampler, 20 runs on
+# a 2,001-account 830 KB payload), the pet a datagram (4 ms measured). The time between the answers
+# is therefore under 2.2 s on a healthy host — a hidden lag under 6 slots at 2.5 slots/s and under 9
+# at 3.7 (docs/SAFETY.md, Slot time), on top of N_HEAD = 25 — and under 9.2 s at the house
+# bound-counting with the payload's pet stalled at its full 7 s (the one op no stamp covers): under
+# 23 slots at 2.5/s, under 35 at 3.7. (The text this replaces said "<= 7 s, ~17 slots": it counted
+# the payload's pet and missed the head read's own curl -m 5 + pet, which nothing bounded —
+# MEASURED, every read at its bound and every pet 7 s, the pre-fix tree MINTED with this bank 50-55
+# slots behind the view; since R3 that world reads HEAD GAP, blind.)
+# WHAT IT DOES NOT SEE, named: this bank and the view lagging or FROZEN TOGETHER —
 # the spare partitioned together with its tiers after the episode opened: on a minority side its
 # processed bank (the tower's vote bank) freezes within ~8 votes and the co-partitioned view freezes
 # with it, the compare passes and this provider MINTS (test_elapsed_provider (11i)); a host suspend
@@ -3355,7 +3447,8 @@ _elapsed_incident_active() { return 1; }
 # the dormant verdict's re-check included — and every serve of a standing verdict re-classifies the
 # stored token at the derivation site: a local file read + cksum, ~20 ms measured (mac test box; ~8 ms
 # on Linux), ZERO network (M1: dormant is zero-NETWORK, no longer zero-I/O). Worst added gap per cycle
-# (the A3-style census — the evaluation MEASURED at 46 s + glue in test_elapsed_provider (12c)):
+# (the A3-style census — the evaluation MEASURED at 46 s + glue in test_elapsed_provider (12c-tail);
+# since 6.3 fix round 2 (R3) that worst evaluation answers HEAD GAP, blind — it never mints):
 #     below floor / dormant proven / paced / not registered : zero network reads               ~  0 s
 #     evaluation: the sampler (T2 curl -m 10 + pet 7 s, then T3 curl -m 10 + pet 7 s)         = 34 s
 #                 + the head read (curl -m 5 + pet 7 s) + parse glue (~2 s)                   = 14 s
@@ -3376,19 +3469,41 @@ _elapsed_answer="cannot"         # current verdict class: cannot | blind | no | 
 _elapsed_reason="not yet evaluated"  # MEASURED reason for the verdict record and logs (never a static figure)
 _elapsed_verdict=""              # the minted proven verdict record (stamps frozen at the mint; ages via observed_at)
 _elapsed_since=0                 # the silence start the minted verdict rests on = max(observed_since, blind_until, token adoption) at the mint
-_elapsed_obs_ts=0                # the minted verdict's observed_at: the answering payload read's own stamp, taken immediately BEFORE that read (M3)
+_elapsed_obs_ts=0                # the minted verdict's observed_at: the EVALUATION START (mono, taken before its fresh read) — fix round 2, R1
 _elapsed_mint_silence=0          # the silence (s) the minted verdict rests on — a re-derived floor above it withdraws the verdict (M1)
 _elapsed_triple=""               # the freshness triple (vantage/observed_since/blind_until) at the mint — the served triple must still be the seam's (M7)
-_elapsed_tok_gen=""              # the token gen this provider last adopted ("" = none in force: the next ok classification is a NEW adoption) — N4
+_elapsed_tok_key=""              # the FULL key of the token this provider last adopted: its classified line + the stored file's identity ("" = none in force: the next ok classification is a NEW adoption) — N4, R4
+_elapsed_tok_gen=""              # that token's gen (for the logs and reasons only — the key above decides)
 _elapsed_tok_since=0             # provider-local mono stamp of that adoption — silence observed before it does not count (N4)
+_elapsed_mint_key=""             # the token key the minted verdict rests on — at every serve the key in force must still be it (R4)
 _elapsed_last_read_ts=0          # _ELAPSED_READ_PACE_SECS anchor (mono; 0 = the first evaluation never waits)
 
 # _elapsed_reset <why> — drop the verdict and back to cannot. Registration survives (it is config),
-# and so does the token adoption stamp (it belongs to the token, not to an episode).
+# and so does the token adoption stamp (it belongs to the token, not to an episode — the dormant
+# step clears it on a withdrawal for a TOKEN reason, R4).
 _elapsed_reset() {
     _elapsed_answer="cannot"; _elapsed_reason="${1:-reset}"
-    _elapsed_verdict=""; _elapsed_since=0; _elapsed_obs_ts=0; _elapsed_mint_silence=0; _elapsed_triple=""
+    _elapsed_verdict=""; _elapsed_since=0; _elapsed_obs_ts=0; _elapsed_mint_silence=0; _elapsed_triple=""; _elapsed_mint_key=""
     return 0
+}
+
+# _elapsed_tok_ident — the STORED token file's identity: "<inode> <size> <change time>" (GNU/busybox
+# stat -c, else BSD stat -f; an opaque string compared for EQUALITY only — never as a time). A rewrite
+# changes it even when the bytes come back identical (the ceremony stores tmp+mv: a new inode; an
+# in-place edit: a new change time), so a rot-and-restore that no step saw is still a new token (fix
+# round 2, R4 — the reporter runs inside the gate's $() and cannot record what it saw). rc 1 (nothing
+# printed) when neither form yields one line — the caller fails toward NOT proving. Not visible: a
+# rewrite back to identical bytes within the filesystem's timestamp granularity (one kernel tick on
+# Linux) with the inode kept. Zero network; armed + registered paths only.
+_elapsed_tok_ident() {
+    local _eti_f="$PROOF_STATE_DIR/pairing-token" _eti_o
+    if _eti_o=$(stat -c '%i %s %z' "$_eti_f" 2>/dev/null) && [[ -n "$_eti_o" && "$_eti_o" != *$'\n'* ]]; then
+        printf '%s' "$_eti_o"; return 0
+    fi
+    if _eti_o=$(stat -f '%i %z %Fc' "$_eti_f" 2>/dev/null) && [[ -n "$_eti_o" && "$_eti_o" != *$'\n'* ]]; then
+        printf '%s' "$_eti_o"; return 0
+    fi
+    return 1
 }
 
 # _elapsed_verdict_why <now> — "" while the minted verdict still stands, else the MEASURED reason it
@@ -3398,11 +3513,13 @@ _elapsed_reset() {
 # and the freshness triple it carries is still the seam's (a new observed life, a stamped blindness
 # or a vantage re-pin since the mint all withdraw it — M7); [elapsed-token] the stored token STILL
 # classifies ok at the ONE derivation site (a local file read + cksum — M1), with the gen its
-# observation_id carries, and the re-derived elapsed_floor does not exceed the silence it was minted
-# on; and it is no older than PROOF_MAX_AGE (serving an older one is noise — the mutation edge
-# refuses it anyway).
+# observation_id carries, the re-derived elapsed_floor does not exceed the silence it was minted
+# on, and it is still the SAME token — its full classified line and the stored file's identity (fix
+# round 2, R4: a same-gen re-pair, another host's token or a rewrite withdraws it); and it is no older
+# than PROOF_MAX_AGE, measured from observed_at = the evaluation start (R1) — serving an older one is
+# noise (the mutation edge refuses it anyway).
 _elapsed_verdict_why() {
-    local _evw_now="$1" _evw_since="${_liveness_obs_since:-0}" _evw_blind="${_last_blind_end:-0}" _evw_triple _evw_gen
+    local _evw_now="$1" _evw_since="${_liveness_obs_since:-0}" _evw_blind="${_last_blind_end:-0}" _evw_triple _evw_gen _evw_ident
     _elapsed_incident_active || { printf 'episode closed'; return 0; }
     # [elapsed-seam] (1) an observed span must stand under the verdict — the reachable post-blindness
     # state (T1): _note_blind_cycle zeroes observed_since and KEEPS the pin
@@ -3428,6 +3545,18 @@ _elapsed_verdict_why() {
         printf 'the re-derived elapsed_floor %ss exceeds the %ss of silence the verdict was minted on' "$elapsed_floor" "$_elapsed_mint_silence"
         return 0
     fi
+    # [elapsed-token] (the serve half of R4): the FULL token in force — its classified line and the stored
+    # file's identity — must still be the one this verdict was minted under (same gen and a covered floor
+    # are not enough: a same-gen re-pair with a LOWER floor, another host's token with the same bounds, a
+    # rewrite back to the same bytes)
+    if ! _evw_ident=$(_elapsed_tok_ident); then
+        printf 'the stored token file identity is unreadable (stat) — a rewrite since the mint cannot be excluded'
+        return 0
+    fi
+    if [[ "${_proof_token_line} @ ${_evw_ident}" != "$_elapsed_mint_key" ]]; then
+        printf 'the stored token changed under the verdict: the same gen=%s, but not the token it was minted under (its classified line or its stored file changed — a re-pair, another host'"'"'s token, or a rewrite; its silence restarts at the adoption)' "$_proof_token_gen"
+        return 0
+    fi
     case "${PROOF_MAX_AGE:-}" in ''|*[!0-9]*) printf 'PROOF_MAX_AGE unusable (%s)' "${PROOF_MAX_AGE:-unset}"; return 0 ;; esac
     if [[ $(( _evw_now - _elapsed_obs_ts )) -gt $PROOF_MAX_AGE ]]; then
         printf 'aged %ss > PROOF_MAX_AGE=%ss' "$(( _evw_now - _elapsed_obs_ts ))" "$PROOF_MAX_AGE"
@@ -3441,7 +3570,8 @@ _elapsed_verdict_why() {
 # site (none / invalid / page-only / non-converging / shorter than TAKEOVER_DELAY) registers NOTHING
 # and emits nothing — the §2.7 posture printed by _proof_startup_check already says, loudly, that
 # silence-based take is disabled. Registration adopts the token in force (N4: its stamp is now —
-# nothing observed before this process started exists in the seam anyway).
+# nothing observed before this process started exists in the seam anyway), keyed on the full token
+# (R4; an unreadable file identity leaves the key short, so the first evaluation re-adopts — later).
 _elapsed_register() {
     _watchdog_active || return 0
     _proof_role_is_spare || return 0
@@ -3450,7 +3580,7 @@ _elapsed_register() {
     _proof_providers="${_proof_providers:+$_proof_providers }_elapsed_provider"
     _proof_provider_labels="${_proof_provider_labels:+$_proof_provider_labels }watchdog-elapsed"
     _elapsed_registered=1
-    _elapsed_tok_gen="$_proof_token_gen"; _elapsed_tok_since=$(mono_now)
+    _elapsed_tok_key="${_proof_token_line} @ $(_elapsed_tok_ident)"; _elapsed_tok_gen="$_proof_token_gen"; _elapsed_tok_since=$(mono_now)
     _elapsed_reset "registered — no evaluation yet"
     log_info "[elapsed-provider] registered: watchdog-elapsed — token gen=${_proof_token_gen} (watchdog=${_proof_token_w}s, relinquish_bound=${_proof_token_b}s, fence=real) → floor ${elapsed_floor}s of observed silence (W+B+MARGIN_ELAPSED = ${_proof_token_w}+${_proof_token_b}+${MARGIN_ELAPSED}), head cross-check ±${N_HEAD} slots against this spare's own bank (LOCAL_RPC getSlot, commitment=processed)"
     return 0
@@ -3463,7 +3593,7 @@ _elapsed_step() {
     _watchdog_active || return 0
     _proof_role_is_spare || return 0
     [[ "$_elapsed_registered" == "1" ]] || return 0
-    local _es_now _es_since _es_blind _es_start _es_why _es_s _es_rest _es_x _es_obs _es_after _es_cur _es_ref _es_tier _es_hb _es_hrc _es_head _es_lag
+    local _es_now _es_since _es_blind _es_start _es_why _es_s _es_rest _es_ident _es_key _es_pay _es_hd _es_cur _es_ref _es_tier _es_hb _es_hrc _es_head _es_lag
     _es_now=$(mono_now)
     if ! _elapsed_incident_active; then
         [[ -n "$_elapsed_verdict" ]] && log_info "[elapsed-provider] episode closed — proven verdict (${_elapsed_verdict%%|observation_id=*}) dropped"
@@ -3476,21 +3606,35 @@ _elapsed_step() {
         _es_why=$(_elapsed_verdict_why "$_es_now")
         [[ -z "$_es_why" ]] && return 0
         log_info "[elapsed-provider] proven verdict WITHDRAWN (${_es_why}) — re-evaluating from the seam"
+        # R4: a withdrawal for a TOKEN reason (M1) clears the adoption — the next ok classification is a NEW
+        # adoption and its silence restarts then. (The gate's reporter runs the same check inside $() and
+        # cannot clear anything; the full key below makes whatever it saw count at the next step anyway.)
+        case "$_es_why" in
+            "token no longer classifies ok"*|"the stored token"*|"the re-derived elapsed_floor"*) _elapsed_tok_key="" ;;
+        esac
         _elapsed_reset "withdrawn: ${_es_why}"
         return 0
     fi
     # [elapsed-token] re-classify at the ONE derivation site at every evaluation: a token that rotted on
     # disk (or a daemon re-configured under it) since registration proves nothing from here on
     _derive_proof_floors || {
-        _elapsed_tok_gen=""   # N4: the next ok classification is a NEW adoption — its silence restarts then
+        _elapsed_tok_key=""   # N4: the next ok classification is a NEW adoption — its silence restarts then
         _elapsed_answer="cannot"; _elapsed_reason="token no longer classifies ok at the derivation site: ${_proof_floor_why}"
         return 0
     }
-    # [elapsed-token] (N4) the token NOW in force: a provider-local mono stamp the first time this provider
-    # sees its gen (or sees it again after a not-ok classification) — never count silence from before it
-    if [[ "$_proof_token_gen" != "$_elapsed_tok_gen" ]]; then
-        _elapsed_tok_gen="$_proof_token_gen"; _elapsed_tok_since=$_es_now
-        log_info "[elapsed-provider] token gen=${_proof_token_gen} adopted at mono ${_es_now} (watchdog=${_proof_token_w}s, relinquish_bound=${_proof_token_b}s → floor ${elapsed_floor}s) — silence observed before its adoption does not count"
+    # [elapsed-token] (N4 — keyed on the FULL token since fix round 2, R4) the token NOW in force: a
+    # provider-local mono stamp the first time this provider sees THIS token — its exact classified line
+    # AND the stored file's identity, so a same-gen re-pair, another host's token and a rewrite that no
+    # step saw are all new adoptions — never count silence from before it
+    if ! _es_ident=$(_elapsed_tok_ident); then
+        _elapsed_tok_key=""
+        _elapsed_answer="cannot"; _elapsed_reason="the stored token file identity is unreadable (stat) — a rewrite since its adoption cannot be excluded, so no silence counts under it"
+        return 0
+    fi
+    _es_key="${_proof_token_line} @ ${_es_ident}"
+    if [[ "$_es_key" != "$_elapsed_tok_key" ]]; then
+        _elapsed_tok_key="$_es_key"; _elapsed_tok_gen="$_proof_token_gen"; _elapsed_tok_since=$_es_now
+        log_info "[elapsed-provider] token gen=${_proof_token_gen} adopted at mono ${_es_now} (watchdog=${_proof_token_w}s, relinquish_bound=${_proof_token_b}s → floor ${elapsed_floor}s; keyed on the full token line and its stored file — any change or rewrite is a new adoption) — silence observed before its adoption does not count"
     fi
     _es_since="${_liveness_obs_since:-0}"; _es_blind="${_last_blind_end:-0}"
     case "$_es_since" in ''|*[!0-9]*) _es_since=0 ;; esac
@@ -3528,20 +3672,13 @@ _elapsed_step() {
     fi
     _elapsed_last_read_ts=$_es_now
     # the FRESH read the verdict rests on, through the ONE liveness sampler (T2→T3; it pets per op). The
-    # silence is measured to _es_now (the evaluation start, before this read): conservative.
+    # silence is measured to _es_now (the evaluation start, before this read): conservative — and the
+    # verdict's observed_at IS _es_now (fix round 2, R1: never claimed fresher than the evaluation that
+    # produced it; see the tail census at the mint site).
     _es_s=$(get_staked_liveness_sample) || _es_s=""
-    _es_after=$(mono_now)
+    _es_pay=$(mono_now)   # [elapsed-gap] near end: the payload read's op completed (the sampler returns after its post-op pet)
     _es_cur="${_es_s%% *}"; _es_rest="${_es_s#* }"; _es_ref="${_es_rest%% *}"
     _es_tier=""; [[ "$_es_rest" == *" "* ]] && _es_tier="${_es_rest##* }"
-    # observed_at (M3): the answering read's OWN pre-read stamp — the sampler's third field of four
-    # ("<lastVote> <ref> <read_ts> <tier>"). A sample without one (a 2- or 3-field mock) or a stamp
-    # outside [this evaluation's start, now] falls back to the evaluation start — never fresher than
-    # the evidence.
-    _es_obs=$_es_now; _es_x="${_es_rest#* }"
-    if [[ "$_es_x" == *" "* ]]; then
-        _es_x="${_es_x%% *}"
-        if _canon_uint "$_es_x" && [[ $_es_x -ge $_es_now && $_es_x -le $_es_after ]]; then _es_obs=$_es_x; fi
-    fi
     if [[ -z "$_es_s" ]] || ! _canon_uint "$_es_cur" || ! _canon_uint "$_es_ref"; then   # M4: the ONE validator (the sampler already applies it)
         _elapsed_answer="blind"; _elapsed_reason="this evaluation's liveness read yielded no usable sample (both tiers failed/invalid) — proves nothing (not stamped into the seam: see the region comment)"
         return 0
@@ -3567,9 +3704,21 @@ _elapsed_step() {
     _es_hb=$(curl -s -m 5 "$LOCAL_RPC" -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}' 2>/dev/null)
     _es_hrc=$?
     _watchdog_pet   # §5 per-op pet: bounded op completed (rc captured above); no-op outside the armed unit
+    _es_hd=$(mono_now)   # [elapsed-gap] far end: the head read's op completed (its post-op pet included)
     _es_head=""; [[ $_es_hrc -eq 0 ]] && _es_head=$(printf '%s' "$_es_hb" | jq -r '.result // empty' 2>/dev/null)
     if ! _canon_uint "$_es_head"; then   # M4: the ONE validator — "0009999" / 2^64+N is no head, never a wrapped one
         _elapsed_answer="cannot"; _elapsed_reason="no usable independent head from this spare's own bank (LOCAL_RPC getSlot processed, curl rc=${_es_hrc}: '${_es_head}') — the payload's freshness cannot be checked"
+        return 0
+    fi
+    # [elapsed-gap] (fix round 2, R3 — FX-2): the two reads are compared as if simultaneous, but the bank
+    # moves while the gap between them runs — past ELAPSED_HEAD_GAP_MAX (op to op) the compare is not
+    # meaningful: blind, never a mint (the region comment says what this bounds and what it cannot see)
+    case "${ELAPSED_HEAD_GAP_MAX:-}" in ''|*[!0-9]*)
+        _elapsed_answer="cannot"; _elapsed_reason="no usable derived ELAPSED_HEAD_GAP_MAX ('${ELAPSED_HEAD_GAP_MAX:-unset}')"
+        return 0
+    ;; esac
+    if [[ $(( _es_hd - _es_pay )) -gt $ELAPSED_HEAD_GAP_MAX ]]; then
+        _elapsed_answer="blind"; _elapsed_reason="HEAD GAP: the head read landed $(( _es_hd - _es_pay ))s after the payload read — too far apart to compare (the bank moves while the gap runs, shifting the two-sided compare by the slot rate x the gap); REQUIRED: <= ELAPSED_HEAD_GAP_MAX=${ELAPSED_HEAD_GAP_MAX}s — blind (wait), never a mint"
         return 0
     fi
     _es_lag=$(( _es_head - _es_ref ))
@@ -3585,30 +3734,40 @@ _elapsed_step() {
     # COMPOSITION (the D4-arithmetic class, stated where the verdict is born): this read cannot see a
     # vote cast AFTER it — the mutation-edge recheck's staked-vote pin owns that direction (6.4), and
     # _proof_age_edge_check bounds this verdict's staleness there.
-    # observed_at (6.3 fix round, M3 — CC-5) = the answering payload read's OWN pre-read stamp (on a T2
-    # failure the T3 read's, not the evaluation start): the evidence is at least that fresh and is never
-    # claimed fresher. TAIL from that stamp to this mint, censused at the house bound-counting (a pet =
-    # 7 s): the answering read itself (curl -m 10) + its pet (7) + the head read (curl -m 5) + its pet
-    # (7) + parse glue (~2: the sampler's two jq, the head's jq, this arithmetic) = 31 s worst — of it,
-    # the head read + glue after the payload's pet = 14 s. Healthy path ~1 s (one fast T2 answer, a
-    # local head, pets are datagrams). PROOF_MAX_AGE (50 s, derived at 6.1 from verdict ACCEPTANCE to
+    # observed_at = _es_now, the EVALUATION START (6.3 fix round 2, R1 — REG-A): the verdict is never
+    # claimed fresher than the evaluation that produced it, and its age at every serve and at 6.4's
+    # edge check counts from there, as before fix round 1. Fix round 1 (M3) had stamped the answering
+    # read's own pre-read stamp instead — up to one T2 timeout (curl -m 10) LATER on a T2 failure — and
+    # that widened the acceptance window: a strict loosening (measured under the 6.4-placement
+    # emulation: degraded tiers — T2 down, T3 answering 5 s late — took at t441 where the evaluation-start
+    # stamp never takes). Reverted, with the sampler's per-tier stamp that fed it.
+    # TAIL from observed_at to this mint = the whole minting evaluation, at the house bound-counting
+    # (a pet = 7 s): the sampler (T2 curl -m 10 + pet 7, then T3 curl -m 10 + pet 7 = 34 s) + the head
+    # read and its pet inside [elapsed-gap]'s bound (<= ELAPSED_HEAD_GAP_MAX = 1 s measured) = 35 s,
+    # MEASURED on a file clock (test_elapsed_provider (12c-tail)); in the field add the sampler's parse
+    # (~0.11 s measured per sample, mac test box, a 2,001-account payload) and string glue. The 46 s
+    # worst evaluation (the census above; the head read at its full curl -m 5 + a 7 s pet) no longer
+    # mints — a 12 s gap: HEAD GAP, BLIND (MEASURED, (12c-tail)). Healthy path ~1 s (one fast T2 answer,
+    # a local head, pets are datagrams). PROOF_MAX_AGE (50 s, derived at 6.1 from verdict ACCEPTANCE to
     # set-identity: R_worst 36 + acceptance slack 3 + margin 11) does NOT cover this provider's worst
     # case for 6.4: at the edge the age is this tail + the verdict's age at acceptance (served dormant
-    # for up to PROOF_MAX_AGE, and the same cycle's own-bank + take-path reads run between this step
-    # and the gate) + 3 + R_worst 36 — >= 70 s worst even when minted in the accepting cycle, so under
-    # sustained worst-case tier degradation every elapsed verdict reaches the edge stale and the elapsed
-    # path does not converge (availability — the edge refuses, never a take). Healthy path ≈ 1 + ~3 +
-    # 3 + ~1 ≈ 8 s ≪ 50. PROOF_MAX_AGE is NOT changed here; the placement/re-derivation is 6.4's.
+    # for up to PROOF_MAX_AGE, and the same cycle's own-bank + take-path reads run between this step and
+    # the gate) + 3 + R_worst 36 — MEASURED 74 s at the edge for the worst minting evaluation accepted
+    # at its mint ((12c-tail): refused). THE ELAPSED PROVIDER'S WORST EVALUATION DOES NOT CONVERGE UNDER
+    # PROOF_MAX_AGE; 6.4 decides (re-derive PROOF_MAX_AGE over this provider's worst evaluation, or
+    # accept the non-convergence as availability — the edge refuses, never a take; the derivation site
+    # at _proof_age_edge_check points here). Healthy path ≈ 1 + ~3 + 3 + ~1 ≈ 8 s ≪ 50. PROOF_MAX_AGE
+    # is NOT changed here; the placement/re-derivation is 6.4's.
     # SHARED INPUT, stated here too (docs/SAFETY.md): this verdict's silence and the take path's vote-
     # FROZEN observation are the SAME TIER2/TIER3 stream on every config — one intermediary that
     # freezes the staked lastVote while proxying the tip supplies both; composing them adds nothing
     # against it. What does add an independent input, and how little, is the measured own-bank
     # veto (docs/SAFETY.md) — not this provider.
-    _elapsed_since=$_es_start; _elapsed_obs_ts=$_es_obs; _elapsed_mint_silence=$(( _es_now - _es_start ))
+    _elapsed_since=$_es_start; _elapsed_obs_ts=$_es_now; _elapsed_mint_silence=$(( _es_now - _es_start )); _elapsed_mint_key="$_elapsed_tok_key"
     _elapsed_triple="${_liveness_first_provider:-}/${_liveness_obs_since:-0}/${_last_blind_end:-0}"
-    _elapsed_verdict="proven=yes|provider=watchdog-elapsed|observation_id=elapsed:gen=${_proof_token_gen}:since=${_es_start}:floor=${elapsed_floor}|vantage=${_liveness_first_provider:-}|obs_since=${_liveness_obs_since:-0}|blind_until=${_last_blind_end:-0}|observed_at=${_es_obs}"
-    _elapsed_answer="yes"; _elapsed_reason="proven: $(( _es_now - _es_start ))s of observed silence >= ${elapsed_floor}s; head within ±${N_HEAD} (view ${_es_lag} slots behind this spare's bank)"
-    log_warn "[elapsed-provider] watchdog-elapsed PROVEN (token gen=${_proof_token_gen}): $(( _es_now - _es_start ))s of observed silence on vantage ${_liveness_first_provider:-} since ${_es_start} >= floor ${elapsed_floor}s (W+B+MARGIN_ELAPSED), the holder's staked lastVote still ${_es_cur} (episode baseline ${_liveness_first_vote}) at this read, the payload's cluster-max ${_es_lag} slots behind this spare's own head (|lag| <= N_HEAD=${N_HEAD}) — attested TIME, not an observation of the relinquish (observed_at=${_es_obs}; the gate is not wired into any take path in this build)"
+    _elapsed_verdict="proven=yes|provider=watchdog-elapsed|observation_id=elapsed:gen=${_proof_token_gen}:since=${_es_start}:floor=${elapsed_floor}|vantage=${_liveness_first_provider:-}|obs_since=${_liveness_obs_since:-0}|blind_until=${_last_blind_end:-0}|observed_at=${_es_now}"
+    _elapsed_answer="yes"; _elapsed_reason="proven: $(( _es_now - _es_start ))s of observed silence >= ${elapsed_floor}s; head within ±${N_HEAD} (view ${_es_lag} slots behind this spare's bank; head read $(( _es_hd - _es_pay ))s after the payload)"
+    log_warn "[elapsed-provider] watchdog-elapsed PROVEN (token gen=${_proof_token_gen}): $(( _es_now - _es_start ))s of observed silence on vantage ${_liveness_first_provider:-} since ${_es_start} >= floor ${elapsed_floor}s (W+B+MARGIN_ELAPSED), the holder's staked lastVote still ${_es_cur} (episode baseline ${_liveness_first_vote}) at this read, the payload's cluster-max ${_es_lag} slots behind this spare's own head (|lag| <= N_HEAD=${N_HEAD}; the head read landed $(( _es_hd - _es_pay ))s after the payload, <= ELAPSED_HEAD_GAP_MAX=${ELAPSED_HEAD_GAP_MAX}s) — attested TIME, not an observation of the relinquish (observed_at=${_es_now}; the gate is not wired into any take path in this build)"
     return 0
 }
 
@@ -4325,7 +4484,17 @@ check_self_fence_isolation() {
         | jq -r '.result // empty' 2>/dev/null)
     _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
 
-    if ! _canon_uint "$slot"; then   # M4 (Block 6.3 fix round): the ONE validator — a non-canonical slot is NO ANSWER (this branch), never a compare/arithmetic operand
+    # v0.7 (Block 6.3 fix round 2, R6 — REG-D): an EMPTY answer is a no-answer (this branch, as ever); a
+    # PRESENT but non-canonical slot (the ONE validator: leading zeros, a JSON string, >= 2^63, a float,
+    # a sign) comes from the HOLDER's own node — garbage there fails toward "nobody holds the stake":
+    # it counts as NOT ADVANCING (the frozen clock below runs), never as healthy and never as a
+    # no-answer (which SELF_FENCE_NOANSWER_SECS=0 disables). Never a compare/arithmetic operand.
+    local _sf_garbage=0
+    if [[ -n "$slot" ]] && ! _canon_uint "$slot"; then
+        _sf_garbage=1
+        log_warn "[self-fence] LOCAL getSlot(confirmed) answered a NON-CANONICAL slot ('${slot:0:40}') — garbage from our own node counts as NOT advancing (the frozen clock runs), never as healthy or as a no-answer"
+    fi
+    if [[ -z "$slot" ]]; then
         # LOCAL RPC did not answer getSlot. A BRIEF gap is the existing "validator unreachable" pause
         # path, NOT isolation. But a CONTINUOUSLY silent LOCAL JSON-RPC while we still hold staked
         # (admin RPC up, so the main loop stays in the STAKED branch) is itself an isolation signal —
@@ -4371,7 +4540,8 @@ check_self_fence_isolation() {
         log_warn "[self-fence] LOCAL getSlot(confirmed) no answer — treating as validator-unreachable, NOT isolation"
         return 1
     fi
-    # Got a numeric slot — a successful read clears the no-answer isolation timer (v0.6.5 F1).
+    # Got an answer — a successful read clears the no-answer isolation timer (v0.6.5 F1); a garbage
+    # answer is an answer too: its frozen clock below is what runs (R6).
     _selffence_noanswer_since=0
     _selffence_noanswer_restore_pending=0   # v0.6.9 (H3): the RPC answered → the persisted silence is NOT continuous; drop the pending backdate
 
@@ -4379,24 +4549,30 @@ check_self_fence_isolation() {
     # if the confirmed slot has NOT advanced past the persisted baseline, the stall is CONTINUOUS —
     # backdate the advance clock to the persisted value so the fence can fire immediately instead of
     # waiting a fresh SELF_FENCE_ISOLATION_SECS. A validator that resumed advancing clears instantly
-    # (the pending flag is simply dropped; the normal advance path below re-baselines).
+    # (the pending flag is simply dropped; the normal advance path below re-baselines). A garbage slot
+    # is not past it (R6).
     if [[ ${_selffence_restore_pending:-0} -eq 1 ]]; then
         _selffence_restore_pending=0
-        if [[ -n "$_last_confirmed_slot" && $slot -le $_last_confirmed_slot ]]; then
+        if [[ -n "$_last_confirmed_slot" ]] && { [[ $_sf_garbage -eq 1 ]] || [[ $slot -le $_last_confirmed_slot ]]; }; then
             _last_confirmed_advance_ts=$_selffence_restored_advance_ts
-            log_warn "[self-fence] LOCAL confirmed slot still not past the persisted baseline ($slot <= $_last_confirmed_slot) across the monitor restart — stall treated as continuous; advance clock backdated $(( now - _last_confirmed_advance_ts ))s (v0.6.9 H3)"
+            log_warn "[self-fence] LOCAL confirmed slot still not past the persisted baseline (${slot:0:40} <= $_last_confirmed_slot) across the monitor restart — stall treated as continuous; advance clock backdated $(( now - _last_confirmed_advance_ts ))s (v0.6.9 H3)"
         fi
     fi
 
-    if [[ -z "$_last_confirmed_slot" ]]; then
+    if [[ $_sf_garbage -eq 1 && -z "$_last_confirmed_slot" ]]; then
+        # R6: garbage before any baseline — no slot to keep, but the frozen clock runs from the tenure's
+        # reset stamp (or from now, when nothing ever stamped it): no advance is being shown
+        [[ ${_last_confirmed_advance_ts:-0} -gt 0 ]] || _last_confirmed_advance_ts="$now"
+    fi
+    if [[ $_sf_garbage -eq 0 && -z "$_last_confirmed_slot" ]]; then
         _last_confirmed_slot="$slot"; _last_confirmed_advance_ts="$now"
         log_info "[self-fence] tracking LOCAL confirmed slot from $slot"
-    elif [[ $slot -gt $_last_confirmed_slot ]]; then
+    elif [[ $_sf_garbage -eq 0 && $slot -gt $_last_confirmed_slot ]]; then
         _last_confirmed_slot="$slot"; _last_confirmed_advance_ts="$now"   # advancing → healthy
     else
         frozen=$(( now - _last_confirmed_advance_ts ))
         if [[ $frozen -ge $SELF_FENCE_ISOLATION_SECS ]]; then
-            log_warn "[self-fence] LOCAL confirmed slot frozen at $slot for ${frozen}s (>= ${SELF_FENCE_ISOLATION_SECS}s) — ISOLATED from supermajority → switch to unstaked"
+            log_warn "[self-fence] LOCAL confirmed slot frozen at ${slot:0:40} for ${frozen}s (>= ${SELF_FENCE_ISOLATION_SECS}s) — ISOLATED from supermajority → switch to unstaked"
             # v0.6.8 (B1): reset ONLY after a confirmed demote (N9 discipline); a failed demote retries.
             if switch_to_unstaked "self-fence: local confirmed slot frozen ${frozen}s — isolated from supermajority"; then
                 _selffence_reset
@@ -4405,7 +4581,7 @@ check_self_fence_isolation() {
             fi
             return 0
         fi
-        log_info "[self-fence] LOCAL confirmed slot not advancing (${frozen}s/${SELF_FENCE_ISOLATION_SECS}s) at $slot"
+        log_info "[self-fence] LOCAL confirmed slot not advancing (${frozen}s/${SELF_FENCE_ISOLATION_SECS}s) at ${slot:0:40}"
     fi
 
     # (2) Optional: LOCAL getHealth "behind by >N" — faster partial-partition detection. LOCAL only;
@@ -4417,10 +4593,20 @@ check_self_fence_isolation() {
         _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
         if [[ -n "$health_result" ]]; then
             behind=$(echo "$health_result" | jq -r '.error.data.numSlotsBehind // empty' 2>/dev/null)
-            if _canon_uint "$behind" && [[ $behind -gt $SELF_FENCE_MAX_BEHIND ]]; then   # M4: non-canonical = no usable count (ignored, like a non-answer)
-                log_warn "[self-fence] LOCAL getHealth behind by ${behind} slots (> ${SELF_FENCE_MAX_BEHIND}) — partial partition → switch to unstaked"
+            # R6 (fix round 2): an EMPTY count is no count (ignored, as ever — a healthy "ok" has none); a
+            # PRESENT but non-canonical count from our own node counts as BEHIND (fail toward the fence),
+            # never as a usable number and never as healthy
+            local _sf_behind=0
+            if [[ -n "$behind" ]] && ! _canon_uint "$behind"; then
+                _sf_behind=1
+                log_warn "[self-fence] LOCAL getHealth answered a NON-CANONICAL numSlotsBehind ('${behind:0:40}') — garbage from our own node counts as BEHIND (fail toward the fence)"
+            elif _canon_uint "$behind" && [[ $behind -gt $SELF_FENCE_MAX_BEHIND ]]; then   # M4: canonical or no count — never arithmetic on garbage
+                _sf_behind=1
+            fi
+            if [[ $_sf_behind -eq 1 ]]; then
+                log_warn "[self-fence] LOCAL getHealth behind by ${behind:0:40} slots (> ${SELF_FENCE_MAX_BEHIND}) — partial partition → switch to unstaked"
                 # v0.6.8 (B1): reset ONLY after a confirmed demote (N9 discipline); a failed demote retries.
-                if switch_to_unstaked "self-fence: local getHealth behind ${behind} slots (> ${SELF_FENCE_MAX_BEHIND}) — isolated from supermajority"; then
+                if switch_to_unstaked "self-fence: local getHealth behind ${behind:0:40} slots (> ${SELF_FENCE_MAX_BEHIND}) — isolated from supermajority"; then
                     _selffence_reset
                 else
                     log_warn "[self-fence] getHealth demote FAILED — keeping the timer armed to retry next cycle"
@@ -4450,8 +4636,18 @@ check_self_fence_isolation() {
         own_lv=$(echo "$own_sample" | jq -r --arg vote "$VOTE_PUBKEY" '(.result.current + .result.delinquent)[]? | select(.votePubkey == $vote) | .lastVote // empty' 2>/dev/null | head -1)
         # Cluster-wide freshness reference = MAX lastVote from the SAME payload (advances every slot).
         cluster_max=$(echo "$own_sample" | jq -r '[(.result.current + .result.delinquent)[]? | .lastVote] | map(numbers) | max // empty' 2>/dev/null)
-        if _canon_uint "$own_lv" && _canon_uint "$cluster_max"; then   # M4: non-canonical = cannot determine (HOLD the timer as-is), never the vlag arithmetic that would abort the main loop
-            vlag=$(( cluster_max - own_lv )); [[ $vlag -lt 0 ]] && vlag=0
+        # R6 (fix round 2): both EMPTY-or-canonical as before (an empty one = cannot determine, HOLD the
+        # timer as-is); a PRESENT but non-canonical own or cluster lastVote from our own node counts as
+        # LAGGING (over the threshold — the sustain timer below runs; fail toward the fence), never the
+        # vlag arithmetic and never "cannot determine"
+        local _sf_vgarb=0
+        if { [[ -n "$own_lv" ]] && ! _canon_uint "$own_lv"; } || { [[ -n "$cluster_max" ]] && ! _canon_uint "$cluster_max"; }; then
+            _sf_vgarb=1
+            log_warn "[self-fence] LOCAL getVoteAccounts answered a NON-CANONICAL lastVote (own '${own_lv:0:40}', cluster-max '${cluster_max:0:40}') — garbage from our own node counts as LAGGING (fail toward the fence)"
+        fi
+        if [[ $_sf_vgarb -eq 1 ]] || { _canon_uint "$own_lv" && _canon_uint "$cluster_max"; }; then   # M4: canonical, or garbage routed to lagging — never arithmetic on garbage
+            local _sf_vshow
+            if [[ $_sf_vgarb -eq 1 ]]; then vlag=$(( SELF_FENCE_VOTE_LAG_SLOTS + 1 )); _sf_vshow="a NON-CANONICAL lastVote"; else vlag=$(( cluster_max - own_lv )); [[ $vlag -lt 0 ]] && vlag=0; _sf_vshow="${vlag} slots"; fi
             # v0.6.9 (H3): restart continuity for N6 — on the first successful own-vote read after a
             # restore, a lag STILL over threshold (with the restored healthy baseline) is a continuous
             # episode → inherit the persisted sustain clock. A recovered lag simply drops the flag.
@@ -4459,7 +4655,7 @@ check_self_fence_isolation() {
                 _selffence_votelag_restore_pending=0
                 if [[ $vlag -gt $SELF_FENCE_VOTE_LAG_SLOTS && -n "$_selffence_votelag_baseline" ]]; then
                     _selffence_votelag_since=$_selffence_restored_votelag_since
-                    log_warn "[self-fence] own-vote lag still over threshold (${vlag} slots) across the monitor restart — sustain timer backdated $(( now - _selffence_votelag_since ))s (v0.6.9 H3)"
+                    log_warn "[self-fence] own-vote lag still over threshold (${_sf_vshow}) across the monitor restart — sustain timer backdated $(( now - _selffence_votelag_since ))s (v0.6.9 H3)"
                 fi
             fi
             if [[ $vlag -le $SELF_FENCE_VOTE_LAG_SLOTS ]]; then
@@ -4478,22 +4674,22 @@ check_self_fence_isolation() {
                 [[ $_selffence_votelag_since -eq 0 ]] && _selffence_votelag_since=$now
                 vlsust=$(( now - _selffence_votelag_since ))
                 if [[ $vlsust -ge $SELF_FENCE_VOTE_LAG_SECS ]]; then
-                    log_warn "[self-fence] OWN vote lagging cluster-max by ${vlag} slots (> ${SELF_FENCE_VOTE_LAG_SLOTS}) for ${vlsust}s (>= ${SELF_FENCE_VOTE_LAG_SECS}s) while staked — votes not landing (egress isolation) → switch to unstaked"
+                    log_warn "[self-fence] OWN vote lagging cluster-max by ${_sf_vshow} (> ${SELF_FENCE_VOTE_LAG_SLOTS}) for ${vlsust}s (>= ${SELF_FENCE_VOTE_LAG_SECS}s) while staked — votes not landing (egress isolation) → switch to unstaked"
                     # v0.6.6 (N2) ordering: safety action FIRST, alert AFTER (never wait on notifier I/O).
                     # v0.6.7 (N9): re-arm the tracker ONLY after a SUCCESSFUL demote (switch_to_unstaked
                     # returns 0, incl. DRY_RUN's logged success) — so DRY_RUN does not re-fire every cycle,
                     # AND a FAILED demote leaves the timer/baseline armed so the next cycle re-attempts
                     # (never one-and-done). switch_to_unstaked already re-arms via _selffence_reset on a
                     # real success and emits a throttled FAILED page, so failure needs no extra alert here.
-                    if switch_to_unstaked "self-fence: own votes not landing (lag ${vlag} slots, ${vlsust}s) — egress isolation"; then
+                    if switch_to_unstaked "self-fence: own votes not landing (lag ${_sf_vshow}, ${vlsust}s) — egress isolation"; then
                         _selffence_reset
-                        alert "OWN staked vote not landing — lagged cluster-max ${vlag} slots for ${vlsust}s while staked (egress-only isolation); demoting to unstaked before a heal can double-sign" "$STAKED_PUBKEY" "PRIMARY SELF-FENCE — VOTES NOT LANDING 🚨"
+                        alert "OWN staked vote not landing — lagged cluster-max by ${_sf_vshow} for ${vlsust}s while staked (egress-only isolation); demoting to unstaked before a heal can double-sign" "$STAKED_PUBKEY" "PRIMARY SELF-FENCE — VOTES NOT LANDING 🚨"
                     else
                         log_warn "[self-fence] vote-lag demote FAILED — still staked; keeping the timer armed to retry next cycle"
                     fi
                     return 0
                 fi
-                log_info "[self-fence] OWN vote lag ${vlag} slots (> ${SELF_FENCE_VOTE_LAG_SLOTS}) sustained ${vlsust}s/${SELF_FENCE_VOTE_LAG_SECS}s — counting toward egress-isolation self-fence"
+                log_info "[self-fence] OWN vote lag ${_sf_vshow} (> ${SELF_FENCE_VOTE_LAG_SLOTS}) sustained ${vlsust}s/${SELF_FENCE_VOTE_LAG_SECS}s — counting toward egress-isolation self-fence"
             fi
             # else: over threshold but NO healthy baseline yet (fresh start / catching up) → do not arm.
         fi
