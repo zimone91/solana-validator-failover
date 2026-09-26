@@ -380,6 +380,9 @@ drive_markers() {
 # before the fix, a _rot_capture_intent splice in the HOLD loop is pure file tests and tripped
 # NOTHING (60/60 green); _fence_rot_check was caught only INDIRECTLY (timeout-shim → the
 # systemctl bait), a chain that breaks if the sweep's gate or read path moves. Named = direct.
+# Block 6.3: the per-cycle proof-provider steps are NAMED baits too — _elapsed_step (6.3) and
+# _g2_step (6.2, which had joined the loop without one): both no-op unless armed + spare +
+# registered, so a HOLD-loop splice of either could otherwise trip nothing on an unpaired drive.
 _HOLD_BAITS="attempt_takeover local_check_delinquency tier1_check_local_health
 tier2_check_delinquency tier3_confirm_delinquency confirm_delinquency_external
 take_staked_identity give_back_identity check_self_fence_isolation check_identity_collision
@@ -388,7 +391,7 @@ tier1_get_vote_latency switch_to_unstaked switch_to_staked attempt_safe_recovery
 check_standby_has_identity check_primary_dropped_identity staked_is_actively_voting
 get_staked_liveness_sample peer_has_relinquished _prewarm_voter_add _check_rpc_delinquency
 _check_single_rpc _selffence_hard_stop _selffence_demote _fence_rot_check _rot_capture_intent
-curl systemctl"
+_g2_step _elapsed_step curl systemctl"
 drive_hold() {
     local script="$1"
     (
@@ -868,11 +871,18 @@ s_pets=$(grep -cE '^[[:space:]]*_watchdog_pet[[:space:]]+# §5 end-of-cycle pet'
 # separate requests, so the region lost one curl site and its pet — G2's contribution went 5 → 4
 # and the totals 42 → 41 / 43 → 42. The region's A3 worst added gap fell 36 s → 24 s with it
 # (test_g2_provider (6a)/(6b) census both counts against the live run and the source).
+# +1 per daemon at Block 6.3 (the pin MOVED, deliberately, in that diff): the [elapsed-provider]
+# twin region's ONE own read — the independent head, LOCAL_RPC getSlot, curl -m 5 — petted post-op;
+# the liveness sampler it calls pets its own reads (already counted here). Totals 41 → 42 / 42 → 43.
+# Worst added gap per evaluation 48 s, argued in the region's own A3-style census (the sampler's
+# two tiers 34 s + the head read 14 s); consecutive pets stay <= one op + one pet ~ 17 s < 30 s, and
+# always in the take-LATER direction (test_elapsed_provider (8a)/(8b) census the live run and the
+# source).
 p_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$PRIMARY")
 s_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$STANDBY")
-[[ "$p_total" == "41" && "$s_total" == "42" ]] \
-    && ok "(14b) total pet call-site pins: primary 40 calls (+def=41), standby 41 calls (+def=42) — deletion of any pet line trips this" \
-    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 41, standby=$s_total pinned 42) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
+[[ "$p_total" == "42" && "$s_total" == "43" ]] \
+    && ok "(14b) total pet call-site pins: primary 41 calls (+def=42), standby 42 calls (+def=43) — deletion of any pet line trips this" \
+    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 42, standby=$s_total pinned 43) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
 if ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$PRIMARY" && ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$STANDBY" && ! grep -qE '^[[:space:]]*sleep "\$RECOVERY_CHECK_INTERVAL"' "$PRIMARY"; then
     ok "(14c) the >=15s sleeps (STARTUP_GRACE x3, RECOVERY_CHECK_INTERVAL, hard-stop re-verify) go through _watchdog_sleep"
 else

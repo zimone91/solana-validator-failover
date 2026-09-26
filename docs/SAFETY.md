@@ -220,34 +220,8 @@ front of the staked mutation, never a trigger for one: the pre-existing, live-te
 (delinquency detection, the vote-frozen observation, `_fresh_proof_recheck`) must still pass on its
 own. A false PROVEN therefore cannot by itself cause a take — it can only fail to *block* a take
 that logic already authorized. A double-sign needs **both** a false G2 proof **and** a false-frozen
-vote observation of a holder that is in fact alive and voting. **Read the next section before
-relying on that sentence: on the default configuration it is true and empty.**
-
-**Shared vantages — where the additivity argument stops holding (the default config).** The
-standing condition, in the words the ceremony and the daemon log print verbatim: *G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host.* Mechanically: G2 defaults
-`G2_VANTAGE_A`/`G2_VANTAGE_B` to `TIER2_RPC`/`TIER3_RPC`, and every vote-liveness reader in the
-daemons iterates exactly those two endpoints (`for rpc in "$TIER2_RPC" "$TIER3_RPC"`). On such a
-host the two halves named above are **not independent**: the same active, protocol-aware
-intermediary that splices `getSlot`/`getClusterNodes` into a false G2 proof can equally proxy the
-tip live while freezing the staked account's `lastVote` into a false-frozen vote observation. One
-capability supplies both halves, so the composition adds nothing and residual 2 above is
-**unbounded by it**. (A *naive* freeze is still caught by the tip-guard; an active one is the same
-"passive closed, active open" boundary G2 draws everywhere else.)
-
-This is **not** refused, deliberately: most operators run exactly two RPCs, and refusing to arm
-would trade a named residual for no spare at all. It is **measured and stated**: `failover arm`
-compares each vantage against each tier — by normalized URL, by host, and by resolved address set
-where a resolver exists — and prints which vantage matched which tier by which comparison, the
-consequence, and the fix, both at precondition P6 and again in the end-of-summary; the armed
-daemon repeats a URL-level version of the same statement as a startup `WARN` (it does no DNS — the
-arm owns resolution, so a shared vantage hiding behind two hostnames is visible at the arm and
-invisible to the daemon).
-
-**The way back is a third endpoint in a separate failure domain:** point `G2_VANTAGE_A` and/or
-`G2_VANTAGE_B` in `failover-standby.env` at an RPC run by a *different operator* — not another
-hostname or another API key for one you already use — and re-run `failover arm`. The arm then
-prints the measured "vantages are SEPARATE from the vote-liveness tiers" line, and the additivity
-statement above becomes load-bearing again.
+vote observation of a holder that is in fact alive and voting. **Read *Shared vantages* below
+before relying on that sentence: on the default configuration it is true and empty.**
 
 **Deployed constants, and why the number moved twice.** This build deploys `G2_DELTA = 60 s` and
 `G2_CLOCK_BUDGET = 25 s` (and `G2_SLOT_ADVANCE_FLOOR = G2_DELTA` slots), derived at one site as
@@ -287,6 +261,127 @@ holder re-arm and the next spare re-pair, the spare's elapsed floor rests on sta
   presumes that pinned pair).
 - **Failure handling** (v0.7): escalate on *any* unverified demote postcondition, not only on
   command timeouts; atomic state writes; monotonic (boot-time) safety timers.
+
+### Shared vantages — the spare's observation surface (a standing property, v0.7)
+
+A claim that two checks are independent is a claim about their **inputs**. This section states it
+for the spare's whole take path — a standing property of the spare, not a residual of one proof
+provider; each provider's section points here. Read from the code, and confirmed by execution
+against the real main loop (`tests/test_elapsed_provider.sh` §11 — the `TIER2`/`TIER3` view in
+those runs is frozen: an intermediary, or tiers partitioned together with the spare, which then
+honestly serve a live tip and a silent holder; times below are seconds after the holder's last
+vote before the episode):
+
+| Input | What reads it on the take path |
+|---|---|
+| **the spare's own node** (`LOCAL_RPC`) | Tier-1 health (`getHealth`); the own-bank delinquency check that opens the episode and fills the 7-of-10 window (`getVoteAccounts` at the RPC default commitment, *finalized* — plus `getSlot` when `MAX_DELINQUENT_SLOTS` > 0); watchdog-elapsed's head cross-check (`getSlot`, *processed*) |
+| **`TIER2_RPC` / `TIER3_RPC`** | external confirm; the vote-FROZEN observation, its pinned first sample and the freshness seam they write; the mutation-edge re-check; the gossip advisory (logged, never a gate); watchdog-elapsed's silence — on **every** configuration; G2's two vantages **on the default configuration** |
+| **`G2_VANTAGE_A` / `G2_VANTAGE_B`** pinned elsewhere | G2 only |
+| **the pairing token** | the proof-gate posture; the derived floors (`elapsed_floor`, `N_HEAD`); watchdog-elapsed's registration |
+| **the spare's monotonic clock** | the re-take lockout, the cooldown, the takeover delay and its anchor, the observation-span floor, G2's hold, the silence floor, the proof age edge |
+| **the spare's wall clock** | G2's cluster-time freshness compare (±25 s) — no other gate on the take path (alert throttles aside) |
+
+**Where composition adds nothing: any two checks in the `TIER2`/`TIER3` row.** An active,
+protocol-aware intermediary in front of those two endpoints — one that proxies the tip live while
+freezing the staked account's `lastVote` (a *naive* freeze is caught by the tip guard) — supplies,
+in one capability, the external confirm, the vote-FROZEN observation and a clean mutation-edge
+re-check. Two instances matter for the proof gate.
+
+**The G2 instance — on the default configuration.**
+The standing condition, in the words the ceremony and the daemon log print verbatim: *G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host.* Mechanically: G2 defaults
+`G2_VANTAGE_A`/`G2_VANTAGE_B` to `TIER2_RPC`/`TIER3_RPC`, and every vote-liveness reader in the
+daemons iterates exactly those two endpoints (`for rpc in "$TIER2_RPC" "$TIER3_RPC"`). On such a
+host the two halves named above are **not independent**: the same active, protocol-aware
+intermediary that splices `getSlot`/`getClusterNodes` into a false G2 proof can equally proxy the
+tip live while freezing the staked account's `lastVote` into a false-frozen vote observation. One
+capability supplies both halves, so the composition adds nothing and the G2 section's residual 2 is
+**unbounded by it**. (A *naive* freeze is still caught by the tip-guard; an active one is the same
+"passive closed, active open" boundary G2 draws everywhere else.)
+
+This is **not** refused, deliberately: most operators run exactly two RPCs, and refusing to arm
+would trade a named residual for no spare at all. It is **measured and stated**: `failover arm`
+compares each vantage against each tier — by normalized URL, by host, and by resolved address set
+where a resolver exists — and prints which vantage matched which tier by which comparison, the
+consequence, and the fix, both at precondition P6 and again in the end-of-summary; the armed
+daemon repeats a URL-level version of the same statement as a startup `WARN` (it does no DNS — the
+arm owns resolution, so a shared vantage hiding behind two hostnames is visible at the arm and
+invisible to the daemon).
+
+**The way back is a third endpoint in a separate failure domain:** point `G2_VANTAGE_A` and/or
+`G2_VANTAGE_B` in `failover-standby.env` at an RPC run by a *different operator* — not another
+hostname or another API key for one you already use — and re-run `failover arm`. The arm then
+prints the measured "vantages are SEPARATE from the vote-liveness tiers" line, and the additivity
+statement of the G2 section becomes load-bearing again — **for G2's path**. It does not do that for
+watchdog-elapsed, next.
+
+**The watchdog-elapsed instance — on every configuration.** watchdog-elapsed has no vantage of its
+own: it measures the holder's silence through the same liveness sampler the take path reads, so its
+silence and the take path's vote-FROZEN observation are **one observation, read twice** — coupled
+more directly than G2's default case, and with no configuration that separates them. The
+intermediary above supplies the elapsed floor's silence and the FROZEN verdict together; the
+provider's head cross-check does not change that (the intermediary proxies the head live, and lag is
+what that check measures — splicing is not). What watchdog-elapsed adds is attested **time** — the
+pairing token's bound (W + B) on how long a holder whose fence works keeps signing once it is in a
+failure that fence covers — never a second **witness** that the holder is silent. So on a host with
+separately pinned G2 vantages the gate's additivity holds for G2's path and **not** for the elapsed
+path: through watchdog-elapsed the false-frozen view, held for `elapsed_floor` (100 s at the shipped
+token bounds — longer than the un-armed timer's 60 s, by the floor's own minimum), is the whole
+forgery. What else stands in its way is the spare's own bank, measured next.
+
+**Where composition does add an independent input — and how much.**
+
+1. **G2 on separately pinned vantages** (the way back above): a different operator's RPC is an
+   input the `TIER2`/`TIER3` intermediary does not control.
+2. **The spare's own bank.** `LOCAL_RPC` does not traverse `TIER2`/`TIER3`, so no intermediary
+   there can splice it. What it buys was measured, and it is less than it looks:
+   - it is a **per-cycle entry gate, not a mutation-edge condition**: the take cycle reads the own
+     bank, then `attempt_takeover` reads only `TIER2`/`TIER3` (external confirm, the vote-FROZEN
+     sample, the mutation-edge re-check; the gossip advisory too) and mutates — zero `LOCAL_RPC`
+     reads in between;
+   - it reads the **finalized** bank, so a resumed holder's vote shows there about 32 slots
+     (~13 s) after it lands;
+   - a "current" verdict vetoes the take **on that cycle only**: it never re-anchors the countdown
+     (the re-anchor rides the vote-FROZEN gate, i.e. `TIER2`/`TIER3`); from a full window, the
+     7-of-10 trigger drops after 4 consecutive current cycles and the episode closes only after 9.
+
+   **So the own bank does not bound the active-intermediary residual.** (A design finding, named
+   here as measured; the remedy is a separate, reviewed design change.) With the intermediary on both tiers
+   and the holder resuming — its votes reaching the spare's bank — the veto wins only when the
+   resumption lands at least ~13 s before the scheduled mutation. Measured on the un-armed timer
+   path (take scheduled at t125): resumed at t112 → vetoed; at t113 → taken over at t125 after 12 s
+   of renewed voting. On the armed elapsed path (proof minted at t171): t158 → vetoed; t159 → the
+   gate accepts watchdog-elapsed and the take mutates at t171 — the proof matures before the own
+   bank sees the resumption. An intermittent holder fares worse: at `MAX_DELINQUENT_SLOTS=15`, one
+   vote at t40 reached the spare's bank (current from t53), and the take still fired at t80 on the
+   original anchor.
+
+**A partitioned or lagging spare.** Agave's `getHealth` (v4.2.1, `rpc/src/rpc_health.rs`) compares
+the node's own replayed optimistic slot with the latest optimistic slot its **own blockstore** has
+observed (through replay and gossip), at a 128-slot distance; it never consults `TIER2`/`TIER3`, and
+neither does Tier-1 (its `getSlot` is logged, never compared). Measured, with the tiers frozen:
+
+- **cut off after the episode opened**: the frozen bank keeps its delinquent verdict and `getHealth`
+  stays ok (the blockstore learns nothing new either) — **no spare-side gate holds**: the timer path
+  took over at t125 with the holder voting since t90. Armed, watchdog-elapsed refuses to prove
+  there: its head cross-check reads the frozen own head as a stale reference (blind);
+- **on a minority fork** (the bank advancing without the holder's votes): held, because the own-bank
+  read is at *finalized* and a minority fork does not finalize — the same read at *processed* took
+  over at t145. If the supermajority's gossip still reaches the spare, `getHealth` reports it behind
+  and Tier-1 holds as well;
+- **replaying behind**: up to 128 slots behind reads ok, and the own-bank veto's reaction grows by
+  the lag — 40 s behind, a holder that resumed at t95 was vetoed and one that resumed at t115 was
+  taken over at t165, after 50 s of voting. Armed, watchdog-elapsed refuses such a spare (stale
+  reference): it cannot prove by time while its own bank lags a live view by more than `N_HEAD`.
+  `LOCAL_HEALTH_MAX_BEHIND` (default 100) cannot widen or narrow this at agave's default distance:
+  agave reports "behind" only beyond 128 slots, so the knob's within-tolerance branch is never
+  reached, and every "behind" report fails Tier-1.
+
+**What the elapsed head cross-check does and does not see.** It is two-sided against the spare's own
+bank (`getSlot`, *processed*): a view more than `N_HEAD` slots behind that bank reads blind (a lagged
+fleet), and that bank more than `N_HEAD` behind a live view reads blind (a stale reference — the
+cut-off or lagging spare above). Both cost availability, never a take. It does not see the bank and
+the view lagging **together**, and an intermediary that proxies the head live passes it by
+construction.
 
 ### Availability-side starvation (blind or flapping externals)
 

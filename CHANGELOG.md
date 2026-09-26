@@ -5,6 +5,52 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Block 6.3 — the watchdog-elapsed proof provider (attested time), and the shared-input property
+  made standing.** The second provider behind the Block-6.1 proof gate, in a new `[elapsed-provider]`
+  twin region (byte-identical in both daemons; armed + spare + registered-gated — zero reads, zero
+  events on every un-armed, holder or unpaired host, census-asserted). It registers at armed-spare
+  startup ONLY over a pairing token that classifies ok at the one derivation site
+  (`_derive_proof_floors`: fence=real, crc-valid, floor converged and ≥ `TAKEOVER_DELAY`),
+  re-classifies the token at every evaluation, and the PAIRED posture's measured registry now lists
+  it. PROVEN iff the silence OBSERVED on the spare's monotonic clock — from the Block-3 seam's
+  observed span, restarting after every stamped blindness (read through the seam, never a parallel
+  freshness system; the region writes nothing to it) — is ≥ `elapsed_floor` (W + B +
+  `MARGIN_ELAPSED` = 100 s at the shipped 30/60), a fresh same-vantage read still shows the staked
+  `lastVote` at the episode baseline, AND the payload's cluster-max `lastVote` is within ±`N_HEAD`
+  (25) slots of an INDEPENDENT head: the spare's own bank (`LOCAL_RPC` `getSlot`,
+  commitment=processed — the one head no TIER2/TIER3 intermediary can lower; the RPC default would
+  understate a view's lag by ~32 slots). Two-sided: a view lagging the bank, or a bank lagging a
+  live view (a cut-off or lagging spare), reads blind — availability, never a take; `N_HEAD` is used
+  only from the derivation site and is not loosened. Structured verdict (observation_id = token gen
+  + silence start + floor; observed_at = the read the silence rests on), WITHDRAWN — never extended —
+  past `PROOF_MAX_AGE` or when the seam moves under it. Per-cycle, never blocking: zero reads below
+  the floor and while a verdict stands, at most one paced evaluation per cycle (worst added gap
+  48 s, every read petted; the pet census moves 41/42 → 42/43). UNWIRED into any take path (6.4).
+  `tests/test_elapsed_provider.sh` (52 suites): reds first; the case table; the multilayer rule
+  (token / blindness / floor / head each neutered alone falls through to a named survivor, all four
+  neutered restores the forged acceptance); the `MARGIN_ELAPSED` coupling mutant (floor and `N_HEAD`
+  move together, the provider follows); the inertness census; twin parity. The HOLD loop's named
+  baits gain both provider steps — `_elapsed_step`, and `_g2_step`, whose HOLD-loop splice had
+  tripped nothing. **D0, the executed input map**, is now a standing section of `docs/SAFETY.md`
+  (*Shared vantages — the spare's observation surface*), with its findings named, not fixed: on
+  EVERY config watchdog-elapsed's silence and the take path's vote-FROZEN observation are one
+  TIER2/TIER3 input — attested time, never a second witness (`failover arm`'s "additivity HOLDS"
+  line is now scoped to verified-demote and says so); the spare's own bank is a per-cycle entry
+  gate read at finalized commitment, not a mutation-edge condition, and it never re-anchors —
+  measured, its veto wins only for a holder that resumed ≥ ~13 s before the scheduled mutation
+  (timer path: t112 vetoed, t113 taken; elapsed path: t158 vetoed, t159 taken), so it does not
+  bound the active-intermediary residual; a spare cut off after the episode opened is held by no
+  spare-side gate on the timer path (agave's `getHealth` compares against the node's own
+  blockstore; watchdog-elapsed refuses to prove there), a minority-fork spare is held by the
+  finalized read, a spare replaying ≤ 128 slots behind passes Tier-1, and `LOCAL_HEALTH_MAX_BEHIND`
+  never admits a "behind" report at agave's default distance. The G2-vantage texts in
+  `DEPLOYMENT-MANUAL.md`, the standby env template and the deploy script now say a third endpoint
+  restores additivity for G2 only. Found in passing and fixed: the standby deploy script's env
+  heredoc is unquoted, and the 6.2 G2-vantage comment inside it carried bare backticks — every
+  standby deploy ran `failover arm` as a command substitution ("command not found" on stderr, the
+  rendered comment left with a hole); now escaped, with a static-and-render guard
+  (`test_installer_guardrails` (27)) red on the old text.
+
 - **Install-verification claims aligned to the mechanism (docs, comments and one runtime output
   line; no logic change).** `install.sh`'s header, `SECURITY.md` ("Verifying what you install") and the README
   install paragraph promised more than exists: a signed release tag verified with `git tag -v`

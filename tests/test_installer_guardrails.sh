@@ -318,4 +318,35 @@ ha_junk=$(ha_drive "abc" "10")
   && ok "(26c) non-numeric EXPECTED reset to safe 30; low MARGIN still warned ($ha_junk)" \
   || bad "(26c) non-numeric handling wrong ($ha_junk)"
 
+# ── (27) the generated env's heredoc must never EXECUTE its own comment text ──────────────────────
+# ENVEOF is UNQUOTED by design (it expands ${CFG_*} and $(_envq …)), so a BARE backtick in one of its
+# comment lines is command substitution at deploy time: Block 6.2's G2-vantage comment ran
+# `failover arm` on every standby deploy (stderr "failover: command not found", the rendered comment
+# left with a hole) until Block 6.3 escaped it. The house form is the escaped \` that
+# deploy-failover.sh's own heredoc comments already use. Static census of unescaped backticks in
+# every UNQUOTED heredoc body of both deploy scripts, plus a live render of the standby env heredoc
+# (stubbed _envq, output to a temp file): zero stderr, and the literal text survives.
+hd_bare() {   # $1 = file → count of unescaped backticks inside UNQUOTED heredoc bodies
+  awk '!inh && /<<[[:space:]]*[A-Za-z_]+[[:space:]]*$/ { tag=$NF; sub(/^<</, "", tag); inh=1; next }
+       inh && $0 == tag { inh=0; next }
+       inh { line=$0; gsub(/\\`/, "", line); n += gsub(/`/, "", line) }
+       END { print n+0 }' "$1"
+}
+hd_s=$(hd_bare "$DEPLOY_STANDBY"); hd_p=$(hd_bare "$DEPLOY_PRIMARY")
+_r_dir=$(mktemp -d)
+_r_s=$(grep -n '^cat > /opt/solana-failover/failover-standby.env << ENVEOF$' "$DEPLOY_STANDBY" | cut -d: -f1)
+_r_e=""; [[ -n "$_r_s" ]] && _r_e=$(awk -v s="$_r_s" 'NR > s && /^ENVEOF$/ { print NR; exit }' "$DEPLOY_STANDBY")
+_r_err="(no heredoc found)"; _r_txt=no
+if [[ -n "$_r_s" && -n "$_r_e" ]]; then
+  { echo '_envq(){ printf "%q" "$1"; }'; sed -n "${_r_s},${_r_e}p" "$DEPLOY_STANDBY" | sed "1s|/opt/solana-failover/failover-standby.env|$_r_dir/env|"; } > "$_r_dir/render.sh"
+  _r_err=$("${BASH:-bash}" "$_r_dir/render.sh" 2>&1 >/dev/null)
+  grep -qF -- '`failover arm` probes both' "$_r_dir/env" 2>/dev/null && _r_txt=yes
+fi
+rm -rf "$_r_dir"
+if [[ "$hd_s" == "0" && "$hd_p" == "0" && -z "$_r_err" && "$_r_txt" == "yes" ]]; then
+  ok "(27) zero UNESCAPED backticks in the unquoted heredocs of both deploy scripts (standby $hd_s, primary $hd_p), and the standby env heredoc renders with ZERO stderr and its comment text intact ('\`failover arm\` probes both') — no comment line runs a command at deploy time"
+else
+  bad "(27) heredoc command-substitution hazard: unescaped backticks standby=$hd_s primary=$hd_p; render stderr='${_r_err}'; comment text intact=$_r_txt"
+fi
+
 results_banner

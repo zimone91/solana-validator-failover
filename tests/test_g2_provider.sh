@@ -1177,8 +1177,11 @@ case_posture_none() {
     echo "info=$LASTINFO"
 }
 r=$(G2PK="" drive_g2 "$STANDBY" case_posture_none | tail -1)
-if [[ "$(field "$r" info)" == *"armed spare PAIRED"* && "$(field "$r" info)" == *"proof providers registered: NONE"* ]]; then
-    ok "(7f) PAIRED + unconfigured G2 → the posture line says 'proof providers registered: NONE' (measured, claim=check — never the old static text)"
+# Block 6.3 moved this pin, deliberately: the classification that prints PAIRED is the one that
+# registers watchdog-elapsed, so a PAIRED spare with G2 unconfigured now lists exactly that provider
+# (the 6.2-era 'NONE' is unreachable on a PAIRED line; the ':-NONE' fallback stays as the defense).
+if [[ "$(field "$r" info)" == *"armed spare PAIRED"* && "$(field "$r" info)" == *"proof providers registered: watchdog-elapsed;"* ]]; then
+    ok "(7f) PAIRED + unconfigured G2 → the posture line prints the MEASURED registry 'proof providers registered: watchdog-elapsed' — no verified-demote (unconfigured), the attested-time provider registered by the same classification that prints PAIRED (claim=check — never a static text)"
 else
     bad "(7f) $r"
 fi
