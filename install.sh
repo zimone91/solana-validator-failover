@@ -17,9 +17,10 @@
 #   verification for them, and none can be added — published tags are not rewritten.
 #   From the first manifest-bearing release on, downloads are checked against that tag's
 #   SHA256SUMS, fail-closed: a mismatch, a missing entry, or a missing manifest ABORTS the install.
-#   Checksums protect against a corrupted or truncated download, a tampering mirror/CDN, and a
-#   partially applied tag. They do NOT protect against a compromise of the repository itself or of
-#   zim.one — the manifest travels through the same channel as the files.
+#   Checksums catch a corrupted or truncated download and a partially applied tag. They do NOT
+#   catch an intermediary on the delivery path that rewrites the files AND the manifest together — a
+#   compromised mirror/CDN, the repository itself, or zim.one: the manifest travels through the same
+#   channel as the files.
 #   There is NO anchor outside that channel for v0.6.x: the v0.6.9 and v0.6.10 tags are NOT signed
 #   and never will be, and this script verifies no signature. Tag signing starts with v0.7, after
 #   the maintainer key is published outside GitHub (see SECURITY.md).

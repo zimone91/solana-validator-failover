@@ -5,14 +5,53 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Block 6.3 fix round 1 (panel wf_4c899880-d5b) — the provider's standing verdict follows the
+  token in force, silence starts are stamped after the answer, non-canonical integers are unusable,
+  an aborted loop fails the unit, and the D0 text is rewritten to the measured truth.** Mechanism,
+  each red first on de21927 and green after: (M1) the reporter and the dormant step re-classify the
+  token at the one derivation site on every serve (local file read, zero network — "zero I/O while
+  dormant" is now "zero network") and WITHDRAW a verdict whose token no longer classifies ok, whose
+  gen changed, or whose re-derived floor exceeds the silence it was minted on; (N4) a token adopted
+  mid-episode restarts the silence (a provider-local stamp per gen — no retroactive mint); (M2) every
+  seam stamp that STARTS a span — the observed-span start, the VOTING re-pin, the blind stamp, the
+  pair's first end, the prefetch pin — is taken AFTER the read that established it (the F2 world:
+  minted with true silence 86 s < W+B before, ≥ 100 s after; measured, the span floor binds nowhere
+  new); (M3) observed_at is the answering read's own pre-read stamp (house worst case: 29 s old at
+  the mint + glue, recorded against `PROOF_MAX_AGE` for 6.4, unchanged); (M4) ONE canonical-integer
+  validator `_canon_uint` (`^(0|[1-9][0-9]{0,18})$`, ≤ 2^63−1) for every external integer the take
+  path, the providers and the self-fence do arithmetic on — "0009999" aborted the main loop and
+  2^64+N wrapped; (M5) a main loop that ends without a shutdown request logs an ERROR and exits 1, so
+  the armed unit (Restart=no, OnFailure on `failed`) fences/pages instead of sitting `inactive`
+  (SIGTERM still exits 0); (M6) Tier-1's and the MAX_DELINQUENT_SLOTS `getSlot` reads are petted —
+  the measured gap between consecutive pets through the watchdog-elapsed evaluation 20 s → 17 s, one
+  op + one pet again (the loop-wide bound stays one op + one pet: the take path's `curl -m 15` reads
+  set it at 22 s, measured, before and after); the pet census 42/43 → 42/45; (M7) a vantage re-pin
+  under a standing verdict withdraws it (the served triple never disagrees with the seam); (M8) a spare
+  paired while its monitor runs says so every heartbeat ("paired, but watchdog-elapsed is NOT
+  registered — restart the monitor"); (M9) `LOCAL_HEALTH_MAX_BEHIND` > 128 is announced at startup as
+  widening Tier-1 (no clamp). The unpaired posture prints the MEASURED provider registry ("NONE — no
+  provider can prove here" where G2 is unconfigured). Tests: the D0 world gets a file-backed clock,
+  an explicit slot-rate knob and the physical minority model (the "processed takes at t145"
+  counterfactual is dropped); six DOCUMENTED RESIDUALS are measured and named with the remedy that
+  would flip each (co-frozen partition after the pin, the latency term Σ, an honest lagging tier,
+  the armed intermittent holder, `LOCAL_HEALTH_MAX_BEHIND` > 128, forged G2 on shared vantages); the
+  reachable post-blindness archetype and `[elapsed-seam]` join the multilayer controls; the heredoc
+  guard censuses every expansion in both deploy heredocs and renders both under a canary PATH.
+  Texts: `docs/SAFETY.md` "Shared vantages" rewritten (three premises, the exposure = commitment lag
+  + every tier read before `set-identity`, partitioned-after-open findings, the tip guard's reach,
+  slot time stated in slots — mainnet measured ≈ 3.7 slots/s on 2026-09-26, so `N_HEAD` = 25 slots ≈
+  6.8 s there, stricter than its 10 s derivation); the G2 remedy texts scoped to verified-demote; the
+  checksum claims scoped (a delivery-path intermediary rewrites files and manifest together).
+
 - **Block 6.3 — the watchdog-elapsed proof provider (attested time), and the shared-input property
   made standing.** The second provider behind the Block-6.1 proof gate, in a new `[elapsed-provider]`
   twin region (byte-identical in both daemons; armed + spare + registered-gated — zero reads, zero
   events on every un-armed, holder or unpaired host, census-asserted). It registers at armed-spare
   startup ONLY over a pairing token that classifies ok at the one derivation site
   (`_derive_proof_floors`: fence=real, crc-valid, floor converged and ≥ `TAKEOVER_DELAY`),
-  re-classifies the token at every evaluation, and the PAIRED posture's measured registry now lists
-  it. PROVEN iff the silence OBSERVED on the spare's monotonic clock — from the Block-3 seam's
+  re-classifies the token at every evaluation (and, since the fix round above, at every serve of a
+  standing verdict), and the PAIRED posture's measured registry now lists it. PROVEN iff the
+  silence OBSERVED on the spare's monotonic clock — from the Block-3 seam's
   observed span, restarting after every stamped blindness (read through the seam, never a parallel
   freshness system; the region writes nothing to it) — is ≥ `elapsed_floor` (W + B +
   `MARGIN_ELAPSED` = 100 s at the shipped 30/60), a fresh same-vantage read still shows the staked
@@ -23,8 +62,8 @@ All notable changes are documented here. Versions follow the project's internal 
   live view (a cut-off or lagging spare), reads blind — availability, never a take; `N_HEAD` is used
   only from the derivation site and is not loosened. Structured verdict (observation_id = token gen
   + silence start + floor; observed_at = the read the silence rests on), WITHDRAWN — never extended —
-  past `PROOF_MAX_AGE` or when the seam moves under it. Per-cycle, never blocking: zero reads below
-  the floor and while a verdict stands, at most one paced evaluation per cycle (worst added gap
+  past `PROOF_MAX_AGE` or when the seam moves under it. Per-cycle, never blocking: zero network reads
+  below the floor and while a verdict stands, at most one paced evaluation per cycle (worst added gap
   48 s, every read petted; the pet census moves 41/42 → 42/43). UNWIRED into any take path (6.4).
   `tests/test_elapsed_provider.sh` (52 suites): reds first; the case table; the multilayer rule
   (token / blindness / floor / head each neutered alone falls through to a named survivor, all four
@@ -41,9 +80,11 @@ All notable changes are documented here. Versions follow the project's internal 
   (timer path: t112 vetoed, t113 taken; elapsed path: t158 vetoed, t159 taken), so it does not
   bound the active-intermediary residual; a spare cut off after the episode opened is held by no
   spare-side gate on the timer path (agave's `getHealth` compares against the node's own
-  blockstore; watchdog-elapsed refuses to prove there), a minority-fork spare is held by the
-  finalized read, a spare replaying ≤ 128 slots behind passes Tier-1, and `LOCAL_HEALTH_MAX_BEHIND`
-  never admits a "behind" report at agave's default distance. The G2-vantage texts in
+  blockstore; watchdog-elapsed refuses to prove there only against a LIVE view — with its tiers
+  partitioned together with it, it mints), a spare on a minority fork that PRECEDES the episode is
+  held by the finalized read (one that begins after it opened is the cut-off case), a spare
+  replaying ≤ 128 slots behind passes Tier-1, and `LOCAL_HEALTH_MAX_BEHIND` is inert at or below
+  128 at agave's default distance and WIDENS Tier-1 above it. The G2-vantage texts in
   `DEPLOYMENT-MANUAL.md`, the standby env template and the deploy script now say a third endpoint
   restores additivity for G2 only. Found in passing and fixed: the standby deploy script's env
   heredoc is unquoted, and the 6.2 G2-vantage comment inside it carried bare backticks — every

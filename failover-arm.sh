@@ -374,7 +374,7 @@ _pre_pairing_intake() {
     fi
     if [[ -z "$tok" ]]; then
         _ARM_PAIR_SUMMARY="unpaired"
-        _arm_log "precondition P5: NO pairing token (ARM_PAIRING_TOKEN unset; nothing stored at $tokf) — the arm PROCEEDS; the ARMED daemon runs the §2.7 UNPAIRED posture (proof providers verified-demote ONLY; silence-based take disabled; CRITICAL page at every daemon start). See the end-of-summary warning."
+        _arm_log "precondition P5: NO pairing token (ARM_PAIRING_TOKEN unset; nothing stored at $tokf) — the arm PROCEEDS; the ARMED daemon runs the §2.7 UNPAIRED posture (proof providers: verified-demote ONLY where G2 is configured — PRIMARY_UNSTAKED_PUBKEY set — else NONE, the page prints the measured registry; silence-based take disabled; CRITICAL page at every daemon start). See the end-of-summary warning."
         _pre_zero_stake_verify
         return 0
     fi
@@ -478,7 +478,7 @@ _pre_pairing_intake() {
     fi
     if [[ "$fence" == "page-only" ]]; then
         _ARM_PAIR_SUMMARY="page-only gen=$gen watchdog=${w}s relinquish_bound=${b}s holder=$thost"
-        _arm_log "precondition P5: pairing token VERIFIED and stored (gen=$gen, watchdog=${w}s, relinquish_bound=${b}s, fence=page-only, holder=$thost; source: $src) — but fence=page-only RELINQUISHES NOTHING (it pages): elapsed (silence-based) attestation is REFUSED, and the ARMED daemon runs the §2.7 posture (verified-demote ONLY) until the holder is re-armed with the REAL fence and re-paired."
+        _arm_log "precondition P5: pairing token VERIFIED and stored (gen=$gen, watchdog=${w}s, relinquish_bound=${b}s, fence=page-only, holder=$thost; source: $src) — but fence=page-only RELINQUISHES NOTHING (it pages): elapsed (silence-based) attestation is REFUSED, and the ARMED daemon runs the §2.7 posture (proof providers: verified-demote ONLY where G2 is configured, else NONE) until the holder is re-armed with the REAL fence and re-paired."
     else
         _ARM_PAIR_SUMMARY="paired gen=$gen watchdog=${w}s relinquish_bound=${b}s holder=$thost"
         _arm_log "precondition P5: pairing token VERIFIED and stored (gen=$gen, watchdog=${w}s, relinquish_bound=${b}s, fence=real, holder=$thost; source: $src) — the ARMED daemon derives its watchdog-elapsed floor from these bounds at its ONE derivation site (W+B+MARGIN_ELAPSED). A re-armed holder prints a NEW token: re-pair this spare on every holder arm (ceremony, not advice)."
@@ -703,8 +703,10 @@ _pre_g2_vantage_probe() {
 # `for rpc in "$TIER2_RPC" "$TIER3_RPC"`. One protocol-aware intermediary in front of that single
 # endpoint supplies BOTH halves: it splices getSlot/getClusterNodes into a false verified-demote
 # proof, and it proxies the tip live while freezing the staked account's lastVote into a
-# false-frozen vote observation. A naive freeze is caught by the tip-guard; an active one is the
-# same "passive closed, active open" boundary G2 already draws honestly (SAFETY.md residual 2).
+# false-frozen vote observation. The tip-guard catches only a freeze AT OR BEFORE the pinned first
+# sample (it compares against that pinned tip and the frozen path never re-bases it) — a naive freeze
+# that begins after the pin passes it (6.3 panel F3); an active one is the same "passive closed,
+# active open" boundary G2 already draws honestly (SAFETY.md residual 2).
 # So: measure it, name it, print the way back — and arm anyway.
 # Every pair is compared strongest-first (normalized URL, then host, then resolved address set)
 # and the OUTPUT NAMES THE COMPARISON THAT MATCHED. The no-overlap line is printed too, with the
@@ -745,7 +747,7 @@ _pre_g2_tier_overlap() {
         return 0
     fi
     _ARM_G2_SHARED="$_p6o_hits"
-    _arm_warn "precondition P6 — DEGRADED, NOT REFUSED: G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host. MEASURED (${_p6o_how}): ${_p6o_hits}. The daemons' liveness readers iterate TIER2_RPC then TIER3_RPC, so the same protocol-aware intermediary can splice getSlot/getClusterNodes into the false proof AND proxy the tip live while freezing the staked account's lastVote into the false-frozen observation; docs/SAFETY.md residual 2 (an active, protocol-aware intermediary) is NOT bounded by that composition. Not refused, deliberately: most operators run exactly two RPCs and refusing would leave this spare un-armed. THE WAY BACK: point G2_VANTAGE_A and/or G2_VANTAGE_B in $ARM_ENV_FILE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN — a different operator, not another hostname or another API key for one you already use — then re-run 'failover arm'."
+    _arm_warn "precondition P6 — DEGRADED, NOT REFUSED: G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host. MEASURED (${_p6o_how}): ${_p6o_hits}. The daemons' liveness readers iterate TIER2_RPC then TIER3_RPC, so the same protocol-aware intermediary can splice getSlot/getClusterNodes into the false proof AND proxy the tip live while freezing the staked account's lastVote into the false-frozen observation; docs/SAFETY.md residual 2 (an active, protocol-aware intermediary) is NOT bounded by that composition. Not refused, deliberately: most operators run exactly two RPCs and refusing would leave this spare un-armed. THE WAY BACK: point G2_VANTAGE_A and/or G2_VANTAGE_B in $ARM_ENV_FILE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN — a different operator, not another hostname or another API key for one you already use — then re-run 'failover arm'. That restores additivity for verified-demote ONLY: watchdog-elapsed's silence and the vote-FROZEN observation stay one TIER2/TIER3 input on every host (docs/SAFETY.md, 'Shared vantages')."
     return 0
 }
 
@@ -756,7 +758,7 @@ _pre_g2_tier_overlap() {
 # _ARM_G2_SHARED empty. Printed BEFORE the pairing posture, which stays last by §2.7 (c).
 _arm_g2_summary() {
     [[ -n "$_ARM_G2_SHARED" ]] || return 0
-    _arm_warn "G2 vantage summary — G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host. MEASURED: ${_ARM_G2_SHARED}. This spare is armed and the proof gate runs (docs/SAFETY.md, 'Verified-demote (G2)' residual 2). Fix by pointing G2_VANTAGE_A/G2_VANTAGE_B in $ARM_ENV_FILE at a third endpoint in a separate failure domain, then re-run 'failover arm'."
+    _arm_warn "G2 vantage summary — G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host. MEASURED: ${_ARM_G2_SHARED}. This spare is armed; the proof gate is not wired into any take path in this build (docs/SAFETY.md, 'Verified-demote (G2)' residual 2). Fix by pointing G2_VANTAGE_A/G2_VANTAGE_B in $ARM_ENV_FILE at a third endpoint in a separate failure domain, then re-run 'failover arm' — that restores additivity for verified-demote ONLY: watchdog-elapsed's silence and the vote-FROZEN observation stay one TIER2/TIER3 input on every host (docs/SAFETY.md, 'Shared vantages')."
     return 0
 }
 
@@ -770,10 +772,10 @@ _arm_pairing_summary() {
             _arm_log "pairing summary: PAIRED (${_ARM_PAIR_SUMMARY}) — re-pair on EVERY holder re-arm: a re-armed holder prints a NEW token and this spare's stored bounds go stale (the stale-bound residual, docs/SAFETY.md); the holder's arm refuses to complete without printing it."
         ;;
         page-only*)
-            _arm_warn "pairing summary: token stored but fence=page-only (${_ARM_PAIR_SUMMARY}) — page-only relinquishes NOTHING: elapsed (silence-based) attestation REFUSED; the ARMED daemon runs the §2.7 posture (proof providers verified-demote ONLY — holder not attested) and pages it at every start. Re-arm the holder with DRY_RUN=false (the REAL fence), then re-pair this spare with the new token."
+            _arm_warn "pairing summary: token stored but fence=page-only (${_ARM_PAIR_SUMMARY}) — page-only relinquishes NOTHING: elapsed (silence-based) attestation REFUSED; the ARMED daemon runs the §2.7 posture (proof providers: verified-demote ONLY where G2 is configured, else NONE — holder not attested) and pages it at every start. Re-arm the holder with DRY_RUN=false (the REAL fence), then re-pair this spare with the new token."
         ;;
         *)
-            _arm_warn "pairing summary: UNPAIRED SPARE — no valid pairing token stored: the ARMED daemon runs proof providers verified-demote ONLY (holder not attested; silence-based take disabled) and pages CRITICAL at every start until paired. Pair: run 'failover arm' on the HOLDER first (upgrade order: holder first), copy the token line it prints, then re-run this arm with ARM_PAIRING_TOKEN='<that line>'."
+            _arm_warn "pairing summary: UNPAIRED SPARE — no valid pairing token stored: the ARMED daemon runs proof providers verified-demote ONLY where G2 is configured (PRIMARY_UNSTAKED_PUBKEY set), else NONE (holder not attested; silence-based take disabled) and pages CRITICAL at every start until paired. Pair: run 'failover arm' on the HOLDER first (upgrade order: holder first), copy the token line it prints, then re-run this arm with ARM_PAIRING_TOKEN='<that line>'."
         ;;
     esac
     return 0

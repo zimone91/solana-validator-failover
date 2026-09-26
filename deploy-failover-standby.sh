@@ -439,7 +439,8 @@ ask_numeric "Takeover delay (seconds of sustained delinquency)" "${TAKEOVER_DELA
 CFG_TAKEOVER_DELAY="$REPLY"
 warn_if_below_rec_takeover_delay "$CFG_TAKEOVER_DELAY" "$REC_TAKEOVER_DELAY" || true   # nudge only (N1 clamp below enforces the floor)
 
-ask_numeric "Local health max behind (slots; own-node lag tolerance)" "${LOCAL_HEALTH_MAX_BEHIND:-100}" 0
+echo -e "  ${DIM}Not a lag guard below 129: agave's getHealth reports 'behind' only beyond 128 slots (its default distance), so <= 128 is inert; > 128 lets a spare that far behind take over.${NC}"
+ask_numeric "Local health max behind (slots; inert <= 128, WIDENS Tier-1 above)" "${LOCAL_HEALTH_MAX_BEHIND:-100}" 0
 CFG_MAX_BEHIND="$REPLY"
 
 echo ""
@@ -1037,10 +1038,10 @@ fi
 echo ""
 echo -e "  ${BOLD}${YELLOW}ATTESTATION NOTE (v0.7)${NC}"
 echo -e "    ${DIM}This config carries NO pairing attestation. Once this spare is ARMED ('failover arm'),${NC}"
-echo -e "    ${DIM}it runs proof providers: verified-demote ONLY — holder not attested; silence-based${NC}"
-echo -e "    ${DIM}take disabled — and pages CRITICAL at every start until paired. Upgrade+arm the${NC}"
-echo -e "    ${DIM}HOLDER first (its arm prints the pairing token), then re-run this spare's arm with${NC}"
-echo -e "    ${DIM}ARM_PAIRING_TOKEN='<token line>'. Un-armed hosts: no behavior change.${NC}"
+echo -e "    ${DIM}it runs proof providers: verified-demote ONLY (NONE if G2 is unconfigured) — holder${NC}"
+echo -e "    ${DIM}not attested; silence-based take disabled — and pages CRITICAL at every start until${NC}"
+echo -e "    ${DIM}paired. Upgrade+arm the HOLDER first (its arm prints the pairing token), then re-run${NC}"
+echo -e "    ${DIM}this spare's arm with ARM_PAIRING_TOKEN='<token line>'. Un-armed hosts: no behavior change.${NC}"
 
 sleep 2
 

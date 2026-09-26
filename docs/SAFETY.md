@@ -54,10 +54,11 @@ also outwait the STANDBY's takeover becoming externally visible.
 
 ## What has been tested
 
-Beyond the 36 automated suites, the release was validated by **live failovers on a real two-node
-testnet stack** (agave, systemd, real `set-identity`), with a 1 Hz on-chain observer recording the
-vote account throughout. Each scenario below was run end to end and the observer confirmed **no
-overlap** — at no point did two nodes hold the staked identity:
+Beyond the automated suites (`tests/run_all.sh` — its manifest pins the count, and CI checks the
+README's), the release was validated by **live failovers on a real two-node testnet stack** (agave,
+systemd, real `set-identity`), with a 1 Hz on-chain observer recording the vote account throughout.
+Each scenario below was run end to end and the observer confirmed **no overlap** — at no point did
+two nodes hold the staked identity:
 
 | Scenario | What was induced | Observed |
 |---|---|---|
@@ -267,25 +268,53 @@ holder re-arm and the next spare re-pair, the spare's elapsed floor rests on sta
 A claim that two checks are independent is a claim about their **inputs**. This section states it
 for the spare's whole take path — a standing property of the spare, not a residual of one proof
 provider; each provider's section points here. Read from the code, and confirmed by execution
-against the real main loop (`tests/test_elapsed_provider.sh` §11 — the `TIER2`/`TIER3` view in
-those runs is frozen: an intermediary, or tiers partitioned together with the spare, which then
-honestly serve a live tip and a silent holder; times below are seconds after the holder's last
-vote before the episode):
+against the real main loop (`tests/test_elapsed_provider.sh` §11–§12, a file-backed clock so reads
+take time).
+
+**The premise under test is what `TIER2`/`TIER3` serve, in three forms** — each a measured case, not
+an assumption about who is lying:
+
+1. an **active intermediary** in front of both tiers: the tip proxied live, the staked account's
+   `lastVote` frozen;
+2. an **honest tier lagging but advancing**: the true chain, some seconds late — no adversary at all;
+3. the spare **partitioned together with its tiers after the episode's pin** (co-frozen): on a side
+   holding less than 2/3 of the stake the tower fails its depth-8 2/3 threshold within ~8 votes, so
+   the spare's *processed* bank — the tower's last votable bank — stops, and the co-partitioned
+   tiers' view (its max `lastVote`) stops with it.
+
+(An earlier text had "tiers partitioned together with the spare, honestly serving a live tip". That
+is not a physical state: a side under 2/3 stops voting within ~8 votes, and a side at or above 2/3
+is the canonical chain, where the spare's own bank sees exactly the holder votes the tiers see.)
+
+**Slot time.** Every seconds figure below was measured at **2.5 slots/s** (400 ms slots — the rate
+the code's derivations assume, e.g. `N_HEAD = MARGIN_ELAPSED × 5/2`). Mainnet **measured ≈ 3.7
+slots/s** on 2026-09-26 (265–283 ms per slot), so the slot boundaries are the stable facts: the own
+bank's delinquency rule is 128 slots (≈ 51 s at 2.5/s, ≈ 35 s at 3.7/s); *finalized* trails
+*processed* by 32 slots (≈ 13 s / ≈ 9 s); `getHealth`'s distance is 128 slots; `N_HEAD` is 25 slots —
+10 s at its assumed rate, ≈ 6.8 s on today's mainnet: **stricter** than its derivation (more blind
+reads — availability, never a take). A *slower* cluster would loosen it (25 slots = 15 s at 600 ms).
+Measured at 3.7 slots/s, the timing race below opens its episode at t45 instead of t65, takes at
+t105 instead of t125, and its veto boundary is the same 32 slots — ≈ 9 s (t96 vetoed, t97 taken
+after 8 s).
 
 | Input | What reads it on the take path |
 |---|---|
-| **the spare's own node** (`LOCAL_RPC`) | Tier-1 health (`getHealth`); the own-bank delinquency check that opens the episode and fills the 7-of-10 window (`getVoteAccounts` at the RPC default commitment, *finalized* — plus `getSlot` when `MAX_DELINQUENT_SLOTS` > 0); watchdog-elapsed's head cross-check (`getSlot`, *processed*) |
-| **`TIER2_RPC` / `TIER3_RPC`** | external confirm; the vote-FROZEN observation, its pinned first sample and the freshness seam they write; the mutation-edge re-check; the gossip advisory (logged, never a gate); watchdog-elapsed's silence — on **every** configuration; G2's two vantages **on the default configuration** |
+| **the spare's own node** (`LOCAL_RPC`) | Tier-1 health (`getHealth`); the own-bank delinquency check that opens the episode and fills the 7-of-10 window (`getVoteAccounts` at the RPC default commitment, *finalized* — then, when `MAX_DELINQUENT_SLOTS` > 0, a separate `getSlot` read AFTER that payload, also finalized: the gap between them can only inflate the measured latency toward "delinquent", by at most its `curl -m 3`); watchdog-elapsed's head cross-check (`getSlot`, *processed* = the tower's vote bank); the local identity that selects the take branch (the admin socket's contact info; `getIdentity` on frankendancer) |
+| **`TIER2_RPC` / `TIER3_RPC`** | external confirm; the vote-FROZEN observation, its pinned first sample and the freshness seam they write; the mutation-edge re-check; the gossip advisory (logged, never a gate); the fast-path timer skip (`peer_has_relinquished`, `getClusterNodes` — only with `WITNESS_FASTPATH=true`, default off: it skips the remaining delay, never Gate 2 or 3); watchdog-elapsed's silence — on **every** configuration; G2's two vantages **on the default configuration** |
 | **`G2_VANTAGE_A` / `G2_VANTAGE_B`** pinned elsewhere | G2 only |
-| **the pairing token** | the proof-gate posture; the derived floors (`elapsed_floor`, `N_HEAD`); watchdog-elapsed's registration |
-| **the spare's monotonic clock** | the re-take lockout, the cooldown, the takeover delay and its anchor, the observation-span floor, G2's hold, the silence floor, the proof age edge |
+| **the pairing token** | the proof-gate posture; the derived floors (`elapsed_floor`, `N_HEAD`); watchdog-elapsed's registration, and its re-classification at every evaluation and every serve of a standing verdict |
+| **the spare's monotonic clock** | the re-take lockout, the cooldown, the takeover delay and its anchor, the observation-span floor, `VOTE_LIVENESS_MIN_INTERVAL`, `EXTERNAL_CONFIRM_THROTTLE`, the fast-path stagger floor, G2's hold, the silence floor, the proof age edge |
+| **the state file** (`STATE_FILE`, stamped with `BOOT_ID`) | the re-take lockout and the cooldown across a monitor restart (a mono stamp is honored only within the boot that wrote it) |
 | **the spare's wall clock** | G2's cluster-time freshness compare (±25 s) — no other gate on the take path (alert throttles aside) |
 
 **Where composition adds nothing: any two checks in the `TIER2`/`TIER3` row.** An active,
 protocol-aware intermediary in front of those two endpoints — one that proxies the tip live while
-freezing the staked account's `lastVote` (a *naive* freeze is caught by the tip guard) — supplies,
-in one capability, the external confirm, the vote-FROZEN observation and a clean mutation-edge
-re-check. Two instances matter for the proof gate.
+freezing the staked account's `lastVote` — supplies, in one capability, the external confirm, the
+vote-FROZEN observation and a clean mutation-edge re-check. The tip guard does not stand in its way:
+it compares the reference tip against the **pinned first sample's** tip and the frozen path never
+re-bases it, so it catches a freeze only **at or before** that pinned sample — a naive, whole-body
+freeze that begins after the pin passes it too (measured with tiers frozen together with the spare:
+frozen before the pin → held on both paths; after it → taken). Two instances matter for the proof gate.
 
 **The G2 instance — on the default configuration.**
 The standing condition, in the words the ceremony and the daemon log print verbatim: *G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host.* Mechanically: G2 defaults
@@ -295,8 +324,10 @@ host the two halves named above are **not independent**: the same active, protoc
 intermediary that splices `getSlot`/`getClusterNodes` into a false G2 proof can equally proxy the
 tip live while freezing the staked account's `lastVote` into a false-frozen vote observation. One
 capability supplies both halves, so the composition adds nothing and the G2 section's residual 2 is
-**unbounded by it**. (A *naive* freeze is still caught by the tip-guard; an active one is the same
-"passive closed, active open" boundary G2 draws everywhere else.)
+**unbounded by it**. Measured, on a spare cut off after the episode opened (P1b below) with G2 on the
+default vantages: the forged flip proves verified-demote and the gate accepts it — the take mutates
+at t132 with the holder voting for 42 s; the promoted spare's own H1 self-fence (its local confirmed
+slot frozen ≥ 30 s) gives the identity back at t168, 36 s after the take.
 
 This is **not** refused, deliberately: most operators run exactly two RPCs, and refusing to arm
 would trade a named residual for no spare at all. It is **measured and stated**: `failover arm`
@@ -311,8 +342,8 @@ invisible to the daemon).
 `G2_VANTAGE_B` in `failover-standby.env` at an RPC run by a *different operator* — not another
 hostname or another API key for one you already use — and re-run `failover arm`. The arm then
 prints the measured "vantages are SEPARATE from the vote-liveness tiers" line, and the additivity
-statement of the G2 section becomes load-bearing again — **for G2's path**. It does not do that for
-watchdog-elapsed, next.
+statement of the G2 section becomes load-bearing again — **for G2's path only** (every runtime
+remedy text says so). It does not do that for watchdog-elapsed, next.
 
 **The watchdog-elapsed instance — on every configuration.** watchdog-elapsed has no vantage of its
 own: it measures the holder's silence through the same liveness sampler the take path reads, so its
@@ -326,7 +357,16 @@ failure that fence covers — never a second **witness** that the holder is sile
 separately pinned G2 vantages the gate's additivity holds for G2's path and **not** for the elapsed
 path: through watchdog-elapsed the false-frozen view, held for `elapsed_floor` (100 s at the shipped
 token bounds — longer than the un-armed timer's 60 s, by the floor's own minimum), is the whole
-forgery. What else stands in its way is the spare's own bank, measured next.
+forgery. Its silence clock starts at the episode's first observation and restarts at every
+**stamped** blindness — a cycle in which the take path tried to observe the holder and could not.
+Stretches nobody tried to observe are not stamped (both tiers down t80–t120, inside the delay: the
+proof still mints at t171; outages overlapping take-path cycles restart it — mint at the outage's end
++ 100 s); `lastVote`'s on-chain monotonicity and the final same-vantage read cover them. A host
+suspend or VM pause that the uptime clock counts (`/proc/uptime` includes suspended time) likewise
+meets the floor with no observation in between and ends on one post-resume read. The standing
+verdict is served only while the stored token still licenses it — re-classified at every serve; a
+token removed, rotted, turned page-only or re-paired withdraws it at once, and a token adopted
+mid-episode restarts the silence — and never after `PROOF_MAX_AGE`.
 
 **Where composition does add an independent input — and how much.**
 
@@ -338,50 +378,79 @@ forgery. What else stands in its way is the spare's own bank, measured next.
      bank, then `attempt_takeover` reads only `TIER2`/`TIER3` (external confirm, the vote-FROZEN
      sample, the mutation-edge re-check; the gossip advisory too) and mutates — zero `LOCAL_RPC`
      reads in between;
-   - it reads the **finalized** bank, so a resumed holder's vote shows there about 32 slots
-     (~13 s) after it lands;
+   - it reads the **finalized** bank, so a resumed holder's vote shows there 32 slots after it lands;
    - a "current" verdict vetoes the take **on that cycle only**: it never re-anchors the countdown
      (the re-anchor rides the vote-FROZEN gate, i.e. `TIER2`/`TIER3`); from a full window, the
      7-of-10 trigger drops after 4 consecutive current cycles and the episode closes only after 9.
 
-   **So the own bank does not bound the active-intermediary residual.** (A design finding, named
-   here as measured; the remedy is a separate, reviewed design change.) With the intermediary on both tiers
-   and the holder resuming — its votes reaching the spare's bank — the veto wins only when the
-   resumption lands at least ~13 s before the scheduled mutation. Measured on the un-armed timer
-   path (take scheduled at t125): resumed at t112 → vetoed; at t113 → taken over at t125 after 12 s
-   of renewed voting. On the armed elapsed path (proof minted at t171): t158 → vetoed; t159 → the
-   gate accepts watchdog-elapsed and the take mutates at t171 — the proof matures before the own
-   bank sees the resumption. An intermittent holder fares worse: at `MAX_DELINQUENT_SLOTS=15`, one
-   vote at t40 reached the spare's bank (current from t53), and the take still fired at t80 on the
-   original anchor.
+   **Finding 1 — the own bank does not bound the exposure.** (A design finding, named here as
+   measured; the remedy is a separate, reviewed design change.) A holder that resumes voting is
+   taken over unless its votes reach the spare's finalized bank before the take cycle's own-bank
+   read. The exposure is **the own bank's commitment lag (32 slots at finalized) PLUS every tier
+   read between that read and `set-identity`** — bounded by those reads' `curl -m` on the timer
+   path, and on the armed path by the proof's age (up to `PROOF_MAX_AGE`) as well. Measured, the
+   tiers as the intermediary, the take scheduled at t125 on the timer path:
+   - zero latency: resumed at t112 → vetoed; at t113 → taken at t125 after **12 s** of renewed
+     voting. Armed (proof minted at t171): t158 → vetoed; t159 → the gate accepts watchdog-elapsed
+     and the take mutates at t171 — the proof matures before the own bank sees the resumption;
+   - **the intermediary also controls latency** (each tier read of the take cycle answered at its
+     `curl -m` − 1 s, legal within every bound): the veto boundary is unchanged (t112 vetoed — the
+     own bank is read once, at the cycle's start), but the mutation trails that read by Σ: t113 →
+     taken at t147, **34 s** into the holder's voting; with `GOSSIP_VERIFY=true` t175 / 62 s; with
+     `TIER2` blackholed t182 / 69 s. Armed: the proof mints at t181, t166 is vetoed, t169 is taken
+     at t203 after 34 s;
+   - **no adversary needed**: an HONEST tier 40 s behind reproduces the zero-latency race exactly
+     (t112 vetoed; t113 taken at t125 after 12 s); 10 s behind, t115 is caught by the tiers and t116
+     is taken at t125 after 9 s. This applies to **un-armed** installs as they ship. Armed,
+     watchdog-elapsed refuses such a view — it reads LAGGED VIEW (blind) whenever the view trails
+     the own bank by more than `N_HEAD` (25 slots): no mint, no take;
+   - an **intermittent holder**: at `MAX_DELINQUENT_SLOTS=15` one vote at t40 reached the spare's
+     bank (current from t53) and the take still fired at t80 on the original anchor. Armed,
+     watchdog-elapsed minted PROVEN at t126 — its clock runs from the episode's first sample (t26)
+     and never sees the vote the tiers withhold — and the proof-gated take mutated at t126, **86 s**
+     after a vote the spare's own bank saw: the verdict's "100 s of silence" overstated the true
+     silence by 14 s, more than `MARGIN_ELAPSED` (10 s).
 
 **A partitioned or lagging spare.** Agave's `getHealth` (v4.2.1, `rpc/src/rpc_health.rs`) compares
-the node's own replayed optimistic slot with the latest optimistic slot its **own blockstore** has
-observed (through replay and gossip), at a 128-slot distance; it never consults `TIER2`/`TIER3`, and
-neither does Tier-1 (its `getSlot` is logged, never compared). Measured, with the tiers frozen:
+the node's own optimistically confirmed slot with the latest optimistic slot its **own blockstore**
+has observed (through replay and gossip), at a 128-slot distance; it never consults `TIER2`/`TIER3`,
+and neither does Tier-1 (its `getSlot` is logged, never compared). Measured:
 
-- **cut off after the episode opened**: the frozen bank keeps its delinquent verdict and `getHealth`
-  stays ok (the blockstore learns nothing new either) — **no spare-side gate holds**: the timer path
-  took over at t125 with the holder voting since t90. Armed, watchdog-elapsed refuses to prove
-  there: its head cross-check reads the frozen own head as a stale reference (blind);
-- **on a minority fork** (the bank advancing without the holder's votes): held, because the own-bank
-  read is at *finalized* and a minority fork does not finalize — the same read at *processed* took
-  over at t145. If the supermajority's gossip still reaches the spare, `getHealth` reports it behind
-  and Tier-1 holds as well;
+- **Finding 2 — partitioned AFTER the episode opened** (cut off, or on a minority fork): the frozen
+  bank keeps its delinquent verdict and `getHealth` stays ok (the blockstore learns nothing new) —
+  **no spare-side gate holds on the timer path**: taken at t125 with the holder voting since t90
+  (P1b). On the armed path watchdog-elapsed refuses **only against a LIVE view**: its two-sided head
+  cross-check reads the frozen own head as a stale reference (blind, every cycle). With **co-frozen
+  tiers** (the third premise: partitioned together, after the pin) the frozen vote bank and the
+  frozen view agree within `N_HEAD` and watchdog-elapsed **MINTS PROVEN**: the proof-gated take
+  mutated at t171, 81 s into the holder's renewed voting — indistinguishable from a dead holder.
+  A spare cut off *before* any episode opened (P1a) never opens one, even for a dead holder: a
+  silent availability loss, no page;
+- **on a minority fork that PRECEDES the episode**: held — the own bank's finalized read shows the
+  holder current (a minority fork does not finalize), and so would a read at *processed* (the vote
+  bank freezes within ~8 votes of the fork) or *confirmed* (optimistic confirmation needs 2/3). If
+  the supermajority's gossip still reaches the spare, `getHealth` reports it behind and Tier-1 holds
+  as well. A fork that begins after the episode opened is Finding 2;
 - **replaying behind**: up to 128 slots behind reads ok, and the own-bank veto's reaction grows by
-  the lag — 40 s behind, a holder that resumed at t95 was vetoed and one that resumed at t115 was
-  taken over at t165, after 50 s of voting. Armed, watchdog-elapsed refuses such a spare (stale
-  reference): it cannot prove by time while its own bank lags a live view by more than `N_HEAD`.
-  `LOCAL_HEALTH_MAX_BEHIND` (default 100) cannot widen or narrow this at agave's default distance:
-  agave reports "behind" only beyond 128 slots, so the knob's within-tolerance branch is never
-  reached, and every "behind" report fails Tier-1.
+  the lag — 40 s (100 slots) behind, a holder that resumed at t95 was vetoed and one that resumed at
+  t115 was taken over at t165, after 50 s of voting. Armed, watchdog-elapsed refuses such a spare
+  (stale reference): it cannot prove by time while its own bank lags a live view by more than
+  `N_HEAD`. **`LOCAL_HEALTH_MAX_BEHIND`** is inert at or below 128 at agave's default distance
+  (agave reports "behind" only beyond 128 slots, so the knob's within-tolerance branch is never
+  reached and every "behind" report fails Tier-1) — the shipped 100 promises no 100-slot protection;
+  **above 128 it WIDENS Tier-1** to admit a spare up to that many slots behind: at 200, a spare 150
+  slots behind passed Tier-1 and took over at t185, 35 s into the holder's renewed voting. The daemon
+  announces a value above 128 at startup; it does not clamp it.
 
 **What the elapsed head cross-check does and does not see.** It is two-sided against the spare's own
-bank (`getSlot`, *processed*): a view more than `N_HEAD` slots behind that bank reads blind (a lagged
-fleet), and that bank more than `N_HEAD` behind a live view reads blind (a stale reference — the
-cut-off or lagging spare above). Both cost availability, never a take. It does not see the bank and
-the view lagging **together**, and an intermediary that proxies the head live passes it by
-construction.
+bank (`getSlot`, *processed* — the tower's vote bank): a view more than `N_HEAD` slots behind that
+bank reads blind (a lagged fleet), and that bank more than `N_HEAD` behind a live view reads blind (a
+stale reference — the cut-off or lagging spare above). Both cost availability, never a take. It does
+not see the bank and the view lagging or frozen **together** (Finding 2's co-frozen form), a bank at
+the same height on another fork (the compare is on slot numbers), or an intermediary that proxies the
+head live (it passes by construction). The head is read after the payload and its per-op pet, so the
+gap (≤ 7 s at the house counting, ~17 slots at 2.5/s) deflates the bank-behind side: a bank lagging a
+live view by up to about `N_HEAD` + 17 slots can still pass.
 
 ### Availability-side starvation (blind or flapping externals)
 
