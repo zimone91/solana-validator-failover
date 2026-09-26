@@ -280,8 +280,9 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
     at their `curl -m 10` bound and a 7 s pet between them), the latency demote comes up to **one
     full STAKED loop cycle** later than the reverse order — `DELINQUENCY_RETRIES` consecutive
     over-limit reads are needed, and the bias hides one. That is a cycle, not a fixed number: 37 s
-    measured in a latency-only cycle at `CHECK_INTERVAL` 3, 64 s at `CHECK_INTERVAL` 30, ~61 s at the
-    shipped defaults with the self-fence's `getSlot` and `getHealth` reads. A still-voting holder
+    measured in a latency-only cycle at `CHECK_INTERVAL` 3 and 64 s in one at `CHECK_INTERVAL` 30; a full
+    default STAKED cycle with every per-cycle read and pet is ~103 s (more with the own-vote-lag read or
+    the armed sleep's chunk pets). A still-voting holder
     lagging within (slot rate × that gap — up to 67 slots at 2.5 slots/s, 100 at 3.7) of the limit
     never demotes on this path. It is an **availability** cost only (a lagging holder is still live),
     and it does not touch the self-fence relinquish that the cross-node margin `B` bounds (the
@@ -962,10 +963,12 @@ absence alert tells you *which* node's monitor went silent. Do **not** reuse a s
 - All nodes running agave-validator
 - Each monitor runs on its validator's host (systemd, as root), where `/proc/uptime` and
   `/proc/sys/kernel/random/boot_id` belong to ONE kernel boot: the persisted safety stamps are
-  monotonic (uptime) values keyed by `boot_id`, and a same-boot stamp later than now is treated as
-  corrupted. Not inside a container that virtualizes `/proc/uptime` but not `boot_id` (lxcfs-style):
-  there a container restart resets the uptime clock under the same `boot_id`, every persisted stamp
-  looks "future" and restores ANCIENT, and one first-read blip fences at once — measured by the v0.7
+  monotonic (uptime) values keyed by `boot_id`, and a same-boot self-fence stall / silence / lag stamp later
+  than now is treated as corrupted. Not inside a container that virtualizes `/proc/uptime` but not `boot_id` (lxcfs-style):
+  there a container restart resets the uptime clock under the same `boot_id`: the self-fence stall /
+  silence / lag stamps look "future" and restore ANCIENT (a future lockout or cooldown stamp restores
+  verbatim and simply holds until the uptime passes it), and — once the container's uptime at that
+  read is at least `SELF_FENCE_ISOLATION_SECS` — one first-read blip fences at once — measured by the v0.7
   review panel: a validator still catching up for 10–25 s after such a restart, at `STARTUP_GRACE=0`,
   was fenced at its first read, where the same restart on a normal host is never fenced.
 - Each node has its own UNIQUE unstaked keypair

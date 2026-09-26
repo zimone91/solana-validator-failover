@@ -44,7 +44,8 @@
 #        (R-SYM): a token whose DIRECTORY does not canonicalize to itself (PROOF_STATE_DIR reached through a
 #        symlink) never proves either — the directory re-pointed away and back, or never moved: cannot on
 #        the step, the startup posture and the status line (3l-R5a/b); the canonical-path control proves
-#        as before, and a directory swapped by RENAME (no symlink anywhere) is a DOCUMENTED RESIDUAL
+#        as before, and a directory's contents swapped between two steps (a rename, a transient symlink, a
+#        mount) is a DOCUMENTED RESIDUAL
 #   (4)  the head reference: commitment=processed read from the live request log; the head is read
 #        AFTER the payload (live order); the default-commitment mutant is wrong BOTH ways (a live
 #        view permanently blind AND a 40-slot lagged view accepted)
@@ -629,16 +630,16 @@ for sc in "$STANDBY"; do   # the spare posture (see (3l-R4b))
 done
 [[ $sp_ok -eq 1 ]] && ok "(3l-R4d) W3 — with a symlinked token the registered spare says WHY watchdog-elapsed cannot prove, on both surfaces: the startup posture ('armed spare PAIRED, but watchdog-elapsed CANNOT prove: $SYMWHY …') and the every-interval status line ('paired (token gen=7), but watchdog-elapsed CANNOT prove: …'); a regular-file token prints neither (zero WARNs). Pre-fix: both silent — the PAIRED line alone"
 # (3l-R5a) 6.3 fix round 5, R-SYM (P5T-ANCESTOR-SYMLINK): W3 refused a symlink only at the token path's
-# FINAL component. A symlinked STATE DIRECTORY re-pointed away (to a garbage token's directory, seen only by
-# the reporter at +61 inside the gate's $()) and back before the next step is the same blindness one level
+# FINAL component. A symlinked STATE DIRECTORY re-pointed away (to a garbage token's directory — no evaluation
+# observes it: before a mint the reporter serves the cached step answer) and back before the next step is the same blindness one level
 # up: the token file under it keeps its inode, size and change time, so the full key never changes. Pre-fix
 # red (every earlier tree — de21927, f22d492, e917c04, 7ab7eca, 02c8e54, measured in fix round 5; the final
 # panel found it on the last three): PROVEN at +100 with since=+0, gate rc 0 — and a symlinked directory
 # that never moves proves like a canonical one. Now a token whose directory does not canonicalize to itself
 # (cd -P / pwd -P of PROOF_STATE_DIR differs from PROOF_STATE_DIR as configured) answers cannot on every
 # step, the reporter too, with the loud reason; the gate refuses. Controls: the canonical path proves at
-# +100 exactly as before; and a directory swapped away and back by RENAME — no symlink anywhere, so nothing
-# canonicalizes differently — still proves at +100 with since=+0 on every tree: a DOCUMENTED RESIDUAL (the
+# +100 exactly as before; and a directory's contents swapped away and back between two steps (here by RENAME;
+# a transient symlink or a mount behave the same) — nothing canonicalizes differently at a step — still proves at +100 with since=+0 on every tree: a DOCUMENTED RESIDUAL (the
 # token file's identity is all the key sees; flips if the key ever covers the directory's own identity — not
 # this round).
 case_dirflap() {   # DMODE=flap (a symlink re-pointed away and back) | static (a symlink that never moves) | rename (the real directory swapped by mv, away and back) | regular (the canonical path, no flap)
@@ -673,7 +674,7 @@ for m in regular rename; do
     r=$(DMODE=$m drive_ep "$STANDBY" case_dirflap | tail -1)
     if [[ "$(field "$r" a60)" == "no" && "$(field "$r" rep61)" == "no" && "$(field "$r" a100)" == "yes" && "$(field "$r" a200)" == "yes" && "$(field "$r" g200)" == "0" && "$(field "$r" oid)" == "elapsed:gen=7:since=${T0}:floor=100" ]]; then :; else df_ok=0; bad "(3l-R5a) control/residual mode=$m: $r"; fi
 done
-[[ $df_ok -eq 1 ]] && ok "(3l-R5a) R-SYM — a token whose DIRECTORY is reached through a symlink never proves: PROOF_STATE_DIR a symlink to the real directory, re-pointed AWAY to a garbage token's directory (seen only by the reporter at +61) and BACK before +100, or never moved: cannot at +60 (the reporter at +61 too), +100, +199 and +200 ('$DIRWHY …'), no verdict, the gate refuses (rc 1) — the spare posture (the PRIMARY's copy is byte-identical, (10)). Controls, equal before and after: the canonical path proves at +100 (since=+0, re-minted at +200, gate rc 0); a directory swapped away and back by RENAME (no symlink anywhere) proves the same — DOCUMENTED RESIDUAL: the key sees the token file's identity only. Pre-fix (every earlier tree, de21927 through 02c8e54): the re-pointed and the static symlinked directory PROVEN at +100 with since=+0, gate rc 0"
+[[ $df_ok -eq 1 ]] && ok "(3l-R5a) R-SYM — a token whose DIRECTORY is reached through a symlink never proves: PROOF_STATE_DIR a symlink to the real directory, re-pointed AWAY to a garbage token's directory (no evaluation observes it — before a mint the reporter serves the cached step answer) and BACK before +100, or never moved: cannot at +60 (the reporter at +61 too), +100, +199 and +200 ('$DIRWHY …'), no verdict, the gate refuses (rc 1) — the spare posture (the PRIMARY's copy is byte-identical, (10)). Controls, equal before and after: the canonical path proves at +100 (since=+0, re-minted at +200, gate rc 0); a directory's contents swapped away and back between two steps (here by RENAME) proves the same — DOCUMENTED RESIDUAL: the key sees the token file's identity only. Pre-fix (every earlier tree, de21927 through 02c8e54): the re-pointed and the static symlinked directory PROVEN at +100 with since=+0, gate rc 0"
 # (3l-R5b) R-SYM on the posture/status surface: the SAME reason path as W3 — the startup PAIRED posture and
 # the every-interval status line name the symlinked directory; the canonical-path control prints neither.
 case_dirposture() {   # DSYM=1: PROOF_STATE_DIR is a symlink to the real directory (the token itself a regular file)

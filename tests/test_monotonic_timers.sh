@@ -480,8 +480,8 @@ f2_case "healthy VOTELAG=0777"           never healthy 30 "SF_LAST_CONFIRMED_SLO
 # (15 s) past the reference read — a HEALTHY holder whose confirmed slot pauses (C F C: one frozen read; C D C:
 # one read 5 below; C S F C: a silent read, then the pause) is never fenced (7ab7eca: 5 / 5 / 10 s, grace 30:
 # 35 / 35 / 40 s — backdated to the persisted stall); a still-frozen one fences at the first read at or after
-# reference + 15 s (the rows above, at this harness's 5 s cadence: 15 / 45 s — up to one CHECK_INTERVAL more
-# at a cadence that does not divide 15: 51 / 21 s at 7, the final panel's cadence grid, fix round 5). The
+# reference + 15 s (the rows above, at this harness's 5 s cadence: 15 / 45 s — up to one loop cycle more on a real
+# host; in this free-read harness, at a cadence that does not divide 15: 51 / 21 s at 7, the final panel's cadence grid, fix round 5). The
 # YOUNG-stamp member (a stall stamp 10 s old — under one window — over a corrupted slot): the frozen clock
 # anchors at the restore instant behind the same floor, so it fences at the first read at or after
 # max(reference + 15 s, restore + SELF_FENCE_ISOLATION_SECS) — grace 30: 45 s (7ab7eca and e917c04 60: the
