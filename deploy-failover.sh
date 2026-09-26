@@ -587,8 +587,9 @@ SELF_FENCE_NOANSWER_SECS=30
 # Catches an egress-only partition (we still RECEIVE blocks — slot advances, getHealth fine — but our
 # votes don't land), which the frozen-slot/no-answer checks above are blind to. LOCAL signal only; safe
 # direction only. REQUIRES VOTE_PUBKEY (set above) — the daemon refuses to start with it blank while N6
-# is armed. Sizing is cross-node margin: lag grows ~2–2.5 slots/s, so demote ≈ SLOTS/rate + SECS ≈ 33s at
-# 32 slots — before a worst-case fast spare (~68s). Keep in 24–48 (healthy soak calibrates); too high
+# is armed. Sizing is cross-node margin: lag grows at the slot rate, so demote ≈ SLOTS/rate + SECS ≈ 33s at
+# 32 slots at the ASSUMED 2.5 slots/s (mainnet MEASURED ≈3.7 slots/s on 2026-09-26: ≈29s — sooner, the
+# safe side) — before a worst-case fast spare (~68s). Keep in 24–48 (healthy soak calibrates); too high
 # re-opens the egress-only race. Either knob = 0 disables this sub-check.
 SELF_FENCE_VOTE_LAG_SLOTS=32
 SELF_FENCE_VOTE_LAG_SECS=20

@@ -56,6 +56,17 @@ semantics is "does not act, loudly"). The blocker lifts on host answers, not on 
           (no marker + §2.2 third branch: startup evidence → pre-READY extension, no stop)
 ```
 
+## The daemon's exit contract under `Restart=no` (Block 6.3 fix round, M5)
+
+`OnFailure=` fires only on the terminal `failed` state, so the daemon's exit code is part of the
+fence contract. It exits **0 only on a shutdown request** (SIGTERM/SIGINT/SIGHUP → `cleanup`) or
+the HOLD marker-clear below — the unit goes `inactive` and nothing dispatches. A main loop that
+ends **any other way** — a bash expansion error discards the whole top-level loop (a non-canonical
+number in arithmetic was the measured case) — logs an `ERROR` and exits **1**: terminal `failed` →
+`OnFailure` (the fence on a holder, the page on a spare). Before the fix that abort fell through to
+`Main loop exited.` and exit 0 — the armed monitor sat dead and unfenced. The shipped v0.6.x unit
+(`Restart=always`) restarts the daemon either way.
+
 ## HOLD, as implemented (supersedes addendum §2.2's original wording)
 
 The addendum's original §2.2 described HOLD as "no watchdog re-arm, one CRITICAL page, quiet".

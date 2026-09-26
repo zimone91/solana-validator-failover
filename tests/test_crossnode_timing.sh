@@ -125,7 +125,7 @@ echo "─── non-vacuous control: OLD preset TAKEOVER_DELAY=20 → STANDBY ta
 # timeline where the tip advances ~RATE slots/s while our own lastVote is frozen (votes not landing), and
 # require the demote to precede a CONSERVATIVE fast spare by the designed margin — measured against the
 # fast spare (onset + TAKEOVER_DELAY), NOT merely the slow ~84s live run, so a fast spare can't invert it.
-RATE_NUM=5; RATE_DEN=2   # ~2.5 slots/s (representative; own-vote lag = tip - own_lastVote grows at this rate)
+RATE_NUM=5; RATE_DEN=2   # 2.5 slots/s — the ASSUMED rate (mainnet MEASURED ≈3.7 on 2026-09-26; a faster rate only demotes sooner); own-vote lag = tip - own_lastVote grows at this rate
 SF_SLOTS=$(sed -n 's/^SELF_FENCE_VOTE_LAG_SLOTS=\([0-9][0-9]*\).*/\1/p' "$PRIMARY" | head -1)
 SF_SECS=$(sed -n 's/^SELF_FENCE_VOTE_LAG_SECS=\([0-9][0-9]*\).*/\1/p' "$PRIMARY" | head -1)
 SPARE_ONSET=8   # conservative fast-spare detect+window onset in egress-only (fast-detect ~6s @2.5sl/s + a window cycle)

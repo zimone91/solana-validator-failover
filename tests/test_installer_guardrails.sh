@@ -318,35 +318,101 @@ ha_junk=$(ha_drive "abc" "10")
   && ok "(26c) non-numeric EXPECTED reset to safe 30; low MARGIN still warned ($ha_junk)" \
   || bad "(26c) non-numeric handling wrong ($ha_junk)"
 
-# ── (27) the generated env's heredoc must never EXECUTE its own comment text ──────────────────────
-# ENVEOF is UNQUOTED by design (it expands ${CFG_*} and $(_envq …)), so a BARE backtick in one of its
-# comment lines is command substitution at deploy time: Block 6.2's G2-vantage comment ran
-# `failover arm` on every standby deploy (stderr "failover: command not found", the rendered comment
-# left with a hole) until Block 6.3 escaped it. The house form is the escaped \` that
-# deploy-failover.sh's own heredoc comments already use. Static census of unescaped backticks in
-# every UNQUOTED heredoc body of both deploy scripts, plus a live render of the standby env heredoc
-# (stubbed _envq, output to a temp file): zero stderr, and the literal text survives.
-hd_bare() {   # $1 = file → count of unescaped backticks inside UNQUOTED heredoc bodies
+# ── (27) the generated env's heredocs must never EXECUTE anything but their own value expansions ──
+# ENVEOF is UNQUOTED by design (it expands ${CFG_*} and $(_envq …)), so ANY other expansion in one of its
+# lines — a bare backtick, a $( … ), a $(( … )), a bare $NAME/${NAME} — is evaluated at deploy time, as
+# root: Block 6.2's G2-vantage comment ran `failover arm` on every standby deploy until Block 6.3 escaped
+# it (the house form is the escaped \` / \$). Two layers (6.3 fix round, T4 — panel INT-3):
+#   CENSUS  every line of every UNQUOTED heredoc body in BOTH deploy scripts, after deleting the ALLOWLIST
+#           (escaped \$ and \`; the header's $(date -u +"%F %T UTC"); $(_envq "${CFG_X}"); ${CFG_X}),
+#           must carry ZERO $( / $(( / bare $[A-Za-z_{0-9@*#?!$-] / backticks
+#   RENDER  both ENVEOF heredocs rendered with PATH = a CANARY dir (every command it knows RECORDS its
+#           argv; any other command is 'not found' on stderr) and builtin-only output: the only recorded
+#           command may be the header's `date -u +%F %T UTC`, stderr must be empty, and the escaped comment
+#           text must survive literally. A builtin ($(true)) is invisible to the render — the census holds it.
+# Scope of the PASS: these two mechanisms over the ENVEOF heredocs — not a proof about any other file.
+hd_census() {   # $1 = deploy script → prints the count of NON-allowlisted expansions; hits on stderr
   awk '!inh && /<<[[:space:]]*[A-Za-z_]+[[:space:]]*$/ { tag=$NF; sub(/^<</, "", tag); inh=1; next }
        inh && $0 == tag { inh=0; next }
-       inh { line=$0; gsub(/\\`/, "", line); n += gsub(/`/, "", line) }
+       inh {
+         line=$0
+         gsub(/\\[$]/, "", line); gsub(/\\`/, "", line)
+         gsub(/[$][(]date -u [+]"%F %T UTC"[)]/, "", line)
+         gsub(/[$][(]_envq "[$][{]CFG_[A-Z0-9_]+[}]"[)]/, "", line)
+         gsub(/[$][{]CFG_[A-Z0-9_]+[}]/, "", line)
+         if (line ~ /[$][(A-Za-z_{0-9@*#?!$-]/ || line ~ /`/) { n++; print "HIT l" NR ": " $0 > "/dev/stderr" }
+       }
        END { print n+0 }' "$1"
 }
-hd_s=$(hd_bare "$DEPLOY_STANDBY"); hd_p=$(hd_bare "$DEPLOY_PRIMARY")
-_r_dir=$(mktemp -d)
-_r_s=$(grep -n '^cat > /opt/solana-failover/failover-standby.env << ENVEOF$' "$DEPLOY_STANDBY" | cut -d: -f1)
-_r_e=""; [[ -n "$_r_s" ]] && _r_e=$(awk -v s="$_r_s" 'NR > s && /^ENVEOF$/ { print NR; exit }' "$DEPLOY_STANDBY")
-_r_err="(no heredoc found)"; _r_txt=no
-if [[ -n "$_r_s" && -n "$_r_e" ]]; then
-  { echo '_envq(){ printf "%q" "$1"; }'; sed -n "${_r_s},${_r_e}p" "$DEPLOY_STANDBY" | sed "1s|/opt/solana-failover/failover-standby.env|$_r_dir/env|"; } > "$_r_dir/render.sh"
-  _r_err=$("${BASH:-bash}" "$_r_dir/render.sh" 2>&1 >/dev/null)
-  grep -qF -- '`failover arm` probes both' "$_r_dir/env" 2>/dev/null && _r_txt=yes
-fi
-rm -rf "$_r_dir"
-if [[ "$hd_s" == "0" && "$hd_p" == "0" && -z "$_r_err" && "$_r_txt" == "yes" ]]; then
-  ok "(27) zero UNESCAPED backticks in the unquoted heredocs of both deploy scripts (standby $hd_s, primary $hd_p), and the standby env heredoc renders with ZERO stderr and its comment text intact ('\`failover arm\` probes both') — no comment line runs a command at deploy time"
+hd_render() {   # $1 = deploy script, $2 = its env path in the opener → "err=<stderr>|rec=<recorded cmds>|out=<rendered file>"
+  local f="$1" envp="$2" d s e
+  d=$(mktemp -d)
+  mkdir -p "$d/canary"
+  printf '#!/bin/sh\nn=${0##*/}\nprintf "%%s %%s\\n" "$n" "$*" >> "$CANARY_LOG"\n[ "$n" = date ] && printf "2026-01-01 00:00:00 UTC\\n"\nexit 0\n' > "$d/canary/.rec"
+  chmod +x "$d/canary/.rec"
+  for c in date failover solana agave-validator fdctl systemctl journalctl curl jq cat sed awk grep hostname id whoami uname ls rm env sh bash true false echo printf sleep kill touch mkdir chmod chown tee head tail tr cut sort uniq wc xargs find ssh scp getent nproc timeout install cp mv ln readlink dirname basename stat; do
+    ln -s .rec "$d/canary/$c"
+  done
+  s=$(grep -n "^cat > ${envp} << ENVEOF\$" "$f" | cut -d: -f1)
+  e=""; [[ -n "$s" ]] && e=$(awk -v s="$s" 'NR > s && /^ENVEOF$/ { print NR; exit }' "$f")
+  if [[ -z "$s" || -z "$e" ]]; then echo "err=(no ENVEOF heredoc for ${envp})|rec=|out="; rm -rf "$d"; return; fi
+  {
+    echo "PATH='$d/canary'; export CANARY_LOG='$d/rec.log'"
+    echo '_envq(){ printf "%q" "$1"; }'
+    echo "{ while IFS= read -r _l || [[ -n \"\$_l\" ]]; do printf '%s\\n' \"\$_l\"; done; } > '$d/env' << ENVEOF"
+    sed -n "$(( s + 1 )),${e}p" "$f"
+  } > "$d/render.sh"
+  local err rec
+  err=$("${BASH:-bash}" "$d/render.sh" 2>&1 >/dev/null | tr '\n' ' ')
+  rec=$(tr '\n' ';' < "$d/rec.log" 2>/dev/null)
+  cp "$d/env" "$WORKDIR_27/$(basename "$f").env" 2>/dev/null
+  echo "err=${err}|rec=${rec}|out=$WORKDIR_27/$(basename "$f").env"
+  rm -rf "$d"
+}
+hd_guard() {   # $1 = standby deploy, $2 = primary deploy → "ok" or the MEASURED reason it is not
+  local cs cp rs rp why=""
+  cs=$(hd_census "$1" 2>/dev/null); cp=$(hd_census "$2" 2>/dev/null)
+  rs=$(hd_render "$1" /opt/solana-failover/failover-standby.env); rp=$(hd_render "$2" /opt/solana-failover/failover.env)
+  [[ "$cs" == "0" ]] || why="$why census(standby)=$cs"
+  [[ "$cp" == "0" ]] || why="$why census(primary)=$cp"
+  [[ -z "$(field "$rs" err)" ]] || why="$why render-stderr(standby)='$(field "$rs" err | cut -c1-120)'"
+  [[ -z "$(field "$rp" err)" ]] || why="$why render-stderr(primary)='$(field "$rp" err | cut -c1-120)'"
+  [[ "$(field "$rs" rec)" == "date -u +%F %T UTC;" ]] || why="$why executed(standby)='$(field "$rs" rec)'"
+  [[ "$(field "$rp" rec)" == "date -u +%F %T UTC;" ]] || why="$why executed(primary)='$(field "$rp" rec)'"
+  grep -qF -- '`failover arm` probes both' "$(field "$rs" out)" 2>/dev/null || why="$why standby-comment-text-lost"
+  grep -qF -- 'wraps in `timeout 8`' "$(field "$rp" out)" 2>/dev/null || why="$why primary-comment-text-lost"
+  grep -qF -- 'SOLANA_PATH="$HOME/.local/share/solana/install/active_release/bin"' "$(field "$rp" out)" 2>/dev/null || why="$why primary-SOLANA_PATH-expanded"
+  echo "${why:-ok}"
+}
+WORKDIR_27=$(mktemp -d)
+g=$(hd_guard "$DEPLOY_STANDBY" "$DEPLOY_PRIMARY")
+if [[ "$g" == "ok" ]]; then
+  ok "(27) the ENVEOF heredocs of BOTH deploy scripts: ZERO non-allowlisted expansions in any line (census), and both render under a canary PATH with ZERO stderr, exactly ONE executed command each (the header's date), the escaped comment text and \\\$HOME intact — no heredoc line runs a command or expands a variable at deploy time beyond the CFG values"
 else
-  bad "(27) heredoc command-substitution hazard: unescaped backticks standby=$hd_s primary=$hd_p; render stderr='${_r_err}'; comment text intact=$_r_txt"
+  bad "(27) heredoc hazard:$g"
 fi
+# (27-ctl) the mutants the guard must each turn RED (panel INT-3: the old guard stayed green on the
+# primary-heredoc and comment-line forms)
+m27_ok=1; m27_rows=""
+m27() {   # $1=label $2=which(s|p) $3=sed expr
+  local ms="$DEPLOY_STANDBY" mp="$DEPLOY_PRIMARY" out
+  if [[ "$2" == "s" ]]; then ms="$WORKDIR_27/mut-s.sh"; mutate "$DEPLOY_STANDBY" "$3" "$ms" || { m27_ok=0; return; }
+  else mp="$WORKDIR_27/mut-p.sh"; mutate "$DEPLOY_PRIMARY" "$3" "$mp" || { m27_ok=0; return; }; fi
+  out=$(hd_guard "$ms" "$mp")
+  if [[ "$out" != "ok" ]]; then m27_rows="$m27_rows $1"; else m27_ok=0; bad "(27-ctl) mutant '$1' stayed GREEN"; fi
+}
+m27 "p:backtick"        p 's/^# wraps in \\`timeout 8\\`/# wraps in `timeout 8`/'
+m27 "p:\$(true)"        p 's/^# wraps in \\`timeout 8\\`/# wraps in $(true)/'
+m27 "p:\$(failover arm)" p 's/^# wraps in \\`timeout 8\\`/# wraps in $(failover arm)/'
+m27 "s:backtick"        s 's/^# address — \\`failover arm\\` probes both/# address — `failover arm` probes both/'
+m27 "s:\$(true)"        s 's/^# address — \\`failover arm\\` probes both/# address — $(true) probes both/'
+m27 "s:\$(failover arm)" s 's/^# address — \\`failover arm\\` probes both/# address — $(failover arm) probes both/'
+m27 "p:comment \$TIER2_RPC"  p 's/^# wraps in \\`timeout 8\\`/# wraps in $TIER2_RPC \\`timeout 8\\`/'
+m27 "s:comment \${LEDGER}"   s 's/^# address — \\`failover arm\\` probes both/# address ${LEDGER} — \\`failover arm\\` probes both/'
+m27 "p:comment \$((1+1))"    p 's/^# wraps in \\`timeout 8\\`/# wraps in $((1+1)) \\`timeout 8\\`/'
+m27 "s:comment \$HOME"       s 's/^# address — \\`failover arm\\` probes both/# address $HOME — \\`failover arm\\` probes both/'
+m27 "p:value \$HOME unescaped" p 's|^SOLANA_PATH="\\$HOME/|SOLANA_PATH="$HOME/|'
+[[ $m27_ok -eq 1 ]] && ok "(27-ctl) every hazard mutant turns (27) RED —$m27_rows — a backtick / \$(true) / \$(failover arm) in EITHER heredoc, \$TIER2_RPC / \${LEDGER} / \$((1+1)) / \$HOME in a comment line, and the escaped \\\$HOME value unescaped (pre-fix guard: green on the primary-heredoc and comment-line forms)"
+rm -rf "$WORKDIR_27"
 
 results_banner

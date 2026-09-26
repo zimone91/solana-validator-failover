@@ -94,6 +94,11 @@ TimeoutStartSec=90s
 #
 # R8 (load-bearing, see the [Unit] comment): NEVER a restarting policy on this unit. Post-fence
 # restart of the monitor is the FENCE's explicit action (two marker states, §2.2), not PID 1's.
+# THE DAEMON'S EXIT CONTRACT under it (Block 6.3 fix round, M5): exit 0 ONLY on a shutdown request
+# (SIGTERM/SIGINT/SIGHUP → cleanup) or the HOLD marker-clear — the unit goes `inactive`, no
+# OnFailure; a main loop that ends any other way (a bash expansion error discards the whole
+# top-level loop) logs an ERROR and exits 1 → terminal `failed` → OnFailure (the fence on a
+# holder, the page on a spare). Before M5 that abort fell through to exit 0: dead and unfenced.
 Restart=no
 # Watchdog expiry sends SIGABRT (the default — explicit for audit; research record assumption
 # 4). A bash monitor has nothing to core-dump: TimeoutAbortSec=5s SIGKILLs a SIGABRT-ignoring

@@ -629,8 +629,9 @@ if [[ "$RC" == "0" ]] && out_has 'WARN: precondition P6 — DEGRADED, NOT REFUSE
    && out_has 'G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition' \
    && out_has "additivity does NOT hold" && out_has 'residual 2' \
    && out_has 'THIRD endpoint in a SEPARATE FAILURE DOMAIN' && out_has 'G2_VANTAGE_A and/or G2_VANTAGE_B' \
+   && out_has "That restores additivity for verified-demote ONLY: watchdog-elapsed's silence and the vote-FROZEN observation stay one TIER2/TIER3 input on every host" \
    && ! out_has 'REFUSE\[P6'; then
-    ok "(2n) DEFAULT config (vantages derived from the tiers) → a LOUD, MEASURED degradation: each matching pair named with the comparison that matched ('by identical URL'), the comparisons this host could make named ('resolved-address compares via getent on every pair'), the consequence stated (one compromised vantage supplies BOTH halves; additivity does NOT hold; SAFETY residual 2), and the way back named with the env keys and the file — and the arm still COMPLETES (rc 0, no REFUSE)"
+    ok "(2n) DEFAULT config (vantages derived from the tiers) → a LOUD, MEASURED degradation: each matching pair named with the comparison that matched ('by identical URL'), the comparisons this host could make named ('resolved-address compares via getent on every pair'), the consequence stated (one compromised vantage supplies BOTH halves; additivity does NOT hold; SAFETY residual 2), and the way back named with the env keys and the file, SCOPED to verified-demote (6.3 fix round, X2: watchdog-elapsed's silence stays one TIER2/TIER3 input on every host) — and the arm still COMPLETES (rc 0, no REFUSE)"
 else
     bad "(2n) rc=$RC tail: $(grep -c 'precondition P6' "$MOCK_DIR/out") P6 lines; $(tail -4 "$MOCK_DIR/out" | tr '\n' ' ')"
 fi
@@ -640,8 +641,10 @@ armed_ln=$(grep -n 'ARMED (' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
 g2sum_ln=$(grep -n 'G2 vantage summary — G2 and vote-liveness SHARE VANTAGES' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
 pair_ln=$(grep -n 'pairing summary:' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
 if [[ -n "$armed_ln" && -n "$g2sum_ln" && -n "$pair_ln" ]] && [[ "$armed_ln" -lt "$g2sum_ln" && "$g2sum_ln" -lt "$pair_ln" ]] \
-   && out_has 'G2 vantage summary — G2 and vote-liveness SHARE VANTAGES' && out_has 'separate failure domain'; then
-    ok "(2o) the degradation is re-stated in the END-OF-SUMMARY, in order: ARMED (line $armed_ln) → G2 vantage summary (line $g2sum_ln) → pairing posture (line $pair_ln, still LAST per §2.7 (c)) — it cannot scroll away with the rest of the ceremony"
+   && out_has 'G2 vantage summary — G2 and vote-liveness SHARE VANTAGES' && out_has 'separate failure domain' \
+   && out_has "This spare is armed; the proof gate is not wired into any take path in this build" \
+   && out_has "that restores additivity for verified-demote ONLY: watchdog-elapsed's silence and the vote-FROZEN observation stay one TIER2/TIER3 input on every host"; then
+    ok "(2o) the degradation is re-stated in the END-OF-SUMMARY, in order: ARMED (line $armed_ln) → G2 vantage summary (line $g2sum_ln) → pairing posture (line $pair_ln, still LAST per §2.7 (c)) — it cannot scroll away with the rest of the ceremony; its remedy SCOPED to verified-demote and the gate stated as NOT wired (6.3 fix round, X2/X4)"
 else
     bad "(2o) summary ordering: armed=$armed_ln g2=$g2sum_ln pairing=$pair_ln"
 fi
@@ -921,10 +924,20 @@ case_two_starts() {
 r=$(drive_gate "$STANDBY" 1 "" none case_two_starts | tail -1)
 tt=$(field "$r" titles)
 lp=$(field "$r" lastpage)
-if [[ "$(field "$r" pages)" == "2" ]] && [[ "$tt" == ";ARMED SPARE NOT ATTESTED 🚨;ARMED SPARE NOT ATTESTED 🚨" ]] && [[ "$lp" == *"verified-demote ONLY"* && "$lp" == *"holder not attested"* && "$lp" == *"silence-based take disabled"* && "$lp" == *"arm prints the token"* ]]; then
-    ok "(6a) armed spare, no token → CRITICAL page at EVERY start (2 drives → 2 pages, unthrottled) with the §2.7 wording"
+if [[ "$(field "$r" pages)" == "2" ]] && [[ "$tt" == ";ARMED SPARE NOT ATTESTED 🚨;ARMED SPARE NOT ATTESTED 🚨" ]] && [[ "$lp" == "proof providers: NONE — no provider can prove here — holder not attested"* && "$lp" == *"silence-based take disabled"* && "$lp" == *"arm prints the token"* ]]; then
+    ok "(6a) armed spare, no token → CRITICAL page at EVERY start (2 drives → 2 pages, unthrottled) with the §2.7 wording, printing the MEASURED registry: G2 unconfigured here → 'proof providers: NONE — no provider can prove here' (6.3 fix round, X4 — the remembered 'verified-demote ONLY' was false on this config)"
 else
     bad "(6a) $r"
+fi
+case_two_starts_g2() {   # the same unpaired spare WITH G2 configured (its unstaked pubkey + the default vantages)
+    PRIMARY_UNSTAKED_PUBKEY=UPK1; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"
+    case_two_starts
+}
+r=$(drive_gate "$STANDBY" 1 "" none case_two_starts_g2 | tail -1)
+if [[ "$(field "$r" pages)" == "2" && "$(field "$r" lastpage)" == "proof providers: verified-demote ONLY — holder not attested"* ]]; then
+    ok "(6a-g2) the same unpaired spare with G2 configured → the page prints 'proof providers: verified-demote ONLY' — the registry as MEASURED, not a remembered phrase"
+else
+    bad "(6a-g2) $r"
 fi
 r=$(drive_gate "$STANDBY" 1 "" invalid case_two_starts | tail -1)
 if [[ "$(field "$r" pages)" == "2" && "$(field "$r" lastpage)" == *"invalid (crc/shape)"* ]]; then
@@ -944,13 +957,13 @@ case_status_lines() {
     echo "slines=$SLINES|last=$LASTINFO"
 }
 r=$(drive_gate "$STANDBY" 1 "" none case_status_lines | tail -1)
-if [[ "$(field "$r" slines)" == "2" && "$(field "$r" last)" == *"verified-demote ONLY — holder not attested"* && "$(field "$r" last)" == *"silence-based take disabled"* ]]; then
-    ok "(6d) standing line at every interval (2 calls → 2 identical §2.7 lines on the status surface)"
+if [[ "$(field "$r" slines)" == "2" && "$(field "$r" last)" == *"proof providers: NONE — no provider can prove here — holder not attested"* && "$(field "$r" last)" == *"silence-based take disabled"* ]]; then
+    ok "(6d) standing line at every interval (2 calls → 2 identical §2.7 lines on the status surface, the MEASURED registry: NONE with G2 unconfigured)"
 else
     bad "(6d) $r"
 fi
 # (6e) control: the startup scream neutered → zero pages (red observed on the mutant)
-mutate "$STANDBY" '/alert "proof providers: verified-demote ONLY/d' "$WORK/noscream.sh"
+mutate "$STANDBY" '/alert "proof providers: \$(_proof_unpaired_registry) — holder not attested (/d' "$WORK/noscream.sh"
 r=$(drive_gate "$WORK/noscream.sh" 1 "" none case_two_starts | tail -1)
 if [[ "$(field "$r" pages)" == "0" ]]; then
     ok "(6e) scream-neutered mutant → 0 pages: (6a) is green because the page line exists (control red observed)"
@@ -1017,8 +1030,8 @@ r=$(drive_gate "$STANDBY" 1 "" none case_gate_refuse | tail -1)
 wv=$(field "$r" warn)
 if [[ "$(field "$r" rc)" == "1" && "$(field "$r" v_proven)" == "no" && "$(field "$r" v_prov)" == "none" && "$(field "$r" v_obs)" == "0" ]] \
    && [[ "$(field "$r" v_vant)" == "$(field "$r" s_vant)" && "$(field "$r" v_since)" == "$(field "$r" s_since)" && "$(field "$r" v_blind)" == "$(field "$r" s_blind)" && "$(field "$r" v_since)" == "424242" ]] \
-   && [[ "$wv" == *"MEASURED: providers registered=0"* && "$wv" == *"verified-demote ONLY — holder not attested"* ]]; then
-    ok "(8) zero providers → REFUSE rc 1 (MEASURED registered=0, §2.7 posture); the minted verdict carries the Block-3 triple EQUAL to dump_freshness's seam values, observed_at=0"
+   && [[ "$wv" == *"MEASURED: providers registered=0"* && "$wv" == *"proof providers: NONE — no provider can prove here — holder not attested"* ]]; then
+    ok "(8) zero providers → REFUSE rc 1 (MEASURED registered=0; the §2.7 posture prints the MEASURED registry — NONE here); the minted verdict carries the Block-3 triple EQUAL to dump_freshness's seam values, observed_at=0"
 else
     bad "(8) $r"
 fi

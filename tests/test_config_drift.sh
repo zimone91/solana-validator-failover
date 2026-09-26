@@ -186,6 +186,32 @@ else
     bad "(f8) STANDBY role table incomplete"
 fi
 
+# ── (h) LOCAL_HEALTH_MAX_BEHIND against agave's default health distance (6.3 fix round, M9) ─────
+# The knob is announced against agave's DEFAULT --health-check-slot-distance (128), not against this
+# version's default (100): <= 128 is inert at that distance (silent here — (h2)); > 128 WIDENS Tier-1
+# and is announced (h1). Announce-only (no clamp) in this build. Pre-fix red (de21927): 200 → silent.
+echo ""; echo "─── (h) LOCAL_HEALTH_MAX_BEHIND > 128 → announced as WIDENING Tier-1 (M9) ───"
+out=$(drift_out "$STANDBY" 'LOCAL_HEALTH_MAX_BEHIND=200')
+n=$(count_drift "$out")
+if [[ "$n" == "1" && "$out" == *"LOCAL_HEALTH_MAX_BEHIND=200 exceeds agave's default health-check distance (128 slots)"* && "$out" == *"WIDENS Tier-1"* \
+      && "$out" == *"ADMITS a spare up to 200 slots behind as ready to take over"* && "$out" == *"set LOCAL_HEALTH_MAX_BEHIND to 128 or less"* ]]; then
+    ok "(h1) LOCAL_HEALTH_MAX_BEHIND=200 → ONE [config-drift] WARN naming the value, agave's default distance (128), that it WIDENS Tier-1 (admits a spare up to 200 slots behind), and how to align"
+else
+    bad "(h1) got ($n lines): $out"
+fi
+out128=$(drift_out "$STANDBY" 'LOCAL_HEALTH_MAX_BEHIND=128'); out100=$(drift_out "$STANDBY" 'LOCAL_HEALTH_MAX_BEHIND=100'); out129=$(drift_out "$STANDBY" 'LOCAL_HEALTH_MAX_BEHIND=129')
+if [[ -z "$out128" && -z "$out100" && "$(count_drift "$out129")" == "1" ]]; then
+    ok "(h2) boundary: 128 and the shipped 100 → silent (inert at agave's default distance); 129 → announced"
+else
+    bad "(h2) 128='$out128' 100='$out100' 129='$out129'"
+fi
+outp=$(drift_out "$PRIMARY" 'LOCAL_HEALTH_MAX_BEHIND=200')
+if [[ "$(count_drift "$outp")" == "0" ]]; then
+    ok "(h3) the PRIMARY (no Tier-1 takeover gate) does not announce it — the knob is the spare's"
+else
+    bad "(h3) primary announced: $outp"
+fi
+
 # ── (g) CONTROL (non-vacuous) + the startup call-site ────────────────────────────────────────────
 echo ""; echo "─── (g) control: neutered announce → (a) records nothing; call-site placement ───"
 out=$(

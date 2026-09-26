@@ -38,10 +38,10 @@ depends on the tag:
 
 Be precise about what that buys you:
 
-- **Checksums protect against** a corrupted or truncated download, a tampering mirror/CDN, and a
-  partially applied tag.
-- **Checksums do not protect against** a compromise of this repository or of `zim.one` — the
-  manifest travels through the same channel as the files it describes.
+- **Checksums catch** a corrupted or truncated download and a partially applied tag.
+- **Checksums do not catch** an intermediary on the delivery path that rewrites the files and the
+  manifest together — a compromised mirror or CDN, this repository, or `zim.one`: the manifest
+  travels through the same channel as the files it describes.
 
 **There is no anchor outside the delivery channel for v0.6.x.** The `v0.6.9` and `v0.6.10`
 release tags are **not signed**, and they will not be: a published tag is never rewritten, so a

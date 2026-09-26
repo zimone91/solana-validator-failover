@@ -89,7 +89,7 @@ Asks whether this node is PRIMARY or STANDBY, downloads that role's files for th
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.6.10/install.sh
 ```
-read it, then run `sh install.sh`. **What checksums honestly buy you:** protection against a corrupted or tampered download — not against a compromise of this repository or zim.one (the manifest travels through the same channel). Details, scope, and disclosure: [SECURITY.md](SECURITY.md).
+read it, then run `sh install.sh`. **What checksums honestly buy you:** detection of a corrupted or truncated download (or a partially applied tag) — not of anyone on the delivery path who rewrites the files and the manifest together: a compromised mirror/CDN, this repository, or zim.one (the manifest travels through the same channel). Details, scope, and disclosure: [SECURITY.md](SECURITY.md).
 
 Or from source:
 ```bash
