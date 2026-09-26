@@ -432,14 +432,21 @@ _selffence_restored_votelag_since=0
 #       the reference's own answer may land up to its curl -m 5 after its stamp, plus 1 s of mono_now
 #       truncation, so a floor F guarantees only F - 6 s between the two OBSERVATIONS: F >= 8.8 + 6 → 15 s;
 #   (2) BELOW SELF_FENCE_ISOLATION_SECS (30 by default — the BACKUP timing contract): a still-frozen holder
-#       with an unknown slot fences at reference + 15 s, earlier than the plain frozen clock's reference +
-#       30 s (e917c04's timing). The plain frozen clock keeps running from the reference meanwhile, so an
-#       ISOLATION set below 15 still fires first — this floor never delays a fence past it.
+#       with an unknown slot over a stall stamp a window old fences at the first read at or after reference
+#       + 15 s — up to one CHECK_INTERVAL past it (45 / 15 s at grace 30 / 0 at CHECK_INTERVAL 1, 3 and 5;
+#       51 / 21 s at 7) — earlier than the plain frozen clock's reference + 30 s (e917c04's timing); over a
+#       YOUNG stall stamp at max(reference + 15 s, restore + SELF_FENCE_ISOLATION_SECS), about restore + 30 s
+#       at a short grace (6.3 fix round 5 — P5T-FLOOR-EVERY-CADENCE, H5-W2-YOUNG-BOUND-COMMENT). The plain
+#       frozen clock keeps running from the reference meanwhile, so an ISOLATION set below 15 still fires
+#       first — this floor never delays a fence past it.
 # 15 s = 37 slots at 2.5 slots/s, 55 at 3.7; after the 6 s read-timing term it tolerates a healthy hold of
 # 9 s = 22 / 33 slots. RESIDUAL, named: a HEALTHY holder whose confirmed slot holds longer than that right
-# after such a restart is fenced (availability; a corrupted slot + a restart needed), and a still-frozen one
-# fences up to 15 s - one cycle later than round 3's read-2 decision (which fenced the paused healthy
-# holder too).
+# after such a restart is fenced (availability; a corrupted slot + a restart needed); a still-frozen one
+# fences 10-14 s later than round 3's read-2 decision (which fenced the paused healthy holder too; measured
+# at CHECK_INTERVAL 1/3/4/5/7/10); and a monitor restart inside the ~15 s window defers the fence to the
+# next instance (the pending is not persisted — H5-W2-RESTART-WINDOW), which fences at its first read if
+# the reference stamp is SELF_FENCE_ISOLATION_SECS old by its restore, else at its first read at or after
+# restore + SELF_FENCE_ISOLATION_SECS: +25..+59 s later than round 3 for stops of 0-20 s, equal to e917c04.
 _selffence_restore_ref_ts=0
 SELFFENCE_RESTORE_CONFIRM_SECS=15
 # v0.6.9 (H3): role recorded in the last persisted save ("staked"/"unstaked"/""), read by load_state.
@@ -879,10 +886,11 @@ load_state() {
         # drops it. EXPOSURE (fix round 4, H4-ANCIENT-BLIP): broader than a canonical-but-old stamp's — a
         # holder healthy at save arms nothing with canonical stamps, but with a corrupted one a single
         # first-read blip (one silent / non-canonical / lagging read; at STARTUP_GRACE=0 a 3-5 s pause)
-        # fences at once: availability, a corrupted stamp needed (de21927/f22d492 had the same for
-        # octal-valid stamps). Round 2 started such a timer fresh: a holder still isolated after the
-        # restart fenced up to one window later than the pre-fix tree (MEASURED at the shipped
-        # STARTUP_GRACE 30: silent 30 → 60 s, lagging 30 → 50–51 s).
+        # fences at once: availability, a corrupted stamp needed — or, where /proc/uptime restarts
+        # without a boot_id change (a container with lxcfs-style uptime), just a container restart (W4
+        # below) — (de21927/f22d492 had the same for octal-valid stamps). Round 2 started such a timer
+        # fresh: a holder still isolated after the restart fenced up to one window later than the pre-fix
+        # tree (MEASURED at the shipped STARTUP_GRACE 30: silent 30 → 60 s, lagging 30 → 50–51 s).
         # With a non-canonical SLOT (restored as 0 — every live slot is past it) the first canonical answer
         # is only the REFERENCE and the stall backdate stays PENDING (pending 2, see
         # check_self_fence_isolation) until an answer shows the slot not past it with the reference at least
@@ -892,10 +900,18 @@ load_state() {
         # instant, never earlier, gated by the same floor (it restarted at the first answer: +30 s against
         # the canonical-slot holder at grace 30).
         # v0.7 (Block 6.3 fix round 4, W4 — H4-CORRUPT-NEVER): a same-boot stamp LATER than now cannot be a
-        # mono stamp of this boot — corrupted, restored as ANCIENT like S2's (a future silence / lag clock
-        # read negative and never fenced); and the vote-lag baseline latch restores SET for any PRESENT
-        # value but 0 (save_state writes only 0 or 1 — anything else is corrupted; unset left N6 unarmed
-        # on a holder lagging across the restart). An ABSENT latch key stays unset (N6's fresh-start rule).
+        # mono stamp of this boot — ON A HOST WHERE /proc/uptime AND boot_id BELONG TO ONE KERNEL BOOT (the
+        # shipped deployment: the monitor under systemd on the validator host) — so it is corrupted,
+        # restored as ANCIENT like S2's (a future silence / lag clock read negative and never fenced); and
+        # the vote-lag baseline latch restores SET for any PRESENT value but 0 (save_state writes only 0 or
+        # 1 — anything else is corrupted; unset left N6 unarmed on a holder lagging across the restart). An
+        # ABSENT latch key stays unset (N6's fresh-start rule). RESIDUAL (6.3 fix round 5 —
+        # H5-W4-LXCFS-PREMISE; named, not changed): a container that virtualizes /proc/uptime but not
+        # boot_id (lxcfs-style) restarts the uptime clock under the same boot_id, so after a container
+        # restart every persisted stamp is "future" → ANCIENT → one first-read blip fences at once — e.g. a
+        # validator still catching up, restarted with the container, at STARTUP_GRACE=0 (the final panel:
+        # fenced at its first read, where 7ab7eca and the same restart on a normal host never fenced).
+        # docs/DEPLOYMENT-MANUAL.md, Prerequisites.
         for _sg_k in SF_LAST_CONFIRMED_SLOT SF_ADVANCE_MONO SF_NOANSWER_MONO SF_VOTELAG_MONO SF_VOTELAG_BASELINE SF_VOTELAG_HEALTHY; do
             _state_get "$_sg_k" >/dev/null; [[ $? -eq 2 ]] && _sg_bad="${_sg_bad:+$_sg_bad }$_sg_k"
         done
@@ -913,7 +929,7 @@ load_state() {
             [[ -n "$pa" && $pa -gt $_mono_now ]] && { pa=1; _sg_fut="SF_ADVANCE_MONO"; }
             [[ $pn -gt $_mono_now ]] && { pn=1; _sg_fut="${_sg_fut:+$_sg_fut }SF_NOANSWER_MONO"; }
             [[ $pv -gt $_mono_now ]] && { pv=1; _sg_fut="${_sg_fut:+$_sg_fut }SF_VOTELAG_MONO"; }
-            [[ -n "$_sg_fut" ]] && log_warn "State: self-fence stamp(s) LATER than this boot's monotonic clock (${_mono_now}) in $STATE_FILE (${_sg_fut}) — a same-boot mono stamp cannot be in the future: corrupted, restored as ANCIENT (its backdate applies only if the first read after the restore still shows the condition)"
+            [[ -n "$_sg_fut" ]] && log_warn "State: self-fence stamp(s) LATER than this boot's monotonic clock (${_mono_now}) in $STATE_FILE (${_sg_fut}) — a same-boot mono stamp cannot be in the future where /proc/uptime and boot_id belong to one kernel boot: corrupted (or an uptime clock virtualized per container, e.g. lxcfs — not a supported deployment), restored as ANCIENT (its backdate applies only if the first read after the restore still shows the condition)"
         fi
         pb=$(_state_get SF_VOTELAG_BASELINE); _sg_pb=$?
         ph=$(_state_get SF_VOTELAG_HEALTHY)
@@ -1006,15 +1022,18 @@ tier1_check_delinquency() {
 # this reads its REFERENCE (getSlot) FIRST, then the payload (getVoteAccounts) — the OPPOSITE order from
 # the own-bank MDS check (fix round 2, R2). Here the reference is the older read, so a pet or a stall
 # BETWEEN the two makes current_slot smaller relative to last_vote → the holder looks MORE current, and
-# the demote comes LATER: up to ~37 s later than a payload-first order — MEASURED with BOTH reads at their
-# curl -m 10 bound and a 7 s pet between them (the two snapshots up to 10 + 7 + 10 = 27 s apart; stopped
-# holder, 2.5 and 3.7 slots/s: 37 s; ~27 s when only the payload stalls — fix round 4, P4-S8-27S) — and
-# a still-voting holder lagging within rate x (that gap) of MAX_VOTE_LATENCY never demotes on this path at
-# all. It costs AVAILABILITY only (a lagging holder is live), and the worst delay
-# is within B = EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS = 60 s — but this path is NOT
-# what B bounds (B bounds the self-fence, whose N6 own-vote-lag check reads one same-payload snapshot, no
-# cross-read skew). The read order is left as-is this round (flipping it is on the NOT list): stated, not
-# fixed. verify_latency_tiered reads the payload FIRST, biasing toward demoting sooner.
+# the demote comes LATER: whenever the threshold crossing falls inside the snapshot gap (up to 10 + 7 + 10
+# = 27 s: both reads at their curl -m 10 bound and a 7 s pet between them), the over-limit read it hides
+# costs ONE FULL STAKED LOOP CYCLE (DELINQUENCY_RETRIES consecutive over-limit reads are needed), so the
+# delay is 0 or exactly one cycle — no fixed number: 37 s measured in a latency-only cycle at
+# CHECK_INTERVAL 3, 64 s at CHECK_INTERVAL 30, ~61 s at the defaults with the self-fence's getSlot and
+# getHealth reads (stopped holder, 2.5 and 3.7 slots/s; 6.3 fix round 5, P5T-S8-NOT-A-BOUND — round 4's
+# "~37 s … within B = 60 s" was one probe's cycle, not a bound) — and a still-voting holder lagging within
+# rate x (that gap) of MAX_VOTE_LATENCY never demotes on this path at all. It costs AVAILABILITY only (a
+# lagging holder is live), and this path is NOT what B = EXPECTED_PRIMARY_SELF_FENCE_SECS +
+# SELF_FENCE_MARGIN_SECS bounds (B bounds the self-fence, whose N6 own-vote-lag check reads one
+# same-payload snapshot, no cross-read skew). The read order is left as-is (flipping it is on the NOT
+# list): stated, not fixed. verify_latency_tiered reads the payload FIRST, biasing toward demoting sooner.
 tier1_get_vote_latency() {
     local slot_result vote_result current_slot last_vote _t1l_rc
     slot_result=$(curl -s -m 10 "$LOCAL_RPC" -X POST \
@@ -2620,7 +2639,8 @@ _proof_startup_check() {
     if [[ -z "$_proof_unpaired_why" ]]; then
         if _derive_proof_floors; then
             log_info "[proof-gate] armed spare PAIRED: token gen=${_proof_token_gen} (watchdog=${_proof_token_w}s, relinquish_bound=${_proof_token_b}s, fence=real) → elapsed_floor=${elapsed_floor}s, N_HEAD=${N_HEAD} slots (proof providers registered: ${_proof_provider_labels:-NONE}; the gate is not wired into any take path)"
-            # (6.3 fix round 4, W3) registered, but a symlinked token proves nothing — say why, loudly
+            # (6.3 fix round 4, W3) registered, but a symlinked token proves nothing — say why, loudly (fix
+            # round 5, R-SYM: nor does a token whose directory is reached through a symlink — the same line)
             local _psc_why
             if [[ "${_elapsed_registered:-0}" == "1" ]] && _psc_why=$(_elapsed_tok_symlink_why 2>/dev/null); then
                 log_warn "[proof-gate] armed spare PAIRED, but watchdog-elapsed CANNOT prove: ${_psc_why}"
@@ -2642,7 +2662,8 @@ _proof_startup_check() {
 # silence-based take is still unavailable. The status surface says so, loudly, every interval
 # (a restart registers it; a token whose floor does not derive is named instead — restarting would
 # not register that one). (6.3 fix round 4, W3) A REGISTERED provider whose token is a symlink cannot
-# prove either — the same surface names that too, every interval.
+# prove either — the same surface names that too, every interval; so does one whose token DIRECTORY is
+# reached through a symlink (fix round 5, R-SYM).
 _proof_status_line() {
     _watchdog_active || return 0
     _proof_role_is_spare || return 0
@@ -3451,10 +3472,12 @@ _elapsed_incident_active() { return 1; }
 #                    key as below); and the silence counts only from when this provider first saw the
 #                    token now in force — a provider-local mono stamp per TOKEN, keyed on its full
 #                    classified line (gen, watchdog, relinquish_bound, fence, host, crc) AND the stored
-#                    file's identity (inode, size, change time), so ANY change — a same-gen re-pair with
-#                    other bounds, another host's token, a rewrite back to the same bytes that no step saw
-#                    — is a new adoption, and a withdrawal for a token reason clears it: a re-pair never
-#                    lends its bounds to silence measured under another token (N4, R4)
+#                    file's identity (inode, size, change time), so ANY change of the stored file — a
+#                    same-gen re-pair with other bounds, another host's token, a rewrite back to the same
+#                    bytes that no step saw — is a new adoption, and a withdrawal for a token reason clears
+#                    it: a re-pair never lends its bounds to silence measured under another token (N4, R4).
+#                    A symlinked token (fix round 4, W3) or token directory (fix round 5, R-SYM) never
+#                    proves; the blind spots left are named at _elapsed_tok_ident
 #   [elapsed-blind]  no STAMPED blindness since the start: the Block-3 seam shows an observed span this
 #                    episode (_liveness_obs_since > 0 — a stamped blind cycle zeroes it) and a blind_until
 #                    newer than a floor refuses on its OWN line (defense in depth under a seam whose
@@ -3613,13 +3636,25 @@ _elapsed_reset() {
 # loop are symlinks too: rc 1 here on every platform (round 3's comment claimed that for the dangling link,
 # which BSD stat -L reports as the link itself). Any other stat failure → rc 1 (nothing printed); the caller
 # fails toward NOT proving. A DIRECTORY at the path yields an identity — the token classification at the ONE
-# derivation site runs first everywhere and refuses it. Not visible: a rewrite back to identical bytes
-# within one ctime granule (a kernel tick on ns-timestamp filesystems; 1 s on ext4 with 128-byte inodes,
-# ext3, HFS+) — the inode number does not help (ext4 reuses it across a tmp+mv). Zero network; armed +
-# registered paths only.
+# derivation site runs first everywhere and refuses it (a dangling link, a link loop and a directory all
+# fail that classification first: "no pairing token stored" at startup). W3's blindness one level up (fix
+# round 5, R-SYM — P5T-ANCESTOR-SYMLINK): a symlinked STATE DIRECTORY re-pointed away and back leaves the
+# token file under it untouched, so no file identity sees it (proven at +100 s on every earlier tree,
+# de21927 through 02c8e54) — so a token whose directory does not canonicalize to itself (cd -P / pwd -P of
+# PROOF_STATE_DIR differs from PROOF_STATE_DIR as configured: a symlink anywhere on the path, or any
+# spelling that is not the resolved path — a trailing '/', '//', '.', '..', a relative path) → rc 1, with
+# the loud reason _elapsed_tok_symlink_why prints. Strictly tighter; AVAILABILITY: a symlinked state
+# directory disables watchdog-elapsed until PROOF_STATE_DIR is pointed at the resolved path (`failover arm`
+# writes through the link into that same directory). Not visible: a rewrite back to identical bytes within
+# one ctime granule (a kernel tick on ns-timestamp filesystems; 1 s on ext4 with 128-byte inodes, ext3,
+# HFS+) — the inode number does not help (ext4 reuses it across a tmp+mv); and the state directory itself
+# swapped away and back by RENAME, no symlink anywhere (the token file keeps its identity: proven at +100 s
+# on every tree, this one included — test_elapsed_provider (3l-R5a), a DOCUMENTED RESIDUAL). Zero network;
+# armed + registered paths only.
 _elapsed_tok_ident() {
     local _eti_f="$PROOF_STATE_DIR/pairing-token" _eti_o
     [[ -L "$_eti_f" ]] && return 1   # W3: a symlinked token never keys an adoption (see _elapsed_tok_symlink_why)
+    [[ "$(CDPATH='' cd -P -- "$PROOF_STATE_DIR" 2>/dev/null && pwd -P)" == "$PROOF_STATE_DIR" ]] || return 1   # R-SYM: nor does a token whose directory is not its own resolved path
     if _eti_o=$(stat -L -c '%i %s %z' "$_eti_f" 2>/dev/null) && [[ -n "$_eti_o" && "$_eti_o" != *$'\n'* ]]; then
         printf '%s' "$_eti_o"; return 0
     fi
@@ -3629,12 +3664,19 @@ _elapsed_tok_ident() {
     return 1
 }
 
-# _elapsed_tok_symlink_why — prints the LOUD reason (rc 0) when the stored pairing token is a symlink, else
-# rc 1 (nothing printed). The ONE text the step, the reporter and the [proof-gate] posture/status lines
-# print (fix round 4, W3). Zero network.
+# _elapsed_tok_symlink_why — prints the LOUD reason (rc 0) when the stored pairing token is a symlink, or
+# (fix round 5, R-SYM) when its directory is not its own resolved path; else rc 1 (nothing printed). The ONE
+# text the step, the reporter and the [proof-gate] posture/status lines print (fix round 4, W3). Zero
+# network.
 _elapsed_tok_symlink_why() {
-    [[ -L "$PROOF_STATE_DIR/pairing-token" ]] || return 1
-    printf 'the pairing token is a symlink — store it as a regular file, as `failover arm` does (%s: a link re-pointed away and back is invisible to any one file identity, so no silence counts under it)' "$PROOF_STATE_DIR/pairing-token"
+    local _etw_p
+    if [[ -L "$PROOF_STATE_DIR/pairing-token" ]]; then
+        printf 'the pairing token is a symlink — store it as a regular file, as `failover arm` does (%s: a link re-pointed away and back is invisible to any one file identity, so no silence counts under it)' "$PROOF_STATE_DIR/pairing-token"
+        return 0
+    fi
+    _etw_p=$(CDPATH='' cd -P -- "$PROOF_STATE_DIR" 2>/dev/null && pwd -P)
+    [[ "$_etw_p" == "$PROOF_STATE_DIR" ]] && return 1
+    printf "the pairing token's directory is reached through a symlink — point PROOF_STATE_DIR at the resolved path (PROOF_STATE_DIR=%s resolves to %s: a directory re-pointed away and back is invisible to the token file's identity, so no silence counts under it)" "$PROOF_STATE_DIR" "${_etw_p:-nothing (unresolvable)}"
     return 0
 }
 
@@ -3742,7 +3784,7 @@ _elapsed_step() {
         # adoption and its silence restarts then. (The gate's reporter runs the same check inside $() and
         # cannot clear anything; the full key below makes whatever it saw count at the next step anyway.)
         case "$_es_why" in
-            "token no longer classifies ok"*|"the stored token"*|"the pairing token is a symlink"*|"the re-derived elapsed_floor"*) _elapsed_tok_key="" ;;
+            "token no longer classifies ok"*|"the stored token"*|"the pairing token is a symlink"*|"the pairing token's directory"*|"the re-derived elapsed_floor"*) _elapsed_tok_key="" ;;
         esac
         _elapsed_reset "withdrawn: ${_es_why}"
         return 0
@@ -4705,10 +4747,16 @@ check_self_fence_isolation() {
     # SELFFENCE_RESTORE_CONFIRM_SECS (derived at its one site) the pending is KEPT; an advance past it drops
     # the pending; a non-canonical answer applies it (the rp=1 rule); a silent read never reaches here.
     # Round 3 decided at the next answer, 3-5 s after the reference, and fenced a HEALTHY holder whose
-    # confirmed slot paused one cycle (backdated to the persisted stall). The plain frozen clock keeps
-    # running from the reference meanwhile, so a still-frozen holder fences no later than reference +
-    # min(the floor, SELF_FENCE_ISOLATION_SECS). What is applied: the persisted stall stamp, or — over a
-    # YOUNG stall stamp (load_state) — the restore instant, never earlier.
+    # confirmed slot paused one cycle (backdated to the persisted stall). What is applied: the persisted
+    # stall stamp, or — over a YOUNG stall stamp (load_state) — the restore instant, never earlier. The
+    # plain frozen clock keeps running from the reference meanwhile (an ISOLATION below the floor fires
+    # first). So a still-frozen holder fences at the first read AT OR AFTER: over a stall stamp a window
+    # old, reference + min(the floor, SELF_FENCE_ISOLATION_SECS) — up to one CHECK_INTERVAL past it (45 /
+    # 15 s at grace 30 / 0 at CHECK_INTERVAL 1, 3 and 5; 51 / 21 s at 7); over a YOUNG stall stamp,
+    # max(reference + the floor, restore + SELF_FENCE_ISOLATION_SECS) — about restore + 30 s at a short
+    # grace (6.3 fix round 5 — P5T-FLOOR-EVERY-CADENCE, H5-W2-YOUNG-BOUND-COMMENT: the bound stated here
+    # before held only at cadences that divide 15, and only over a stamp a window old). The pending is not
+    # persisted: a monitor restart before the decision leaves the fence to the next instance (load_state).
     local _sf_rp_ref="${_selffence_restore_ref_ts:-0}" _sf_rp_keep=0
     if [[ ${_selffence_restore_pending:-0} -eq 1 && $_sf_rp_ref -gt 0 && $_sf_garbage -eq 0 && -n "$_last_confirmed_slot" ]]; then
         [[ $slot -le $_last_confirmed_slot && $(( now - _sf_rp_ref )) -lt $SELFFENCE_RESTORE_CONFIRM_SECS ]] && _sf_rp_keep=1
