@@ -288,7 +288,8 @@ is the canonical chain, where the spare's own bank sees exactly the holder votes
 
 **Slot time.** Every seconds figure below was measured at **2.5 slots/s** (400 ms slots — the rate
 the code's derivations assume, e.g. `N_HEAD = MARGIN_ELAPSED × 5/2`). Mainnet **measured ≈ 3.7
-slots/s** on 2026-09-26 (265–283 ms per slot), so the slot boundaries are the stable facts: the own
+slots/s** on 2026-09-26 (265–283 ms per slot: `getRecentPerformanceSamples` on the public
+mainnet RPC, ten 60 s samples of 212–226 slots — re-run it to check), so the slot boundaries are the stable facts: the own
 bank's delinquency rule is 128 slots (≈ 51 s at 2.5/s, ≈ 35 s at 3.7/s); *finalized* trails
 *processed* by 32 slots (≈ 13 s / ≈ 9 s); `getHealth`'s distance is 128 slots; `N_HEAD` is 25 slots —
 10 s at its assumed rate, ≈ 6.8 s on today's mainnet: **stricter** than its derivation (more blind

@@ -2249,7 +2249,7 @@ _derive_proof_floors() {
     # measured - X >= W + B, i.e. X <= MARGIN_ELAPSED. N_HEAD = slots(MARGIN_ELAPSED) =
     # 2.5 slots/s x MARGIN_ELAPSED (integer form *5/2 = 25 slots). 2.5 slots/s (400 ms slots) is
     # an ASSUMED rate — a floor below the real one, not a model of it: mainnet MEASURED ~3.7
-    # slots/s on 2026-09-26 (design-records/mainnet-slot-time-2026-09-26.md), so 25 slots is
+    # slots/s on 2026-09-26 (docs/SAFETY.md, 'Slot time'), so 25 slots is
     # ~6.8 s there — STRICTER than its 10 s derivation (more blind reads: availability, never a
     # take); a SLOWER cluster would loosen it (25 slots = 15 s at 600 ms slots). Staleness beyond
     # the allowance reads as BLIND (wait) — availability, never safety.
@@ -2632,8 +2632,8 @@ G2_DELTA=$(( 30 + G2_CLOCK_BUDGET + 5 ))
 # OWN confirmed head must advance between its T1 and its T2 snapshot before either snapshot may
 # testify about NOW. DERIVATION, from DELTA and nothing else: at the ASSUMED 2.5 slots/s (400 ms
 # slots — the rate every seconds figure in this build assumes) an honest vantage advances ~150 slots
-# across a 60 s hold (mainnet MEASURED ~3.7 slots/s on 2026-09-26 — ~220 slots; design-records/
-# mainnet-slot-time-2026-09-26.md); the floor is set at ~1 slot/s x DELTA = 60 slots = 40 % of the
+# across a 60 s hold (mainnet MEASURED ~3.7 slots/s on 2026-09-26 — ~220 slots; docs/SAFETY.md,
+# 'Slot time'); the floor is set at ~1 slot/s x DELTA = 60 slots = 40 % of the
 # assumed rate (~27 % of the measured one), a deliberately loose tolerance so ordinary cluster
 # slowdowns and per-vantage replay lag stay green — a floor BELOW the lowest plausible rate, never a
 # model of the rate (a faster cluster only widens its margin). This layer trusts NO clock — not this
