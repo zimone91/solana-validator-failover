@@ -322,20 +322,30 @@ ha_junk=$(ha_drive "abc" "10")
 # ENVEOF is UNQUOTED by design (it expands ${CFG_*} and $(_envq …)), so ANY other expansion in one of its
 # lines — a bare backtick, a $( … ), a $(( … )), a bare $NAME/${NAME} — is evaluated at deploy time, as
 # root: Block 6.2's G2-vantage comment ran `failover arm` on every standby deploy until Block 6.3 escaped
-# it (the house form is the escaped \` / \$). Two layers (6.3 fix round, T4 — panel INT-3):
-#   CENSUS  every line of every UNQUOTED heredoc body in BOTH deploy scripts, after deleting the ALLOWLIST
-#           (escaped \$ and \`; the header's $(date -u +"%F %T UTC"); $(_envq "${CFG_X}"); ${CFG_X}),
-#           must carry ZERO $( / $(( / bare $[A-Za-z_{0-9@*#?!$-] / backticks
-#   RENDER  both ENVEOF heredocs rendered with PATH = a CANARY dir (every command it knows RECORDS its
-#           argv; any other command is 'not found' on stderr) and builtin-only output: the only recorded
-#           command may be the header's `date -u +%F %T UTC`, stderr must be empty, and the escaped comment
-#           text must survive literally. A builtin ($(true)) is invisible to the render — the census holds it.
-# Scope of the PASS: these two mechanisms over the ENVEOF heredocs — not a proof about any other file.
+# it (the house form is the escaped \` / \$). Two layers (6.3 fix round, T4 — panel INT-3; hardened in
+# fix round 2, R9 — panel P2-INERT-1/2):
+#   CENSUS  every line of every UNQUOTED heredoc body in BOTH deploy scripts, after deleting the escaped
+#           PAIRS left to right — every \\ pair FIRST (in the heredoc it is one literal backslash, and the
+#           $( after it EXPANDS), then the escaped \$ and \` — and the ALLOWLIST (the header's
+#           $(date -u +"%F %T UTC"); $(_envq "${CFG_X}"); ${CFG_X}), must carry ZERO $( / $(( / bare
+#           $[A-Za-z_{0-9@*#?!$-] / backticks
+#   RENDER  ONLY a script whose census is 0 is rendered at all (a flagged line is never evaluated), and
+#           then RESTRICTED: `env -i PATH=<canary> TMPDIR=<temp> bash -r` — a clean environment, a CANARY
+#           PATH (every command it knows RECORDS its argv; any other is 'not found' on stderr), no '/' in a
+#           command name, no output redirection (the OUTER shell captures stdout into the temp file), the
+#           heredoc's own temp file inside the temp dir. The only recorded command may be the header's
+#           `date -u +%F %T UTC`, stderr must be empty, and the escaped comment text must survive literally:
+#           a forbidden form ($(/abs/cmd …), $(… > file)) FAILS LOUDLY on stderr instead of executing.
+#           A builtin with no redirection ($(true)) is invisible to the render — the census holds it.
+# Nothing the guard renders can execute an absolute path or write outside its temp dir (27-ctl: the
+# PWNED mutants). Scope of the PASS: these two mechanisms over the ENVEOF heredocs — not a proof about
+# any other file.
 hd_census() {   # $1 = deploy script → prints the count of NON-allowlisted expansions; hits on stderr
   awk '!inh && /<<[[:space:]]*[A-Za-z_]+[[:space:]]*$/ { tag=$NF; sub(/^<</, "", tag); inh=1; next }
        inh && $0 == tag { inh=0; next }
        inh {
          line=$0
+         gsub(/\\\\/, "", line)                          # escaped PAIRS left to right: every \\ first (R9)
          gsub(/\\[$]/, "", line); gsub(/\\`/, "", line)
          gsub(/[$][(]date -u [+]"%F %T UTC"[)]/, "", line)
          gsub(/[$][(]_envq "[$][{]CFG_[A-Z0-9_]+[}]"[)]/, "", line)
@@ -357,13 +367,15 @@ hd_render() {   # $1 = deploy script, $2 = its env path in the opener → "err=<
   e=""; [[ -n "$s" ]] && e=$(awk -v s="$s" 'NR > s && /^ENVEOF$/ { print NR; exit }' "$f")
   if [[ -z "$s" || -z "$e" ]]; then echo "err=(no ENVEOF heredoc for ${envp})|rec=|out="; rm -rf "$d"; return; fi
   {
-    echo "PATH='$d/canary'; export CANARY_LOG='$d/rec.log'"
     echo '_envq(){ printf "%q" "$1"; }'
-    echo "{ while IFS= read -r _l || [[ -n \"\$_l\" ]]; do printf '%s\\n' \"\$_l\"; done; } > '$d/env' << ENVEOF"
+    echo "while IFS= read -r _l || [[ -n \"\$_l\" ]]; do printf '%s\\n' \"\$_l\"; done << ENVEOF"
     sed -n "$(( s + 1 )),${e}p" "$f"
   } > "$d/render.sh"
   local err rec
-  err=$("${BASH:-bash}" "$d/render.sh" 2>&1 >/dev/null | tr '\n' ' ')
+  # RESTRICTED (6.3 fix round 2, R9): a clean env, the canary PATH only, bash -r — no '/' in a command
+  # name, no output redirection; THIS shell captures the render's stdout into the temp file
+  env -i PATH="$d/canary" TMPDIR="$d" CANARY_LOG="$d/rec.log" "${BASH:-/bin/bash}" -r "$d/render.sh" > "$d/env" 2> "$d/err"
+  err=$(tr '\n' ' ' < "$d/err")
   rec=$(tr '\n' ';' < "$d/rec.log" 2>/dev/null)
   cp "$d/env" "$WORKDIR_27/$(basename "$f").env" 2>/dev/null
   echo "err=${err}|rec=${rec}|out=$WORKDIR_27/$(basename "$f").env"
@@ -372,22 +384,32 @@ hd_render() {   # $1 = deploy script, $2 = its env path in the opener → "err=<
 hd_guard() {   # $1 = standby deploy, $2 = primary deploy → "ok" or the MEASURED reason it is not
   local cs cp rs rp why=""
   cs=$(hd_census "$1" 2>/dev/null); cp=$(hd_census "$2" 2>/dev/null)
-  rs=$(hd_render "$1" /opt/solana-failover/failover-standby.env); rp=$(hd_render "$2" /opt/solana-failover/failover.env)
   [[ "$cs" == "0" ]] || why="$why census(standby)=$cs"
   [[ "$cp" == "0" ]] || why="$why census(primary)=$cp"
-  [[ -z "$(field "$rs" err)" ]] || why="$why render-stderr(standby)='$(field "$rs" err | cut -c1-120)'"
-  [[ -z "$(field "$rp" err)" ]] || why="$why render-stderr(primary)='$(field "$rp" err | cut -c1-120)'"
-  [[ "$(field "$rs" rec)" == "date -u +%F %T UTC;" ]] || why="$why executed(standby)='$(field "$rs" rec)'"
-  [[ "$(field "$rp" rec)" == "date -u +%F %T UTC;" ]] || why="$why executed(primary)='$(field "$rp" rec)'"
-  grep -qF -- '`failover arm` probes both' "$(field "$rs" out)" 2>/dev/null || why="$why standby-comment-text-lost"
-  grep -qF -- 'wraps in `timeout 8`' "$(field "$rp" out)" 2>/dev/null || why="$why primary-comment-text-lost"
-  grep -qF -- 'SOLANA_PATH="$HOME/.local/share/solana/install/active_release/bin"' "$(field "$rp" out)" 2>/dev/null || why="$why primary-SOLANA_PATH-expanded"
+  # R9: a script is rendered ONLY when its census is 0 — a flagged heredoc line is never evaluated
+  if [[ "$cs" == "0" ]]; then
+    rs=$(hd_render "$1" /opt/solana-failover/failover-standby.env)
+    [[ -z "$(field "$rs" err)" ]] || why="$why render-stderr(standby)='$(field "$rs" err | cut -c1-120)'"
+    [[ "$(field "$rs" rec)" == "date -u +%F %T UTC;" ]] || why="$why executed(standby)='$(field "$rs" rec)'"
+    grep -qF -- '`failover arm` probes both' "$(field "$rs" out)" 2>/dev/null || why="$why standby-comment-text-lost"
+  else
+    why="$why render(standby)=NOT-RUN"
+  fi
+  if [[ "$cp" == "0" ]]; then
+    rp=$(hd_render "$2" /opt/solana-failover/failover.env)
+    [[ -z "$(field "$rp" err)" ]] || why="$why render-stderr(primary)='$(field "$rp" err | cut -c1-120)'"
+    [[ "$(field "$rp" rec)" == "date -u +%F %T UTC;" ]] || why="$why executed(primary)='$(field "$rp" rec)'"
+    grep -qF -- 'wraps in `timeout 8`' "$(field "$rp" out)" 2>/dev/null || why="$why primary-comment-text-lost"
+    grep -qF -- 'SOLANA_PATH="$HOME/.local/share/solana/install/active_release/bin"' "$(field "$rp" out)" 2>/dev/null || why="$why primary-SOLANA_PATH-expanded"
+  else
+    why="$why render(primary)=NOT-RUN"
+  fi
   echo "${why:-ok}"
 }
 WORKDIR_27=$(mktemp -d)
 g=$(hd_guard "$DEPLOY_STANDBY" "$DEPLOY_PRIMARY")
 if [[ "$g" == "ok" ]]; then
-  ok "(27) the ENVEOF heredocs of BOTH deploy scripts: ZERO non-allowlisted expansions in any line (census), and both render under a canary PATH with ZERO stderr, exactly ONE executed command each (the header's date), the escaped comment text and \\\$HOME intact — no heredoc line runs a command or expands a variable at deploy time beyond the CFG values"
+  ok "(27) the ENVEOF heredocs of BOTH deploy scripts: ZERO non-allowlisted expansions in any line (census, escaped pairs removed left to right), and — rendered only because the census is 0 — both render RESTRICTED (env -i, a canary PATH, bash -r) with ZERO stderr, exactly ONE executed command each (the header's date), the escaped comment text and \\\$HOME intact — no heredoc line runs a command or expands a variable at deploy time beyond the CFG values"
 else
   bad "(27) heredoc hazard:$g"
 fi
@@ -412,7 +434,26 @@ m27 "s:comment \${LEDGER}"   s 's/^# address — \\`failover arm\\` probes both/
 m27 "p:comment \$((1+1))"    p 's/^# wraps in \\`timeout 8\\`/# wraps in $((1+1)) \\`timeout 8\\`/'
 m27 "s:comment \$HOME"       s 's/^# address — \\`failover arm\\` probes both/# address $HOME — \\`failover arm\\` probes both/'
 m27 "p:value \$HOME unescaped" p 's|^SOLANA_PATH="\\$HOME/|SOLANA_PATH="$HOME/|'
-[[ $m27_ok -eq 1 ]] && ok "(27-ctl) every hazard mutant turns (27) RED —$m27_rows — a backtick / \$(true) / \$(failover arm) in EITHER heredoc, \$TIER2_RPC / \${LEDGER} / \$((1+1)) / \$HOME in a comment line, and the escaped \\\$HOME value unescaped (pre-fix guard: green on the primary-heredoc and comment-line forms)"
+# 6.3 fix round 2, R9 (panel P2-INERT-1): an escaped BACKSLASH before an expansion — '\\$(…)' is one
+# literal backslash and a LIVE $(…) in the unquoted heredoc; the pre-fix census ate the second backslash
+# as an escaped dollar and stayed GREEN
+m27 "p:comment \\\\\$(true)"  p 's/^\(# wraps in \\`timeout 8\\`.*\)$/\1 \\\\$(true)/'
+m27 "s:comment \\\\\$HOME"    s 's/^\(# address — \\`failover arm\\` probes both.*\)$/\1 \\\\$HOME/'
+# (P2-INERT-2) the render must never execute an absolute path or write outside its temp dir: an
+# absolute-path command and a builtin redirection in a comment line → RED, and neither file exists after
+m27 "p:comment \$(/usr/bin/touch PWNED)"  p "s|^\\(# wraps in \\\\\`timeout 8\\\\\`.*\\)\$|\\1 \$(/usr/bin/touch $WORKDIR_27/PWNED)|"
+m27 "s:comment \$(true > PWNED2)"         s "s|^\\(# address — \\\\\`failover arm\\\\\` probes both.*\\)\$|\\1 \$(true > $WORKDIR_27/PWNED2)|"
+[[ -e "$WORKDIR_27/PWNED" || -e "$WORKDIR_27/PWNED2" ]] && { m27_ok=0; bad "(27-ctl) a PWNED file EXISTS after the guard ran: $(ls "$WORKDIR_27" | tr '\n' ' ')"; }
+[[ $m27_ok -eq 1 ]] && ok "(27-ctl) every hazard mutant turns (27) RED —$m27_rows — a backtick / \$(true) / \$(failover arm) in EITHER heredoc, \$TIER2_RPC / \${LEDGER} / \$((1+1)) / \$HOME in a comment line, the escaped \\\$HOME value unescaped, an escaped backslash before \$(true) / \$HOME (pre-fix census: GREEN), and an absolute-path command / a builtin redirection in a comment line — with NO PWNED file afterwards (pre-fix guard: green on the primary-heredoc and comment-line forms)"
+# (27-ctl-r) the RENDER layer on its own (the census bypassed — rendered directly): the same two forms
+# FAIL LOUDLY on stderr under the restricted render and still create nothing
+mutate "$DEPLOY_PRIMARY" "s|^# wraps in \\\\\`timeout 8\\\\\`|# wraps in \$(/usr/bin/touch $WORKDIR_27/PWNED3) \$(true > $WORKDIR_27/PWNED4) \\\\\`timeout 8\\\\\`|" "$WORKDIR_27/mut-r.sh"
+rr=$(hd_render "$WORKDIR_27/mut-r.sh" /opt/solana-failover/failover.env)
+if [[ "$(field "$rr" err)" == *"restricted: cannot specify"* && "$(field "$rr" err)" == *"restricted: cannot redirect output"* && ! -e "$WORKDIR_27/PWNED3" && ! -e "$WORKDIR_27/PWNED4" ]]; then
+  ok "(27-ctl-r) the restricted render ALONE (census bypassed): \$(/usr/bin/touch …) and \$(true > …) fail LOUDLY on stderr ('restricted: cannot specify \`/' in command names', 'restricted: cannot redirect output') and create nothing — a spelling the census misses cannot run an absolute path or write outside the temp dir (pre-fix render: both files CREATED)"
+else
+  bad "(27-ctl-r) err='$(field "$rr" err | cut -c1-200)' files=$(ls "$WORKDIR_27" | tr '\n' ' ')"
+fi
 rm -rf "$WORKDIR_27"
 
 results_banner

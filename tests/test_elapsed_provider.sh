@@ -36,21 +36,27 @@
 #        restarts at its adoption); (3m) M7 a vantage re-pin under a standing verdict → withdrawn (the
 #        served triple never disagrees with dump_freshness); (3n) M4 non-canonical integers
 #        ("0009999", 2^64+N) at the provider → blind / cannot, never arithmetic, plus the ONE
-#        validator's boundary table
+#        validator's boundary table; 6.3 fix round 2 (R4): (3l-R4a–c) the adoption keyed on the FULL
+#        token — a same-gen re-pair with a lower floor, a reporter-only flap (restored in place and by
+#        tmp+mv), a same-gen token from another host under a dormant verdict
 #   (4)  the head reference: commitment=processed read from the live request log; the head is read
 #        AFTER the payload (live order); the default-commitment mutant is wrong BOTH ways (a live
 #        view permanently blind AND a 40-slot lagged view accepted)
 #   (5)  D3 MULTILAYER (mandatory): (5a)–(5d) the SEAM-REGRESSION defense line — the old forged-silence
 #        archetype (a seam state the current writers cannot produce) vs each single neuter, the
-#        progressive chain, and ALL FOUR step layers neutered → forged PROVEN; (5e)–(5h) the REACHABLE
+#        progressive chain, and ALL the step layers neutered → forged PROVEN; (5e)–(5h) the REACHABLE
 #        post-blindness state (the real _note_blind_cycle, then an evaluation before re-observation):
 #        [elapsed-blind] and [elapsed-seam] each neutered alone → the other refuses; both → [elapsed-
-#        floor]'s serve-time half withdraws; all three → the forged acceptance at the GATE reappears
+#        floor]'s serve-time half withdraws; all three → the forged acceptance at the GATE reappears;
+#        (5i)–(5k) the GAP ARCHETYPE (6.3 fix round 2, R3): a lagging bank hidden by a 12 s payload→head
+#        gap → [elapsed-gap] refuses; neutered alone → the forged acceptance at the gate reappears (its
+#        own neuter control), [elapsed-head] the named survivor past the hidden amount; the in-sync
+#        control blind either way
 #   (6)  COUPLING [pre-registration (b)]: MARGIN_ELAPSED 10→20 moves the floor AND N_HEAD and the
 #        provider's behavior follows (measured both ways); a decoupled static-N_HEAD control
 #   (7)  inertness census: un-armed / holder / unpaired → zero events; the armor-forced control leaks
 #   (8)  boundedness + pets: live event order + the static region census (N-is-all, both censuses)
-#   (9)  constants: the region assigns none of the four derived names; the N_HEAD condition comment
+#   (9)  constants: the region assigns none of the five derived names; the N_HEAD condition comment
 #        still sits at the derivation site in both daemons
 #   (10) twins + call sites: [elapsed-provider] byte-identical; [proof-gate] and [g2-provider] still
 #        identical; call-site census per daemon
@@ -66,13 +72,19 @@
 #        forged G2 on shared vantages — each a MEASURED fact that docs/SAFETY.md states, so the text
 #        cannot drift from the mechanism silently; each residual says which remedy flips it
 #   (12) the 6.3 fix round's mechanism reds, re-run green: M2 (post-read silence starts — the F2
-#        world), M3 (observed_at = the answering read's own stamp; the tail), M4 (non-canonical input
-#        through the REAL loop), M5 (an aborted loop exits non-zero; SIGTERM still 0), M6 (the MEASURED
-#        inter-pet gap), M8 (the paired-but-unregistered status line), N2 (only a STAMPED blindness
-#        restarts the silence clock — (12h))
+#        world), M3 → R1 (observed_at is the EVALUATION START again — fix round 2 reverted M3; the tail
+#        census, measured: (12c)/(12c-tail)), M4 (non-canonical input through the REAL loop), M5 (an
+#        aborted loop exits non-zero; SIGTERM still 0), M6 (the MEASURED inter-pet gap), M8 (the
+#        paired-but-unregistered status line), N2 (only a STAMPED blindness restarts the silence clock
+#        — (12h))
+#   (13) 6.3 fix round 2's reds, re-run green: R1 through the REAL loop (the degraded-tier and W1 worlds
+#        equal de21927 take-for-take), R2 (the own-bank MAX_DELINQUENT_SLOTS reference read FIRST; the
+#        TIER2 census twin re-reads; the live-holder PETS=7 world), R3 (the head gap on the REAL loop),
+#        R7 (M2 binds the span floor — later only), R8 (the cadence residual, DOCUMENTED — flips when the
+#        episode-close rule becomes time-based)
 #
 # MUTATION COVERAGE (HARNESS.md discipline), all via mutate() (loud on no-op): the step layers of (5)
-# alone and chained, [elapsed-seam] (5f), the head compare boundary (3b-ctl), the head commitment
+# alone and chained, [elapsed-seam] (5f), [elapsed-gap] (5j), the head compare boundary (3b-ctl), the head commitment
 # (4b), the MARGIN_ELAPSED coupling + its decoupled control (6), the armor shim-force (7b), the
 # validator reverted to the pre-fix shape (12e), the Tier-1/MDS pets removed (12f). One what-if
 # mutant lives in the (11) world instead, with its own loud apply-check: the own-bank read's
@@ -188,6 +200,33 @@ drive_ep() {
     )
 }
 reads_of() { grep -c '^read' "$1"; }
+
+# a FILE-backed mono clock for ONE drive_ep case: T2/T3/LOCAL reads (and pets) then TAKE time inside $()
+fileclock_on() {
+    CLKF=$(mktemp "$WORK/clk.XXXXXX"); echo "$_SIM_NOW" > "$CLKF"
+    mono_now() { local x; read -r x < "$CLKF"; echo "$x"; }
+    _clk_adv() { local x; read -r x < "$CLKF"; echo $(( x + $1 )) > "$CLKF"; }
+    eval "$(declare -f curl | sed '1s/^curl/_ep_curl/')"
+    curl() {   # T2_DOWN/T3_DOWN: a timeout AT the -m bound; LAT_T3 / LAT_LOCAL: the answer that many s late
+        local args=("$@") i=0 mt=10 url=""
+        while [[ $i -lt ${#args[@]} ]]; do
+            case "${args[$i]}" in -m) mt="${args[$((i+1))]}" ;; http*) url="${args[$i]}" ;; esac
+            i=$((i+1))
+        done
+        case "$url" in
+            "$TIER2_RPC") [[ "$T2_DOWN" == "1" ]] && _clk_adv "$mt" ;;
+            "$TIER3_RPC") if [[ "$T3_DOWN" == "1" ]]; then _clk_adv "$mt"; else _clk_adv "${LAT_T3:-0}"; fi ;;
+            "$LOCAL_RPC") _clk_adv "${LAT_LOCAL:-0}" ;;
+        esac
+        _ep_curl "$@"
+    }
+    _watchdog_pet() {   # PETSEQF: a FILE of per-pet costs consumed in order (the sampler pets inside $() — a variable would not carry back), then PETCOST
+        echo "pet" >> "$EV"
+        local c="${PETCOST:-0}"
+        if [[ -n "${PETSEQF:-}" && -s "$PETSEQF" ]]; then read -r c < "$PETSEQF"; tail -n +2 "$PETSEQF" > "$PETSEQF.n"; mv "$PETSEQF.n" "$PETSEQF"; fi
+        _clk_adv "$c"
+    }
+}
 
 # ── (1) registration ───────────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (1) registration: ONLY a token that classifies ok registers; everything else is silent ───"
@@ -494,6 +533,69 @@ else
     bad "(3l) $r"
 fi
 
+# (3l-R4) 6.3 fix round 2, R4 (FX-3): N4's adoption is keyed on the FULL token — its classified line AND the
+# stored file's identity (inode, size, change time) — not on gen. Pre-fix red (f22d492): (a) a same-gen
+# re-pair with a LOWER floor (gen 7 W30/B120 floor 160 → gen 7 W30/B60 floor 100 at +121) PROVEN at +121
+# with since=+0, gate rc 0 — and the same from another host; (b) a flap seen ONLY by the reporter (the
+# token garbage at +61, the same bytes restored before the next step) kept the old adoption: PROVEN at
+# +100 on silence counted across the flap; (c) a same-gen token from another host with the same bounds
+# swapped in under a DORMANT verdict: served proven=yes, gate rc 0.
+case_samegen() {   # HOST2: the re-pair's host (default holder1)
+    printf '%s\n' "$(mk_token 7 30 120 real holder1)" > "$PROOF_STATE_DIR/pairing-token"   # floor 160
+    reg; prime_seam 0 none
+    _SIM_NOW=$(( T0 + 120 )); _elapsed_step; local a1="$_elapsed_answer"
+    printf '%s\n' "$(mk_token 7 30 60 real "${HOST2:-holder1}")" > "$PROOF_STATE_DIR/pairing-token"   # the SAME gen, floor 100
+    _SIM_NOW=$(( T0 + 121 )); _elapsed_step; local a2="$_elapsed_answer" r2="$_elapsed_reason" i2="$LASTINFO"
+    require_relinquish_proof; local g2=$?
+    _SIM_NOW=$(( T0 + 220 )); _elapsed_step; local a3="$_elapsed_answer" r3="$_elapsed_reason"
+    _SIM_NOW=$(( T0 + 221 )); _elapsed_step; local a4="$_elapsed_answer"
+    local v; v=$(_elapsed_provider)
+    echo "a1=$a1|a2=$a2|r2=$r2|i2=$i2|g2=$g2|a3=$a3|r3=$r3|a4=$a4|oid=$(_proof_field "$v" observation_id)"
+}
+sg_ok=1
+for h in holder1 otherholder; do
+    r=$(HOST2=$h drive_ep "$STANDBY" case_samegen | tail -1)
+    if [[ "$(field "$r" a1)" == "no" && "$(field "$r" a2)" == "no" && "$(field "$r" r2)" == *"the token now in force (gen 7) was adopted 0s ago"* && "$(field "$r" i2)" == *"token gen=7 adopted at mono $(( T0 + 121 ))"* && "$(field "$r" g2)" == "1" ]] \
+       && [[ "$(field "$r" a3)" == "no" && "$(field "$r" r3)" == *"adopted 99s ago"* && "$(field "$r" a4)" == "yes" && "$(field "$r" oid)" == "elapsed:gen=7:since=$(( T0 + 121 )):floor=100" ]]; then :; else sg_ok=0; bad "(3l-R4a) host=$h: $r"; fi
+done
+[[ $sg_ok -eq 1 ]] && ok "(3l-R4a) R4 — a SAME-GEN re-pair with a lower floor (gen 7 floor 160 → gen 7 floor 100 at +121, from the same host and from another) is a NEW adoption: no at +121 ('adopted 0s ago', gate rc 1) and at +220 ('99s ago'), PROVEN only at +221 with since=+121. Pre-fix: PROVEN at +121 with since=+0, gate rc 0 (the adoption was keyed on gen)"
+case_flap() {   # MODE=inplace|mv — how the restore is written: in place (the same inode, a new change time) or tmp+mv (a new inode — the ceremony's own atomic write)
+    reg; prime_seam 0 none
+    local tf="$PROOF_STATE_DIR/pairing-token" good; good=$(cat "$tf")
+    _SIM_NOW=$(( T0 + 60 )); _elapsed_step; local a60="$_elapsed_answer"
+    printf 'garbage\n' > "$tf"
+    _SIM_NOW=$(( T0 + 61 )); local v1; v1=$(_elapsed_provider)            # ONLY the reporter (inside the gate's $()) sees the rot
+    if [[ "${MODE:-inplace}" == "mv" ]]; then printf '%s\n' "$good" > "$tf.tmp"; mv "$tf.tmp" "$tf"; else printf '%s\n' "$good" > "$tf"; fi
+    _SIM_NOW=$(( T0 + 100 )); _elapsed_step; local a100="$_elapsed_answer" r100="$_elapsed_reason"
+    _SIM_NOW=$(( T0 + 199 )); _elapsed_step; local a199="$_elapsed_answer"
+    _SIM_NOW=$(( T0 + 200 )); _elapsed_step; local a200="$_elapsed_answer"
+    local v; v=$(_elapsed_provider)
+    echo "a60=$a60|rep61=$(_proof_field "$v1" proven)|a100=$a100|r100=$r100|a199=$a199|a200=$a200|oid=$(_proof_field "$v" observation_id)"
+}
+fl_ok=1
+for m in inplace mv; do
+    r=$(MODE=$m drive_ep "$STANDBY" case_flap | tail -1)
+    if [[ "$(field "$r" a60)" == "no" && "$(field "$r" rep61)" == "no" && "$(field "$r" a100)" == "no" && "$(field "$r" r100)" == *"the token now in force (gen 7) was adopted 0s ago (mono $(( T0 + 100 )))"* ]] \
+       && [[ "$(field "$r" a199)" == "no" && "$(field "$r" a200)" == "yes" && "$(field "$r" oid)" == "elapsed:gen=7:since=$(( T0 + 100 )):floor=100" ]]; then :; else fl_ok=0; bad "(3l-R4b) restore=$m: $r"; fi
+done
+[[ $fl_ok -eq 1 ]] && ok "(3l-R4b) R4 — a token flap seen ONLY by the reporter (garbage at +61 inside the gate's \$(), the SAME bytes restored before the next step — in place, and by tmp+mv) is a NEW adoption at the next step: no at +100 ('adopted 0s ago (mono +100)') and +199, PROVEN only at +200 with since=+100 — the reporter cannot clear anything from its subshell, so the key carries the stored file's identity and the rewrite counts. Pre-fix: PROVEN at +100 on silence counted across the flap"
+case_samegen_dormant() {
+    reg; prime_seam 0 none
+    _SIM_NOW=$(( T0 + 100 )); _elapsed_step; local a1="$_elapsed_answer"
+    printf '%s\n' "$(mk_token 7 30 60 real otherholder)" > "$PROOF_STATE_DIR/pairing-token"   # the same gen and bounds, another host
+    _SIM_NOW=$(( T0 + 110 )); local v; v=$(_elapsed_provider)
+    require_relinquish_proof; local g=$?
+    _elapsed_step; local a2="$_elapsed_answer" r2="$_elapsed_reason"
+    echo "a1=$a1|served=$(_proof_field "$v" proven)|vr=$(_proof_field "$v" elapsed_reason)|gate=$g|a2=$a2|r2=$r2"
+}
+r=$(drive_ep "$STANDBY" case_samegen_dormant | tail -1)
+if [[ "$(field "$r" a1)" == "yes" && "$(field "$r" served)" == "no" && "$(field "$r" vr)" == *"the stored token changed under the verdict: the same gen=7, but not the token it was minted under"* && "$(field "$r" gate)" == "1" ]] \
+   && [[ "$(field "$r" a2)" == "cannot" && "$(field "$r" r2)" == "withdrawn: the stored token changed under the verdict"* ]]; then
+    ok "(3l-R4c) R4 — a same-gen token from ANOTHER host with the same bounds swapped in under a DORMANT verdict: the reporter serves proven=no ('the stored token changed under the verdict: the same gen=7, but not the token it was minted under'), the gate refuses (rc 1), and the next step withdraws it and clears the adoption. Pre-fix: served proven=yes, gate rc 0"
+else
+    bad "(3l-R4c) $r"
+fi
+
 # (3m) M7 (N6): a vantage re-pin under a standing verdict. Pre-fix red: served proven=yes vantage=T2 while
 # the seam's vantage was T3, gate rc 0.
 case_repin() {
@@ -621,6 +723,7 @@ layer_of() {   # the NAMED layer that refused, from the captured record (the ste
         *"blindness ended"*|*"no continuous observation"*) echo "blind" ;;
         *"observed silence"*"< elapsed_floor"*|*"exceeds the"*"of silence the verdict was minted on"*) echo "floor" ;;
         *"LAGGED VIEW"*|*"STALE REFERENCE"*) echo "head" ;;
+        *"HEAD GAP"*) echo "gap" ;;
         *"the seam moved under the verdict"*) echo "seam" ;;
         *"token no longer classifies ok"*|*"stored token changed"*) echo "token" ;;
         *) echo "other:$x" ;;
@@ -634,6 +737,7 @@ M_FLOOR2='s/if \[\[ \$elapsed_floor -gt \$_elapsed_mint_silence \]\]; then/if [[
 M_HEAD='s/-gt \$N_HEAD \]\]; then/-gt 999999999 ]]; then/g'
 M_SEAM1='s/^    if \[\[ \$_evw_since -le 0 \]\]; then/    if [[ 1 -eq 2 ]]; then/'
 M_SEAM2='s/^    if \[\[ "\$_evw_triple" != "\$_elapsed_triple" \]\]; then/    if [[ 1 -eq 2 ]]; then/'
+M_GAP='s/if \[\[ \$(( _es_hd - _es_pay )) -gt \$ELAPSED_HEAD_GAP_MAX \]\]; then/if [[ 1 -eq 2 ]]; then/'
 r=$(TOK=lowfloor drive_ep "$STANDBY" case_archetype | tail -1)
 if [[ "$(layer_of "$r")" == "token" && "$(field "$r" why)" == *"SHORTER than the un-armed timer path"* && "$(field "$r" vlen)" == "0" ]]; then
     ok "(5a) LIVE seam-regression archetype → refused by [elapsed-token] FIRST (not registered: the derivation site's own reason — floor 40 s SHORTER than the un-armed timer path); the provider does not exist on this host"
@@ -644,8 +748,9 @@ mutate "$STANDBY" "$M_TOKEN" "$WORK/n-token.sh"
 mutate "$STANDBY" "$M_BLIND1" "$WORK/n-blind-a.sh" && mutate "$WORK/n-blind-a.sh" "$M_BLIND2" "$WORK/n-blind.sh"
 mutate "$STANDBY" "$M_FLOOR1" "$WORK/n-floor-a.sh" && mutate "$WORK/n-floor-a.sh" "$M_FLOOR2" "$WORK/n-floor.sh"
 mutate "$STANDBY" "$M_HEAD" "$WORK/n-head.sh"
+mutate "$STANDBY" "$M_GAP" "$WORK/n-gap.sh"
 s_ok=1; s_rows=""
-for n in token blind floor head; do
+for n in token blind floor head gap; do
     r=$(TOK=lowfloor drive_ep "$WORK/n-$n.sh" case_archetype | tail -1)
     got=$(layer_of "$r")
     if [[ "$got" != "NONE(proven)" && "$got" != "$n" && "$got" != other:* ]]; then
@@ -657,7 +762,7 @@ done
 [[ $s_ok -eq 1 ]] && ok "(5b) each step layer neutered ALONE, the seam-regression archetype still refused by a NAMED surviving layer:$s_rows — one neutered layer never reopens the hole"
 mutate "$WORK/n-token.sh" "$M_BLIND1" "$WORK/c1a.sh" && mutate "$WORK/c1a.sh" "$M_BLIND2" "$WORK/c-tb.sh"
 mutate "$WORK/c-tb.sh" "$M_FLOOR1" "$WORK/c-tbf-a.sh" && mutate "$WORK/c-tbf-a.sh" "$M_FLOOR2" "$WORK/c-tbf.sh"
-mutate "$WORK/c-tbf.sh" "$M_HEAD" "$WORK/c-all.sh"
+mutate "$WORK/c-tbf.sh" "$M_HEAD" "$WORK/c-all-a.sh" && mutate "$WORK/c-all-a.sh" "$M_GAP" "$WORK/c-all.sh"
 r1=$(TOK=lowfloor drive_ep "$WORK/n-token.sh" case_archetype | tail -1)
 r2=$(TOK=lowfloor drive_ep "$WORK/c-tb.sh" case_archetype | tail -1)
 r3=$(TOK=lowfloor drive_ep "$WORK/c-tbf.sh" case_archetype | tail -1)
@@ -669,7 +774,7 @@ else
     bad "(5c) r1=$(layer_of "$r1") r2=$(layer_of "$r2") r3=$(layer_of "$r3") :: $r3"
 fi
 if [[ "$(field "$r4" a)" == "yes" && "$(field "$r4" proven)" == "yes" ]]; then
-    ok "(5d) [elapsed-token]/[elapsed-blind]/[elapsed-floor] (both halves)/[elapsed-head] ALL neutered → the seam-regression archetype MINTS and is SERVED PROVEN (forged acceptance RESTORED): no hidden guard on this line ([elapsed-seam] does not see it — the archetype's seam never moves after the mint; (5e)–(5h) is where that layer is load-bearing)"
+    ok "(5d) [elapsed-token]/[elapsed-blind]/[elapsed-floor] (both halves)/[elapsed-head]/[elapsed-gap] ALL neutered → the seam-regression archetype MINTS and is SERVED PROVEN (forged acceptance RESTORED): no hidden guard on this line ([elapsed-seam] does not see it — the archetype's seam never moves after the mint; (5e)–(5h) is where that layer is load-bearing; [elapsed-gap] does not see it either — the archetype's reads take no time; (5i)–(5k) is where it is)"
 else
     bad "(5d) all-neutered mutant did not restore the forged acceptance: $r4"
 fi
@@ -718,6 +823,52 @@ if [[ "$(field "$rall" a)" == "yes" && "$(field "$rall" proven)" == "yes" && "$(
     ok "(5h) all three neutered ([elapsed-blind] + [elapsed-seam] + [elapsed-floor]'s serve half) → the FORGED ACCEPTANCE AT THE GATE reappears: require_relinquish_proof rc 0 and _proof_age_edge_check rc 0 on observation_id since=+5 — 1 s after a stamped blindness. The enumerated set is complete over the reachable state"
 else
     bad "(5h) all-neutered reachable mutant did not restore the forged acceptance: $rall"
+fi
+
+# (5i)–(5k) THE GAP ARCHETYPE (6.3 fix round 2, R3 — FX-2): this spare's own bank trails the chain by
+# BANKLAG slots, the tiers serve the LIVE view (the chain advances 2.5 slots/s on a file clock; every
+# answer reflects the chain at the instant it is SERVED), and the head read lands 12 s after the payload
+# (the house bound-counting: the payload's pet 7 s, then the head read at its curl -m 5 bound and its own
+# 7 s pet). The bank moves 30 slots while the gap runs, so a bank 50 slots behind the live view reads 19
+# behind — inside N_HEAD 25: the head compare alone cannot see it. [elapsed-gap] refuses on its own line.
+# Pre-fix red (f22d492): BANKLAG=50 MINTED and the gate accepted (rc 0); BANKLAG=0 answered LAGGED VIEW.
+case_gap() {   # BANKLAG (slots)
+    reg; prime_seam 0 none
+    _SIM_NOW=$(( T0 + 100 )); fileclock_on
+    eval "$(declare -f _ep_curl | sed '1s/^_ep_curl/_ep_curl0/')"
+    _ep_curl() {   # the chain at the instant the answer is served (after the read's latency); LOCAL = the chain − BANKLAG
+        local a u="" c; for a in "$@"; do case "$a" in http*) u="$a" ;; esac; done
+        read -r c < "$CLKF"
+        HEAD=$(( HEAD0 + (c - T0) * 5 / 2 )); VIEWLAG=1
+        [[ "$u" == "$LOCAL_RPC" ]] && HEAD=$(( HEAD - BANKLAG ))
+        _ep_curl0 "$@"
+    }
+    LAT_LOCAL=5; PETCOST=7
+    _elapsed_step
+    local v; v=$(_elapsed_provider)
+    require_relinquish_proof; local grc=$?
+    echo "reg=$_elapsed_registered|a=$_elapsed_answer|r=$_elapsed_reason|proven=$(_proof_field "$v" proven)|vr=$(_proof_field "$v" elapsed_reason)|grc=$grc"
+}
+g50=$(BANKLAG=50 drive_ep "$STANDBY" case_gap | tail -1)
+if [[ "$(field "$g50" a)" == "blind" && "$(layer_of "$g50")" == "gap" && "$(field "$g50" r)" == "HEAD GAP: the head read landed 12s after the payload read"* && "$(field "$g50" grc)" == "1" ]]; then
+    ok "(5i) LIVE, the gap archetype (this bank 50 slots behind the live view, the head read landing 12 s after the payload): [elapsed-gap] refuses ('HEAD GAP: the head read landed 12s after the payload read'), blind, gate rc 1. Pre-fix: MINTED, gate rc 0 — the 30 slots the bank moved during the gap hid 30 of its 50-slot lag"
+else
+    bad "(5i) $g50"
+fi
+g50n=$(BANKLAG=50 drive_ep "$WORK/n-gap.sh" case_gap | tail -1)
+g60n=$(BANKLAG=60 drive_ep "$WORK/n-gap.sh" case_gap | tail -1)
+if [[ "$(field "$g50n" a)" == "yes" && "$(field "$g50n" proven)" == "yes" && "$(field "$g50n" grc)" == "0" ]] \
+   && [[ "$(field "$g60n" a)" == "blind" && "$(layer_of "$g60n")" == "head" && "$(field "$g60n" r)" == *"STALE REFERENCE"*"29 slots behind"* ]]; then
+    ok "(5j) [elapsed-gap] neutered ALONE → the gap archetype MINTS and the gate accepts (rc 0): a bank 50 slots behind the live view certified fresh — the layer is load-bearing (its own neuter control; [elapsed-head] passes the 19 slots it SEES). Beyond the hidden amount the head layer is the named survivor: 60 slots behind → STALE REFERENCE (29 slots seen), blind"
+else
+    bad "(5j) gap-neutered@50=$g50n :: gap-neutered@60=$g60n"
+fi
+g0=$(BANKLAG=0 drive_ep "$STANDBY" case_gap | tail -1)
+g0n=$(BANKLAG=0 drive_ep "$WORK/n-gap.sh" case_gap | tail -1)
+if [[ "$(layer_of "$g0")" == "gap" && "$(field "$g0" grc)" == "1" && "$(layer_of "$g0n")" == "head" && "$(field "$g0n" r)" == *"LAGGED VIEW"*"31 slots behind"* && "$(field "$g0n" grc)" == "1" ]]; then
+    ok "(5k) the IN-SYNC control (this bank on the chain, the same 12 s gap): HEAD GAP, blind; [elapsed-gap] neutered → LAGGED VIEW (the live view reads 31 slots behind the bank that moved during the gap), blind — no mint either way (pre-fix: LAGGED VIEW)"
+else
+    bad "(5k) live=$g0 :: gap-neutered=$g0n"
 fi
 
 # ── (6) coupling ───────────────────────────────────────────────────────────────────────────────
@@ -836,7 +987,7 @@ fi
 
 # ── (9) constants ──────────────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (9) constants: the region assigns none of the derived names; the N_HEAD condition stays at its site ───"
-CONST_RE='(^[[:space:]]*((local|declare|export|readonly)[[:space:]]+([-][[:alnum:]]+[[:space:]]+)*)?(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE)=)|(\(\([[:space:]]*(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE)[[:space:]]*=)'
+CONST_RE='(^[[:space:]]*((local|declare|export|readonly)[[:space:]]+([-][[:alnum:]]+[[:space:]]+)*)?(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX)=)|(\(\([[:space:]]*(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX)[[:space:]]*=)'
 k_ok=1
 for d in "$STANDBY" "$PRIMARY"; do
     rg=$(extract_region "$d" '\[elapsed-provider\] watchdog-elapsed (attested time) proof provider' '\[elapsed-provider\] end shared block')
@@ -846,7 +997,7 @@ for d in "$STANDBY" "$PRIMARY"; do
     df=$(sed -n '/^_derive_proof_floors() {/,/^}/p' "$d")
     printf '%s' "$df" | grep -q 'N_HEAD may$' && printf '%s' "$df" | grep -q 'NOT be loosened alone' || { k_ok=0; bad "(9a) $(basename "$d"): the N_HEAD condition comment left the derivation site"; }
 done
-[[ $k_ok -eq 1 ]] && ok "(9a) the [elapsed-provider] region assigns NONE of elapsed_floor/MARGIN_ELAPSED/N_HEAD/PROOF_MAX_AGE (the test_proof_gate (11) broadened spellings) in either daemon, and the pre-registered N_HEAD condition comment still sits inside _derive_proof_floors in both — the provider READS the one site"
+[[ $k_ok -eq 1 ]] && ok "(9a) the [elapsed-provider] region assigns NONE of elapsed_floor/MARGIN_ELAPSED/N_HEAD/PROOF_MAX_AGE/ELAPSED_HEAD_GAP_MAX (the test_proof_gate (11) broadened spellings; the fifth name is 6.3 fix round 2's R3 bound) in either daemon, and the pre-registered N_HEAD condition comment still sits inside _derive_proof_floors in both — the provider READS the one site"
 
 # ── (10) twins + call sites ────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (10) twins byte-identical; call-site census ───"
@@ -930,6 +1081,14 @@ echo ""; echo "─── (11) D0: the own-bank veto, the timing race, the interm
 # the 6.4-placement EMULATION below; POSTTAKE=1 the loop runs on after the mutation (the STAKED
 # branch: H1). HOSTILE=lv0 the tiers serve the holder's lastVote as the JSON STRING "0009999";
 # HOSTILE=headwrap the spare's processed getSlot answers 2^64 + the true head (M4).
+# 6.3 FIX ROUND 2 (the delta panel's differential knobs, ported verbatim from its driver so the round's
+# reds run here): CI/TI/TCD = CHECK_INTERVAL / TURBO_INTERVAL / TAKEOVER_COOLDOWN (defaults 5 / 1 / 120);
+# VOTES=a:b[,c:d…] the holder votes in each window [a, b] (b < 0: forever) instead of RESUME/STOP;
+# T2LAT / T3LAT_ALL / LOCLAT = every read of that source answers that many s late within [LATFROM,
+# LATTO) (>= the read's -m bound: a timeout at the bound); T2BADFROM/T2BADTO TIER2 refuses instantly in
+# that window; STALLFROM/STALLTO the tiers' view stalls then resumes live; SIFAIL=<n> the first n staked
+# set-identity calls fail. The summary adds hvafter (does the holder vote at or after the mutation — the
+# double-sign exposure), tsil, and egap_from/egap_cycles ([elapsed-gap]'s HEAD GAP answers, R3).
 world() {   # prints one k=v| summary line
     (
         set +e
@@ -944,14 +1103,14 @@ $region
 }"
         STAKED_PUBKEY=S1; UNSTAKED_PUBKEY=U1; VOTE_PUBKEY=V1; PRIMARY_UNSTAKED_PUBKEY=""
         LOCAL_RPC="http://local.mock"; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"
-        TAKEOVER_DELAY=60; TAKEOVER_COOLDOWN=120; EXTERNAL_CONFIRM_THROTTLE=12
+        TAKEOVER_DELAY=60; TAKEOVER_COOLDOWN=${TCD:-120}; EXTERNAL_CONFIRM_THROTTLE=12
         MAX_DELINQUENT_SLOTS=${MDS:-0}; DRY_RUN=false; GOSSIP_VERIFY=${GV:-false}; WITNESS_FASTPATH=false
         VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_EPSILON=0; VOTE_LIVENESS_MIN_INTERVAL=10; VOTE_LIVENESS_MIN_SPAN=40
         # LOCAL_HEALTH_MAX_BEHIND: the shipped default from the seam (printed as lhmb) unless LHMB overrides it
         [[ -n "${LHMB:-}" ]] && LOCAL_HEALTH_MAX_BEHIND=$LHMB
         SOLANA_PATH="$W"; LEDGER_PATH=/x; VALIDATOR_TYPE=agave; SETIDENTITY_TIMEOUT=15
         STAKED_KEYPAIR="$W/staked.json"; printf '[1]' > "$STAKED_KEYPAIR"; UNSTAKED_KEYPAIR="$W/unstaked.json"; printf '[2]' > "$UNSTAKED_KEYPAIR"
-        CHECK_INTERVAL=5; TURBO_INTERVAL=1; _current_interval=5; HEARTBEAT_INTERVAL=999999; _last_heartbeat=$T0
+        CHECK_INTERVAL=${CI:-5}; TURBO_INTERVAL=${TI:-1}; _current_interval=${CI:-5}; HEARTBEAT_INTERVAL=999999; _last_heartbeat=$T0
         ALERT_THROTTLE=600; TAKEOVER_STARVATION_ALERT_SECS=0
         [[ "${HOLDCOOL:-0}" == "1" ]] && { LAST_TAKEOVER_TIME=$T0; TAKEOVER_COOLDOWN=999999; }
         # the FILE-BACKED mono clock (installed AFTER load_seam: its reshim re-applies the _SIM_NOW shims)
@@ -974,7 +1133,7 @@ $region
         display_status() {
             rm -f "$W/spl"
             local ek=none
-            case "${_elapsed_reason:-}" in "STALE REFERENCE"*) ek=stale ;; "LAGGED VIEW"*) ek=lag ;; esac
+            case "${_elapsed_reason:-}" in "STALE REFERENCE"*) ek=stale ;; "LAGGED VIEW"*) ek=lag ;; "HEAD GAP"*) ek=gap ;; esac
             echo "cycle t=$(_t) status=$1 fdt=${FIRST_DELINQUENT_TIME} ea=${_elapsed_answer:-na} ek=$ek fh=${_ep_floor_holds:-0}" >> "$EV"
         }
         case "${LCOMM:-default}" in
@@ -992,7 +1151,10 @@ $region
             shift
             case "$*" in
                 *" set-identity $UNSTAKED_KEYPAIR"*) echo "GIVEBACK t=$(_t)" >> "$EV"; echo U1 > "$IDF"; return 0 ;;
-                *" set-identity "*) echo "MUTATION t=$(_t)" >> "$EV"; echo S1 > "$IDF"; return 0 ;;
+                *" set-identity "*)
+                    # 6.3 fix round 2 (the delta panel's knob): SIFAIL=<n> — the first n staked set-identity calls FAIL (admin socket refuses; identity unchanged)
+                    if [[ ${SIFAIL:-0} -gt 0 ]] && [[ $(grep -c '^SIFAILED' "$EV") -lt ${SIFAIL:-0} ]]; then echo "SIFAILED t=$(_t)" >> "$EV"; return 1; fi
+                    echo "MUTATION t=$(_t)" >> "$EV"; echo S1 > "$IDF"; return 0 ;;
                 *"authorized-voter"*) return 0 ;;
             esac
             "$@"
@@ -1000,7 +1162,11 @@ $region
         _SN=${SLOT_NUM:-5}; _SD=${SLOT_DEN:-2}; _FL=$(( (32 * _SD + _SN - 1) / _SN ))   # finalized visibility lag = ceil(32 slots / rate)
         _slot() { echo $(( HEAD0 + $1 * _SN / _SD )); }
         _hv() {   # the holder's latest landed vote time <= $1
-            local at="$1" r="${RESUME:--1}" s="${STOP:--1}" lv=0
+            local at="$1" r="${RESUME:--1}" s="${STOP:--1}" lv=0 iv a b c
+            if [[ -n "${VOTES:-}" ]]; then
+                for iv in ${VOTES//,/ }; do a=${iv%%:*}; b=${iv##*:}; if [[ $at -ge $a ]]; then c=$at; [[ $b -ge 0 && $c -gt $b ]] && c=$b; [[ $c -gt $lv ]] && lv=$c; fi; done
+                echo "$lv"; return 0
+            fi
             if [[ $r -ge 0 && $at -ge $r ]]; then lv=$at; [[ $s -ge 0 && $lv -gt $s ]] && lv=$s; fi
             echo "$lv"
         }
@@ -1025,6 +1191,17 @@ $region
             echo "read $src $m t=$t" >> "$EV"
             # ── latency (the file clock) ──
             if [[ "$src" == "T2" && "${T2DOWN:-0}" == "1" ]]; then _adv "$mt"; echo "timeout T2 +${mt}" >> "$EV"; return 28; fi
+            # 6.3 fix round 2 (the delta panel's knob): T2BADFROM/T2BADTO — TIER2 refuses INSTANTLY (rc 7, no latency) in that window
+            if [[ "$src" == "T2" && $t -ge ${T2BADFROM:--1} && $t -lt ${T2BADTO:--1} ]]; then echo "t2bad" >> "$EV"; return 7; fi
+            # 6.3 fix round 2 (the delta panel's knobs): T2LAT/T3LAT_ALL/LOCLAT = every read of that source answers that many s late (>= its -m bound: a timeout at the bound), within [LATFROM, LATTO)
+            if [[ $t -ge ${LATFROM:-0} && $t -lt ${LATTO:-999999} ]]; then
+                local _gl=0
+                case "$src" in T2) _gl=${T2LAT:-0} ;; T3) _gl=${T3LAT_ALL:-0} ;; LOCAL) _gl=${LOCLAT:-0} ;; esac
+                if [[ $_gl -gt 0 ]]; then
+                    if [[ $_gl -ge $mt ]]; then _adv "$mt"; echo "timeout $src +${mt}" >> "$EV"; return 28; fi
+                    _adv "$_gl"; echo "late $src +${_gl}" >> "$EV"
+                fi
+            fi
             if [[ ( "$src" == "T2" || "$src" == "T3" ) && $t -ge ${DOWNFROM:--1} && $t -lt ${DOWNTO:--1} ]]; then echo "down $src" >> "$EV"; return 7; fi
             if [[ "$comm" == "processed" && ( "$src" == "T2" || "$src" == "T3" ) ]]; then   # the sampler's reads (SLOWFROM/SLOWTO/T3LAT)
                 if [[ "$src" == "T2" && $t -ge ${SLOWFROM:--1} && $t -lt ${SLOWTO:--1} ]]; then _adv "$mt"; echo "timeout T2 +${mt}" >> "$EV"; return 28; fi
@@ -1082,6 +1259,8 @@ $region
             fi
             # ── TIER2/TIER3 ──
             local tm="${TIERMODE:-splice}" ts bp bf hvp hvf fz
+            # 6.3 fix round 2 (the delta panel's knob): STALLFROM/STALLTO — the tiers' view STALLS (served as of STALLFROM) and then resumes live
+            if [[ $t -ge ${STALLFROM:--1} && $t -lt ${STALLTO:--1} ]]; then t=$STALLFROM; fi
             if [[ "$tm" == "splice" ]]; then
                 case "$mm" in
                     getVoteAccounts)
@@ -1172,6 +1351,7 @@ $region
         estale_from=$(grep -m1 ' ek=stale' "$EV" | sed 's/^cycle t=\([0-9]*\).*/\1/')
         cyc_from=0; [[ -n "$estale_from" ]] && cyc_from=$(awk -v f="$estale_from" '/^cycle / { split($2,a,"="); if (a[2]+0 >= f) c++ } END { print c+0 }' "$EV")
         elag_from=$(grep -m1 ' ek=lag' "$EV" | sed 's/^cycle t=\([0-9]*\).*/\1/')
+        egap_from=$(grep -m1 ' ek=gap' "$EV" | sed 's/^cycle t=\([0-9]*\).*/\1/'); egap=$(grep -c ' ek=gap' "$EV")
         t1b=$(grep -m1 ' status=T1:BEHIND ' "$EV" | sed 's/^cycle t=\([0-9]*\).*/\1/')
         tco=$(awk '/^read LOCAL getVoteAccounts/{n=NR} /^MUTATION/{m=NR} END{print n+0, m+0}' "$EV")
         between=$(awk -v range="$tco" 'BEGIN{split(range,x," ")} NR>x[1] && NR<x[2] && /^read LOCAL/{c++} END{print c+0}' "$EV")
@@ -1179,8 +1359,22 @@ $region
         lastlocal=""; [[ -n "$mut" ]] && lastlocal=$(awk '/^read LOCAL getVoteAccounts/{l=$4} /^MUTATION/{print l; exit}' "$EV" | sed 's/t=//')
         voting=""; [[ -n "$mut" && ${RESUME:--1} -ge 0 && $mut -ge ${RESUME:--1} ]] && { if [[ ${STOP:--1} -lt 0 ]]; then voting=$(( mut - RESUME )); else voting="stopped@${STOP}"; fi; }
         petgap=$(awk '/^pet t=/{ split($2,a,"="); t=a[2]+0; if (seen && t-p > g) g=t-p; p=t; seen=1 } END{print g+0}' "$EV")
+        # petgap_own (6.3 fix round 2): the widest gap between consecutive pets that spans the own-bank
+        # payload read (LOCAL getVoteAccounts) — the segment the MAX_DELINQUENT_SLOTS reference joins
+        petgap_own=$(awk '/^pet t=/{ split($2,a,"="); t=a[2]+0; if (seen && own && t-p > g) g=t-p; p=t; seen=1; own=0; next } /^read LOCAL getVoteAccounts/{ own=1 } END{print g+0}' "$EV")
         fholds=$(awk '/^cycle /{ for (i=1;i<=NF;i++) if ($i ~ /^fh=/) { split($i,a,"="); if (a[2]+0 > m) m=a[2]+0 } } END{print m+0}' "$EV")
-        echo "E=${E:-none}|veto=${veto:-none}|mutation=${mut:-none}|end=$_end|emint=${emint:-none}|eoat=${eoat:-none}|estale_cycles=$estale|estale_from=${estale_from:-none}|cycles_from_stale=$cyc_from|elag_from=${elag_from:-none}|t1_behind_from=${t1b:-never}|lhmb=${LOCAL_HEALTH_MAX_BEHIND:-unset}|local_reads_between=$between|own_read_before_mut=${lastlocal:-none}|holder_voting_at_mut=${voting:-no}|giveback=$(grep -m1 '^GIVEBACK' "$EV" | sed 's/.*t=//')|h1=$(grep -m1 '^h1-fence' "$EV" | sed 's/.*t=//')|petgap=$petgap|pets=$(grep -c '^pet t=' "$EV")|floor_holds=$fholds|order=$order|gate=$(grep -m1 '^gate-accepted' "$EV" | sed 's/^gate-accepted //')"
+        tsil=none; [[ -n "$mut" ]] && tsil=$(( mut - $(_hv "$mut") ))
+        # hvafter: does the holder vote at or after the mutation (the double-sign exposure)?
+        hvafter=na
+        if [[ -n "$mut" ]]; then
+            hvafter=0
+            if [[ -n "${VOTES:-}" ]]; then
+                for iv in ${VOTES//,/ }; do b=${iv##*:}; if [[ $b -lt 0 || $b -ge $mut ]]; then hvafter=1; fi; done
+            elif [[ ${RESUME:--1} -ge 0 ]]; then
+                if [[ ${STOP:--1} -lt 0 || ${STOP:--1} -ge $mut ]]; then hvafter=1; fi
+            fi
+        fi
+        echo "hvafter=$hvafter|tsil=$tsil|E=${E:-none}|veto=${veto:-none}|mutation=${mut:-none}|end=$_end|emint=${emint:-none}|eoat=${eoat:-none}|estale_cycles=$estale|estale_from=${estale_from:-none}|cycles_from_stale=$cyc_from|elag_from=${elag_from:-none}|egap_from=${egap_from:-none}|egap_cycles=$egap|t1_behind_from=${t1b:-never}|lhmb=${LOCAL_HEALTH_MAX_BEHIND:-unset}|local_reads_between=$between|own_read_before_mut=${lastlocal:-none}|holder_voting_at_mut=${voting:-no}|giveback=$(grep -m1 '^GIVEBACK' "$EV" | sed 's/.*t=//')|h1=$(grep -m1 '^h1-fence' "$EV" | sed 's/.*t=//')|petgap=$petgap|petgap_own=$petgap_own|pets=$(grep -c '^pet t=' "$EV")|floor_holds=$fholds|order=$order|gate=$(grep -m1 '^gate-accepted' "$EV" | sed 's/^gate-accepted //')"
         rm -rf "$W"
     )
 }
@@ -1364,7 +1558,7 @@ else
 fi
 
 # ── (12) the 6.3 fix round's mechanism reds, re-run green ──────────────────────────────────────
-echo ""; echo "─── (12) fix round 1: M2 post-read starts / M3 observed_at / M4 through the loop / M5 exit code / M6 pet gap / M8 status ───"
+echo ""; echo "─── (12) fix round 1: M2 post-read starts / M3 → R1 observed_at (the evaluation start again) + the tail / M4 through the loop / M5 exit code / M6 pet gap / M8 status ───"
 # (12a) M2 (F2) — the silence START stamped AFTER the read that established it. The world: honest tiers,
 # MAX_DELINQUENT_SLOTS=15, a holder ALIVE (each vote landing 20 slots behind the head — delinquent to the
 # spare, under its own 32-slot vote-lag fence) until STOP; the Gate-3 read at t135 hits one T2 timeout
@@ -1384,32 +1578,11 @@ else
     bad "(12a) t3lat5=$ra1 :: t3lat1=$ra2 :: control=$ra3"
 fi
 if [[ "$(field "$ra4" emint)" == "190" && "$(field "$ra4" mutation)" == "190" && "$(field "$ra5" mutation)" == "135" && "$(field "$ra5" floor_holds)" == "0" ]]; then
-    ok "(12a-pin) M2 at the attempt_takeover PREFETCH PIN (the pin read at t71 costs a T2 timeout + 9 s of T3 latency): the observed-span start is the answer's arrival (t90), so the provider mints at t190 (pre-fix t171 — the 19 s the read took counted as observed silence); the un-armed take in the same world is UNCHANGED at t135 with ZERO span-floor holds — M2 is conservative on the span floor and, measured, binds it nowhere new (see also the report's probe set)"
+    ok "(12a-pin) M2 at the attempt_takeover PREFETCH PIN (the pin read at t71 costs a T2 timeout + 9 s of T3 latency): the observed-span start is the answer's arrival (t90), so the provider mints at t190 (pre-fix t171 — the 19 s the read took counted as observed silence); the un-armed take in THIS world is unchanged at t135 with zero span-floor holds — only because its pin lands on T3 and the take cycle's T2 sample flips provider (the 10 s re-pin wait covers the floor). Elsewhere M2 DOES make the span floor bind where it did not — always later: (13e)"
 else
     bad "(12a-pin) armed=$ra4 :: unarmed=$ra5"
 fi
 
-# a FILE-backed mono clock for ONE drive_ep case: T2/T3/LOCAL reads (and pets) then TAKE time inside $()
-fileclock_on() {
-    CLKF=$(mktemp "$WORK/clk.XXXXXX"); echo "$_SIM_NOW" > "$CLKF"
-    mono_now() { local x; read -r x < "$CLKF"; echo "$x"; }
-    _clk_adv() { local x; read -r x < "$CLKF"; echo $(( x + $1 )) > "$CLKF"; }
-    eval "$(declare -f curl | sed '1s/^curl/_ep_curl/')"
-    curl() {   # T2_DOWN/T3_DOWN: a timeout AT the -m bound; LAT_T3 / LAT_LOCAL: the answer that many s late
-        local args=("$@") i=0 mt=10 url=""
-        while [[ $i -lt ${#args[@]} ]]; do
-            case "${args[$i]}" in -m) mt="${args[$((i+1))]}" ;; http*) url="${args[$i]}" ;; esac
-            i=$((i+1))
-        done
-        case "$url" in
-            "$TIER2_RPC") [[ "$T2_DOWN" == "1" ]] && _clk_adv "$mt" ;;
-            "$TIER3_RPC") if [[ "$T3_DOWN" == "1" ]]; then _clk_adv "$mt"; else _clk_adv "${LAT_T3:-0}"; fi ;;
-            "$LOCAL_RPC") _clk_adv "${LAT_LOCAL:-0}" ;;
-        esac
-        _ep_curl "$@"
-    }
-    _watchdog_pet() { echo "pet" >> "$EV"; _clk_adv "${PETCOST:-0}"; }
-}
 # (12b) M2, unit: every span-STARTING stamp of the Block-3 twin helper is post-read. Pre-fix red:
 # blind_until / observed_since / pair_ts all equal the PRE-read stamp (+50 / +70 / +70).
 case_m2unit() {
@@ -1429,14 +1602,16 @@ else
     bad "(12b) $r"
 fi
 
-# (12c) M3 (CC-5) — observed_at = the ANSWERING read's own pre-read stamp. House bound-counting on a file
-# clock: T2 times out at its 10 s bound, every pet costs 7 s, T3 answers at its 10 s bound, the head read
-# takes its 5 s bound. Pre-fix red: observed_at = the evaluation start (+150) — 46 s old at the mint.
-case_m3() {
+# (12c) R1 (6.3 fix round 2 — REG-A): observed_at is the EVALUATION START again. Fix round 1's M3 stamped
+# the answering read's own pre-read stamp instead — up to one T2 timeout LATER — and so the edge admitted
+# a verdict the evaluation-start stamp refuses: a loosening, reverted. A file clock: T2 times out at its
+# 10 s bound, T3 answers 10 s late, the own-bank head is local and instant, pets free. Pre-fix red
+# (f22d492): observed_at=+160 (T3's pre-read stamp), 49 s old at the edge after 6.1's 39 s → ACCEPTED.
+case_r1() {
     reg; prime_seam 0 none
     _liveness_first_provider="T3"                                          # the episode pinned to T3 (a T2-down episode) — fixture write
     _SIM_NOW=$(( T0 + 150 )); fileclock_on
-    T2_DOWN=1; LAT_T3=10; LAT_LOCAL=5; PETCOST=7
+    T2_DOWN=1; LAT_T3=10; LAT_LOCAL=0; PETCOST=0
     _elapsed_step
     local mint; mint=$(cat "$CLKF")
     local v; v=$(_elapsed_provider)
@@ -1446,13 +1621,40 @@ case_m3() {
     _proof_age_edge_check; local erc=$?
     echo "a=$_elapsed_answer|oat=$(_proof_field "$v" observed_at)|mint=$mint|grc=$grc|erc=$erc|ew=$ew"
 }
-r=$(drive_ep "$STANDBY" case_m3 | tail -1)
-oat=$(field "$r" oat); mint=$(field "$r" mint)
-if [[ "$(field "$r" a)" == "yes" && "$oat" == "$(( T0 + 167 ))" && "$mint" == "$(( T0 + 196 ))" && "$(field "$r" grc)" == "0" ]] \
-   && [[ "$(field "$r" erc)" == "1" && "$(field "$r" ew)" == *"verdict age 68s"* ]]; then
-    ok "(12c) M3 — under the house bound-counting (T2 timeout 10 + pet 7, T3 at its 10 s bound, head 5 s, pets 7 s) the verdict's observed_at is the T3 read's OWN pre-read stamp (+167 — not the evaluation start +150); the mint lands at +196: TAIL from observed_at to the mint = $(( mint - oat )) s (+ ~2 s parse glue in the field = the region comment's 31 s). The gate accepts it at the mint; after 6.1's acceptance slack + recheck R_worst (39 s) the edge check REFUSES it (verdict age 68 s > PROOF_MAX_AGE 50) — PROOF_MAX_AGE does not cover this provider's worst case for 6.4 (recorded in the region comment; unchanged here). Pre-fix: observed_at=+150, 46 s old at the mint, 85 s at the edge"
+r=$(drive_ep "$STANDBY" case_r1 | tail -1)
+if [[ "$(field "$r" a)" == "yes" && "$(field "$r" oat)" == "$(( T0 + 150 ))" && "$(field "$r" mint)" == "$(( T0 + 170 ))" && "$(field "$r" grc)" == "0" ]] \
+   && [[ "$(field "$r" erc)" == "1" && "$(field "$r" ew)" == *"verdict age 59s"* ]]; then
+    ok "(12c) R1 — observed_at is the EVALUATION START (+150), not the answering read's pre-read stamp: T2 timing out (10 s) and T3 answering 10 s late mint at +170; after 6.1's acceptance slack + recheck R_worst (39 s) the edge check REFUSES it (verdict age 59 s > PROOF_MAX_AGE 50). Pre-fix (M3): observed_at=+160, age 49 s → ACCEPTED — the loosening R1 reverts"
 else
     bad "(12c) $r"
+fi
+# (12c-tail) the TAIL census at the house bound-counting (a pet = 7 s; PETSEQF sets each pet in order):
+# the sampler's two pets 7 s, T2 timing out (10 s), T3 at its 10 s bound. The head read's own op + pet
+# decide: within ELAPSED_HEAD_GAP_MAX (a 1 s pet) the worst MINTING evaluation; at its full bound (curl
+# -m 5 + a 7 s pet) the worst evaluation — which R3 turns into HEAD GAP, blind. Pre-fix red (f22d492):
+# the full-bound evaluation MINTED at +196 (observed_at +167).
+case_r1tail() {   # HEADLAT / HEADPET: the head read's latency and its own pet (s)
+    reg; prime_seam 0 none
+    _liveness_first_provider="T3"
+    _SIM_NOW=$(( T0 + 150 )); fileclock_on
+    T2_DOWN=1; LAT_T3=10; LAT_LOCAL=${HEADLAT:-0}
+    PETSEQF="$WORK/petseq.$HEADLAT.$HEADPET"; printf '7\n7\n%s\n' "$HEADPET" > "$PETSEQF"
+    _elapsed_step
+    local mint; mint=$(cat "$CLKF")
+    local v; v=$(_elapsed_provider)
+    require_relinquish_proof; local grc=$?
+    _clk_adv 39
+    local ew=""; log_warn() { ew="$*"; }
+    _proof_age_edge_check; local erc=$?
+    echo "a=$_elapsed_answer|r=$_elapsed_reason|oat=$(_proof_field "$v" observed_at)|mint=$mint|grc=$grc|erc=$erc|ew=$ew"
+}
+rt1=$(HEADLAT=0 HEADPET=1 drive_ep "$STANDBY" case_r1tail | tail -1)
+rt2=$(HEADLAT=5 HEADPET=7 drive_ep "$STANDBY" case_r1tail | tail -1)
+if [[ "$(field "$rt1" a)" == "yes" && "$(field "$rt1" oat)" == "$(( T0 + 150 ))" && "$(field "$rt1" mint)" == "$(( T0 + 185 ))" && "$(field "$rt1" grc)" == "0" && "$(field "$rt1" erc)" == "1" && "$(field "$rt1" ew)" == *"verdict age 74s"* ]] \
+   && [[ "$(field "$rt2" a)" == "blind" && "$(field "$rt2" r)" == "HEAD GAP: the head read landed 12s after the payload read"* && "$(field "$rt2" mint)" == "$(( T0 + 196 ))" ]]; then
+    ok "(12c-tail) the tail from observed_at to the mint, MEASURED on the file clock at the house bound-counting: the worst MINTING evaluation (the head read + its pet inside ELAPSED_HEAD_GAP_MAX) mints at +185 — TAIL 35 s — the gate accepts it at the mint, and the edge refuses it (age 74 s > 50); the worst evaluation (the head read at its curl -m 5 bound + a 7 s pet: 46 s end to end) no longer mints — HEAD GAP 12 s, blind. THE ELAPSED PROVIDER'S WORST EVALUATION DOES NOT CONVERGE UNDER PROOF_MAX_AGE (region comment + the PROOF_MAX_AGE derivation site; 6.4 decides). Pre-fix: the 46 s evaluation MINTED at +196"
+else
+    bad "(12c-tail) minting=$rt1 :: full-bound=$rt2"
 fi
 
 # (12d) M4 (INT-4/N7) through the REAL main loop. Pre-fix red: the zero-padded lastVote ABORTS the loop at
@@ -1572,19 +1774,20 @@ fi
 
 # (12f) M6 (INT-2/CC-6a) — the MEASURED gap between consecutive pets, house bound-counting (every read at its
 # full -m bound, every pet 7 s, T2 failing), the take held on the cooldown so watchdog-elapsed evaluates.
-# Pre-fix red: 20 s at MAX_DELINQUENT_SLOTS 0 and 15 (getSlot curl -m 3 unpetted + the next T2 read + a pet).
+# Pre-fix red (de21927): 20 s at MAX_DELINQUENT_SLOTS 0 and 15 (getSlot curl -m 3 unpetted + the next T2
+# read + a pet). Since 6.3 fix round 2 (R2) the MAX_DELINQUENT_SLOTS reference is read FIRST in the own-
+# bank check, so it no longer precedes the prefetch sampler's T2 read: it precedes the own-bank payload
+# (curl -m 5). The MDS=15 world is a holder that stopped (the MDS reference runs on every own-bank read
+# now; a live lagging holder no longer opens an episode here — R2's own effect).
 mutate "$STANDBY" '/per-op pet after THIS read too/,/^        _watchdog_pet$/{/^        _watchdog_pet$/d;}' "$WORK/no-t1pet.sh"
 mutate "$STANDBY" '/^        _watchdog_pet   # v0.7 (Block 6.3 fix round, M6.s class/d' "$WORK/no-mdspet.sh"
 rf0=$(ARMED=1 HOLDCOOL=1 T2DOWN=1 CURLMAX=1 PETS=7 MDS=0 HORIZON=900 world | tail -1)
-# at MAX_DELINQUENT_SLOTS=15 the MDS getSlot runs only while the holder is not yet delinquent-LISTED, so that
-# world keeps the holder alive and lagging (each vote 20 slots behind the head; honest tiers): the MDS read
-# then precedes the pin's prefetch sampler read in the episode's first take-path cycle
-rf15=$(ARMED=1 HOLDCOOL=1 T2DOWN=1 CURLMAX=1 PETS=7 MDS=15 TIERMODE=honest RESUME=0 HLAGS=20 HORIZON=900 world | tail -1)
+rf15=$(ARMED=1 HOLDCOOL=1 T2DOWN=1 CURLMAX=1 PETS=7 MDS=15 HORIZON=900 world | tail -1)
 rfc0=$(WSCRIPT="$WORK/no-t1pet.sh" ARMED=1 HOLDCOOL=1 T2DOWN=1 CURLMAX=1 PETS=7 MDS=0 HORIZON=900 world | tail -1)
-rfc15=$(WSCRIPT="$WORK/no-mdspet.sh" ARMED=1 HOLDCOOL=1 T2DOWN=1 CURLMAX=1 PETS=7 MDS=15 TIERMODE=honest RESUME=0 HLAGS=20 HORIZON=900 world | tail -1)
-if [[ "$(field "$rf0" petgap)" == "17" && "$(field "$rf15" petgap)" == "17" && "$(field "$rf0" elag_from)" != "none" ]] \
-   && [[ "$(field "$rfc0" petgap)" == "20" && "$(field "$rfc15" petgap)" == "20" ]]; then
-    ok "(12f) M6 — MEASURED max gap between consecutive pets through the armed standby loop (watchdog-elapsed evaluating; T2 failing; every read at its full -m bound; every pet 7 s): 17 s at MAX_DELINQUENT_SLOTS 0 and at 15 = one op + one pet < WatchdogSec 30; CONTROLS: the Tier-1 getSlot pet removed → 20 s at 0; the MDS getSlot pet removed → 20 s at 15 — each pet is load-bearing (N-is-all). Pre-fix: 20 s at both"
+rfc15=$(WSCRIPT="$WORK/no-mdspet.sh" ARMED=1 HOLDCOOL=1 T2DOWN=1 CURLMAX=1 PETS=7 MDS=15 HORIZON=900 world | tail -1)
+if [[ "$(field "$rf0" petgap)" == "17" && "$(field "$rf15" petgap)" == "17" && "$(field "$rf0" egap_from)" != "none" && "$(field "$rf15" egap_from)" != "none" ]] \
+   && [[ "$(field "$rf15" petgap_own)" == "12" && "$(field "$rfc0" petgap)" == "20" && "$(field "$rfc15" petgap)" == "17" && "$(field "$rfc15" petgap_own)" == "15" ]]; then
+    ok "(12f) M6 — MEASURED max gap between consecutive pets through the armed standby loop (watchdog-elapsed evaluating through its head read; T2 failing; every read at its full -m bound; every pet 7 s): 17 s at MAX_DELINQUENT_SLOTS 0 and at 15 = one op + one pet < WatchdogSec 30; across the own-bank read at 15: 12 s. CONTROLS: the Tier-1 getSlot pet removed → 20 s at 0 (load-bearing); the MDS reference pet removed → the own-bank segment 15 s (the reference now stacks with the payload read: 3 + 5 + a 7 s pet) while the max stays 17 s — R2's reorder removed M6's 20 s stack; the pet stays (per-op placement). Pre-fix (de21927): 20 s at both"
 else
     bad "(12f) mds0=$rf0 :: mds15=$rf15 :: no-t1pet@0=$rfc0 :: no-mdspet@15=$rfc15"
 fi
@@ -1621,6 +1824,105 @@ if [[ "$(field "$rh1" emint)" == "171" && "$(field "$rh2" emint)" == "250" && "$
     ok "(12h) N2 — both tiers down t80–t120 (inside the delay: no observation attempted, nothing stamped) → the mint is unchanged at t171 (the clock ran through 40 s of UNSTAMPED blindness); outages overlapping take-path cycles (t100–t150, t140–t170) are stamped and restart it → mint at t250 / t270 (the outage's end + the 100 s floor). [elapsed-blind] = no STAMPED blindness since the start (region comment + docs/SAFETY.md)"
 else
     bad "(12h) inside-delay=$rh1 :: overlap1=$rh2 :: overlap2=$rh3"
+fi
+
+# ── (13) 6.3 fix round 2: the round's reds, re-run green — and its documented residual ─────────────────
+echo ""; echo "─── (13) fix round 2: R1 observed_at (loop) / R2 own-bank MDS reference first / R3 head gap (loop) / R7 span floor / R8 cadence ───"
+# (13a) R1 (REG-A) through the REAL loop under the 6.4-placement emulation. The shipped-defaults degraded
+# world (GV=true MDS=0 CI=5; TIER2 down, TIER3 answering 5 s late; the holder's one vote at t146) and the
+# W1 world (TIER2 refusing to t160 then 10 s late, the first set-identity failing, the holder resuming at
+# t320). Pre-fix red (f22d492): a proof-gated take at t441 in the first; t357 on a holder voting since
+# t320 (hvafter=1) in the second. de21927 and the M3-only-revert control: no take / vetoed at t342.
+r13a1=$(ARMED=1 GATE=1 PETS=0 MDS=0 CI=5 GV=true VOTES=146:146 T2DOWN=1 T3LAT_ALL=5 HORIZON=700 world | tail -1)
+r13a2=$(ARMED=1 GATE=1 PETS=0 MDS=0 CI=5 T2BADFROM=0 T2BADTO=160 T2LAT=10 LATFROM=160 SIFAIL=1 RESUME=320 HORIZON=500 world | tail -1)
+if [[ "$(field "$r13a1" mutation)" == "none" && "$(field "$r13a1" emint)" == "381" ]] \
+   && [[ "$(field "$r13a2" veto)" == "342" && "$(field "$r13a2" mutation)" == "none" ]]; then
+    ok "(13a) R1 on the REAL loop: the shipped-defaults degraded world mints at t381 and the gate never accepts it — no take through t700; the W1 world vetoes at t342 — no take on the holder that resumed at t320. Both equal de21927 and the M3-only-revert control take-for-take. Pre-fix (M3): a proof-gated take at t441; a take at t357 on a holder voting 37 s"
+else
+    bad "(13a) degraded=$r13a1 :: w1=$r13a2"
+fi
+# (13b) R2 (FX-1): the own-bank MAX_DELINQUENT_SLOTS reference is read FIRST. A file clock, the REAL
+# local_check_delinquency / tier2_check_delinquency; the holder votes EVERY slot (its lastVote = the
+# finalized head the instant the payload is served), MAX_DELINQUENT_SLOTS=15, 2.5 slots/s; every pet
+# costs PC s and the reference getSlot answers SL s late (the answer reflects the chain when served).
+mds_unit() {   # $1=local|tier2 $2=PC $3=SL $4=holder lag (slots) [$5=down: every read times out at its -m bound]
+    (
+        set +e
+        load_seam "$STANDBY"
+        MCLK=$(mktemp "$WORK/mclk.XXXXXX"); echo "$T0" > "$MCLK"; MORD=$(mktemp "$WORK/mord.XXXXXX")
+        _mn() { local x; read -r x < "$MCLK"; echo "$x"; }
+        _ma() { local x; read -r x < "$MCLK"; echo $(( x + $1 )) > "$MCLK"; }
+        mono_now() { _mn; }
+        _msl() { echo $(( HEAD0 + ($1 - T0) * 5 / 2 - 32 )); }   # the finalized head at t
+        MLOG=""; log_info() { MLOG="$*"; }; log_warn() { MLOG="$*"; }; log() { :; }
+        VOTE_PUBKEY=V1; STAKED_PUBKEY=S1; LOCAL_RPC=http://local.mock; TIER2_RPC=http://t2.mock; MAX_DELINQUENT_SLOTS=15; _turbo_mode=true
+        MPC="$2"; MSL="$3"; MHL="$4"; MDN="${5:-}"
+        _watchdog_pet() { _ma "$MPC"; printf 'pet;' >> "$MORD"; }
+        curl() {
+            local d="" mt=5; while [[ $# -gt 0 ]]; do case "$1" in -d) d="$2"; shift 2 ;; -m) mt="$2"; shift 2 ;; *) shift ;; esac; done
+            case "$d" in *getVoteAccounts*) printf 'gva;' >> "$MORD" ;; *getSlot*) printf 'slot;' >> "$MORD" ;; esac
+            if [[ "$MDN" == "down" ]]; then _ma "$mt"; return 28; fi
+            case "$d" in
+                *getVoteAccounts*) printf '{"jsonrpc":"2.0","result":{"current":[{"votePubkey":"OTHER","nodePubkey":"X","lastVote":%s},{"votePubkey":"V1","nodePubkey":"S1","lastVote":%s}],"delinquent":[]},"id":1}' "$(( $(_msl "$(_mn)") - 1 ))" "$(( $(_msl "$(_mn)") - MHL ))" ;;
+                *getSlot*) _ma "$MSL"; printf '{"jsonrpc":"2.0","result":%s,"id":1}' "$(_msl "$(_mn)")" ;;
+            esac
+        }
+        if [[ "$1" == "tier2" ]]; then tier2_check_delinquency; else local_check_delinquency; fi
+        echo "rc=$?|order=$(cat "$MORD")|log=$MLOG"
+    )
+}
+u1=$(mds_unit local 7 3 0); u2=$(mds_unit tier2 7 3 0)
+c1=$(mds_unit local 0 3 40); c2=$(mds_unit tier2 0 3 40); d2=$(mds_unit tier2 7 0 0 down)
+if [[ "$(field "$u1" rc)" == "1" && "$(field "$u1" order)" == "slot;pet;gva;pet;" && "$(field "$u2" rc)" == "1" && "$(field "$u2" order)" == "gva;pet;slot;pet;gva;pet;" ]] \
+   && [[ "$(field "$c1" rc)" == "0" && "$(field "$c1" log)" == "[LOCAL] Latency 40 > 15 — treating as delinquent" && "$(field "$c2" rc)" == "0" && "$(field "$c2" log)" == "[TIER2] Latency 40 > 15 — treating as delinquent (lastVote re-read after the reference)" ]] \
+   && [[ "$(field "$d2" rc)" == "2" && "$(field "$d2" order)" == "gva;pet;" ]]; then
+    ok "(13b) R2, unit — a holder voting every slot, the reference 3 s late + a 7 s pet: LOCAL reads the reference FIRST (slot;pet;gva;pet) and the holder is current (rc 1); TIER2 keeps its op sequence and RE-READS the lastVote after the reference before a latency verdict can confirm (gva;pet;slot;pet;gva;pet) — current (rc 1). CONTROLS: a holder truly 40 slots behind still reads delinquent in both ('Latency 40 > 15'); TIER2 down keeps its exact pre-fix sequence (gva;pet → rc 2). Pre-fix: 'Latency 25 > 15 — treating as delinquent' in both"
+else
+    bad "(13b) local=$u1 :: tier2=$u2 :: lag40-local=$c1 :: lag40-tier2=$c2 :: t2down=$d2"
+fi
+r13b=$(ARMED=1 MDS=15 RESUME=0 PETS=7 HORIZON=600 world | tail -1)
+if [[ "$(field "$r13b" E)" == "none" && "$(field "$r13b" mutation)" == "none" ]]; then
+    ok "(13b-world) R2 on the REAL armed loop: MAX_DELINQUENT_SLOTS=15, a holder voting the whole time, every pet 7 s → no episode opens and nothing is taken through t600. Pre-fix: 'delinquent' every cycle from E=35 and the timer-path take MUTATED at t577 on the live holder (de21927: t423)"
+else
+    bad "(13b-world) $r13b"
+fi
+# (13c) R3 (FX-2) through the REAL loop: every read at its full -m bound (CURLMAX), every pet 7 s, the
+# spare's own bank LAG s behind the chain (LAG=20 → 50 slots at 2.5/s; N_HEAD 25). Pre-fix red: LAG=20
+# MINTED at t753 (the head read landing 12 s after the payload hid 30 of the 50 slots); LAG=0 (in sync)
+# answered LAGGED VIEW from t794 — no mint either way there.
+r13c1=$(LAG=20 CURLMAX=1 PETS=7 ARMED=1 GATE=1 MDS=0 HORIZON=820 world | tail -1)
+r13c2=$(LAG=0 CURLMAX=1 PETS=7 ARMED=1 GATE=1 MDS=0 HORIZON=820 world | tail -1)
+if [[ "$(field "$r13c1" emint)" == "none" && "$(field "$r13c1" egap_from)" == "794" && "$(field "$r13c1" mutation)" == "none" ]] \
+   && [[ "$(field "$r13c2" emint)" == "none" && "$(field "$r13c2" egap_from)" == "794" && "$(field "$r13c2" elag_from)" == "none" ]]; then
+    ok "(13c) R3 on the REAL loop (every read at its bound, every pet 7 s): this bank 50 slots behind → HEAD GAP from t794, blind, no mint (pre-fix: MINTED at t753); in sync → HEAD GAP from t794 (pre-fix: LAGGED VIEW) — no mint either way"
+else
+    bad "(13c) lag20=$r13c1 :: lag0=$r13c2"
+fi
+# (13e) R7 (REG-B): fix round 1's M2 (post-read silence starts) CAN make the span floor bind where it did
+# not — only ever later. The binding world pinned as a differential: GV=true MDS=0 CI=5, LOCAL reads 2 s,
+# TIER2 9 s. de21927: MUTATION at t167 with zero span-floor holds.
+r13e=$(GV=true MDS=0 CI=5 LOCLAT=2 T2LAT=9 HORIZON=260 world | tail -1)
+if [[ "$(field "$r13e" mutation)" == "197" && "$(field "$r13e" floor_holds)" == "1" ]]; then
+    ok "(13e) R7 — M2 binds the observation-span floor where de21927 did not: GV=true MDS=0 CI=5, LOCAL reads 2 s, TIER2 9 s → one span-floor hold and the take at t197 (de21927: t167, zero holds). Later, never sooner — the (12a-pin) world is not typical of this"
+else
+    bad "(13e) $r13e"
+fi
+# (13f) R8 (REG-C) — DOCUMENTED RESIDUAL, not a defect of this round: the episode window CLOSES on CYCLE
+# COUNT (7-of-10, 'mostly clear') while the own bank's visibility of a holder vote is TIME, so any
+# cadence change (pets that cost time, CHECK_INTERVAL, read latency) re-phases vetoes and closes BOTH
+# WAYS — de21927 included. The world: MDS=0 CI=5 GV=false, the holder's one vote at t141, TIER2 10 s late
+# during t73–t118, armed, the shipped (un-gated) path. FLIPS WHEN THE CLOSE RULE BECOMES TIME-BASED
+# (a reviewed 6.4+ change; not in this round).
+r8p0=$(ARMED=1 GATE=0 PETS=0 MDS=0 CI=5 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
+r8p1=$(ARMED=1 GATE=0 PETS=1 MDS=0 CI=5 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
+r8p2=$(ARMED=1 GATE=0 PETS=2 MDS=0 CI=5 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
+r8c4=$(ARMED=1 GATE=0 PETS=0 MDS=0 CI=4 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
+r8c6=$(ARMED=1 GATE=0 PETS=0 MDS=0 CI=6 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
+if [[ "$(field "$r8p0" mutation)" == "125" && "$(field "$r8p1" mutation)" == "254" && "$(field "$r8p2" mutation)" == "218" ]] \
+   && [[ "$(field "$r8c4" mutation)" == "138" && "$(field "$r8c6" mutation)" == "126" ]]; then
+    ok "(13f) R8 DOCUMENTED RESIDUAL (cadence, both ways): the same world takes at t125 with free pets, t254 with 1 s pets and t218 with 2 s pets (de21927: t125 / t152 / t284 — its 2 s-pet take is 66 s later than this tree's); CI 4/5/6 with free pets → t138 / t125 / t126 on EVERY tree. The window closes on cycle count, the own bank sees a vote in time — flips when the close rule becomes time-based"
+else
+    bad "(13f) pets0=$r8p0 :: pets1=$r8p1 :: pets2=$r8p2 :: ci4=$r8c4 :: ci6=$r8c6"
 fi
 
 rm -rf "$WORK"

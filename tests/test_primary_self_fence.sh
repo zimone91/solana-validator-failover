@@ -55,6 +55,7 @@ curl() {
     case "$data" in
         *getSlot*)   [[ -z "$_LOCAL_SLOT"   ]] && return 7; printf '{"jsonrpc":"2.0","result":%s,"id":1}' "$_LOCAL_SLOT"; return 0 ;;
         *getHealth*) [[ -z "$_LOCAL_HEALTH" ]] && return 7; printf '%s' "$_LOCAL_HEALTH"; return 0 ;;
+        *getVoteAccounts*) [[ -z "${_LOCAL_GVA:-}" ]] && return 7; printf '%s' "$_LOCAL_GVA"; return 0 ;;   # (R6) only when a case sets it
     esac
     return 7
 }
@@ -164,6 +165,57 @@ check_self_fence_isolation; rc=$?
 [[ "$_selffence_noanswer_since" -eq 0 && "$_fence_calls" -eq 0 ]] \
     && ok "(F1d) successful slot read clears the no-answer timer" \
     || bad "(F1d) successful read did not reset the no-answer timer (since=$_selffence_noanswer_since calls=$_fence_calls)"
+
+# ── (R6) 6.3 fix round 2 (REG-D): a PRESENT but non-canonical LOCAL value fails toward the fence ─────
+# The holder's own node answering garbage fails toward "nobody holds the stake": the fencing condition
+# (frozen / behind / lagging) — never healthy, and never the no-answer path SELF_FENCE_NOANSWER_SECS=0
+# disables. Pre-fix red (f22d492, M4 "unusable" = no answer): the slot "0001000" after 35 s without an
+# advance → 'no answer — treating as validator-unreachable', NO fence; numSlotsBehind "0000300" → ignored,
+# NO fence; an own lastVote "abc" → cannot determine (HOLD), NO fence. Canonical inputs: unchanged.
+echo ""; echo "─── (R6) non-canonical LOCAL values → the fencing condition (frozen / behind / lagging) ───"
+_r6_noans="$SELF_FENCE_NOANSWER_SECS"; SELF_FENCE_NOANSWER_SECS=0
+prep; _LOCAL_SLOT='"0001000"'; _LOCAL_HEALTH='{"jsonrpc":"2.0","result":"ok","id":1}'
+_last_confirmed_slot=1000; _last_confirmed_advance_ts=$(( $(NOW) - SELF_FENCE_ISOLATION_SECS - 5 ))
+check_self_fence_isolation >/dev/null; rc=$?
+r6a="$rc/$_fence_calls/$_fence_reason"
+prep; _LOCAL_SLOT='"0001000"'; _last_confirmed_slot=1000; _last_confirmed_advance_ts=$(( $(NOW) - 5 ))
+check_self_fence_isolation >/dev/null; rc=$?
+r6a2="$rc/$_fence_calls/$_last_confirmed_slot"
+if [[ "$r6a" == 0/1/*"frozen"* && "$r6a2" == "1/0/1000" ]]; then
+    ok "(R6a) a NON-CANONICAL confirmed slot (the JSON string \"0001000\") with SELF_FENCE_NOANSWER_SECS=0 counts as NOT advancing: 35 s without an advance → self-fence (frozen); 5 s → not yet, and the tracker does NOT move (1000). Pre-fix: the no-answer path — NO fence at NOANSWER=0"
+else
+    bad "(R6a) 35s=$r6a :: 5s=$r6a2"
+fi
+prep; SELF_FENCE_MAX_BEHIND=150; _last_confirmed_slot=1000; _last_confirmed_advance_ts=$(( $(NOW) - 5 )); _LOCAL_SLOT=1050
+_LOCAL_HEALTH='{"jsonrpc":"2.0","error":{"code":-32005,"message":"Node is behind","data":{"numSlotsBehind":"0000300"}},"id":1}'
+check_self_fence_isolation >/dev/null; rc=$?; r6b="$rc/$_fence_calls/$_fence_reason"
+prep; SELF_FENCE_MAX_BEHIND=150; _last_confirmed_slot=1000; _last_confirmed_advance_ts=$(( $(NOW) - 5 )); _LOCAL_SLOT=1050
+_LOCAL_HEALTH='{"jsonrpc":"2.0","error":{"code":-32005,"message":"Node is behind","data":{"numSlotsBehind":100}},"id":1}'
+check_self_fence_isolation >/dev/null; rc=$?; r6bc="$rc/$_fence_calls"
+if [[ "$r6b" == 0/1/*"getHealth behind"* && "$r6bc" == "1/0" ]]; then
+    ok "(R6b) a NON-CANONICAL numSlotsBehind (\"0000300\") counts as BEHIND → self-fence at once; the canonical control (100 <= 150) → no fence. Pre-fix: ignored, NO fence"
+else
+    bad "(R6b) garbage=$r6b :: canonical-100=$r6bc"
+fi
+_r6_vp="${VOTE_PUBKEY:-}"; VOTE_PUBKEY="VotePubkey1111111111111111111111111111111"
+SELF_FENCE_VOTE_LAG_SLOTS=32; SELF_FENCE_VOTE_LAG_SECS=20; SELF_FENCE_VOTE_LAG_RESET_CYCLES=3
+gva() { printf '{"jsonrpc":"2.0","result":{"current":[{"votePubkey":"Cluster111","lastVote":%s},{"votePubkey":"%s","lastVote":%s}],"delinquent":[]},"id":1}' "$2" "$VOTE_PUBKEY" "$1"; }
+prep; _LOCAL_HEALTH='{"jsonrpc":"2.0","result":"ok","id":1}'
+_selffence_votelag_baseline=1; _selffence_votelag_healthy=0; _selffence_votelag_since=$(( $(NOW) - SELF_FENCE_VOTE_LAG_SECS - 1 ))
+_last_confirmed_slot=1000; _last_confirmed_advance_ts=$(( $(NOW) - 5 )); _LOCAL_SLOT=1050
+_LOCAL_GVA=$(gva '"abc"' 100000)
+check_self_fence_isolation >/dev/null; rc=$?; r6c="$rc/$_fence_calls/$_fence_reason"
+prep; _selffence_votelag_baseline=1; _selffence_votelag_healthy=0; _selffence_votelag_since=$(( $(NOW) - SELF_FENCE_VOTE_LAG_SECS - 1 ))
+_last_confirmed_slot=1000; _last_confirmed_advance_ts=$(( $(NOW) - 5 )); _LOCAL_SLOT=1050
+_LOCAL_GVA=$(gva 99995 100000)
+check_self_fence_isolation >/dev/null; rc=$?; r6cc="$rc/$_fence_calls"
+_LOCAL_GVA=""; VOTE_PUBKEY="$_r6_vp"; SELF_FENCE_VOTE_LAG_SLOTS=0; SELF_FENCE_VOTE_LAG_SECS=0; _selffence_votelag_since=0; _selffence_votelag_baseline=""
+SELF_FENCE_NOANSWER_SECS="$_r6_noans"; _LOCAL_SLOT=1000
+if [[ "$r6c" == 0/1/*"own votes not landing"*"NON-CANONICAL"* && "$r6cc" == "1/0" ]]; then
+    ok "(R6c) a NON-CANONICAL own lastVote (\"abc\") under a running N6 sustain timer counts as LAGGING → self-fence ('own votes not landing (lag a NON-CANONICAL lastVote …)'); the canonical control (lag 5) → no fence. Pre-fix: cannot determine (HOLD), NO fence"
+else
+    bad "(R6c) garbage=$r6c :: canonical-lag5=$r6cc"
+fi
 
 # ── (N2) v0.6.6: the demote runs BEFORE any external alert in the no-answer branch ─────────────
 # Re-source fresh so alert() is the REAL shipped function (the F1 block above mocked it to a recorder).

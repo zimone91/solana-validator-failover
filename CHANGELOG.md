@@ -5,6 +5,61 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Block 6.3 fix round 2 (delta panel wf_5cea260d-efc) — M3 reverted, the own bank's latency
+  reference read first, the elapsed head compare bounded by its gap, token adoption keyed on the full
+  token, persisted and holder-side garbage failing toward held / the fence.** Mechanism, each red first
+  on f22d492 and green after, and each measured for a take sooner / a holder fence later by
+  differential runs (the panel's world driver, the same world on both trees — the sweep's result closes
+  this entry): (R1) watchdog-elapsed's `observed_at`
+  is the evaluation start again and the liveness sample is three fields again — M3 had widened the
+  acceptance window (the shipped-defaults degraded world took at t441, the W1 world at t357 on a
+  holder voting since t320); both now equal de21927 take-for-take (no take; vetoed at t342); (R2) the
+  own-bank `MAX_DELINQUENT_SLOTS` `getSlot` reference is read BEFORE the payload, so a pet or a stall
+  can only make the holder look more current (a holder voting every slot read "Latency 25 > 15" and an
+  armed spare took it at t577; now no episode opens); TIER2's census twin keeps its op sequence and
+  re-reads the holder's `lastVote` after its reference before a latency verdict can confirm (reading
+  the reference first there added a timeout on the TIER2-down path and re-phased a take 11 s sooner —
+  measured, not shipped); (R3) watchdog-elapsed answers BLIND when its head read lands more than
+  `ELAPSED_HEAD_GAP_MAX` = 1 s after the payload (a new derived constant at the one derivation site —
+  the constants census is five names): the pre-fix tree minted with the spare's bank 50–55 slots behind
+  the view; the hidden lag is now under 6 / 9 slots (2.5 / 3.7 slots/s) on a healthy host, under 23 / 35
+  with the payload's pet stalled at 7 s; (R4) N4's adoption is keyed on the full classified token line
+  and the stored file's identity (a same-gen re-pair to a lower floor proved at +121 s, now not before
+  +221 s; a reporter-only flap and a same-gen other-host swap under a dormant verdict are a new
+  adoption / a withdrawal); (R5) `load_state` reads every persisted number through `_canon_uint`: a
+  non-canonical lockout/cooldown re-holds in full from now ("0777" had been read as octal — the lockout
+  silently expired; "0999" was dropped); a non-canonical `SAVE_TS` makes the save stale ("0999" had
+  discarded the rest of the startup command); a non-canonical baseline value is not restored, per value
+  — the rest of the fresh save restores, a slot as 0 (a baseline existed: the no-answer gate stays
+  armed). Measured on a 30-world fence matrix, both daemons: the holder fences no later than on
+  f22d492 except where a non-canonical stall / silence / lag stamp itself now starts its timer fresh
+  (0 → 30 s — f22d492 read "0777" as octal 511, an ancient stall; a residual for the reviewer), and a
+  healthy holder with a leading-zero slot is no longer fenced (f22d492: at 0–30 s); discarding the whole
+  snapshot for one bad value had fenced later or never (30 s → never); (R6) on the holder, a present but
+  non-canonical LOCAL slot / `numSlotsBehind` / own or cluster `lastVote` counts as frozen / behind /
+  lagging — never healthy, never the no-answer path (the panel's 288-row matrix, both daemons: every
+  canonical row identical to de21927, every non-canonical row fencing no later than de21927, 114 of
+  them earlier). Tests and texts: (R7) the M2 span-floor claim corrected and its binding world pinned
+  as a differential (t167 → t197, one hold); (R8) the cadence residual documented and pinned (the
+  episode window closes on cycle count, the own bank sees a vote in time); (R9) the heredoc guard
+  removes escaped pairs left to right, renders only at census 0 and then under `env -i … bash -r` (an
+  escaped backslash before `$(…)` had passed and executed; absolute-path and redirect forms now fail
+  loudly and create nothing); (R10/R11) the `PROOF_MAX_AGE` derivation scoped to the span it proves,
+  with the provider's non-convergence stated there (its worst minting evaluation measured 35 s old at
+  the mint, 74 s at the edge); stale sampler and `LOCAL_HEALTH_MAX_BEHIND` comments; `docs/SAFETY.md`
+  restates the MDS row, Σ (on an armed unit one pet per read: measured 50 s = 22 s of reads + 28 s of
+  pets), token adoption, the hidden-lag bound and the cadence residual. Differential sweep, 1,115
+  worlds, f22d492 → this build: 62 take sooner, 119 later, 28 move only a veto. Of the sooner, 43 are
+  R1 — the revert moves the proof's re-mint cycle back by the 10 s M3 had moved `observed_at`, and
+  each equals f22d492 with only M3 reverted; 22 of them take where f22d492 vetoed (in 18 the holder
+  had resumed 0–45 s before the take: the take path's Σ after its last own-bank read — `TIER2` at its
+  bound and a failed `set-identity`'s retry — while f22d492 takes the same family's holders resumed
+  2–47 s before its own take). 18 are R2's added reference read re-phasing the cycle (1–8 s sooner,
+  `MAX_DELINQUENT_SLOTS`=15 with reads or pets that cost time, each a take f22d492 also made;
+  TIER2's re-read shape in its place re-phased 3 worlds, one by 56 s). 1 is R3's head-gap blindness
+  re-phasing a timer-path take by 28 s (2 s pets). The phase and cadence residuals, both ways — for
+  the reviewer to ratify.
+
 - **Block 6.3 fix round 1 (panel wf_4c899880-d5b) — the provider's standing verdict follows the
   token in force, silence starts are stamped after the answer, non-canonical integers are unusable,
   an aborted loop fails the unit, and the D0 text is rewritten to the measured truth.** Mechanism,
@@ -12,12 +67,15 @@ All notable changes are documented here. Versions follow the project's internal 
   token at the one derivation site on every serve (local file read, zero network — "zero I/O while
   dormant" is now "zero network") and WITHDRAW a verdict whose token no longer classifies ok, whose
   gen changed, or whose re-derived floor exceeds the silence it was minted on; (N4) a token adopted
-  mid-episode restarts the silence (a provider-local stamp per gen — no retroactive mint); (M2) every
+  mid-episode restarts the silence (a provider-local stamp per gen — keyed on gen only, so a same-gen
+  re-pair with a lower floor still minted retroactively; fix round 2's R4 keys it on the full token); (M2) every
   seam stamp that STARTS a span — the observed-span start, the VOTING re-pin, the blind stamp, the
   pair's first end, the prefetch pin — is taken AFTER the read that established it (the F2 world:
-  minted with true silence 86 s < W+B before, ≥ 100 s after; measured, the span floor binds nowhere
-  new); (M3) observed_at is the answering read's own pre-read stamp (house worst case: 29 s old at
-  the mint + glue, recorded against `PROOF_MAX_AGE` for 6.4, unchanged); (M4) ONE canonical-integer
+  minted with true silence 86 s < W+B before, ≥ 100 s after; M2 CAN make the observation-span floor
+  bind where it did not — slow LOCAL reads, TIER2 near its bound — only ever later, +19 to +53 s
+  measured, corrected in fix round 2, R7); (M3) observed_at was set to the answering read's own
+  pre-read stamp — REVERTED in fix round 2 (R1): it widened the acceptance window, a loosening (a
+  proof-gated take at t441 where the evaluation-start stamp never takes); (M4) ONE canonical-integer
   validator `_canon_uint` (`^(0|[1-9][0-9]{0,18})$`, ≤ 2^63−1) for every external integer the take
   path, the providers and the self-fence do arithmetic on — "0009999" aborted the main loop and
   2^64+N wrapped; (M5) a main loop that ends without a shutdown request logs an ERROR and exits 1, so
@@ -36,9 +94,11 @@ All notable changes are documented here. Versions follow the project's internal 
   would flip each (co-frozen partition after the pin, the latency term Σ, an honest lagging tier,
   the armed intermittent holder, `LOCAL_HEALTH_MAX_BEHIND` > 128, forged G2 on shared vantages); the
   reachable post-blindness archetype and `[elapsed-seam]` join the multilayer controls; the heredoc
-  guard censuses every expansion in both deploy heredocs and renders both under a canary PATH.
+  guard censuses the expansions in both deploy heredocs (an escaped backslash before `$(…)` evaded
+  it until fix round 2's R9) and renders both under a canary PATH.
   Texts: `docs/SAFETY.md` "Shared vantages" rewritten (three premises, the exposure = commitment lag
-  + every tier read before `set-identity`, partitioned-after-open findings, the tip guard's reach,
+  + every tier read before `set-identity` — on an armed unit one pet per read as well, restated in fix
+  round 2 — partitioned-after-open findings, the tip guard's reach,
   slot time stated in slots — mainnet measured ≈ 3.7 slots/s on 2026-09-26, so `N_HEAD` = 25 slots ≈
   6.8 s there, stricter than its 10 s derivation); the G2 remedy texts scoped to verified-demote; the
   checksum claims scoped (a delivery-path intermediary rewrites files and manifest together).
