@@ -433,8 +433,8 @@ _selffence_restored_votelag_since=0
 #       truncation, so a floor F guarantees only F - 6 s between the two OBSERVATIONS: F >= 8.8 + 6 → 15 s;
 #   (2) BELOW SELF_FENCE_ISOLATION_SECS (30 by default — the BACKUP timing contract): a still-frozen holder
 #       with an unknown slot over a stall stamp a window old fences at the first read at or after reference
-#       + 15 s — up to one CHECK_INTERVAL past it (45 / 15 s at grace 30 / 0 at CHECK_INTERVAL 1, 3 and 5;
-#       51 / 21 s at 7) — earlier than the plain frozen clock's reference + 30 s (e917c04's timing); over a
+#       + 15 s — up to one LOOP CYCLE past it (the free-read harness: 45 / 15 s at grace 30 / 0 at
+#       CHECK_INTERVAL 1, 3 and 5; 51 / 21 s at 7) — earlier than the plain frozen clock's reference + 30 s (e917c04's timing); over a
 #       YOUNG stall stamp at max(reference + 15 s, restore + SELF_FENCE_ISOLATION_SECS), about restore + 30 s
 #       at a short grace (6.3 fix round 5 — P5T-FLOOR-EVERY-CADENCE, H5-W2-YOUNG-BOUND-COMMENT). The plain
 #       frozen clock keeps running from the reference meanwhile, so an ISOLATION set below 15 still fires
@@ -908,7 +908,9 @@ load_state() {
         # ABSENT latch key stays unset (N6's fresh-start rule). RESIDUAL (6.3 fix round 5 —
         # H5-W4-LXCFS-PREMISE; named, not changed): a container that virtualizes /proc/uptime but not
         # boot_id (lxcfs-style) restarts the uptime clock under the same boot_id, so after a container
-        # restart every persisted stamp is "future" → ANCIENT → one first-read blip fences at once — e.g. a
+        # restart the self-fence stall / silence / lag stamps are "future" → ANCIENT (a future lockout /
+        # cooldown stamp restores verbatim and holds until the uptime passes it) → once the container's uptime
+        # at that read is ≥ SELF_FENCE_ISOLATION_SECS, one first-read blip fences at once — e.g. a
         # validator still catching up, restarted with the container, at STARTUP_GRACE=0 (the final panel:
         # fenced at its first read, where 7ab7eca and the same restart on a normal host never fenced).
         # docs/DEPLOYMENT-MANUAL.md, Prerequisites.
@@ -1025,9 +1027,10 @@ tier1_check_delinquency() {
 # the demote comes LATER: whenever the threshold crossing falls inside the snapshot gap (up to 10 + 7 + 10
 # = 27 s: both reads at their curl -m 10 bound and a 7 s pet between them), the over-limit read it hides
 # costs ONE FULL STAKED LOOP CYCLE (DELINQUENCY_RETRIES consecutive over-limit reads are needed), so the
-# delay is 0 or exactly one cycle — no fixed number: 37 s measured in a latency-only cycle at
-# CHECK_INTERVAL 3, 64 s at CHECK_INTERVAL 30, ~61 s at the defaults with the self-fence's getSlot and
-# getHealth reads (stopped holder, 2.5 and 3.7 slots/s; 6.3 fix round 5, P5T-S8-NOT-A-BOUND — round 4's
+# delay is 0 or exactly one cycle — no fixed number: 37 s / 64 s measured in latency-only cycles at
+# CHECK_INTERVAL 3 / 30; ~103 s for a full default STAKED cycle with every per-cycle read and pet, more
+# with N6's read or the armed sleep's chunk pets (stopped holder, 2.5 and 3.7 slots/s; 6.3 fix round 5,
+# P5T-S8-NOT-A-BOUND and its text check CC5-S8-DEFAULTS-61 — round 4's
 # "~37 s … within B = 60 s" was one probe's cycle, not a bound) — and a still-voting holder lagging within
 # rate x (that gap) of MAX_VOTE_LATENCY never demotes on this path at all. It costs AVAILABILITY only (a
 # lagging holder is live), and this path is NOT what B = EXPECTED_PRIMARY_SELF_FENCE_SECS +
@@ -3642,14 +3645,14 @@ _elapsed_reset() {
 # token file under it untouched, so no file identity sees it (proven at +100 s on every earlier tree,
 # de21927 through 02c8e54) — so a token whose directory does not canonicalize to itself (cd -P / pwd -P of
 # PROOF_STATE_DIR differs from PROOF_STATE_DIR as configured: a symlink anywhere on the path, or any
-# spelling that is not the resolved path — a trailing '/', '//', '.', '..', a relative path) → rc 1, with
+# spelling that is not the resolved path — a trailing '/', an internal '//', '.', '..', a relative path — a LEADING '//' is kept by pwd -P as its own root and passes, with no symlink on it) → rc 1, with
 # the loud reason _elapsed_tok_symlink_why prints. Strictly tighter; AVAILABILITY: a symlinked state
 # directory disables watchdog-elapsed until PROOF_STATE_DIR is pointed at the resolved path (`failover arm`
 # writes through the link into that same directory). Not visible: a rewrite back to identical bytes within
 # one ctime granule (a kernel tick on ns-timestamp filesystems; 1 s on ext4 with 128-byte inodes, ext3,
-# HFS+) — the inode number does not help (ext4 reuses it across a tmp+mv); and the state directory itself
-# swapped away and back by RENAME, no symlink anywhere (the token file keeps its identity: proven at +100 s
-# on every tree, this one included — test_elapsed_provider (3l-R5a), a DOCUMENTED RESIDUAL). Zero network;
+# HFS+) — the inode number does not help (ext4 reuses it across a tmp+mv); and the state directory's contents
+# swapped away and back between two steps — a rename, a transient symlink, a mount (the key sees only the
+# token file's identity: proven at +100 s on every tree, this one included — test_elapsed_provider (3l-R5a), a DOCUMENTED RESIDUAL). Zero network;
 # armed + registered paths only.
 _elapsed_tok_ident() {
     local _eti_f="$PROOF_STATE_DIR/pairing-token" _eti_o
@@ -4751,8 +4754,8 @@ check_self_fence_isolation() {
     # stall stamp, or — over a YOUNG stall stamp (load_state) — the restore instant, never earlier. The
     # plain frozen clock keeps running from the reference meanwhile (an ISOLATION below the floor fires
     # first). So a still-frozen holder fences at the first read AT OR AFTER: over a stall stamp a window
-    # old, reference + min(the floor, SELF_FENCE_ISOLATION_SECS) — up to one CHECK_INTERVAL past it (45 /
-    # 15 s at grace 30 / 0 at CHECK_INTERVAL 1, 3 and 5; 51 / 21 s at 7); over a YOUNG stall stamp,
+    # old, reference + min(the floor, SELF_FENCE_ISOLATION_SECS) — up to one LOOP CYCLE past it (the free-read
+    # harness: 45 / 15 s at grace 30 / 0 at CHECK_INTERVAL 1, 3 and 5; 51 / 21 s at 7); over a YOUNG stall stamp,
     # max(reference + the floor, restore + SELF_FENCE_ISOLATION_SECS) — about restore + 30 s at a short
     # grace (6.3 fix round 5 — P5T-FLOOR-EVERY-CADENCE, H5-W2-YOUNG-BOUND-COMMENT: the bound stated here
     # before held only at cadences that divide 15, and only over a stamp a window old). The pending is not

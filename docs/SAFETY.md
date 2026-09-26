@@ -390,9 +390,9 @@ monitor restarted to read it; `failover arm` writes through the link into that s
 stored token does not move). Not visible, for the regular file: a rewrite back to identical bytes
 within one ctime granule — a kernel tick on ns-timestamp filesystems, 1 s on ext4 with 128-byte inodes,
 ext3 or HFS+ (the inode number does not help: ext4 recycles it across a tmp+mv); and the state
-directory itself swapped away and back by RENAME, with no symlink anywhere — the token file keeps its
-identity, and it proves at +100 s on every tree, this one included (a documented residual,
-`test_elapsed_provider` (3l-R5a)).
+directory's contents swapped away and back between two steps — by a rename, a transient symlink or a
+mount: the key sees only the token file's identity, and it proves at +100 s on every tree, this one
+included (a documented residual, `test_elapsed_provider` (3l-R5a)).
 
 **Where composition does add an independent input — and how much.**
 

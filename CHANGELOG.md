@@ -46,9 +46,9 @@ All notable changes are documented here. Versions follow the project's internal 
   same-gen re-pair, another host's token with the same bounds, and a rewrite back to the same bytes that
   no evaluation saw are all new adoptions, whose silence restarts. Not visible: a rewrite back to
   identical bytes within one ctime granule (a kernel tick on ns-timestamp filesystems; 1 s on ext4 with
-  128-byte inodes, ext3, HFS+), and the state directory swapped away and back by RENAME with no symlink
-  anywhere (the token file keeps its identity: proven at +100 s on every tree, this one included — a
-  documented residual, pinned in (3l-R5a)). A SYMLINKED token never proves: the provider answers cannot
+  128-byte inodes, ext3, HFS+), and the state directory's contents swapped away and back between two
+  steps — by a rename, a transient symlink or a mount (the key sees only the token file's identity: proven
+  at +100 s on every tree, this one included — a documented residual, pinned in (3l-R5a)). A SYMLINKED token never proves: the provider answers cannot
   — "the pairing token is a symlink — store it as a regular file, as `failover arm` does" — and the
   startup posture and the status line say so every interval (no one file identity sees both a rewrite of
   the link's target and a re-point of the link; `failover arm` always stores a regular file). A dangling
@@ -72,7 +72,7 @@ All notable changes are documented here. Versions follow the project's internal 
   modes (target rewritten in place or by tmp+mv, the link re-pointed away and back: all cannot, the gate
   refuses; the regular file unchanged); the (3l-R5a/b) symlinked state directory (re-pointed away and
   back, or never moved: cannot on the step, the startup posture and the status line; the canonical path
-  unchanged; the rename swap pinned as the residual); and the HOLD loop's named baits cover both provider
+  unchanged; the between-steps swap pinned as the residual); and the HOLD loop's named baits cover both provider
   steps (`_elapsed_step`, `_g2_step`).
 
   **The spare's observation surface (D0), a standing section of `docs/SAFETY.md`** (*Shared vantages*),
@@ -174,9 +174,10 @@ All notable changes are documented here. Versions follow the project's internal 
   own cost against 7ab7eca (1), and the fresh-start rows where de21927 fenced only because it adopted
   garbage as its baseline (4):
   (1) *The floor's cost (later than 7ab7eca, never later than e917c04).* A still-frozen holder with a
-  corrupted slot over a stall a window old fences at the first read at or after reference + 15 s — grace
-  30 / 0: 45 / 15 s at `CHECK_INTERVAL` 1, 3 and 5, up to one `CHECK_INTERVAL` more at a cadence that does
-  not divide 15 (51 / 21 s at 7), both daemons — where 7ab7eca decided at the very next answer (35 / 5 s
+  corrupted slot over a stall a window old fences at the first read at or after reference + 15 s — up to
+  one LOOP CYCLE past it (the interval plus the cycle's reads and pets); in the free-read harness, grace
+  30 / 0: 45 / 15 s at `CHECK_INTERVAL` 1, 3 and 5, 51 / 21 s at 7 (a cadence that does not divide 15),
+  both daemons — where 7ab7eca decided at the very next answer (35 / 5 s
   at `CHECK_INTERVAL` 5, 33 / 3 s at 3, 31 / 1 s at 1, 37 / 7 s at 7): the decision that also fenced a
   PAUSED HEALTHY holder (C F C, C D C, C S F C — 35 / 35 / 40 s at grace 30, 5 / 5 / 10 s at grace 0,
   one cycle after the reference at the turbo cadences; never now). e917c04: 60 / 30 s (65 / 35 s at 7);
@@ -222,8 +223,10 @@ All notable changes are documented here. Versions follow the project's internal 
   now also over a young stall stamp (never → 35 s at grace 30). The future-stamp rule assumes
   `/proc/uptime` and `boot_id` belong to one kernel boot, as on the documented deployment (the monitor
   on the validator host; `docs/DEPLOYMENT-MANUAL.md`, Prerequisites): in a container that virtualizes
-  `/proc/uptime` but not `boot_id` (lxcfs-style) a container restart makes EVERY persisted stamp
-  "future" → ANCIENT, so there a first-read blip fences with nothing corrupted — measured by the final
+  `/proc/uptime` but not `boot_id` (lxcfs-style) a container restart makes the self-fence stall /
+  silence / lag stamps "future" → ANCIENT (a future lockout / cooldown stamp restores verbatim and holds
+  until the uptime passes it), so there — once the container's uptime at that read is at least
+  `SELF_FENCE_ISOLATION_SECS` — a first-read blip fences with nothing corrupted — measured by the final
   panel: a validator still catching up 10–25 s after such a restart, at grace 0, fenced at its first
   read, where 7ab7eca and the same restart on a normal host never fence (0 future stamps in 2,000
   real-clock save → load round trips on a normal Linux host). Named, not changed.
@@ -249,7 +252,8 @@ All notable changes are documented here. Versions follow the project's internal 
   the threshold crossing falls inside that ≤ 27 s snapshot gap (both reads at their `curl -m 10` bound + a
   7 s pet), the reference-first bias delays the demote by up to ONE FULL STAKED LOOP CYCLE
   (`DELINQUENCY_RETRIES` consecutive over-limit reads are needed) — 37 s measured in a latency-only cycle
-  at `CHECK_INTERVAL` 3, 64 s at `CHECK_INTERVAL` 30, ~61 s at the defaults with the self-fence's reads —
+  at `CHECK_INTERVAL` 3 and 64 s in one at `CHECK_INTERVAL` 30; a full default STAKED cycle with every
+  per-cycle read and pet is ~103 s (more with N6's read or the armed sleep's chunk pets) —
   and a holder lagging within rate × that gap of the limit never demotes on that path — availability only;
   not what the relinquish B bounds. `SHA256SUMS`: the rows of the changed shipped files regenerated,
   `install.sh` included (fix round 1: header comment only — the checksum-claim scoping).
