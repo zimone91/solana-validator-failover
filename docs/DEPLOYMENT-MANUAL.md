@@ -273,6 +273,15 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   delinquent before the cluster marks the node delinquent. It only moves PRIMARY toward
   *unstaked* (the safe direction) and STANDBY still requires external confirmation + the authoritative vote-liveness fence (gossip advisory),
   so it is safe to opt into; left opt-in to avoid false positives on a busy node.
+  - **Reference-first read bias (`MAX_VOTE_LATENCY` PRIMARY path, measured, unchanged):** on this
+    opt-in path `tier1_get_vote_latency` reads its `getSlot` reference **before** the
+    `getVoteAccounts` payload, so a stall or pet between the two makes the holder look *more*
+    current — the latency demote can arrive up to ~27 s later than the reverse order, and a
+    still-voting holder lagging within (slot rate × that gap) of the limit never demotes on this
+    path. It is an **availability** cost only (a lagging holder is still live), the worst delay is
+    within the cross-node margin `B` (60 s), and it does not touch the self-fence relinquish that
+    `B` actually bounds (the self-fence's own-vote-lag check reads a single same-payload snapshot,
+    no cross-read skew). Off by default; stated, not changed.
 - **Recovery mode (`RECOVERY_MODE`):** `manual` is the **default and recommended** path —
   operator-driven switch-back (see Manual switch-back). `rpc` is an **opt-in** automatic path:
   in v0.6.3 it gets **vote-liveness parity** — PRIMARY re-takes the staked identity only when the

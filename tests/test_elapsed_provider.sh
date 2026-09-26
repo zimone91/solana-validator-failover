@@ -38,7 +38,8 @@
 #        ("0009999", 2^64+N) at the provider → blind / cannot, never arithmetic, plus the ONE
 #        validator's boundary table; 6.3 fix round 2 (R4): (3l-R4a–c) the adoption keyed on the FULL
 #        token — a same-gen re-pair with a lower floor, a reporter-only flap (restored in place and by
-#        tmp+mv), a same-gen token from another host under a dormant verdict
+#        tmp+mv; fix round 3, S3: also through a symlinked token whose target flaps), a same-gen token
+#        from another host under a dormant verdict
 #   (4)  the head reference: commitment=processed read from the live request log; the head is read
 #        AFTER the payload (live order); the default-commitment mutant is wrong BOTH ways (a live
 #        view permanently blind AND a 40-slot lagged view accepted)
@@ -540,6 +541,8 @@ fi
 # token garbage at +61, the same bytes restored before the next step) kept the old adoption: PROVEN at
 # +100 on silence counted across the flap; (c) a same-gen token from another host with the same bounds
 # swapped in under a DORMANT verdict: served proven=yes, gate rc 0.
+# 6.3 fix round 3, S3 (P3-R4-1): the identity is the TARGET's (stat -L) — (b) also through a symlinked
+# token whose target flaps (in place, tmp+mv). Pre-fix red (e917c04): PROVEN at +100 (the ident keyed the link).
 case_samegen() {   # HOST2: the re-pair's host (default holder1)
     printf '%s\n' "$(mk_token 7 30 120 real holder1)" > "$PROOF_STATE_DIR/pairing-token"   # floor 160
     reg; prime_seam 0 none
@@ -559,13 +562,17 @@ for h in holder1 otherholder; do
        && [[ "$(field "$r" a3)" == "no" && "$(field "$r" r3)" == *"adopted 99s ago"* && "$(field "$r" a4)" == "yes" && "$(field "$r" oid)" == "elapsed:gen=7:since=$(( T0 + 121 )):floor=100" ]]; then :; else sg_ok=0; bad "(3l-R4a) host=$h: $r"; fi
 done
 [[ $sg_ok -eq 1 ]] && ok "(3l-R4a) R4 — a SAME-GEN re-pair with a lower floor (gen 7 floor 160 → gen 7 floor 100 at +121, from the same host and from another) is a NEW adoption: no at +121 ('adopted 0s ago', gate rc 1) and at +220 ('99s ago'), PROVEN only at +221 with since=+121. Pre-fix: PROVEN at +121 with since=+0, gate rc 0 (the adoption was keyed on gen)"
-case_flap() {   # MODE=inplace|mv — how the restore is written: in place (the same inode, a new change time) or tmp+mv (a new inode — the ceremony's own atomic write)
+case_flap() {   # MODE=inplace|mv — how the restore is written: in place (the same inode, a new change time) or tmp+mv (a new inode — the ceremony's own atomic write); symlink|symlink-mv — the stored token is a SYMLINK and the flap rewrites its TARGET, in place / by tmp+mv (fix round 3, S3)
+    local tf="$PROOF_STATE_DIR/pairing-token" good
+    if [[ "${MODE:-inplace}" == symlink* ]]; then
+        mv "$tf" "$PROOF_STATE_DIR/token-target"; ln -s token-target "$tf"; tf="$PROOF_STATE_DIR/token-target"
+    fi
     reg; prime_seam 0 none
-    local tf="$PROOF_STATE_DIR/pairing-token" good; good=$(cat "$tf")
+    good=$(cat "$tf")
     _SIM_NOW=$(( T0 + 60 )); _elapsed_step; local a60="$_elapsed_answer"
     printf 'garbage\n' > "$tf"
     _SIM_NOW=$(( T0 + 61 )); local v1; v1=$(_elapsed_provider)            # ONLY the reporter (inside the gate's $()) sees the rot
-    if [[ "${MODE:-inplace}" == "mv" ]]; then printf '%s\n' "$good" > "$tf.tmp"; mv "$tf.tmp" "$tf"; else printf '%s\n' "$good" > "$tf"; fi
+    if [[ "${MODE:-inplace}" == *mv ]]; then printf '%s\n' "$good" > "$tf.tmp"; mv "$tf.tmp" "$tf"; else printf '%s\n' "$good" > "$tf"; fi
     _SIM_NOW=$(( T0 + 100 )); _elapsed_step; local a100="$_elapsed_answer" r100="$_elapsed_reason"
     _SIM_NOW=$(( T0 + 199 )); _elapsed_step; local a199="$_elapsed_answer"
     _SIM_NOW=$(( T0 + 200 )); _elapsed_step; local a200="$_elapsed_answer"
@@ -573,12 +580,12 @@ case_flap() {   # MODE=inplace|mv — how the restore is written: in place (the 
     echo "a60=$a60|rep61=$(_proof_field "$v1" proven)|a100=$a100|r100=$r100|a199=$a199|a200=$a200|oid=$(_proof_field "$v" observation_id)"
 }
 fl_ok=1
-for m in inplace mv; do
+for m in inplace mv symlink symlink-mv; do
     r=$(MODE=$m drive_ep "$STANDBY" case_flap | tail -1)
     if [[ "$(field "$r" a60)" == "no" && "$(field "$r" rep61)" == "no" && "$(field "$r" a100)" == "no" && "$(field "$r" r100)" == *"the token now in force (gen 7) was adopted 0s ago (mono $(( T0 + 100 )))"* ]] \
        && [[ "$(field "$r" a199)" == "no" && "$(field "$r" a200)" == "yes" && "$(field "$r" oid)" == "elapsed:gen=7:since=$(( T0 + 100 )):floor=100" ]]; then :; else fl_ok=0; bad "(3l-R4b) restore=$m: $r"; fi
 done
-[[ $fl_ok -eq 1 ]] && ok "(3l-R4b) R4 — a token flap seen ONLY by the reporter (garbage at +61 inside the gate's \$(), the SAME bytes restored before the next step — in place, and by tmp+mv) is a NEW adoption at the next step: no at +100 ('adopted 0s ago (mono +100)') and +199, PROVEN only at +200 with since=+100 — the reporter cannot clear anything from its subshell, so the key carries the stored file's identity and the rewrite counts. Pre-fix: PROVEN at +100 on silence counted across the flap"
+[[ $fl_ok -eq 1 ]] && ok "(3l-R4b) R4 — a token flap seen ONLY by the reporter (garbage at +61 inside the gate's \$(), the SAME bytes restored before the next step — in place, and by tmp+mv; and, fix round 3 S3, through a SYMLINKED token whose TARGET flaps, in place and by tmp+mv) is a NEW adoption at the next step: no at +100 ('adopted 0s ago (mono +100)') and +199, PROVEN only at +200 with since=+100 — the reporter cannot clear anything from its subshell, so the key carries the identity of the file the path resolves to (stat -L) and the rewrite counts. Pre-fix: PROVEN at +100 on silence counted across the flap (f22d492, every mode; e917c04, the symlink modes — its stat keyed the link itself)"
 case_samegen_dormant() {
     reg; prime_seam 0 none
     _SIM_NOW=$(( T0 + 100 )); _elapsed_step; local a1="$_elapsed_answer"

@@ -19,10 +19,12 @@
 #        reads /proc/uptime (numeric, non-decreasing)
 #   (e)  rollback safety: the legacy keys carry WALL values (dual-write)
 #   (f)  6.3 fix round 2, R5: NON-CANONICAL persisted values (a hand edit or corruption) — a lockout/
-#        cooldown re-HELD in full from now, a SAVE_TS makes the save stale, a baseline value is not
-#        restored (per value; a slot restores as 0), the startup never aborted
-#   (f2) R5 fence timing: the REAL check_self_fence_isolation after load_state on a corrupted save —
-#        every fence the pre-fix tree had, kept; one documented residual (an octal-valid stall stamp)
+#        cooldown re-HELD in full from now, a SAVE_TS makes the save stale, per value the rest restores;
+#        fix round 3, S2: a stall/silence/lag stamp restores as ANCIENT behind the first-read evidence, a
+#        slot as 0 with the stall backdate pending across two reads; the startup never aborted
+#   (f2) R5 + S2 fence timing: the REAL check_self_fence_isolation after load_state on a corrupted save,
+#        at grace 0 and the shipped 30 — the holder still frozen / silent / lagging fences at the first
+#        read that shows it (a non-canonical slot: at the second), a healthy one never
 # harness: tests/lib/harness.sh — ok/bad+banners, paths, harness_silence_sinks ONLY (this suite
 # TESTS the clock: its dual _WALL_NOW/_MONO_NOW shims, seam cuts and parity checks stay local).
 
@@ -291,16 +293,19 @@ fi
 # ── (f) 6.3 fix round 2, R5 (P2-INERT-4): NON-CANONICAL persisted values ──────────────────────────
 # load_state reads every persisted number through _state_get → the ONE canonical-integer validator. A
 # LOCKOUT/COOLDOWN present but non-canonical re-holds IN FULL from now (the cross-boot rule's direction)
-# and says so; a non-canonical SAVE_TS makes the whole save stale (no restore); a non-canonical baseline
-# value is not restored — per value, the rest of the fresh save restores (a slot restores as 0: a baseline
-# existed, its value is unknown); no arithmetic on a raw persisted value. The load runs as a startup-like TOP-LEVEL command (fake_startup), so an
-# arithmetic abort that discards the rest of the startup command is observable (after=0). Same boot,
-# restore at mono 100000, wall 200000 (a fresh SAVE_TS is 199990).
+# and says so; a non-canonical SAVE_TS makes the whole save stale (no restore); a non-canonical value is
+# handled per value — the rest of the fresh save restores; no arithmetic on a raw persisted value. Fix
+# round 3 (S2): a non-canonical stall / silence / lag STAMP restores as ANCIENT (1) behind H3's first-read
+# evidence (its pending arms: rp:ra / np:rn / vp:rv below), and a non-canonical SLOT restores as 0 with
+# the stall backdate pending across the first two reads (rp=2). The load runs as a startup-like TOP-LEVEL
+# command (fake_startup), so an arithmetic abort that discards the rest of the startup command is
+# observable (after=0). Same boot, restore at mono 100000, wall 200000 (a fresh SAVE_TS is 199990).
 # Pre-fix red (f22d492): 0777 restored as "0777" (bash reads OCTAL 511 → the lockout silently expired);
 # 0999 not restored ('value too great for base'); SAVE_TS=0999 and SF_ADVANCE_MONO=0999 aborted the rest
 # of the startup command (after=0 — on an armed holder READY is never sent); the cooldown stamps 0999
-# restored raw.
-r5_load() {   # $1=script, then the state lines → "<demote>|<cooldown>|<baseline slot>|<restore_pending>|after=<0|1>|warns=<n>"
+# restored raw. Round-3 red (e917c04): a non-canonical stamp armed nothing (rp/np/vp 0 — its timer
+# started fresh), and a non-canonical slot armed rp=1 against the restored 0, which every live slot passes.
+r5_load() {   # $1=script, then the state lines → "<demote>|<cooldown>|<baseline slot>|<rp>:<ra>|<np>:<rn>|<vp>:<rv>|after=<0|1>|warns=<n>"
   local script="$1"; shift
   local td; td=$(mktemp -d)
   printf '%s\n' "$@" "BOOT_ID=boot-A" > "$td/state-test"
@@ -320,44 +325,53 @@ r5_load() {   # $1=script, then the state lines → "<demote>|<cooldown>|<baseli
     fake_startup() { load_state; _R5A=1; }
     fake_startup 2>/dev/null
     local cd="$LAST_TAKEOVER_TIME"; [[ "$script" == "$PRIMARY" ]] && cd="$LAST_SWITCH_TIME"
-    printf '%s|%s|%s|%s|after=%s|warns=%s\n' "$SELF_FENCE_DEMOTE_TIME" "$cd" "${_last_confirmed_slot:-none}" "${_selffence_restore_pending:-0}" "$_R5A" "$_R5W"
+    printf '%s|%s|%s|%s:%s|%s:%s|%s:%s|after=%s|warns=%s\n' "$SELF_FENCE_DEMOTE_TIME" "$cd" "${_last_confirmed_slot:-none}" \
+        "${_selffence_restore_pending:-0}" "${_selffence_restored_advance_ts:-0}" "${_selffence_noanswer_restore_pending:-0}" "${_selffence_restored_noanswer_since:-0}" \
+        "${_selffence_votelag_restore_pending:-0}" "${_selffence_restored_votelag_since:-0}" "$_R5A" "$_R5W"
   )
   rm -rf "$td"
 }
 echo ""
-echo "─── (f) R5: non-canonical persisted values → lockout/cooldown re-HELD in full; SAVE_TS stale; a baseline value not restored; startup never aborted ───"
+echo "─── (f) R5 + S2: non-canonical persisted values → lockout/cooldown re-HELD in full; SAVE_TS stale; a stamp ANCIENT behind first-read evidence; a slot 0 with a two-read backdate; startup never aborted ───"
 f_ok=1; f_rows=""
-f_case() {   # $1=label $2=want (prefix match on the first four fields + after) $3=script, then the state lines
+f_case() {   # $1=label $2=want (prefix match through after=) $3=script, then the state lines
   local label="$1" want="$2" script="$3"; shift 3
   local got; got=$(r5_load "$script" "$@")
   if [[ "$got" == "$want"* && ( "$want" == *"after=1"* ) ]]; then f_rows="$f_rows $label"; else f_ok=0; bad "(f) $label: got '$got', want '$want…'"; fi
 }
-f_case "S:lockout=0777→held"    "100000|0|none|0|after=1"   "$STANDBY" "SELF_FENCE_DEMOTE_MONO=0777"
-f_case "S:lockout=0999→held"    "100000|0|none|0|after=1"   "$STANDBY" "SELF_FENCE_DEMOTE_MONO=0999"
-f_case "S:lockout=2^64+N→held"  "100000|0|none|0|after=1"   "$STANDBY" "SELF_FENCE_DEMOTE_MONO=18446744073709651606"
-f_case "S:cooldown=0999→held"   "0|100000|none|0|after=1"   "$STANDBY" "LAST_TAKEOVER_MONO=0999"
-f_case "S:SAVE_TS=0999→stale"   "99990|0|none|0|after=1"    "$STANDBY" "SELF_FENCE_DEMOTE_MONO=99990" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=0999"
-f_case "S:SF_ADVANCE=0999→unrestored" "0|0|500|0|after=1"  "$STANDBY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=0999" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
-f_case "S:SLOT=0999→0"          "0|0|0|1|after=1"           "$STANDBY" "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
-f_case "S:HEALTHY=08→rest restored" "0|0|500|1|after=1"     "$STANDBY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "SF_VOTELAG_HEALTHY=08" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
-f_case "S:canonical control"    "99990|0|500|1|after=1"     "$STANDBY" "SELF_FENCE_DEMOTE_MONO=99990" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
-f_case "P:cooldown=0999→held"   "0|100000|none|0|after=1"   "$PRIMARY" "LAST_SWITCH_MONO=0999"
-f_case "P:SAVE_TS=0999→stale"   "0|0|none|0|after=1"        "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=0999"
-f_case "P:SF_ADVANCE=0777→unrestored" "0|0|500|0|after=1"  "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=0777" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
-f_case "P:SLOT=0999→0"          "0|0|0|1|after=1"           "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
-f_case "P:canonical control"    "0|99990|500|1|after=1"     "$PRIMARY" "LAST_SWITCH_MONO=99990" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
-[[ $f_ok -eq 1 ]] && ok "(f) R5 —$f_rows: a non-canonical lockout/cooldown stamp re-HOLDS IN FULL from the restore instant (100000, a WARN names it), a non-canonical SAVE_TS leaves the whole baseline unrestored (stale), a non-canonical baseline value is not restored while the rest of the fresh save is (a slot restores as 0: every live slot is past it, and the advance backdate still arms), and the startup command always runs past load_state (after=1); canonical stamps restore verbatim. Pre-fix: 0777 → 'restored' as octal 511 (expired), 0999 → dropped, SAVE_TS/SF_ADVANCE 0999 → the rest of the startup command discarded"
+f_case "S:lockout=0777→held"    "100000|0|none|0:0|0:0|0:0|after=1"   "$STANDBY" "SELF_FENCE_DEMOTE_MONO=0777"
+f_case "S:lockout=0999→held"    "100000|0|none|0:0|0:0|0:0|after=1"   "$STANDBY" "SELF_FENCE_DEMOTE_MONO=0999"
+f_case "S:lockout=2^64+N→held"  "100000|0|none|0:0|0:0|0:0|after=1"   "$STANDBY" "SELF_FENCE_DEMOTE_MONO=18446744073709651606"
+f_case "S:cooldown=0999→held"   "0|100000|none|0:0|0:0|0:0|after=1"   "$STANDBY" "LAST_TAKEOVER_MONO=0999"
+f_case "S:SAVE_TS=0999→stale"   "99990|0|none|0:0|0:0|0:0|after=1"    "$STANDBY" "SELF_FENCE_DEMOTE_MONO=99990" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=0999"
+f_case "S:ADVANCE=0999→ancient" "0|0|500|1:1|0:0|0:0|after=1"         "$STANDBY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=0999" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+f_case "S:NOANSWER=0777→ancient" "0|0|500|0:0|1:1|0:0|after=1"        "$STANDBY" "SF_LAST_CONFIRMED_SLOT=500" "SF_NOANSWER_MONO=0777" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+f_case "S:VOTELAG=abc→ancient"  "0|0|500|0:0|0:0|1:1|after=1"         "$STANDBY" "SF_LAST_CONFIRMED_SLOT=500" "SF_VOTELAG_MONO=abc" "SF_VOTELAG_BASELINE=1" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+f_case "S:SLOT=0999→0, two reads" "0|0|0|2:99000|0:0|0:0|after=1"     "$STANDBY" "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+f_case "S:HEALTHY=08→rest restored" "0|0|500|1:99000|0:0|0:0|after=1" "$STANDBY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "SF_VOTELAG_HEALTHY=08" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+f_case "S:canonical control"    "99990|0|500|1:99000|0:0|0:0|after=1" "$STANDBY" "SELF_FENCE_DEMOTE_MONO=99990" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+f_case "P:cooldown=0999→held"   "0|100000|none|0:0|0:0|0:0|after=1"   "$PRIMARY" "LAST_SWITCH_MONO=0999"
+f_case "P:SAVE_TS=0999→stale"   "0|0|none|0:0|0:0|0:0|after=1"        "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=0999"
+f_case "P:ADVANCE=0777→ancient" "0|0|500|1:1|0:0|0:0|after=1"         "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=0777" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+f_case "P:NOANSWER=2^64+N→ancient" "0|0|500|0:0|1:1|0:0|after=1"      "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=500" "SF_NOANSWER_MONO=18446744073709651606" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+f_case "P:SLOT=0999→0, two reads" "0|0|0|2:99000|0:0|0:0|after=1"     "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+f_case "P:canonical control"    "0|99990|500|1:99000|0:0|0:0|after=1" "$PRIMARY" "LAST_SWITCH_MONO=99990" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+[[ $f_ok -eq 1 ]] && ok "(f) R5 + S2 —$f_rows: a non-canonical lockout/cooldown stamp re-HOLDS IN FULL from the restore instant (100000, a WARN names it); a non-canonical SAVE_TS leaves the whole baseline unrestored (stale); a non-canonical stall / silence / lag STAMP restores as ANCIENT — its pending arms with the stamp 1, applied only on first-read evidence (see (f2)); a non-canonical SLOT restores as 0 with the stall backdate pending across the first two reads (rp=2); a vote-lag latch value is not restored while the rest of the fresh save is; the startup command always runs past load_state (after=1); canonical stamps restore verbatim. Pre-fix f22d492: 0777 → 'restored' as octal 511 (expired), 0999 → dropped, SAVE_TS/SF_ADVANCE 0999 → the rest of the startup command discarded. Pre-fix e917c04: a non-canonical stamp armed nothing, and the slot armed rp=1 against the restored 0 — every live slot passes it, so the backdate could never apply"
 
-# ── (f2) R5 fence timing: the REAL check_self_fence_isolation after load_state on a corrupted save ────
+# ── (f2) R5 + S2 fence timing: the REAL check_self_fence_isolation after load_state on a corrupted save ─
 # Same boot, persisted role staked, SAVE_TS fresh; SELF_FENCE_ISOLATION/NOANSWER/VOTE_LAG_SECS = 30,
-# VOTE_LAG_SLOTS 10; the check runs every 5 s from the restore (mono 100000) with the LOCAL node frozen
+# VOTE_LAG_SLOTS 10; the check runs every 5 s from the restore (mono 100000) — or, with R5_GRACE=<s>, from
+# the end of a startup grace that long (the shipped STARTUP_GRACE is 30) — with the LOCAL node frozen
 # (confirmed slot stuck at 500), silent (getSlot never answers), lagging (slot advancing from 600, own
 # lastVote 100 behind the cluster max) or healthy (slot advancing from 600, own vote current). Echoes the
-# fire time in seconds after the restore, or "never" (125 s horizon). MEASURED on the pre-fix tree
-# (f22d492) and on the whole-snapshot variant this round first wrote: row 1 is the canonical control;
-# on rows 2–5 the whole-snapshot variant fenced LATER or NEVER (30 s / never / never / never) and
-# f22d492 fenced as this tree does; on the last two rows f22d492 misread a leading-zero value.
-r5_fence() {   # $1=script $2=mode, then the state lines → "fire=<s>|never"
+# fire time in seconds after the restore, or "never" (125 s horizon after the grace). Rows 1–6 are round
+# 2's (MEASURED there on f22d492 and on the whole-snapshot variant); the rest are fix round 3's S2 rows,
+# red on e917c04, where a non-canonical stamp started its timer fresh and a non-canonical slot's backdate
+# could never apply: silent NOANSWER=0777 30 → 0 s (grace 30: 60 → 30), lagging VOTELAG=0777 30 → 0
+# (60 → 30), frozen ADVANCE=0777 30 → 0, frozen SLOT=0999 over a canonical 1000 s stall 30 → 5 (grace 30:
+# 60 → 35 — the second read decides; f22d492's 30 there was its octal misread, which fenced the HEALTHY
+# holder at 30 as well). Every healthy row: never, on this tree.
+r5_fence() {   # $1=script $2=mode, then the state lines → "fire=<s>|never"   (R5_GRACE: seconds before the first check)
   local script="$1" mode="$2"; shift 2
   local td; td=$(mktemp -d)
   printf '%s\n' "$@" "BOOT_ID=boot-A" > "$td/state-test"
@@ -395,6 +409,7 @@ r5_fence() {   # $1=script $2=mode, then the state lines → "fire=<s>|never"
       esac
     }
     load_state >/dev/null 2>&1
+    _R5M=$(( _R5M + ${R5_GRACE:-0} ))   # the startup grace between the restore and the first check
     local i
     for (( i = 0; i < 25; i++ )); do
       check_self_fence_isolation >/dev/null 2>&1
@@ -406,24 +421,33 @@ r5_fence() {   # $1=script $2=mode, then the state lines → "fire=<s>|never"
   rm -rf "$td"
 }
 echo ""
-echo "─── (f2) R5 fence timing: the REAL self-fence after load_state on a corrupted save (both daemons) ───"
+echo "─── (f2) R5 + S2 fence timing: the REAL self-fence after load_state on a corrupted save (both daemons, grace 0 and 30) ───"
 f2_ok=1; f2_rows=""
-f2_case() {   # $1=label $2=want (exact) $3=mode, then the state lines — runs BOTH daemons
-  local label="$1" want="$2" mode="$3"; shift 3
+f2_case() {   # $1=label $2=want (exact) $3=mode $4=grace, then the state lines — runs BOTH daemons
+  local label="$1" want="$2" mode="$3" gr="$4"; shift 4
   local sc got
   for sc in "$STANDBY" "$PRIMARY"; do
-    got=$(r5_fence "$sc" "$mode" "$@" "ROLE_AT_SAVE=staked" "SAVE_TS=199990")
-    if [[ "$got" != "fire=$want" ]]; then f2_ok=0; bad "(f2) $label [$(basename "$sc")]: got '$got', want 'fire=$want'"; fi
+    got=$(R5_GRACE="$gr" r5_fence "$sc" "$mode" "$@" "ROLE_AT_SAVE=staked" "SAVE_TS=199990")
+    if [[ "$got" != "fire=$want" ]]; then f2_ok=0; bad "(f2) $label grace=$gr [$(basename "$sc")]: got '$got', want 'fire=$want'"; fi
   done
-  f2_rows="$f2_rows $label→$want;"
+  f2_rows="$f2_rows $label${gr:+ (grace $gr)}→$want;"
 }
-f2_case "frozen canonical 1000s"         0     frozen "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000"
-f2_case "frozen HEALTHY=007"             0     frozen "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "SF_VOTELAG_HEALTHY=007"
-f2_case "silent NOANSWER=0999"           30    silent "SF_LAST_CONFIRMED_SLOT=500" "SF_NOANSWER_MONO=0999"
-f2_case "silent SLOT=0500 noanswer-10s"  20    silent "SF_LAST_CONFIRMED_SLOT=0500" "SF_NOANSWER_MONO=99990"
-f2_case "lag HEALTHY=08 1000s"           0     lag    "SF_LAST_CONFIRMED_SLOT=500" "SF_VOTELAG_MONO=99000" "SF_VOTELAG_BASELINE=1" "SF_VOTELAG_HEALTHY=08"
-f2_case "healthy SLOT=07777"             never healthy "SF_LAST_CONFIRMED_SLOT=07777" "SF_ADVANCE_MONO=99000"
-f2_case "frozen ADVANCE=0777 (residual)" 30    frozen "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=0777"
-[[ $f2_ok -eq 1 ]] && ok "(f2) R5 fence timing, both daemons —$f2_rows per-value restore keeps every fence the pre-fix tree had (the whole-snapshot variant: 30 s / never / never / never where rows 2–5 fence at 0 / 30 / 20 / 0 s); a healthy holder with a non-canonical slot is not fenced (pre-fix: fenced at 0 s — '07777' read as octal 4095, above the live slot). DOCUMENTED RESIDUAL (reviewer to ratify): a non-canonical stall/silence/lag STAMP starts its timer fresh — frozen + SF_ADVANCE_MONO=0777 fences at 30 s where the pre-fix tree fenced at 0 s by reading '0777' as octal 511, an ancient stall (the same for SF_NOANSWER_MONO / SF_VOTELAG_MONO=0777: 0 → 30 s); the stamp's true age is unknown and it is no longer read"
+f2_case "frozen canonical 1000s"         0     frozen  "" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000"
+f2_case "frozen HEALTHY=007"             0     frozen  "" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "SF_VOTELAG_HEALTHY=007"
+f2_case "silent NOANSWER=0999"           0     silent  "" "SF_LAST_CONFIRMED_SLOT=500" "SF_NOANSWER_MONO=0999"
+f2_case "silent SLOT=0500 noanswer-10s"  20    silent  "" "SF_LAST_CONFIRMED_SLOT=0500" "SF_NOANSWER_MONO=99990"
+f2_case "lag HEALTHY=08 1000s"           0     lag     "" "SF_LAST_CONFIRMED_SLOT=500" "SF_VOTELAG_MONO=99000" "SF_VOTELAG_BASELINE=1" "SF_VOTELAG_HEALTHY=08"
+f2_case "healthy SLOT=07777"             never healthy "" "SF_LAST_CONFIRMED_SLOT=07777" "SF_ADVANCE_MONO=99000"
+f2_case "frozen ADVANCE=0777"            0     frozen  "" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=0777"
+f2_case "silent NOANSWER=0777"           30    silent  30 "SF_LAST_CONFIRMED_SLOT=500" "SF_NOANSWER_MONO=0777"
+f2_case "lag VOTELAG=0777"               0     lag     "" "SF_LAST_CONFIRMED_SLOT=500" "SF_VOTELAG_MONO=0777" "SF_VOTELAG_BASELINE=1"
+f2_case "lag VOTELAG=0777"               30    lag     30 "SF_LAST_CONFIRMED_SLOT=500" "SF_VOTELAG_MONO=0777" "SF_VOTELAG_BASELINE=1"
+f2_case "frozen SLOT=0999 stall 1000s"   5     frozen  "" "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000"
+f2_case "frozen SLOT=0999 stall 1000s"   35    frozen  30 "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000"
+f2_case "healthy SLOT=0999 stall 1000s"  never healthy 30 "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000"
+f2_case "healthy ADVANCE=0777"           never healthy 30 "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=0777"
+f2_case "healthy NOANSWER=0777"          never healthy 30 "SF_LAST_CONFIRMED_SLOT=500" "SF_NOANSWER_MONO=0777"
+f2_case "healthy VOTELAG=0777"           never healthy 30 "SF_LAST_CONFIRMED_SLOT=500" "SF_VOTELAG_MONO=0777" "SF_VOTELAG_BASELINE=1"
+[[ $f2_ok -eq 1 ]] && ok "(f2) R5 + S2 fence timing, both daemons —$f2_rows a non-canonical stall / silence / lag stamp is ANCIENT behind the first read's evidence: the holder still frozen / silent / lagging fences at that read (pre-fix e917c04 started the timer fresh: 30 s, grace 30: 60 / 60 s), a healthy first read drops it (never); a non-canonical slot over a stall a window old keeps the backdate pending across two reads — frozen fences at the second (grace 0: 5 s, grace 30: 35 s; e917c04 30 / 60; f22d492 30 / 30 by misreading '0999', which fenced the HEALTHY holder at 30 too), healthy never; per-value restore keeps round 2's rows (the whole-snapshot variant fenced 30 s / never / never / never where rows 2–5 fence at 0 / 0 / 20 / 0 s here)"
 
 results_banner
