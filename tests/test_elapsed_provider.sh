@@ -40,7 +40,11 @@
 #        token — a same-gen re-pair with a lower floor, a reporter-only flap (restored in place and by
 #        tmp+mv), a same-gen token from another host under a dormant verdict; 6.3 fix round 4 (W3):
 #        a SYMLINKED token never proves — target rewrites and a link re-pointed away and back all answer
-#        cannot and the gate refuses (3l-R4b), and the posture/status lines say why (3l-R4d)
+#        cannot and the gate refuses (3l-R4b), and the posture/status lines say why (3l-R4d); 6.3 fix round 5
+#        (R-SYM): a token whose DIRECTORY does not canonicalize to itself (PROOF_STATE_DIR reached through a
+#        symlink) never proves either — the directory re-pointed away and back, or never moved: cannot on
+#        the step, the startup posture and the status line (3l-R5a/b); the canonical-path control proves
+#        as before, and a directory swapped by RENAME (no symlink anywhere) is a DOCUMENTED RESIDUAL
 #   (4)  the head reference: commitment=processed read from the live request log; the head is read
 #        AFTER the payload (live order); the default-commitment mutant is wrong BOTH ways (a live
 #        view permanently blind AND a 40-slot lagged view accepted)
@@ -107,6 +111,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 title_banner "watchdog-elapsed proof provider (v0.7 Block 6.3)"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ep63.XXXXXX")
+# 6.3 fix round 5 (R-SYM): the provider refuses a token whose directory does not canonicalize to itself, so
+# every PROOF_STATE_DIR below is built on the RESOLVED path, as an operator's must be (macOS TMPDIR lies
+# under /var → /private/var and ends in '/'; Linux /tmp is already canonical). (3l-R5) builds the
+# non-canonical cases on purpose.
+WORK=$(cd -P -- "$WORK" && pwd -P)
 T0=100000            # mono origin (never 0 — 0 collides with the 0-sentinels under test)
 HEAD0=900000         # the cluster head at T0 (slots; 2.5 slots/s where a world advances it)
 
@@ -619,6 +628,69 @@ for sc in "$STANDBY"; do   # the spare posture (see (3l-R4b))
     [[ "$(field "$r" reg)" == "1" && "$(field "$r" n1)" == "0" && "$(field "$r" n2)" == "0" ]] || { sp_ok=0; bad "(3l-R4d) $(basename "$sc") regular-file control: $r"; }
 done
 [[ $sp_ok -eq 1 ]] && ok "(3l-R4d) W3 — with a symlinked token the registered spare says WHY watchdog-elapsed cannot prove, on both surfaces: the startup posture ('armed spare PAIRED, but watchdog-elapsed CANNOT prove: $SYMWHY …') and the every-interval status line ('paired (token gen=7), but watchdog-elapsed CANNOT prove: …'); a regular-file token prints neither (zero WARNs). Pre-fix: both silent — the PAIRED line alone"
+# (3l-R5a) 6.3 fix round 5, R-SYM (P5T-ANCESTOR-SYMLINK): W3 refused a symlink only at the token path's
+# FINAL component. A symlinked STATE DIRECTORY re-pointed away (to a garbage token's directory, seen only by
+# the reporter at +61 inside the gate's $()) and back before the next step is the same blindness one level
+# up: the token file under it keeps its inode, size and change time, so the full key never changes. Pre-fix
+# red (every earlier tree — de21927, f22d492, e917c04, 7ab7eca, 02c8e54, measured in fix round 5; the final
+# panel found it on the last three): PROVEN at +100 with since=+0, gate rc 0 — and a symlinked directory
+# that never moves proves like a canonical one. Now a token whose directory does not canonicalize to itself
+# (cd -P / pwd -P of PROOF_STATE_DIR differs from PROOF_STATE_DIR as configured) answers cannot on every
+# step, the reporter too, with the loud reason; the gate refuses. Controls: the canonical path proves at
+# +100 exactly as before; and a directory swapped away and back by RENAME — no symlink anywhere, so nothing
+# canonicalizes differently — still proves at +100 with since=+0 on every tree: a DOCUMENTED RESIDUAL (the
+# token file's identity is all the key sees; flips if the key ever covers the directory's own identity — not
+# this round).
+case_dirflap() {   # DMODE=flap (a symlink re-pointed away and back) | static (a symlink that never moves) | rename (the real directory swapped by mv, away and back) | regular (the canonical path, no flap)
+    local real="$PROOF_STATE_DIR" m="${DMODE:-flap}"
+    mkdir -p "$real-B"; printf 'garbage\n' > "$real-B/pairing-token"
+    if [[ "$m" == flap || "$m" == static ]]; then ln -s "$real" "$real-psd"; PROOF_STATE_DIR="$real-psd"; fi
+    reg; prime_seam 0 none
+    _SIM_NOW=$(( T0 + 60 )); _elapsed_step; local a60="$_elapsed_answer"
+    case "$m" in
+        flap)   ln -sfn "$real-B" "$real-psd" ;;
+        rename) mv "$real" "$real-A"; mv "$real-B" "$real" ;;
+    esac
+    _SIM_NOW=$(( T0 + 61 )); local v1; v1=$(_elapsed_provider)            # ONLY the reporter (inside the gate's $()) sees it
+    case "$m" in
+        flap)   ln -sfn "$real" "$real-psd" ;;
+        rename) mv "$real" "$real-B"; mv "$real-A" "$real" ;;
+    esac
+    _SIM_NOW=$(( T0 + 100 )); _elapsed_step; local a100="$_elapsed_answer" r100="$_elapsed_reason"
+    _SIM_NOW=$(( T0 + 199 )); _elapsed_step; local a199="$_elapsed_answer"
+    _SIM_NOW=$(( T0 + 200 )); _elapsed_step; local a200="$_elapsed_answer" r200="$_elapsed_reason"
+    local v; v=$(_elapsed_provider)
+    require_relinquish_proof; local g200=$?
+    echo "a60=$a60|rep61=$(_proof_field "$v1" proven)|rep61r=$(_proof_field "$v1" elapsed_reason)|a100=$a100|r100=$r100|a199=$a199|a200=$a200|r200=$r200|g200=$g200|oid=$(_proof_field "$v" observation_id)"
+}
+df_ok=1; DIRWHY="the pairing token's directory is reached through a symlink — point PROOF_STATE_DIR at the resolved path"
+for m in flap static; do
+    r=$(DMODE=$m drive_ep "$STANDBY" case_dirflap | tail -1)
+    if [[ "$(field "$r" a60)" == "cannot" && "$(field "$r" rep61)" == "cannot" && "$(field "$r" rep61r)" == "$DIRWHY"* && "$(field "$r" a100)" == "cannot" && "$(field "$r" r100)" == "$DIRWHY"* ]] \
+       && [[ "$(field "$r" a199)" == "cannot" && "$(field "$r" a200)" == "cannot" && "$(field "$r" r200)" == "$DIRWHY"* && "$(field "$r" g200)" == "1" && -z "$(field "$r" oid)" ]]; then :; else df_ok=0; bad "(3l-R5a) symlinked state directory, mode=$m: $r"; fi
+done
+for m in regular rename; do
+    r=$(DMODE=$m drive_ep "$STANDBY" case_dirflap | tail -1)
+    if [[ "$(field "$r" a60)" == "no" && "$(field "$r" rep61)" == "no" && "$(field "$r" a100)" == "yes" && "$(field "$r" a200)" == "yes" && "$(field "$r" g200)" == "0" && "$(field "$r" oid)" == "elapsed:gen=7:since=${T0}:floor=100" ]]; then :; else df_ok=0; bad "(3l-R5a) control/residual mode=$m: $r"; fi
+done
+[[ $df_ok -eq 1 ]] && ok "(3l-R5a) R-SYM — a token whose DIRECTORY is reached through a symlink never proves: PROOF_STATE_DIR a symlink to the real directory, re-pointed AWAY to a garbage token's directory (seen only by the reporter at +61) and BACK before +100, or never moved: cannot at +60 (the reporter at +61 too), +100, +199 and +200 ('$DIRWHY …'), no verdict, the gate refuses (rc 1) — the spare posture (the PRIMARY's copy is byte-identical, (10)). Controls, equal before and after: the canonical path proves at +100 (since=+0, re-minted at +200, gate rc 0); a directory swapped away and back by RENAME (no symlink anywhere) proves the same — DOCUMENTED RESIDUAL: the key sees the token file's identity only. Pre-fix (every earlier tree, de21927 through 02c8e54): the re-pointed and the static symlinked directory PROVEN at +100 with since=+0, gate rc 0"
+# (3l-R5b) R-SYM on the posture/status surface: the SAME reason path as W3 — the startup PAIRED posture and
+# the every-interval status line name the symlinked directory; the canonical-path control prints neither.
+case_dirposture() {   # DSYM=1: PROOF_STATE_DIR is a symlink to the real directory (the token itself a regular file)
+    if [[ "${DSYM:-0}" == "1" ]]; then ln -s "$PROOF_STATE_DIR" "$PROOF_STATE_DIR-psd"; PROOF_STATE_DIR="$PROOF_STATE_DIR-psd"; fi
+    WARNCT=0; LASTWARN=""
+    _proof_startup_check
+    local w1="$LASTWARN" n1=$WARNCT
+    WARNCT=0; LASTWARN=""
+    _proof_status_line
+    echo "reg=$_elapsed_registered|w1=$w1|n1=$n1|w2=$LASTWARN|n2=$WARNCT"
+}
+dp_ok=1
+r=$(DSYM=1 drive_ep "$STANDBY" case_dirposture | tail -1)
+[[ "$(field "$r" reg)" == "1" && "$(field "$r" n1)" == "1" && "$(field "$r" w1)" == *"armed spare PAIRED, but watchdog-elapsed CANNOT prove: $DIRWHY"* && "$(field "$r" n2)" == "1" && "$(field "$r" w2)" == *"paired (token gen=7), but watchdog-elapsed CANNOT prove: $DIRWHY"* ]] || { dp_ok=0; bad "(3l-R5b) symlinked state directory: $r"; }
+r=$(DSYM=0 drive_ep "$STANDBY" case_dirposture | tail -1)
+[[ "$(field "$r" reg)" == "1" && "$(field "$r" n1)" == "0" && "$(field "$r" n2)" == "0" ]] || { dp_ok=0; bad "(3l-R5b) canonical-path control: $r"; }
+[[ $dp_ok -eq 1 ]] && ok "(3l-R5b) R-SYM — a registered spare whose PROOF_STATE_DIR is a symlink says WHY watchdog-elapsed cannot prove, on both surfaces, through W3's reason path: the startup posture ('armed spare PAIRED, but watchdog-elapsed CANNOT prove: $DIRWHY …') and the every-interval status line ('paired (token gen=7), but watchdog-elapsed CANNOT prove: …'); the canonical path prints neither (zero WARNs). Pre-fix (02c8e54): both silent — the PAIRED line alone"
 case_samegen_dormant() {
     reg; prime_seam 0 none
     _SIM_NOW=$(( T0 + 100 )); _elapsed_step; local a1="$_elapsed_answer"
@@ -1583,6 +1655,24 @@ if [[ "$(field "$rj1" veto)" == "125" && "$(field "$rj1" mutation)" == "none" ]]
     ok "(11j) RESIDUAL (MEASURED) — the intermediary controls LATENCY: the veto boundary is unchanged (r112 vetoed at t125 — the own bank is read once, at the take cycle's start), but the mutation trails that read by Σ: r113 → mutation at t147, 34 s into the holder's voting (own bank read at t125; Σ = 22 s at GOSSIP_VERIFY=false); GOSSIP_VERIFY=true → t175 / 62 s (the advisory's two reads join Σ); T2 blackholed → t182 / 69 s. ARMED under the 6.4 emulation the provider mints at t181 and r169 is taken at t203 after 34 s (r166 is vetoed) — Σ applies to the proof-gated path too"
 else
     bad "(11j) r112=$rj1 :: r113=$rj2 :: gv=$rj3 :: t2down=$rj4 :: armed-r166=$rj5 :: armed-r169=$rj6"
+fi
+# (11j-Σ) 6.3 fix round 5 (P5T-SIGMA50-UNPINNED): the ARMED Σ that docs/SAFETY.md (Finding 1) and the
+# CHANGELOG state — "Σ = 50 s: 22 s of reads + 28 s of pets" — pinned: an armed unit (every pet 7 s, the
+# house counting), the timer path (no 6.4 gate), the splicer answering every take-cycle tier read at its
+# curl -m − 1 s. The own bank is read at t489; the three TIER2 reads answer +4 / +9 / +9 s (22 s), each
+# read — the own-bank one included — followed by its 7 s pet (4 × 7 = 28 s); the mutation lands at t539
+# (Σ = 50 s), 62 s into the voting of a holder resumed at t477; resumed at t476 it is vetoed at t496.
+# RESIDUAL — flips with (11j).
+rjs1=$(SPLICE_DELAY=max SPLICE_SEL=afterconfirm ARMED=1 GATE=0 PETS=7 MDS=0 RESUME=477 HORIZON=600 KEEPEV="$WORK/ev.sigma" world | tail -1)
+rjs2=$(SPLICE_DELAY=max SPLICE_SEL=afterconfirm ARMED=1 GATE=0 PETS=7 MDS=0 RESUME=476 HORIZON=600 world | tail -1)
+sig_rd=$(awk '/^read LOCAL getVoteAccounts t=489$/{on=1} on && /^late T2 [+]/{sub(/^late T2 [+]/,""); s+=$0} on && /^MUTATION/{print s+0; exit}' "$WORK/ev.sigma" 2>/dev/null)
+sig_pt=$(awk '/^read LOCAL getVoteAccounts t=489$/{on=1} on && /^pet t=/{n++} on && /^MUTATION/{print n+0; exit}' "$WORK/ev.sigma" 2>/dev/null)
+if [[ "$(field "$rjs1" own_read_before_mut)" == "489" && "$(field "$rjs1" mutation)" == "539" && "$(field "$rjs1" holder_voting_at_mut)" == "62" && "$sig_rd" == "22" && "$sig_pt" == "4" ]] \
+   && [[ "$(field "$rjs1" order)" == "read LOCAL getVoteAccounts;attempt;read T2 getVoteAccounts;read T2 getVoteAccounts;read T2 getVoteAccounts;MUTATION;" ]] \
+   && [[ "$(field "$rjs2" veto)" == "496" && "$(field "$rjs2" mutation)" == "none" ]]; then
+    ok "(11j-Σ) RESIDUAL (MEASURED) — the armed Σ the texts state: own bank read at t489, then three TIER2 reads answering +4 / +9 / +9 s (22 s of reads) and 4 pets at 7 s (28 s of pets — the own-bank read's and one per TIER2 read), the mutation at t539: Σ = 50 s; the holder resumed at t477 is taken 62 s into its voting, at t476 it is vetoed at t496 (docs/SAFETY.md Finding 1 — pinned in fix round 5; it had no suite row)"
+else
+    bad "(11j-Σ) r477=$rjs1 :: r476=$rjs2 :: reads=${sig_rd:-?}s pets=${sig_pt:-?}"
 fi
 # (11k) an HONEST tier lagging but advancing (D0-LAG, the TLAG rows) — replaces the incoherent "partitioned
 # together, live tip" premise: TIER2/TIER3 serve the TRUE chain TLAG seconds late; no adversary.

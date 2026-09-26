@@ -26,8 +26,9 @@
 #        ANCIENT; the startup never aborted
 #   (f2) R5 + S2 fence timing: the REAL check_self_fence_isolation after load_state on a corrupted save,
 #        at grace 0 and the shipped 30 — the holder still frozen / silent / lagging fences at the first
-#        read that shows it (a non-canonical slot: once the slot has not moved for 15 s past the reference
-#        read — W2), a healthy one never, a paused healthy one never (W2); the future-stamp and latch rows (W4)
+#        read that shows it (a non-canonical slot: at the first read at or after reference + 15 s that still
+#        shows the slot not past the reference read — W2), a healthy one never, a paused healthy one never
+#        (W2); the future-stamp and latch rows (W4)
 # harness: tests/lib/harness.sh — ok/bad+banners, paths, harness_silence_sinks ONLY (this suite
 # TESTS the clock: its dual _WALL_NOW/_MONO_NOW shims, seam cuts and parity checks stay local).
 
@@ -339,7 +340,7 @@ r5_load() {   # $1=script, then the state lines → "<demote>|<cooldown>|<baseli
   rm -rf "$td"
 }
 echo ""
-echo "─── (f) R5 + S2: non-canonical persisted values → lockout/cooldown re-HELD in full; SAVE_TS stale; a stamp ANCIENT behind first-read evidence; a slot 0 with a two-read backdate; startup never aborted ───"
+echo "─── (f) R5 + S2: non-canonical persisted values → lockout/cooldown re-HELD in full; SAVE_TS stale; a stamp ANCIENT behind first-read evidence; a slot 0 with the backdate pending (the reference, then live evidence); startup never aborted ───"
 f_ok=1; f_rows=""
 f_case() {   # $1=label $2=want (prefix match through after=) $3=script, then the state lines
   local label="$1" want="$2" script="$3"; shift 3
@@ -354,14 +355,14 @@ f_case "S:SAVE_TS=0999→stale"   "99990|0|none|0:0|0:0|0:0|after=1"    "$STANDB
 f_case "S:ADVANCE=0999→ancient" "0|0|500|1:1|0:0|0:0|after=1"         "$STANDBY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=0999" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
 f_case "S:NOANSWER=0777→ancient" "0|0|500|0:0|1:1|0:0|after=1"        "$STANDBY" "SF_LAST_CONFIRMED_SLOT=500" "SF_NOANSWER_MONO=0777" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
 f_case "S:VOTELAG=abc→ancient"  "0|0|500|0:0|0:0|1:1|after=1"         "$STANDBY" "SF_LAST_CONFIRMED_SLOT=500" "SF_VOTELAG_MONO=abc" "SF_VOTELAG_BASELINE=1" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
-f_case "S:SLOT=0999→0, two reads" "0|0|0|2:99000|0:0|0:0|after=1"     "$STANDBY" "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+f_case "S:SLOT=0999→0, reference then live evidence" "0|0|0|2:99000|0:0|0:0|after=1" "$STANDBY" "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
 f_case "S:HEALTHY=08→rest restored" "0|0|500|1:99000|0:0|0:0|after=1" "$STANDBY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "SF_VOTELAG_HEALTHY=08" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
 f_case "S:canonical control"    "99990|0|500|1:99000|0:0|0:0|after=1" "$STANDBY" "SELF_FENCE_DEMOTE_MONO=99990" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
 f_case "P:cooldown=0999→held"   "0|100000|none|0:0|0:0|0:0|after=1"   "$PRIMARY" "LAST_SWITCH_MONO=0999"
 f_case "P:SAVE_TS=0999→stale"   "0|0|none|0:0|0:0|0:0|after=1"        "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=0999"
 f_case "P:ADVANCE=0777→ancient" "0|0|500|1:1|0:0|0:0|after=1"         "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=0777" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
 f_case "P:NOANSWER=2^64+N→ancient" "0|0|500|0:0|1:1|0:0|after=1"      "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=500" "SF_NOANSWER_MONO=18446744073709651606" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
-f_case "P:SLOT=0999→0, two reads" "0|0|0|2:99000|0:0|0:0|after=1"     "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
+f_case "P:SLOT=0999→0, reference then live evidence" "0|0|0|2:99000|0:0|0:0|after=1" "$PRIMARY" "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
 f_case "P:canonical control"    "0|99990|500|1:99000|0:0|0:0|after=1" "$PRIMARY" "LAST_SWITCH_MONO=99990" "SF_LAST_CONFIRMED_SLOT=500" "SF_ADVANCE_MONO=99000" "ROLE_AT_SAVE=staked" "SAVE_TS=199990"
 # fix round 4: W2 — a YOUNG stall stamp (10 s) over a non-canonical slot arms pending 2 anchored at the RESTORE
 # instant (100000), never at the stamp; the canonical-slot young stamp still arms nothing. W4 — a same-boot
@@ -478,10 +479,14 @@ f2_case "healthy VOTELAG=0777"           never healthy 30 "SF_LAST_CONFIRMED_SLO
 # fix round 4, W2 (H4-RP2-HEALTHY-PAUSE): the unknown slot's decision waits SELFFENCE_RESTORE_CONFIRM_SECS
 # (15 s) past the reference read — a HEALTHY holder whose confirmed slot pauses (C F C: one frozen read; C D C:
 # one read 5 below; C S F C: a silent read, then the pause) is never fenced (7ab7eca: 5 / 5 / 10 s, grace 30:
-# 35 / 35 / 40 s — backdated to the persisted stall); a still-frozen one fences at reference + 15 (the rows
-# above: 15 / 45 s). The YOUNG-stamp member (a stall stamp 10 s old — under one window — over a corrupted
-# slot): the frozen clock anchors at the restore instant behind the same floor — grace 30: 45 s (7ab7eca and
-# e917c04 60: the first answer restarted the clock), grace 0: 30 s (unchanged); its healthy pause never.
+# 35 / 35 / 40 s — backdated to the persisted stall); a still-frozen one fences at the first read at or after
+# reference + 15 s (the rows above, at this harness's 5 s cadence: 15 / 45 s — up to one CHECK_INTERVAL more
+# at a cadence that does not divide 15: 51 / 21 s at 7, the final panel's cadence grid, fix round 5). The
+# YOUNG-stamp member (a stall stamp 10 s old — under one window — over a corrupted slot): the frozen clock
+# anchors at the restore instant behind the same floor, so it fences at the first read at or after
+# max(reference + 15 s, restore + SELF_FENCE_ISOLATION_SECS) — grace 30: 45 s (7ab7eca and e917c04 60: the
+# first answer restarted the clock), grace 0: 30 s (unchanged: restore + 30, not reference + 15); its
+# healthy pause never.
 R5_SEQ=CFC  f2_case "pause C F C SLOT=0999 stall 1000s"   never seq 30 "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000"
 R5_SEQ=CFC  f2_case "pause C F C SLOT=0999 stall 1000s"   never seq "" "SF_LAST_CONFIRMED_SLOT=0999" "SF_ADVANCE_MONO=99000"
 R5_SEQ=CDC  f2_case "pause C D C SLOT=abc stall 1000s"    never seq 30 "SF_LAST_CONFIRMED_SLOT=abc" "SF_ADVANCE_MONO=99000"
@@ -530,6 +535,6 @@ for f in "$HARNESS_DIR"/failover.env.example "$HARNESS_DIR"/failover-standby.env
 done
 [[ $f3_ok -eq 1 ]] && ok "(f3) W2 — SELFFENCE_RESTORE_CONFIRM_SECS=15 is assigned exactly ONCE per daemon, after the env source (a constant, not a knob), inside a derivation block byte-identical in both daemons, and named in no other shipped script" \
   || bad "(f3) the floor's one derivation site:$f3_why"
-[[ $f2_ok -eq 1 ]] && ok "(f2) R5 + S2 + W2 + W4 fence timing, both daemons —$f2_rows a non-canonical stall / silence / lag stamp is ANCIENT behind the first read's evidence: the holder still frozen / silent / lagging fences at that read (pre-fix e917c04 started the timer fresh: 30 s, grace 30: 60 / 60 s), a healthy first read drops it (never); a non-canonical slot over a stall a window old keeps the backdate pending past the reference read until the slot has not moved for SELFFENCE_RESTORE_CONFIRM_SECS (15 s) — frozen fences at reference + 15 (grace 0: 15 s, grace 30: 45 s; 7ab7eca 5 / 35, which fenced the PAUSED HEALTHY holder too; e917c04 30 / 60; f22d492 30 / 30 by misreading '0999', which fenced the HEALTHY holder at 30 too), a paused healthy holder never; a young stall stamp over a corrupted slot anchors at the restore instant (grace 30: 45 s; 7ab7eca / e917c04 60); a same-boot FUTURE stamp is ancient and a present latch other than 0 restores set (every tree before: never, or 30 s for the frozen stamp); an ABSENT latch stays unset (named residual, never); per-value restore keeps round 2's rows (the whole-snapshot variant fenced 30 s / never / never / never where rows 2–5 fence at 0 / 0 / 20 / 0 s here)"
+[[ $f2_ok -eq 1 ]] && ok "(f2) R5 + S2 + W2 + W4 fence timing, both daemons —$f2_rows a non-canonical stall / silence / lag stamp is ANCIENT behind the first read's evidence: the holder still frozen / silent / lagging fences at that read (pre-fix e917c04 started the timer fresh: 30 s, grace 30: 60 / 60 s), a healthy first read drops it (never); a non-canonical slot over a stall a window old keeps the backdate pending past the reference read until the slot has not moved for SELFFENCE_RESTORE_CONFIRM_SECS (15 s) — frozen fences at the first read at or after reference + 15 (at this harness's 5 s cadence: grace 0: 15 s, grace 30: 45 s; 7ab7eca 5 / 35, which fenced the PAUSED HEALTHY holder too; e917c04 30 / 60; f22d492 30 / 30 by misreading '0999', which fenced the HEALTHY holder at 30 too), a paused healthy holder never; a young stall stamp over a corrupted slot anchors at the restore instant (grace 30: 45 s; 7ab7eca / e917c04 60); a same-boot FUTURE stamp is ancient and a present latch other than 0 restores set (every tree before: never, or 30 s for the frozen stamp); an ABSENT latch stays unset (named residual, never); per-value restore keeps round 2's rows (the whole-snapshot variant fenced 30 s / never / never / never where rows 2–5 fence at 0 / 0 / 20 / 0 s here)"
 
 results_banner

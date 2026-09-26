@@ -368,8 +368,8 @@ meets the floor with no observation in between and ends on one post-resume read.
 verdict is served only while the stored token still licenses it — re-classified at every serve; a
 token removed, rotted, turned page-only or re-paired withdraws it at once, and a token adopted
 mid-episode restarts the silence — and never after `PROOF_MAX_AGE`. "Adopted" means ANY change to the
-stored token (6.3 fix round 2): the adoption is keyed on its full classified line (gen, bounds, fence,
-host, crc) and on the stored file's identity (inode, size, change time), so a new gen, a same-gen
+stored token FILE (6.3 fix round 2): the adoption is keyed on its full classified line (gen, bounds,
+fence, host, crc) and on the stored file's identity (inode, size, change time), so a new gen, a same-gen
 re-pair with other bounds, another host's token with the same bounds, and a rewrite back to the same
 bytes that no evaluation saw are all new adoptions (measured: a same-gen re-pair to a lower floor at
 +121 s proves no earlier than +221 s; before, it proved at +121 s). A **symlinked** token never proves
@@ -378,10 +378,21 @@ regular file, as `failover arm` does" — and the startup posture and the status
 interval. No single file identity covers a link: keyed on the link itself, every rewrite of its target
 is invisible (a flap proved at +100 s before fix round 3); keyed on its target (`stat -L`, fix round 3),
 a link re-pointed away and back is invisible at any spacing (it proved at +100 s there). `failover arm`
-always stores a regular file (tmp + `mv -f`, which replaces a link). Not visible, for the regular file:
-a rewrite back to identical bytes within one ctime granule — a kernel tick on ns-timestamp
-filesystems, 1 s on ext4 with 128-byte inodes, ext3 or HFS+ (the inode number does not help: ext4
-recycles it across a tmp+mv).
+always stores a regular file (tmp + `mv -f`, which replaces a link). The same holds one level up (6.3
+fix round 5): a **symlinked state directory** re-pointed away and back leaves the token file under it
+untouched — it proved at +100 s on every earlier tree — so a token whose directory does not canonicalize
+to itself (`PROOF_STATE_DIR` reached through a symlink anywhere on its path, or spelled other than its
+resolved path) never proves either: *cannot*, "the pairing token's directory is reached through a
+symlink — point PROOF_STATE_DIR at the resolved path", on the same three surfaces (the provider's
+reason, the startup posture, the status line). The availability cost, by design: **a symlinked state
+directory disables watchdog-elapsed until `PROOF_STATE_DIR` is pointed at the resolved path** (and the
+monitor restarted to read it; `failover arm` writes through the link into that same directory, so the
+stored token does not move). Not visible, for the regular file: a rewrite back to identical bytes
+within one ctime granule — a kernel tick on ns-timestamp filesystems, 1 s on ext4 with 128-byte inodes,
+ext3 or HFS+ (the inode number does not help: ext4 recycles it across a tmp+mv); and the state
+directory itself swapped away and back by RENAME, with no symlink anywhere — the token file keeps its
+identity, and it proves at +100 s on every tree, this one included (a documented residual,
+`test_elapsed_provider` (3l-R5a)).
 
 **Where composition does add an independent input — and how much.**
 
@@ -409,8 +420,8 @@ recycles it across a tmp+mv).
    and every pet 7 s: the own-bank read at t489, the attempt at t496, three `TIER2` reads answering
    +4, +9 and +9 s, each followed by a 7 s pet, the mutation at t539 — Σ = 50 s, 22 s of reads + 28 s
    of pets (the reads' bounds alone imply about 35 s); a holder that resumed at t477 was taken 62 s
-   into its voting (t476: vetoed). Measured, the tiers as the intermediary, the take scheduled at
-   t125 on the timer path:
+   into its voting (t476: vetoed) — pinned in `test_elapsed_provider` (11j-Σ). Measured, the tiers
+   as the intermediary, the take scheduled at t125 on the timer path:
    - zero latency: resumed at t112 → vetoed; at t113 → taken at t125 after **12 s** of renewed
      voting. Armed (proof minted at t171): t158 → vetoed; t159 → the gate accepts watchdog-elapsed
      and the take mutates at t171 — the proof matures before the own bank sees the resumption;

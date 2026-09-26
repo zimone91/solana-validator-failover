@@ -276,14 +276,17 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   - **Reference-first read bias (`MAX_VOTE_LATENCY` PRIMARY path, measured, unchanged):** on this
     opt-in path `tier1_get_vote_latency` reads its `getSlot` reference **before** the
     `getVoteAccounts` payload, so a stall or pet between the two makes the holder look *more*
-    current — the latency demote can arrive up to ~37 s later than the reverse order (measured with
-    both reads at their `curl -m 10` bound and a 7 s pet between them: up to 27 s between the two
-    snapshots; ~27 s later when only the payload stalls), and a still-voting holder lagging within
-    (slot rate × that gap — up to 67 slots at 2.5 slots/s, 100 at 3.7) of the limit never demotes on
-    this path. It is an **availability** cost only (a lagging holder is still live), the worst delay is
-    within the cross-node margin `B` (60 s), and it does not touch the self-fence relinquish that
-    `B` actually bounds (the self-fence's own-vote-lag check reads a single same-payload snapshot,
-    no cross-read skew). Off by default; stated, not changed.
+    current. Whenever the threshold crossing falls inside that snapshot gap (up to 27 s: both reads
+    at their `curl -m 10` bound and a 7 s pet between them), the latency demote comes up to **one
+    full STAKED loop cycle** later than the reverse order — `DELINQUENCY_RETRIES` consecutive
+    over-limit reads are needed, and the bias hides one. That is a cycle, not a fixed number: 37 s
+    measured in a latency-only cycle at `CHECK_INTERVAL` 3, 64 s at `CHECK_INTERVAL` 30, ~61 s at the
+    shipped defaults with the self-fence's `getSlot` and `getHealth` reads. A still-voting holder
+    lagging within (slot rate × that gap — up to 67 slots at 2.5 slots/s, 100 at 3.7) of the limit
+    never demotes on this path. It is an **availability** cost only (a lagging holder is still live),
+    and it does not touch the self-fence relinquish that the cross-node margin `B` bounds (the
+    self-fence's own-vote-lag check reads a single same-payload snapshot, no cross-read skew). Off by
+    default; stated, not changed.
 - **Recovery mode (`RECOVERY_MODE`):** `manual` is the **default and recommended** path —
   operator-driven switch-back (see Manual switch-back). `rpc` is an **opt-in** automatic path:
   in v0.6.3 it gets **vote-liveness parity** — PRIMARY re-takes the staked identity only when the
@@ -957,6 +960,14 @@ absence alert tells you *which* node's monitor went silent. Do **not** reuse a s
 ## Prerequisites
 
 - All nodes running agave-validator
+- Each monitor runs on its validator's host (systemd, as root), where `/proc/uptime` and
+  `/proc/sys/kernel/random/boot_id` belong to ONE kernel boot: the persisted safety stamps are
+  monotonic (uptime) values keyed by `boot_id`, and a same-boot stamp later than now is treated as
+  corrupted. Not inside a container that virtualizes `/proc/uptime` but not `boot_id` (lxcfs-style):
+  there a container restart resets the uptime clock under the same `boot_id`, every persisted stamp
+  looks "future" and restores ANCIENT, and one first-read blip fences at once — measured by the v0.7
+  review panel: a validator still catching up for 10–25 s after such a restart, at `STARTUP_GRACE=0`,
+  was fenced at its first read, where the same restart on a normal host is never fenced.
 - Each node has its own UNIQUE unstaked keypair
 - Staked keypair present on ALL nodes (same file)
 - Vote account keypair at `/root/solana/vote-account-keypair.json` (for auto-detect)
