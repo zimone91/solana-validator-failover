@@ -2862,7 +2862,8 @@ _derive_proof_floors() {
     MARGIN_ELAPSED=10
     # elapsed_floor = W + B + MARGIN_ELAPSED (=100 at the shipped W=30/B=60): the
     # watchdog-elapsed provider's floor — silence measured on the spare's mono clock must reach
-    # this before attested time counts as proof (provider lands in 6.3).
+    # this before attested time counts as proof (consumed by the [elapsed-provider] region, 6.3 — it
+    # READS the three values below and never re-derives them).
     elapsed_floor=$(( _proof_token_w + _proof_token_b + MARGIN_ELAPSED ))
     # N_HEAD [6.0-COND-3] — derived from what the cross-check GUARDS, never from B: a liveness
     # view lagging the true head by X seconds freezes the spare's last-seen-liveness stamp, so
@@ -3060,6 +3061,7 @@ _proof_startup_check() {
         alert "ALLOW_UNFENCED_TAKEOVER=true on an ARMED spare — every take will BYPASS the relinquish-proof gate (no proof the holder relinquished; double-sign risk). Unset the lever unless this is a deliberate, temporary override." "${STAKED_PUBKEY:-unknown}" "PROOF GATE BYPASS ARMED 🚨"
     fi
     _g2_register   # v0.7 (Block 6.2): register the verified-demote provider (armed+spare already gated above; self-gates on PRIMARY_UNSTAKED_PUBKEY + vantage config) BEFORE the posture lines below, so they print the real registry
+    _elapsed_register   # v0.7 (Block 6.3): register the watchdog-elapsed provider — ONLY over a token that classifies ok at _derive_proof_floors (silent otherwise: the §2.7 posture below is the loud part) — BEFORE the posture lines, so the PAIRED line prints the measured registry
     _proof_unpaired_scan
     if [[ -z "$_proof_unpaired_why" ]]; then
         if _derive_proof_floors; then
@@ -3812,6 +3814,298 @@ _g2_provider() {
     return 0
 }
 # ── [g2-provider] end shared block ──
+
+# v0.7 (Block 6.3): the [elapsed-provider] incident adapter — per-daemon, deliberately OUTSIDE the
+# byte-identical region below (the _g2_incident_active pattern: role/episode facts stay per-daemon,
+# the shared block stays byte-identical). On this SPARE daemon the provider keys on the SAME surface
+# as G2 and the take path: an open delinquency episode (FIRST_DELINQUENT_TIME is stamped at the first
+# local-delinquent sighting and cleared by every episode-close reset). The MAIN-LOOP call site sits
+# in the UNSTAKED branch AFTER the Tier-1 health gate (see the call site for why).
+_elapsed_incident_active() { [[ ${FIRST_DELINQUENT_TIME:-0} -gt 0 ]]; }
+
+# ── [elapsed-provider] watchdog-elapsed (attested time) proof provider — BYTE-IDENTICAL in both daemons (test_elapsed_provider) ──
+# v0.7 (Block 6.3, BLOCK6-PLAN §3/§0, DESIGN-v0.7-ADDENDUM §2.1 + the §2.4 re-adopted independent-
+# head item): the second provider behind the [proof-gate] registry — TIME as proof. COST MODEL
+# (reviewer condition 1, binding): the worst outcome is DOUBLE-SIGN — the spare taking while the
+# holder is alive — and time is the WEAKEST evidence kind (a silence measured on a clock, never an
+# observation of the relinquish itself), so every ambiguity below answers blind, no or cannot, NEVER
+# proven. NOT WIRED into any take path in this build (6.4 wires the gate); inert everywhere today.
+#
+# THE CONDITION-4 COMMENT, AT THE PROVIDER END (the gate end carries it too — both ends of the
+# temptation): the pairing token says the holder was ARMED with (watchdog W, relinquish_bound B,
+# fence=real) at pairing generation N. Pairing speaks of CONFIGURATION at gen N, never of what that
+# box is doing now — fence rot is invisible to the spare by design (§2.1; the holder self-enforces via
+# [fence-rot]). What attestation buys here is exactly ONE thing: the right to use TIME as proof, at
+# the token's bounds — and only while the token classifies ok at the ONE derivation site
+# (_derive_proof_floors), checked at registration AND again at every evaluation.
+#
+# WHAT A PROVEN VERDICT STANDS ON — the layer set, enumerated so "complete" stays a measured claim
+# (test_elapsed_provider neuters each layer ALONE and observes the fall-through to a NAMED surviving
+# layer, then neuters ALL of them and observes the forged acceptance come back):
+#   [elapsed-token]  the stored token classifies ok through _derive_proof_floors (fence=real, crc-valid,
+#                    floor converged and >= TAKEOVER_DELAY) — the floors are READ from that one site,
+#                    never re-derived here (the constants census in test_proof_gate stays exact)
+#   [elapsed-blind]  the silence is CONTINUOUSLY OBSERVED: the Block-3 seam shows an observed span this
+#                    episode (_liveness_obs_since > 0) and the clock never runs through blindness (a
+#                    blind_until newer than a floor refuses on its OWN line — defense in depth under a
+#                    seam whose observed span failed to restart)
+#   [elapsed-floor]  silence on this spare's MONO clock since the start of that observed span >=
+#                    elapsed_floor = W + B + MARGIN_ELAPSED (the derivation site says why each term)
+#   [elapsed-head]   the liveness payload's cluster-max lastVote within ±N_HEAD slots of an INDEPENDENT
+#                    head: this spare's OWN bank (LOCAL_RPC getSlot, commitment=processed)
+# and, below them, the observation itself: ONE fresh read through the ONE liveness sampler
+# (get_staked_liveness_sample) on the episode's PINNED vantage, in which the holder's staked lastVote
+# has not moved past the episode baseline — the read the silence measurement rests on (observed_at).
+#
+# WHY THIS SPARE'S OWN BANK IS THE HEAD (Block 6.3 D0, executed on the real main loop in
+# test_elapsed_provider §11): every other input of the take path's liveness surface — external
+# confirm, the vote-FROZEN sample, the mutation-edge recheck and this provider's own silence — rides
+# TIER2_RPC/TIER3_RPC, where one intermediary can serve a LAGGED view whose cluster-max still
+# advances (the Block-3 tip guard tests advance, not rate). LOCAL_RPC does not traverse them: no
+# TIER2/TIER3 intermediary can lower this head to hide a lagged view. commitment=processed is
+# load-bearing BOTH ways — the RPC default (finalized, ~32 slots behind) would alone understate the
+# view's lag by more than N_HEAD (the unsafe direction) and would put every live view ~32 slots AHEAD
+# of the head (a permanent false blind). The compare is TWO-SIDED ("within"): the view more than
+# N_HEAD behind this bank is a lagged fleet; this bank more than N_HEAD behind a live view is a stale
+# REFERENCE — a lagging or cut-off spare, which the Tier-1 gate does not catch (agave's getHealth
+# compares the node against what its OWN blockstore has observed, so a node that cannot observe the
+# cluster moving on reads ok — test_elapsed_provider (11e)/(11h)). Both read BLIND: availability,
+# never safety. The head is read AFTER the payload, so the inter-read gap can only inflate the
+# view-behind side (toward blind), never hide lag. WHAT IT DOES NOT SEE, named: this bank and the
+# view lagging the true head TOGETHER; and a splicer that proxies the head LIVE while freezing the
+# staked lastVote passes it by construction — lag is what it measures, splicing is not
+# (docs/SAFETY.md, the standing shared-input property: on EVERY config this provider's silence and
+# the take path's vote-FROZEN observation are ONE input).
+#
+# BLINDNESS IS LIFE, THROUGH THE SEAM — and this region WRITES NOTHING to it: _liveness_obs_since
+# re-pins at every observed life (the VOTING verdicts) and resets on every stamped blind cycle, so the
+# silence clock restarts exactly as Block 3 defines it. The provider's OWN unusable read answers blind
+# and proves nothing; it is NOT stamped as a blind cycle, and life the provider sees is NOT re-based
+# here (the take path's vote-liveness gate registers it, with the full N3 re-anchor, against the SAME
+# unmoved pin). Why not stamping is sound: a verdict is minted only on a USABLE read compared against
+# the episode pin, and lastVote is monotonic on-chain, so a vote landed while this provider could not
+# read shows as an advance at its next usable read — the argument Block 3 records for unprobed
+# stretches; the S-3 hazard that made blindness-is-life necessary for the N3 anchor (an anchor that
+# predates the blindness) cannot arise here, because the silence starts at the observed span, which
+# the seam re-pins after every stamped blindness. And unwired means unwired: this build must not move
+# the take path's anchor through a provider's side effect.
+#
+# STRUCTURALLY INERT everywhere today: every entrypoint no-ops unless _watchdog_active AND
+# _proof_role_is_spare AND registered (a valid token at startup) — zero reads, zero events, zero
+# state on every un-armed, holder or unpaired host (census-asserted in test_elapsed_provider).
+# A PER-CYCLE STEP, never a blocking wait: zero NETWORK reads below its floor and while a minted
+# verdict stands; at most ONE evaluation per paced cycle. Every non-dormant step with an open
+# incident re-classifies the stored token at the derivation site first — a local file read + cksum,
+# ~20 ms measured, no network (the dormant verdict path skips even that). Worst added gap per cycle
+# (the A3-style census):
+#     below floor / dormant proven / paced / not registered : zero network reads               ~  0 s
+#     evaluation: the sampler (T2 curl -m 10 + pet 7 s, then T3 curl -m 10 + pet 7 s)         = 34 s
+#                 + the head read (curl -m 5 + pet 7 s) + parse glue (~2 s)                   = 14 s
+#                                                                           worst evaluation  = 48 s
+# (a pet is `timeout -k 2 5`, counted as 7 s — the house bound-counting.) Every read is petted
+# post-op (the sampler pets its own; the head read below) — a timeout return IS completion (FF-B1) —
+# so the gap between consecutive pets stays <= one op + one pet ~ 17 s < WatchdogSec 30. Always the
+# SAFE direction: a slow evaluation can only make this spare reach its own take gates LATER. State
+# is DELIBERATELY memory-only (never in save_state): a restarted daemon re-evaluates from the seam.
+_ELAPSED_READ_PACE_SECS=2        # min seconds between evaluations while candidate-but-not-proven — bounds TIER2/TIER3 load under the 1 s turbo loop (the _G2_READ_PACE_SECS class and value); pacing only, never a proof input
+
+_elapsed_registered=0            # registration latch (one registration per process; only with a token that classifies ok)
+_elapsed_answer="cannot"         # current verdict class: cannot | blind | no | yes (every ambiguity initializes and fails toward cannot)
+_elapsed_reason="not yet evaluated"  # MEASURED reason for the verdict record and logs (never a static figure)
+_elapsed_verdict=""              # the minted proven verdict record (stamps frozen at the mint; ages via observed_at)
+_elapsed_since=0                 # the silence start the minted verdict rests on = max(observed_since, blind_until) at the mint
+_elapsed_obs_ts=0                # the minted verdict's observed_at (mono stamp taken BEFORE its fresh read)
+_elapsed_last_read_ts=0          # _ELAPSED_READ_PACE_SECS anchor (mono; 0 = the first evaluation never waits)
+
+# _elapsed_reset <why> — drop the verdict and back to cannot. Registration survives (it is config).
+_elapsed_reset() {
+    _elapsed_answer="cannot"; _elapsed_reason="${1:-reset}"
+    _elapsed_verdict=""; _elapsed_since=0; _elapsed_obs_ts=0
+    return 0
+}
+
+# _elapsed_verdict_why <now> — "" while the minted verdict still stands, else the MEASURED reason it
+# no longer does. State-only (zero reads, zero writes): the reporter calls it inside the gate's $().
+# A verdict stands only while its episode is open, the seam has not moved under it (a new observed
+# life or a stamped blindness moves the silence start) and it is no older than PROOF_MAX_AGE (serving
+# an older one is noise — the mutation edge refuses it anyway).
+_elapsed_verdict_why() {
+    local _evw_now="$1" _evw_since="${_liveness_obs_since:-0}" _evw_blind="${_last_blind_end:-0}" _evw_start
+    _elapsed_incident_active || { printf 'episode closed'; return 0; }
+    _evw_start=$_evw_since; [[ $_evw_blind -gt $_evw_start ]] && _evw_start=$_evw_blind
+    if [[ $_evw_since -le 0 || "$_evw_start" != "$_elapsed_since" ]]; then
+        printf 'the seam moved under the verdict: silence start %s at the mint, now %s (observed life or a stamped blindness since)' "$_elapsed_since" "$_evw_start"
+        return 0
+    fi
+    case "${PROOF_MAX_AGE:-}" in ''|*[!0-9]*) printf 'PROOF_MAX_AGE unusable (%s)' "${PROOF_MAX_AGE:-unset}"; return 0 ;; esac
+    if [[ $(( _evw_now - _elapsed_obs_ts )) -gt $PROOF_MAX_AGE ]]; then
+        printf 'aged %ss > PROOF_MAX_AGE=%ss' "$(( _evw_now - _elapsed_obs_ts ))" "$PROOF_MAX_AGE"
+        return 0
+    fi
+    return 0
+}
+
+# _elapsed_register — called from _proof_startup_check (armed + spare already gated there). The
+# provider exists ONLY over an attested holder: a token that does not classify ok at the derivation
+# site (none / invalid / page-only / non-converging / shorter than TAKEOVER_DELAY) registers NOTHING
+# and emits nothing — the §2.7 posture printed by _proof_startup_check already says, loudly, that
+# silence-based take is disabled.
+_elapsed_register() {
+    _watchdog_active || return 0
+    _proof_role_is_spare || return 0
+    [[ "$_elapsed_registered" == "0" ]] || return 0
+    _derive_proof_floors || { return 0; }   # [elapsed-token]
+    _proof_providers="${_proof_providers:+$_proof_providers }_elapsed_provider"
+    _proof_provider_labels="${_proof_provider_labels:+$_proof_provider_labels }watchdog-elapsed"
+    _elapsed_registered=1
+    _elapsed_reset "registered — no evaluation yet"
+    log_info "[elapsed-provider] registered: watchdog-elapsed — token gen=${_proof_token_gen} (watchdog=${_proof_token_w}s, relinquish_bound=${_proof_token_b}s, fence=real) → floor ${elapsed_floor}s of observed silence (W+B+MARGIN_ELAPSED = ${_proof_token_w}+${_proof_token_b}+${MARGIN_ELAPSED}), head cross-check ±${N_HEAD} slots against this spare's own bank (LOCAL_RPC getSlot, commitment=processed)"
+    return 0
+}
+
+# ── _elapsed_step — the per-cycle evaluation (called from the main loop, spare posture, after the
+#    Tier-1 gate; "main loop" stays lowercase HERE: the test harness cuts each daemon at the first
+#    line matching the uppercase marker — a premature match would truncate the seam mid-region) ──
+_elapsed_step() {
+    _watchdog_active || return 0
+    _proof_role_is_spare || return 0
+    [[ "$_elapsed_registered" == "1" ]] || return 0
+    local _es_now _es_since _es_blind _es_start _es_why _es_s _es_rest _es_cur _es_ref _es_tier _es_hb _es_hrc _es_head _es_lag
+    _es_now=$(mono_now)
+    if ! _elapsed_incident_active; then
+        [[ -n "$_elapsed_verdict" ]] && log_info "[elapsed-provider] episode closed — proven verdict (${_elapsed_verdict%%|observation_id=*}) dropped"
+        _elapsed_reset "idle (no incident)"
+        return 0
+    fi
+    # a minted verdict is DORMANT (zero reads) while it stands; WITHDRAWN — never extended — the moment
+    # it does not (nothing here can make old evidence younger)
+    if [[ -n "$_elapsed_verdict" ]]; then
+        _es_why=$(_elapsed_verdict_why "$_es_now")
+        [[ -z "$_es_why" ]] && return 0
+        log_info "[elapsed-provider] proven verdict WITHDRAWN (${_es_why}) — re-evaluating from the seam"
+        _elapsed_reset "withdrawn: ${_es_why}"
+        return 0
+    fi
+    # [elapsed-token] re-classify at the ONE derivation site at every evaluation: a token that rotted on
+    # disk (or a daemon re-configured under it) since registration proves nothing from here on
+    _derive_proof_floors || {
+        _elapsed_answer="cannot"; _elapsed_reason="token no longer classifies ok at the derivation site: ${_proof_floor_why}"
+        return 0
+    }
+    _es_since="${_liveness_obs_since:-0}"; _es_blind="${_last_blind_end:-0}"
+    case "$_es_since" in ''|*[!0-9]*) _es_since=0 ;; esac
+    case "$_es_blind" in ''|*[!0-9]*) _es_blind=0 ;; esac
+    # [elapsed-blind] (1) no observed span this episode (blind, or not sampled yet): the silence clock
+    # has not started — nothing has been OBSERVED to be silent
+    if [[ $_es_since -le 0 ]]; then
+        _elapsed_answer="blind"; _elapsed_reason="no continuous observation of the holder this episode (observed_since=0: blind, or not yet sampled) — the silence clock has not started"
+        return 0
+    fi
+    # [elapsed-blind] (2) the clock restarts at the END of blindness — on its OWN line, so a seam whose
+    # observed span did not restart at a stamped blindness still cannot run the clock through it
+    if [[ $_es_blind -gt 0 && $(( _es_now - _es_blind )) -lt ${elapsed_floor:-0} ]]; then
+        _elapsed_answer="blind"; _elapsed_reason="blindness ended $(( _es_now - _es_blind ))s ago (blind_until=${_es_blind}); REQUIRED: >= ${elapsed_floor}s of silence observed AFTER it — the clock never runs through an interval this spare could not observe"
+        return 0
+    fi
+    # [elapsed-floor] a valid derived floor, then the observed silence against it (zero network reads below it)
+    case "${elapsed_floor:-}" in ''|*[!0-9]*)
+        _elapsed_answer="cannot"; _elapsed_reason="no usable derived elapsed_floor ('${elapsed_floor:-unset}')"
+        return 0
+    ;; esac
+    if [[ $(( _es_now - _es_since )) -lt $elapsed_floor ]]; then
+        _elapsed_answer="no"; _elapsed_reason="observed silence $(( _es_now - _es_since ))s < elapsed_floor ${elapsed_floor}s (W+B+MARGIN_ELAPSED; observed_since=${_es_since})"
+        return 0
+    fi
+    _es_start=$_es_since; [[ $_es_blind -gt $_es_start ]] && _es_start=$_es_blind
+    # pace guard (the 0-sentinel idiom: the FIRST evaluation never waits; only repeats are paced)
+    if [[ ${_elapsed_last_read_ts:-0} -gt 0 ]]; then
+        [[ $(( _es_now - _elapsed_last_read_ts )) -lt $_ELAPSED_READ_PACE_SECS ]] && return 0
+    fi
+    _elapsed_last_read_ts=$_es_now
+    # the FRESH read the verdict rests on, through the ONE liveness sampler (T2→T3; it pets per op).
+    # observed_at = _es_now, stamped BEFORE the read: the evidence is at least that fresh, and the
+    # silence is measured to that instant — both conservative.
+    _es_s=$(get_staked_liveness_sample) || _es_s=""
+    _es_cur="${_es_s%% *}"; _es_rest="${_es_s#* }"; _es_ref="${_es_rest%% *}"
+    _es_tier=""; [[ "$_es_rest" == *" "* ]] && _es_tier="${_es_rest##* }"
+    if [[ -z "$_es_s" || ! "$_es_cur" =~ ^[0-9]+$ || ! "$_es_ref" =~ ^[0-9]+$ ]]; then
+        _elapsed_answer="blind"; _elapsed_reason="this evaluation's liveness read yielded no usable sample (both tiers failed/invalid) — proves nothing (not stamped into the seam: see the region comment)"
+        return 0
+    fi
+    # the episode's provider pin: a silence claim is valid only same-vantage (the Block-3 A2 rule)
+    if [[ -z "$_es_tier" || "$_es_tier" != "${_liveness_first_provider:-}" ]]; then
+        _elapsed_answer="cannot"; _elapsed_reason="the fresh liveness payload came from vantage '${_es_tier:-none}' but the episode is pinned to '${_liveness_first_provider:-none}' — not same-vantage comparable"
+        return 0
+    fi
+    case "${_liveness_first_vote:-}" in ''|*[!0-9]*)
+        _elapsed_answer="cannot"; _elapsed_reason="no episode baseline pinned ('${_liveness_first_vote:-}') — nothing to measure the silence against"
+        return 0
+    ;; esac
+    if [[ $(( _es_cur - _liveness_first_vote )) -gt ${VOTE_LIVENESS_EPSILON:-0} ]]; then
+        _elapsed_answer="no"; _elapsed_reason="LIFE: the holder's staked lastVote is ${_es_cur}, $(( _es_cur - _liveness_first_vote )) slots past the episode baseline ${_liveness_first_vote} at this read — the silence is broken (the vote-liveness gate re-anchors on it; this provider never re-bases the seam)"
+        return 0
+    fi
+    if [[ $_es_cur -lt $_liveness_first_vote ]]; then
+        _elapsed_answer="cannot"; _elapsed_reason="the holder's staked lastVote went BACKWARDS (${_es_cur} < episode baseline ${_liveness_first_vote}) — inconsistent view"
+        return 0
+    fi
+    # [elapsed-head] the INDEPENDENT head — AFTER the payload (the gap can only inflate the view-behind side)
+    _es_hb=$(curl -s -m 5 "$LOCAL_RPC" -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}' 2>/dev/null)
+    _es_hrc=$?
+    _watchdog_pet   # §5 per-op pet: bounded op completed (rc captured above); no-op outside the armed unit
+    _es_head=""; [[ $_es_hrc -eq 0 ]] && _es_head=$(printf '%s' "$_es_hb" | jq -r '.result // empty' 2>/dev/null)
+    case "$_es_head" in ''|*[!0-9]*)
+        _elapsed_answer="cannot"; _elapsed_reason="no usable independent head from this spare's own bank (LOCAL_RPC getSlot processed, curl rc=${_es_hrc}: '${_es_head}') — the payload's freshness cannot be checked"
+        return 0
+    ;; esac
+    _es_lag=$(( _es_head - _es_ref ))
+    if [[ $_es_lag -gt $N_HEAD ]]; then
+        _elapsed_answer="blind"; _elapsed_reason="LAGGED VIEW: the liveness payload's cluster-max lastVote ${_es_ref} is ${_es_lag} slots behind this spare's own head ${_es_head}; REQUIRED: <= N_HEAD=${N_HEAD} — a lagged-but-answering fleet reads blind (wait), never frozen"
+        return 0
+    fi
+    if [[ $(( 0 - _es_lag )) -gt $N_HEAD ]]; then
+        _elapsed_answer="blind"; _elapsed_reason="STALE REFERENCE: this spare's own head ${_es_head} is $(( 0 - _es_lag )) slots behind the live payload's cluster-max ${_es_ref}; REQUIRED: <= N_HEAD=${N_HEAD} — a lagging or cut-off bank cannot certify a view's freshness (blind, wait)"
+        return 0
+    fi
+    # ── the verdict-minting site (every layer passed) ──
+    # COMPOSITION (the D4-arithmetic class, stated where the verdict is born): this read cannot see a
+    # vote cast AFTER it — the mutation-edge recheck's staked-vote pin owns that direction (6.4), and
+    # _proof_age_edge_check bounds this verdict's staleness there (observed_at is this read's stamp).
+    # SHARED INPUT, stated here too (docs/SAFETY.md): this verdict's silence and the take path's vote-
+    # FROZEN observation are the SAME TIER2/TIER3 stream on every config — one intermediary that
+    # freezes the staked lastVote while proxying the tip supplies both; composing them adds nothing
+    # against it. What does add an independent input, and how little, is the measured own-bank
+    # veto (docs/SAFETY.md) — not this provider.
+    _elapsed_since=$_es_start; _elapsed_obs_ts=$_es_now
+    _elapsed_verdict="proven=yes|provider=watchdog-elapsed|observation_id=elapsed:gen=${_proof_token_gen}:since=${_es_start}:floor=${elapsed_floor}|vantage=${_liveness_first_provider:-}|obs_since=${_liveness_obs_since:-0}|blind_until=${_last_blind_end:-0}|observed_at=${_es_now}"
+    _elapsed_answer="yes"; _elapsed_reason="proven: $(( _es_now - _es_start ))s of observed silence >= ${elapsed_floor}s; head within ±${N_HEAD} (view ${_es_lag} slots behind this spare's bank)"
+    log_warn "[elapsed-provider] watchdog-elapsed PROVEN (token gen=${_proof_token_gen}): $(( _es_now - _es_start ))s of observed silence on vantage ${_liveness_first_provider:-} since ${_es_start} >= floor ${elapsed_floor}s (W+B+MARGIN_ELAPSED), the holder's staked lastVote still ${_es_cur} (episode baseline ${_liveness_first_vote}) at this read, the payload's cluster-max ${_es_lag} slots behind this spare's own head (|lag| <= N_HEAD=${N_HEAD}) — attested TIME, not an observation of the relinquish (observed_at=${_es_now}; the gate is not wired into any take path in this build)"
+    return 0
+}
+
+# ── _elapsed_provider — the registered provider fn (consumed by require_relinquish_proof) ────────
+# The gate runs providers in a $() SUBSHELL, so this is a pure STATE REPORTER: zero network, zero
+# writes, one structured verdict line. proven=yes is served ONLY from the minted record, and only
+# while _elapsed_verdict_why says it still stands; every other state answers its measured class and
+# reason — never a boolean, never a default-yes.
+_elapsed_provider() {
+    _watchdog_active || return 0
+    _proof_role_is_spare || return 0
+    [[ "$_elapsed_registered" == "1" ]] || return 0
+    local _ep_why
+    if [[ -n "$_elapsed_verdict" ]]; then
+        _ep_why=$(_elapsed_verdict_why "$(mono_now)")
+        if [[ -z "$_ep_why" ]]; then
+            printf '%s\n' "$_elapsed_verdict"
+            return 0
+        fi
+        printf 'proven=no|provider=watchdog-elapsed|observation_id=|vantage=%s|obs_since=%s|blind_until=%s|observed_at=0|elapsed_reason=%s\n' "${_liveness_first_provider:-}" "${_liveness_obs_since:-0}" "${_last_blind_end:-0}" "withdrawn: ${_ep_why}"
+        return 0
+    fi
+    printf 'proven=%s|provider=watchdog-elapsed|observation_id=|vantage=%s|obs_since=%s|blind_until=%s|observed_at=0|elapsed_reason=%s\n' "$_elapsed_answer" "${_liveness_first_provider:-}" "${_liveness_obs_since:-0}" "${_last_blind_end:-0}" "$_elapsed_reason"
+    return 0
+}
+# ── [elapsed-provider] end shared block ──
 
 # ── [fence-rot] holder-side fence re-verification + FENCE_ROT_GRACE escalation — BYTE-IDENTICAL in both daemons (test_fence_rot) ──
 # v0.7 (Block 5.4, §2.1-rev2.1 №2): the pairing token attests the holder's fence AT PAIRING
@@ -5298,6 +5592,8 @@ while $_running; do
         fi
         _last_behind_alert=0
 
+        _elapsed_step   # v0.7 (Block 6.3): the watchdog-elapsed per-cycle evaluation — self-gates on armed+spare+registered+open incident; zero network reads below its floor and while a minted verdict stands, at most one paced evaluation per cycle. AFTER the Tier-1 gate by design: its independent head IS this spare's own bank, and a cycle whose bank failed its own health check has no head to offer (the provider's two-sided head compare still refuses a bank that getHealth passes but that lags a live view — D0 R2). Zero events on every un-armed/unpaired host (census-asserted in test_elapsed_provider).
+
         # --- LOCAL: Is staked identity delinquent? (FREE, every cycle) ---
         local_check_delinquency
         local_result=$?
@@ -5367,6 +5663,7 @@ while $_running; do
         # resumed hold was not unsound: [g2-provider] region comment, "EPISODE VS THE SPARE'S OWN
         # STAKED TENURE".
         _g2_reset "spare is STAKED — episode closed (an attempt must never span our own staked tenure)"
+        _elapsed_reset "spare is STAKED — episode closed (a silence verdict must never span our own staked tenure)"   # v0.7 (Block 6.3): the same close for the watchdog-elapsed verdict — pure in-memory, zero I/O
 
         # v0.6.9 (H1): PROMOTED-holder self-fence — the primary's isolation checks (frozen confirmed
         # slot / silent LOCAL RPC / N6 own-vote-lag / getHealth), LOCAL signals only, demote =

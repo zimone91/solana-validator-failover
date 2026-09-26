@@ -869,11 +869,14 @@ WITNESS_FASTPATH_FIRST_SPARE=${CFG_WITNESS_FASTPATH_FIRST_SPARE}
 # bank-bearing RPC providers in DISTINCT failure domains; identical/same-host values page CRITICAL
 # and leave G2 cannot-determine for the run (fail toward NOT-taking). BOTH vantages must support
 # JSON-RPC batching ([getSlot, getClusterNodes] in one POST) and must not resolve to the same
-# address — `failover arm` probes both and refuses with REFUSE[P6-batch] / REFUSE[P6-vantage].
+# address — \`failover arm\` probes both and refuses with REFUSE[P6-batch] / REFUSE[P6-vantage].
 # RECOMMENDED: point at least ONE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN (a different
 # OPERATOR). On the defaults these ARE the vote-liveness tiers, so one compromised vantage supplies
 # BOTH halves of the double-sign condition and the proof gate's additivity does not hold; the arm
-# MEASURES and prints this, and the armed daemon warns at every start (docs/SAFETY.md).
+# MEASURES and prints this, and the armed daemon warns at every start. A third endpoint restores that
+# additivity for G2 ONLY: the armed spare's other proof, watchdog-elapsed, measures the holder's
+# silence through TIER2_RPC/TIER3_RPC on EVERY config (one input with the vote-frozen observation).
+# Full statement: docs/SAFETY.md, 'Shared vantages'.
 # G2_VANTAGE_A=""
 # G2_VANTAGE_B=""
 

@@ -493,7 +493,10 @@ the proof gate's additivity does not hold on that host. This is **not** refused 
 run exactly two RPCs — but `failover arm` measures it, names which vantage matched which tier by
 which comparison, and repeats it in the end-of-summary; the armed daemon warns at every start.
 A different *operator* is what separates the failure domain: another hostname or another API key
-for a provider you already use is the same domain. Full statement: `docs/SAFETY.md`.
+for a provider you already use is the same domain. A separate vantage restores that additivity for
+G2 only: the armed spare's other proof, watchdog-elapsed, measures the holder's silence through
+`TIER2_RPC`/`TIER3_RPC` on every configuration, so its proof and the vote-frozen observation stay one
+input. Full statement: `docs/SAFETY.md` (*Shared vantages*).
 
 **Both vantages must support JSON-RPC batching.** Each G2 snapshot is one POST carrying
 `[getSlot, getClusterNodes]`, so the freshness anchor rides in the same response as the proof

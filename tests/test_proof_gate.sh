@@ -655,9 +655,10 @@ write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"' 'G2_VANTAGE_A="http://t4.m
 run_arm
 if [[ "$RC" == "0" ]] && out_has 'G2 vantages are SEPARATE from the vote-liveness tiers' \
    && out_has "no G2 vantage matched TIER2_RPC (host 't2.mock') or TIER3_RPC (host 't3.mock')" \
-   && out_has "additivity HOLDS on this host" \
+   && out_has "additivity HOLDS on this host for verified-demote" \
+   && out_has "It does NOT extend to watchdog-elapsed, on any host: its silence and the vote-FROZEN observation are the same TIER2/TIER3 input" \
    && ! out_has 'DEGRADED, NOT REFUSED' && ! out_has 'G2 vantage summary'; then
-    ok "(2p) CONTROL: vantages pinned off both tiers (t4.mock/t5.mock vs TIER2 t2.mock / TIER3 t3.mock) → the MEASURED no-overlap line naming both tiers, 'additivity HOLDS', and ZERO degradation output (no P6 warn, no end-of-summary line) — (2n) observes the vantage-vs-tier compare, not an unconditional warning"
+    ok "(2p) CONTROL: vantages pinned off both tiers (t4.mock/t5.mock vs TIER2 t2.mock / TIER3 t3.mock) → the MEASURED no-overlap line naming both tiers, 'additivity HOLDS' SCOPED to verified-demote with watchdog-elapsed named as the path it does NOT cover on any host (Block 6.3: its silence and the vote-FROZEN observation are one TIER2/TIER3 input — docs/SAFETY.md 'Shared vantages'), and ZERO degradation output (no P6 warn, no end-of-summary line) — (2n) observes the vantage-vs-tier compare, not an unconditional warning"
 else
     bad "(2p) rc=$RC tail: $(tail -5 "$MOCK_DIR/out" | tr '\n' ' ')"
 fi

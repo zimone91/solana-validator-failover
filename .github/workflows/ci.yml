@@ -139,6 +139,10 @@ jobs:
           # G2_CLOCK_BUDGET 20→25); C1 added the shared-vantage startup warn in _g2_register,
           # which compares URLs via _norm_rpc_url/_g2_url_host (prefix/suffix expansion, no
           # patsub) and reads no clock at all — neither counter's subject changed.
+          # v0.7 Block 6.3: pins RE-DERIVED by grep and UNCHANGED at 21/22 and 4/4 — the
+          # [elapsed-provider] twin region reads only mono_now (zero `date +%s`) and has no patsub
+          # site (test_elapsed_provider (8b) censuses both inside the region). What moved in that
+          # diff, deliberately and with its own comment, is the (14b) pet census 41/42 → 42/43.
           [ "$d_pri" = "21" ] || { echo "primary 'date +%s' lines: $d_pri != pinned 21 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$d_sby" = "22" ] || { echo "standby 'date +%s' lines: $d_sby != pinned 22 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$p_pri" = "4" ]  || { echo "primary patsub \${var//} lines: $p_pri != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }

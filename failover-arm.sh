@@ -741,7 +741,7 @@ _pre_g2_tier_overlap() {
     fi
     if [[ -z "$_p6o_hits" ]]; then
         _ARM_G2_SHARED=""
-        _arm_log "precondition P6: G2 vantages are SEPARATE from the vote-liveness tiers — MEASURED (${_p6o_how}): no G2 vantage matched TIER2_RPC (host '${_p6o_h2}') or TIER3_RPC (host '${_p6o_h3}'). The proof gate's additivity HOLDS on this host: a double-sign needs a false G2 proof AND a false-frozen vote observation, and those two rest on different endpoints"
+        _arm_log "precondition P6: G2 vantages are SEPARATE from the vote-liveness tiers — MEASURED (${_p6o_how}): no G2 vantage matched TIER2_RPC (host '${_p6o_h2}') or TIER3_RPC (host '${_p6o_h3}'). The proof gate's additivity HOLDS on this host for verified-demote: a double-sign through G2 needs a false G2 proof AND a false-frozen vote observation, and those two rest on different endpoints. It does NOT extend to watchdog-elapsed, on any host: its silence and the vote-FROZEN observation are the same TIER2/TIER3 input — attested time, not a second witness (docs/SAFETY.md, 'Shared vantages')"
         return 0
     fi
     _ARM_G2_SHARED="$_p6o_hits"
