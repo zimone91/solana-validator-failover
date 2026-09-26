@@ -38,8 +38,9 @@
 #        ("0009999", 2^64+N) at the provider → blind / cannot, never arithmetic, plus the ONE
 #        validator's boundary table; 6.3 fix round 2 (R4): (3l-R4a–c) the adoption keyed on the FULL
 #        token — a same-gen re-pair with a lower floor, a reporter-only flap (restored in place and by
-#        tmp+mv; fix round 3, S3: also through a symlinked token whose target flaps), a same-gen token
-#        from another host under a dormant verdict
+#        tmp+mv), a same-gen token from another host under a dormant verdict; 6.3 fix round 4 (W3):
+#        a SYMLINKED token never proves — target rewrites and a link re-pointed away and back all answer
+#        cannot and the gate refuses (3l-R4b), and the posture/status lines say why (3l-R4d)
 #   (4)  the head reference: commitment=processed read from the live request log; the head is read
 #        AFTER the payload (live order); the default-commitment mutant is wrong BOTH ways (a live
 #        view permanently blind AND a 40-slot lagged view accepted)
@@ -541,8 +542,10 @@ fi
 # token garbage at +61, the same bytes restored before the next step) kept the old adoption: PROVEN at
 # +100 on silence counted across the flap; (c) a same-gen token from another host with the same bounds
 # swapped in under a DORMANT verdict: served proven=yes, gate rc 0.
-# 6.3 fix round 3, S3 (P3-R4-1): the identity is the TARGET's (stat -L) — (b) also through a symlinked
-# token whose target flaps (in place, tmp+mv). Pre-fix red (e917c04): PROVEN at +100 (the ident keyed the link).
+# 6.3 fix round 3, S3 (P3-R4-1) keyed a symlinked token's TARGET (stat -L) — red on e917c04: a target flap
+# PROVEN at +100 (the ident keyed the link). 6.3 fix round 4, W3 (P4-S3-REPOINT): that made a link
+# re-pointed AWAY and BACK invisible at any spacing (red on 7ab7eca: PROVEN at +100, gate rc 0) — no single
+# file identity sees both, so a symlinked token now answers cannot, loudly, in every mode.
 case_samegen() {   # HOST2: the re-pair's host (default holder1)
     printf '%s\n' "$(mk_token 7 30 120 real holder1)" > "$PROOF_STATE_DIR/pairing-token"   # floor 160
     reg; prime_seam 0 none
@@ -562,30 +565,60 @@ for h in holder1 otherholder; do
        && [[ "$(field "$r" a3)" == "no" && "$(field "$r" r3)" == *"adopted 99s ago"* && "$(field "$r" a4)" == "yes" && "$(field "$r" oid)" == "elapsed:gen=7:since=$(( T0 + 121 )):floor=100" ]]; then :; else sg_ok=0; bad "(3l-R4a) host=$h: $r"; fi
 done
 [[ $sg_ok -eq 1 ]] && ok "(3l-R4a) R4 — a SAME-GEN re-pair with a lower floor (gen 7 floor 160 → gen 7 floor 100 at +121, from the same host and from another) is a NEW adoption: no at +121 ('adopted 0s ago', gate rc 1) and at +220 ('99s ago'), PROVEN only at +221 with since=+121. Pre-fix: PROVEN at +121 with since=+0, gate rc 0 (the adoption was keyed on gen)"
-case_flap() {   # MODE=inplace|mv — how the restore is written: in place (the same inode, a new change time) or tmp+mv (a new inode — the ceremony's own atomic write); symlink|symlink-mv — the stored token is a SYMLINK and the flap rewrites its TARGET, in place / by tmp+mv (fix round 3, S3)
+case_flap() {   # MODE=inplace|mv — how the restore is written: in place (the same inode, a new change time) or tmp+mv (a new inode — the ceremony's own atomic write); symlink|symlink-mv — the stored token is a SYMLINK and the flap rewrites its TARGET, in place / by tmp+mv (fix round 3, S3); repoint — the stored token is a SYMLINK re-pointed AWAY (to a garbage file) and BACK, the target never written (fix round 4, W3 — P4-S3-REPOINT)
     local tf="$PROOF_STATE_DIR/pairing-token" good
-    if [[ "${MODE:-inplace}" == symlink* ]]; then
-        mv "$tf" "$PROOF_STATE_DIR/token-target"; ln -s token-target "$tf"; tf="$PROOF_STATE_DIR/token-target"
+    if [[ "${MODE:-inplace}" == symlink* || "${MODE:-inplace}" == repoint ]]; then
+        mv "$tf" "$PROOF_STATE_DIR/token-target"; ln -s token-target "$tf"
+        [[ "${MODE:-inplace}" == symlink* ]] && tf="$PROOF_STATE_DIR/token-target"
     fi
     reg; prime_seam 0 none
     good=$(cat "$tf")
     _SIM_NOW=$(( T0 + 60 )); _elapsed_step; local a60="$_elapsed_answer"
-    printf 'garbage\n' > "$tf"
+    if [[ "${MODE:-inplace}" == repoint ]]; then printf 'garbage\n' > "$PROOF_STATE_DIR/token-rotten"; ln -sfn token-rotten "$tf"; else printf 'garbage\n' > "$tf"; fi
     _SIM_NOW=$(( T0 + 61 )); local v1; v1=$(_elapsed_provider)            # ONLY the reporter (inside the gate's $()) sees the rot
-    if [[ "${MODE:-inplace}" == *mv ]]; then printf '%s\n' "$good" > "$tf.tmp"; mv "$tf.tmp" "$tf"; else printf '%s\n' "$good" > "$tf"; fi
+    if [[ "${MODE:-inplace}" == repoint ]]; then ln -sfn token-target "$tf"
+    elif [[ "${MODE:-inplace}" == *mv ]]; then printf '%s\n' "$good" > "$tf.tmp"; mv "$tf.tmp" "$tf"; else printf '%s\n' "$good" > "$tf"; fi
     _SIM_NOW=$(( T0 + 100 )); _elapsed_step; local a100="$_elapsed_answer" r100="$_elapsed_reason"
     _SIM_NOW=$(( T0 + 199 )); _elapsed_step; local a199="$_elapsed_answer"
-    _SIM_NOW=$(( T0 + 200 )); _elapsed_step; local a200="$_elapsed_answer"
+    _SIM_NOW=$(( T0 + 200 )); _elapsed_step; local a200="$_elapsed_answer" r200="$_elapsed_reason"
     local v; v=$(_elapsed_provider)
-    echo "a60=$a60|rep61=$(_proof_field "$v1" proven)|a100=$a100|r100=$r100|a199=$a199|a200=$a200|oid=$(_proof_field "$v" observation_id)"
+    require_relinquish_proof; local g200=$?
+    echo "a60=$a60|rep61=$(_proof_field "$v1" proven)|a100=$a100|r100=$r100|a199=$a199|a200=$a200|r200=$r200|g200=$g200|oid=$(_proof_field "$v" observation_id)"
 }
-fl_ok=1
-for m in inplace mv symlink symlink-mv; do
+fl_ok=1; SYMWHY="the pairing token is a symlink — store it as a regular file, as \`failover arm\` does"
+for m in inplace mv; do
     r=$(MODE=$m drive_ep "$STANDBY" case_flap | tail -1)
     if [[ "$(field "$r" a60)" == "no" && "$(field "$r" rep61)" == "no" && "$(field "$r" a100)" == "no" && "$(field "$r" r100)" == *"the token now in force (gen 7) was adopted 0s ago (mono $(( T0 + 100 )))"* ]] \
-       && [[ "$(field "$r" a199)" == "no" && "$(field "$r" a200)" == "yes" && "$(field "$r" oid)" == "elapsed:gen=7:since=$(( T0 + 100 )):floor=100" ]]; then :; else fl_ok=0; bad "(3l-R4b) restore=$m: $r"; fi
+       && [[ "$(field "$r" a199)" == "no" && "$(field "$r" a200)" == "yes" && "$(field "$r" g200)" == "0" && "$(field "$r" oid)" == "elapsed:gen=7:since=$(( T0 + 100 )):floor=100" ]]; then :; else fl_ok=0; bad "(3l-R4b) restore=$m: $r"; fi
 done
-[[ $fl_ok -eq 1 ]] && ok "(3l-R4b) R4 — a token flap seen ONLY by the reporter (garbage at +61 inside the gate's \$(), the SAME bytes restored before the next step — in place, and by tmp+mv; and, fix round 3 S3, through a SYMLINKED token whose TARGET flaps, in place and by tmp+mv) is a NEW adoption at the next step: no at +100 ('adopted 0s ago (mono +100)') and +199, PROVEN only at +200 with since=+100 — the reporter cannot clear anything from its subshell, so the key carries the identity of the file the path resolves to (stat -L) and the rewrite counts. Pre-fix: PROVEN at +100 on silence counted across the flap (f22d492, every mode; e917c04, the symlink modes — its stat keyed the link itself)"
+for sc in "$STANDBY"; do   # the spare posture: on the PRIMARY the provider never registers (_proof_role_is_spare) — its byte-identical copy is held by (10)
+    for m in symlink symlink-mv repoint; do
+        r=$(MODE=$m drive_ep "$sc" case_flap | tail -1)
+        if [[ "$(field "$r" a60)" == "cannot" && "$(field "$r" rep61)" == "cannot" && "$(field "$r" a100)" == "cannot" && "$(field "$r" r100)" == "$SYMWHY"* ]] \
+           && [[ "$(field "$r" a199)" == "cannot" && "$(field "$r" a200)" == "cannot" && "$(field "$r" r200)" == "$SYMWHY"* && "$(field "$r" g200)" == "1" && -z "$(field "$r" oid)" ]]; then :; else fl_ok=0; bad "(3l-R4b) $(basename "$sc") symlinked token, mode=$m: $r"; fi
+    done
+done
+[[ $fl_ok -eq 1 ]] && ok "(3l-R4b) R4 — a token flap seen ONLY by the reporter (garbage at +61 inside the gate's \$(), the SAME bytes restored before the next step — in place, and by tmp+mv) is a NEW adoption at the next step: no at +100 ('adopted 0s ago (mono +100)') and +199, PROVEN only at +200 with since=+100, gate rc 0 — the reporter cannot clear anything from its subshell, so the key carries the stored file's identity and the rewrite counts. Fix round 4 (W3 — P4-S3-REPOINT): a SYMLINKED token never proves — its target rewritten in place / by tmp+mv, or the link re-pointed AWAY and BACK with the target never written: cannot at +60 (the reporter at +61 too), +100, +199 and +200 ('$SYMWHY'), no verdict, the gate refuses (rc 1) — on the spare posture (the PRIMARY's copy of the region is byte-identical, (10); the provider never registers there). Pre-fix: f22d492 PROVEN at +100 in every mode; e917c04 PROVEN at +100 in the target-rewrite modes (its stat keyed the link); 7ab7eca PROVEN at +100 in the re-point mode (its stat -L keyed the target, so the re-point was invisible) and at +200 in the target-rewrite modes"
+# (3l-R4d) fix round 4, W3: the posture/status surface says WHY the registered provider cannot prove —
+# the startup PAIRED posture and the every-interval status line name the symlink; the regular-file
+# control prints neither.
+case_symposture() {   # SYM=1: the stored token is a symlink to a valid token file
+    if [[ "${SYM:-0}" == "1" ]]; then mv "$PROOF_STATE_DIR/pairing-token" "$PROOF_STATE_DIR/token-target"; ln -s token-target "$PROOF_STATE_DIR/pairing-token"; fi
+    WARNCT=0; LASTWARN=""
+    _proof_startup_check
+    local w1="$LASTWARN" n1=$WARNCT
+    WARNCT=0; LASTWARN=""
+    _proof_status_line
+    echo "reg=$_elapsed_registered|w1=$w1|n1=$n1|w2=$LASTWARN|n2=$WARNCT"
+}
+sp_ok=1
+for sc in "$STANDBY"; do   # the spare posture (see (3l-R4b))
+    r=$(SYM=1 drive_ep "$sc" case_symposture | tail -1)
+    [[ "$(field "$r" reg)" == "1" && "$(field "$r" n1)" == "1" && "$(field "$r" w1)" == *"armed spare PAIRED, but watchdog-elapsed CANNOT prove: $SYMWHY"* && "$(field "$r" n2)" == "1" && "$(field "$r" w2)" == *"paired (token gen=7), but watchdog-elapsed CANNOT prove: $SYMWHY"* ]] || { sp_ok=0; bad "(3l-R4d) $(basename "$sc") symlinked: $r"; }
+    r=$(SYM=0 drive_ep "$sc" case_symposture | tail -1)
+    [[ "$(field "$r" reg)" == "1" && "$(field "$r" n1)" == "0" && "$(field "$r" n2)" == "0" ]] || { sp_ok=0; bad "(3l-R4d) $(basename "$sc") regular-file control: $r"; }
+done
+[[ $sp_ok -eq 1 ]] && ok "(3l-R4d) W3 — with a symlinked token the registered spare says WHY watchdog-elapsed cannot prove, on both surfaces: the startup posture ('armed spare PAIRED, but watchdog-elapsed CANNOT prove: $SYMWHY …') and the every-interval status line ('paired (token gen=7), but watchdog-elapsed CANNOT prove: …'); a regular-file token prints neither (zero WARNs). Pre-fix: both silent — the PAIRED line alone"
 case_samegen_dormant() {
     reg; prime_seam 0 none
     _SIM_NOW=$(( T0 + 100 )); _elapsed_step; local a1="$_elapsed_answer"
@@ -876,6 +909,45 @@ if [[ "$(layer_of "$g0")" == "gap" && "$(field "$g0" grc)" == "1" && "$(layer_of
     ok "(5k) the IN-SYNC control (this bank on the chain, the same 12 s gap): HEAD GAP, blind; [elapsed-gap] neutered → LAGGED VIEW (the live view reads 31 slots behind the bank that moved during the gap), blind — no mint either way (pre-fix: LAGGED VIEW)"
 else
     bad "(5k) live=$g0 :: gap-neutered=$g0n"
+fi
+# (5l) DOCUMENTED RESIDUAL (6.3 fix round 3, S5 — pinned in fix round 4, P4-S5-NOPIN): what [elapsed-gap]
+# does NOT bound — the payload's own snapshot → delivery. The TIER2 payload is computed at its REQUEST and
+# delivered 9 s later (inside its curl -m 10), every pet free, the head read instant: the STAMPED gap is 0 s,
+# so the head compare measures this bank against a view 9 s older than its arrival — at 2.5 slots/s a hidden
+# lag of 22 slots on top of N_HEAD 25. The snapshot-at-delivery control (the same 9 s latency) hides nothing.
+# RESIDUAL — this flips when the sampler stamps BEFORE its call and the gap is measured from the payload's
+# REQUEST (the request-stamped variant, deferred with the gate's wiring, 6.4).
+case_snap() {   # BANKLAG (slots); SNAPREQ=1: the view is the chain at the REQUEST, 0: at the delivery
+    reg; prime_seam 0 none
+    _SIM_NOW=$(( T0 + 100 )); fileclock_on
+    eval "$(declare -f _ep_curl | sed '1s/^_ep_curl/_ep_curl0/')"
+    _ep_curl() {
+        local a u="" c; for a in "$@"; do case "$a" in http*) u="$a" ;; esac; done
+        read -r c < "$CLKF"
+        HEAD=$(( HEAD0 + (c - T0) * 5 / 2 )); VIEWLAG=0
+        if [[ "$u" == "$TIER2_RPC" ]]; then
+            _clk_adv 9   # the answer lands 9 s after its request...
+            [[ "${SNAPREQ:-1}" == "1" ]] || { read -r c < "$CLKF"; HEAD=$(( HEAD0 + (c - T0) * 5 / 2 )); }   # ...its view from the request (1) or the delivery (0)
+        fi
+        [[ "$u" == "$LOCAL_RPC" ]] && HEAD=$(( HEAD - BANKLAG ))
+        _ep_curl0 "$@"
+    }
+    PETCOST=0; LAT_LOCAL=0
+    _elapsed_step
+    local v; v=$(_elapsed_provider)
+    require_relinquish_proof; local grc=$?
+    echo "a=$_elapsed_answer|r=$_elapsed_reason|proven=$(_proof_field "$v" proven)|grc=$grc"
+}
+s47=$(BANKLAG=47 SNAPREQ=1 drive_ep "$STANDBY" case_snap | tail -1)
+s48=$(BANKLAG=48 SNAPREQ=1 drive_ep "$STANDBY" case_snap | tail -1)
+c25=$(BANKLAG=25 SNAPREQ=0 drive_ep "$STANDBY" case_snap | tail -1)
+c26=$(BANKLAG=26 SNAPREQ=0 drive_ep "$STANDBY" case_snap | tail -1)
+if [[ "$(field "$s47" a)" == "yes" && "$(field "$s47" proven)" == "yes" && "$(field "$s47" grc)" == "0" && "$(field "$s47" r)" == *"head read 0s after the payload"* ]] \
+   && [[ "$(field "$s48" a)" == "blind" && "$(field "$s48" r)" == *"STALE REFERENCE"* ]] \
+   && [[ "$(field "$c25" a)" == "yes" && "$(field "$c26" a)" == "blind" && "$(field "$c26" r)" == *"STALE REFERENCE"* ]]; then
+    ok "(5l) DOCUMENTED RESIDUAL — the payload SNAPSHOTTED AT ITS REQUEST and delivered 9 s later (free pets, an instant head; the stamped gap 0 s): watchdog-elapsed MINTS and the gate accepts with this bank 47 slots behind the live chain (= N_HEAD 25 + 22 hidden at 2.5 slots/s — the snapshot→delivery term docs/SAFETY.md names, up to rate x its curl -m 10), 48 → STALE REFERENCE; the snapshot-at-DELIVERY control mints only up to N_HEAD (25 mints, 26 → STALE REFERENCE). Flips when the gap is measured from the payload request (6.4)"
+else
+    bad "(5l) snap-at-request 47=$s47 :: 48=$s48 :: snap-at-delivery 25=$c25 :: 26=$c26"
 fi
 
 # ── (6) coupling ───────────────────────────────────────────────────────────────────────────────

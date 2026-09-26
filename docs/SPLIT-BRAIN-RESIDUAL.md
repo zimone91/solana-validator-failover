@@ -41,7 +41,10 @@ live on the 2-node testnet:
    `SELF_FENCE_ISOLATION_SECS` (30) — a confirmed slot only advances when the supermajority
    confirms this node's view.
 2. **LOCAL JSON-RPC silent** (v0.6.5 F1): the local RPC answers nothing for
-   `SELF_FENCE_NOANSWER_SECS` (30), only armed once a baseline exists. Measured live: fires ~+33s.
+   `SELF_FENCE_NOANSWER_SECS` (30), only armed once a canonical baseline exists. Measured live: fires ~+33s.
+   The fresh-start gap it leaves (a node silent before any canonical answer — including one that
+   answered only non-canonical values first, or restarted over a stale / non-canonical-`SAVE_TS` save —
+   is not fenced by this timer) is named in `DEPLOYMENT-MANUAL.md` (PRIMARY self-fence).
 3. **Own votes not landing / N6** (v0.6.7): own `lastVote` lags the same-payload cluster-max by
    > 32 slots sustained 20s — closes the **egress-only** blindness ("can hear, can't be heard")
    that the first two signals miss (found live as a −25s inversion in rc.1; re-tested after the

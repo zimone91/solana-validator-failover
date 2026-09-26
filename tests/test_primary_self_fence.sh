@@ -13,14 +13,16 @@
 #   (F1a) baseline + CONTINUOUS no-answer >= threshold       → self-fence + URGENT alert FIRST
 #   (F1b) baseline + brief no-answer (< threshold)           → NO self-fence (timer armed, not tripped)
 #   (F1c) NO baseline + no-answer                            → NO self-fence, timer NOT started
-#   (F1d) successful read                                    → clears the no-answer timer
+#   (F1d) successful CANONICAL read                          → clears the no-answer timer (garbage does not: S1)
 # v0.6.6 (N2) demote-before-alert ordering:
 #   (N2)  no-answer fire → switch_to_unstaked runs BEFORE any external alert (notifiers mocked to
 #         sleep): 0 notifier calls complete before the demote, 0 added latency. A negative control
 #         replays the old alert-first order to prove the measurement is non-vacuous (observes 2).
 # v0.7 Block 6.3 fix round 2 (R6a–c): a non-canonical LOCAL value → the fencing condition; fix round 3
 # (S1a–b): a garbage slot is no canonical answer — the no-answer clock (and a restored backdate) keeps
-# running through it, in the loop and across a restore.
+# running through it, in the loop and across a restore; fix round 4 (W1a–b): a garbage-slot cycle adds
+# own-vote-lag (N6) evidence and never removes it — its healthy vote reading neither counts toward the B2
+# reset nor consumes the restored backdate.
 # Non-vacuous: (a) fires only because the frozen-slot timer trips; (F1a) only because the no-answer
 # timer trips; (c)/(d)/(F1b)/(F1c) prove it does NOT fire when advancing, briefly silent, or fresh.
 
@@ -161,12 +163,13 @@ check_self_fence_isolation; rc=$?
     && ok "(F1c) no baseline + no-answer → no fence, no timer (fresh start is not isolation)" \
     || bad "(F1c) started the timer / fenced without a baseline (rc=$rc calls=$_fence_calls since=$_selffence_noanswer_since)"
 
-# (F1d) a successful read clears a running no-answer timer
+# (F1d) a successful CANONICAL read clears a running no-answer timer (a present non-canonical answer does not —
+# the S1 rows below; DEPLOYMENT-MANUAL: only a canonical answer resets it)
 prep
 _selffence_noanswer_since=$(( $(NOW) - 30 )); _last_confirmed_slot=1000; _last_confirmed_advance_ts=$(( $(NOW) - 5 )); _LOCAL_SLOT=1050
 check_self_fence_isolation; rc=$?
 [[ "$_selffence_noanswer_since" -eq 0 && "$_fence_calls" -eq 0 ]] \
-    && ok "(F1d) successful slot read clears the no-answer timer" \
+    && ok "(F1d) a successful CANONICAL slot read clears the no-answer timer (a present non-canonical answer does not — S1 below)" \
     || bad "(F1d) successful read did not reset the no-answer timer (since=$_selffence_noanswer_since calls=$_fence_calls)"
 
 # ── (R6) 6.3 fix round 2 (REG-D): a PRESENT but non-canonical LOCAL value fails toward the fence ─────
@@ -265,6 +268,65 @@ if [[ "$r1" == "10" && "$r3" == "10" && "$rst" == "5" ]]; then
 else
   bad "(S1b) restored 20 s + 1 G → $r1 (want 10); + 3 G → $r3 (want 10); restored 25 s + steady G → $rst (want 5)"
 fi
+
+# ── (W1) 6.3 fix round 4 (H4-R6-VOTELAG): a garbage-slot cycle ADDS own-vote-lag evidence, never removes it ─
+# The REAL function on a fake clock (a subshell), 3 s cycles (the primary's CHECK_INTERVAL), N6 at the
+# shipped 32 slots / 20 s / RESET_CYCLES 3, ISOLATION and NOANSWER 30. Letters (the last repeats): C the
+# slot advances, own vote current; L the slot advances, own vote 100 behind the same-payload cluster-max;
+# G a garbage slot, own vote current; H a garbage slot, own vote lagging. Pre-fix red (7ab7eca; e917c04 the
+# same — R6's fall-through): the G cycles' healthy readings reset the sustain timer and consumed the
+# restored backdate — CCCCLGGGL 45, CCCCLGGGGL 48, CCCCLGGGLGGGL 57, CCCCLLLGGGL 51, (LLLGGG)x5 then L 123
+# where de21927 and f22d492 fence at 33 / 33 / 36 / 33 / 33; restored lag 100 s + GL / GGL / GGGL at
+# grace 0 → 24 / 27 / 30 where they fence at 3 / 6 / 9. Controls, identical on every tree: CCCCLHHHL 33,
+# the canonical (LLLCCC)x4 then L 105.
+w1_run() {   # $1 = letters, $2 = the garbage JSON token, $3 = restored lag age (s; "" = none) → the fence second, or never
+  (
+    _W1T=100000; _W1F=""
+    mono_now() { echo "$_W1T"; }
+    date() { if [[ "$1" == "+%s" ]]; then echo "$_W1T"; return 0; fi; command date "$@"; }
+    switch_to_unstaked() { _W1F=$(( _W1T - 100000 )); return 0; }
+    alert() { :; }; log_info() { :; }; log_warn() { :; }
+    DRY_RUN=false; CURRENT_IDENTITY="$STAKED_PUBKEY"; SELF_FENCE_MAX_BEHIND=0; SELF_FENCE_NOANSWER_SECS=30; SELF_FENCE_ISOLATION_SECS=30
+    VOTE_PUBKEY="VotePubkey1111111111111111111111111111111"
+    SELF_FENCE_VOTE_LAG_SLOTS=32; SELF_FENCE_VOTE_LAG_SECS=20; SELF_FENCE_VOTE_LAG_RESET_CYCLES=3
+    _selffence_reset
+    if [[ -n "$3" ]]; then
+      _last_confirmed_slot=400000000; _selffence_votelag_baseline=1; _selffence_votelag_healthy=0
+      _selffence_votelag_restore_pending=1; _selffence_restored_votelag_since=$(( _W1T - $3 ))
+    fi
+    local i L cm own
+    for (( i = 0; i < 60; i++ )); do
+      L=${1:$(( i < ${#1} ? i : ${#1} - 1 )):1}
+      cm=$(( 500000000 + i * 8 )); own=$(( cm - 1 ))
+      case "$L" in
+        C) _LOCAL_SLOT=$(( 400000000 + i * 8 )) ;;
+        L) _LOCAL_SLOT=$(( 400000000 + i * 8 )); own=$(( cm - 100 )) ;;
+        G) _LOCAL_SLOT="$2" ;;
+        H) _LOCAL_SLOT="$2"; own=$(( cm - 100 )) ;;
+      esac
+      _LOCAL_GVA=$(printf '{"jsonrpc":"2.0","result":{"current":[{"votePubkey":"Cluster111","lastVote":%s},{"votePubkey":"%s","lastVote":%s}],"delinquent":[]},"id":1}' "$cm" "$VOTE_PUBKEY" "$own")
+      check_self_fence_isolation >/dev/null 2>&1
+      [[ -n "$_W1F" ]] && { echo "$_W1F"; return; }
+      _W1T=$(( _W1T + 3 ))
+    done
+    echo never
+  )
+}
+echo ""; echo "─── (W1) a garbage-slot cycle adds own-vote-lag (N6) evidence, never removes it ───"
+w1_ok=1
+for tok in '"abc"' '"0400000123"'; do
+  for row in CCCCLGGGL:33 CCCCLGGGGL:33 CCCCLGGGLGGGL:36 CCCCLLLGGGL:33 CCCCLLLGGGLLLGGGLLLGGGLLLGGGLLLGGGL:33 CCCCLHHHL:33 CCCCLLLCCCLLLCCCLLLCCCLLLCCCL:105; do
+    got=$(w1_run "${row%%:*}" "$tok" "")
+    [[ "$got" == "${row##*:}" ]] || { w1_ok=0; bad "(W1a) ${row%%:*} $tok: fence at $got, want ${row##*:}"; }
+  done
+done
+[[ $w1_ok -eq 1 ]] && ok "(W1a) in the loop, garbage \"abc\" and \"0400000123\" (3 s cycles): CCCCLGGGL → 33, CCCCLGGGGL → 33, CCCCLGGGLGGGL → 36, CCCCLLLGGGL → 33, (LLLGGG)x5 then L → 33 (= de21927 and f22d492; pre-fix 45 / 48 / 57 / 51 / 123), controls CCCCLHHHL → 33 and the canonical (LLLCCC)x4 then L → 105 (every tree)"
+w1_ok=1
+for row in GL:3 GGL:6 GGGL:9 HL:0; do
+  got=$(w1_run "${row%%:*}" '"abc"' 100)
+  [[ "$got" == "${row##*:}" ]] || { w1_ok=0; bad "(W1b) restored lag 100 s + ${row%%:*}: fence at $got, want ${row##*:}"; }
+done
+[[ $w1_ok -eq 1 ]] && ok "(W1b) across a restore (persisted lag 100 s, grace 0): GL → 3, GGL → 6, GGGL → 9 — the garbage cycles' healthy vote readings leave the restored backdate to the first lagging read (= de21927 and f22d492; pre-fix 24 / 27 / 30), control HL → 0 (every tree)"
 
 # ── (N2) v0.6.6: the demote runs BEFORE any external alert in the no-answer branch ─────────────
 # Re-source fresh so alert() is the REAL shipped function (the F1 block above mocked it to a recorder).

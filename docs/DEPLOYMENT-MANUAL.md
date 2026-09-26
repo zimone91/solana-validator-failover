@@ -276,9 +276,11 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   - **Reference-first read bias (`MAX_VOTE_LATENCY` PRIMARY path, measured, unchanged):** on this
     opt-in path `tier1_get_vote_latency` reads its `getSlot` reference **before** the
     `getVoteAccounts` payload, so a stall or pet between the two makes the holder look *more*
-    current — the latency demote can arrive up to ~27 s later than the reverse order, and a
-    still-voting holder lagging within (slot rate × that gap) of the limit never demotes on this
-    path. It is an **availability** cost only (a lagging holder is still live), the worst delay is
+    current — the latency demote can arrive up to ~37 s later than the reverse order (measured with
+    both reads at their `curl -m 10` bound and a 7 s pet between them: up to 27 s between the two
+    snapshots; ~27 s later when only the payload stalls), and a still-voting holder lagging within
+    (slot rate × that gap — up to 67 slots at 2.5 slots/s, 100 at 3.7) of the limit never demotes on
+    this path. It is an **availability** cost only (a lagging holder is still live), the worst delay is
     within the cross-node margin `B` (60 s), and it does not touch the self-fence relinquish that
     `B` actually bounds (the self-fence's own-vote-lag check reads a single same-payload snapshot,
     no cross-read skew). Off by default; stated, not changed.
@@ -307,7 +309,11 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
     exists**, that silent-but-staked state is itself isolation: the node may be partitioned/wedged yet
     still voting, while STANDBY confirms delinquency + frozen liveness and takes over → heal
     double-sign. The daemon then **demotes to unstaked first, then urgent-alerts** (v0.6.6 N2: the safety action never waits on notification I/O). It never arms on a
-    fresh start (no baseline) and any successful read resets the timer.
+    fresh start — no CANONICAL baseline slot yet. Named members of that gap (a silent LOCAL is then
+    not fenced by this timer, and silent reads do not run the frozen-slot clock): a LOCAL that has so
+    far answered only non-canonical values and then goes silent, and a restart whose saved state is
+    stale or carries a non-canonical `SAVE_TS`. Only a **canonical** answer resets the timer; a present
+    non-canonical answer does not (it keeps the clock running and counts as "not advancing").
   - It can **only ever** lead to `switch_to_unstaked` (the safe direction), respects `DRY_RUN`
     (logs "would self-fence", no swap) and the startup / manual-change grace, and is disabled with
     `PRIMARY_SELF_FENCE=false`.

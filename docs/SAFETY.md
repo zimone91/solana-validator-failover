@@ -372,12 +372,16 @@ stored token (6.3 fix round 2): the adoption is keyed on its full classified lin
 host, crc) and on the stored file's identity (inode, size, change time), so a new gen, a same-gen
 re-pair with other bounds, another host's token with the same bounds, and a rewrite back to the same
 bytes that no evaluation saw are all new adoptions (measured: a same-gen re-pair to a lower floor at
-+121 s proves no earlier than +221 s; before, it proved at +121 s). Since 6.3 fix round 3 the identity
-is that of the file the token path **resolves to** (`stat -L`), so a symlinked token is keyed on its
-target and a rewrite of that target is seen too (before, a symlinked token hid every target rewrite and
-proved at +100 s, as on the pre-R4 tree). Not visible: a rewrite back to identical bytes within one
-ctime granule — a kernel tick on ns-timestamp filesystems, 1 s on ext4 with 128-byte inodes, ext3 or
-HFS+ (the inode number does not help: ext4 recycles it across a tmp+mv).
++121 s proves no earlier than +221 s; before, it proved at +121 s). A **symlinked** token never proves
+(6.3 fix round 4): the provider answers *cannot* — "the pairing token is a symlink — store it as a
+regular file, as `failover arm` does" — and the startup posture and the status line say so every
+interval. No single file identity covers a link: keyed on the link itself, every rewrite of its target
+is invisible (a flap proved at +100 s before fix round 3); keyed on its target (`stat -L`, fix round 3),
+a link re-pointed away and back is invisible at any spacing (it proved at +100 s there). `failover arm`
+always stores a regular file (tmp + `mv -f`, which replaces a link). Not visible, for the regular file:
+a rewrite back to identical bytes within one ctime granule — a kernel tick on ns-timestamp
+filesystems, 1 s on ext4 with 128-byte inodes, ext3 or HFS+ (the inode number does not help: ext4
+recycles it across a tmp+mv).
 
 **Where composition does add an independent input — and how much.**
 
@@ -514,10 +518,12 @@ a slow or early-snapshot external provider — which is exactly the **bank and v
 residual above; a live-and-current view carries a snapshot within its transfer time. It is a
 **documented residual**, not bounded by `ELAPSED_HEAD_GAP_MAX` (that stamp is taken at the answer's
 arrival, not its snapshot): a provider that snapshots getVoteAccounts at request and delivers 9 s
-later, with instant free pets, minted here with the bank ~47 slots (≈19 s) behind the live chain
-(measured, both trees — no regression). Bounding it would need the sampler to stamp before its own
-call and treat (head answer − payload request) as the gap, which fails toward blind on every slow
-tier; deferred with the gate's wiring (6.4).
+later, with instant free pets, mints with the bank 47 slots (≈19 s) behind the live chain — `N_HEAD`
+(25) plus 22 hidden at 2.5 slots/s (measured, both trees — no regression; pinned as a DOCUMENTED
+RESIDUAL in `test_elapsed_provider` (5l), with the snapshot-at-delivery control minting only up to
+`N_HEAD`). Bounding it would need the sampler to stamp before its own call and treat (head answer −
+payload request) as the gap, which fails toward blind on every slow tier; deferred with the gate's
+wiring (6.4).
 
 ### Availability-side starvation (blind or flapping externals)
 

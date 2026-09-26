@@ -5,213 +5,207 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
-- **Block 6.3 fix round 3 (delta panel 2, wf_e6692704-d74) — the holder's silence clock survives
-  garbage, a corrupted stall stamp restores as ancient behind the first read, the pairing token
-  follows symlinks, and the heredoc guard closes its two blind spellings.** Each holder-fence change
-  proven by DIFFERENTIAL runs against BOTH de21927 and e917c04 (never later than either, for every
-  input class; never fencing a holder whose first post-restart read is healthy); each mechanism red
-  first on e917c04, green after; twins byte-identical where they were.
-  (S1 — H-R6-SILENCE, BLOCKER) `check_self_fence_isolation` in both daemons: a non-canonical LOCAL
-  slot is **not a canonical answer** — it keeps (or starts, or backdates from the persisted start) the
-  no-answer clock exactly as silence does and fences when that clock is due, while its frozen clock
-  still runs; only a canonical answer clears the clock and its restored backdate. Round 2 let garbage
-  clear both, so garbage-then-silence fenced 55/60/65/70/75 s (1–5 garbage cycles) where f22d492 fences
-  at 50, and a restart dropped the persisted silence (t35/t45 vs t10/t12); now t50 / t10, never later
-  than de21927 or f22d492 in any sequence, and the 288-row self-fence matrix is identical to e917c04
-  except where it fences earlier. (S2 — H-R5-RESIDUAL-SCOPE; reverses round-2 ratification item 4) a
-  present non-canonical stall / silence / lag STAMP restores as ANCIENT (the oldest mono stamp) behind
-  H3's first-read continuity evidence — the backdate applies only if the first read after the restore
-  still shows the condition, the exposure a canonical-but-old stamp already has, and a healthy first
-  read drops it; a non-canonical SLOT restores as 0 with the stall backdate held PENDING across the
-  first two reads (the second advanced past the first → healthy, dropped; not → the persisted stall
-  applied). At the shipped `STARTUP_GRACE`=30 this fences at the first evidence read where round 2
-  started the timer fresh (silence 60 → 30 s, lag 50/51 → 30, the slot member 60 → 35), never later
-  than f22d492 or de21927, never on a healthy first read. The non-canonical `SAVE_TS` over a silent
-  LOCAL maps into the pre-existing fresh-start / stale no-answer gap (the "never on a fresh start"
-  rule, `docs/SPLIT-BRAIN-RESIDUAL.md` no-answer sub-check) — no mechanism change for that gap this
-  round. (S3 — P3-R4-1) `_elapsed_tok_ident` keys the file the token path RESOLVES to (`stat -L`), so a
-  symlinked token no longer hides every rewrite of its target; the residual is restated as a rewrite
-  back to identical bytes within one ctime granule (a kernel tick on ns-timestamp filesystems, 1 s on
-  ext4-128 / ext3 / HFS+ — "inode kept" dropped, ext4 recycles it), and (3l-R4b) gains the symlink case
-  (red on e917c04: proved at +100; green: not before +200, as for a regular file). (S4 — CC2-1 /
-  P3-R9-1) guard (27): the census joins backslash-newline continuations before scanning and adds `$[`
-  to the expansion class; the render bakes its rec-log path into each canary (never reads `CANARY_LOG`
-  from the environment), runs with its CWD in the temp dir, and disables the write/kill-capable builtins
-  restricted bash still allows (`enable -n history kill ulimit suspend`); (27)/(27-ctl)/(27-ctl-r) gain
-  the continuation / `$[1+1]` / `CANARY_LOG=` / `history -w` / `kill` mutants (pre-fix: census 0, guard
-  GREEN, and the continuation ran its command / wrote outside the temp dir / killed the sentinel), and
-  the PASS texts now state exactly what the two layers guarantee. Texts (measured, mechanism unchanged):
-  (S5 — CC2-2 / P3-R3-1) the hidden-lag bound covers only the payload's post-delivery interval; the
-  payload's own snapshot → delivery adds rate × that (up to its `curl -m 10` = 25 / 37 slots), a
-  documented residual reachable only with a stale-on-arrival view — stated in `docs/SAFETY.md` and both
-  `[elapsed-provider]` twins, "(the one op no stamp covers)" dropped, no change to
-  `ELAPSED_HEAD_GAP_MAX`. (S6 — CC2-3; twin, byte-identical) the `_canon_uint` header states what
-  non-canonical means per caller class (take path / providers unusable; holder self-fence the fencing
-  condition; `load_state` per R5/S2). (S7 — P3-R2-1) the R2 inertness text: the own-bank reference read
-  is MOVED on every check and ADDED only on the checks the payload ends early, with the measured
-  dead-holder detection cost (0 s at loopback, one cycle at 2 s LOCAL reads) and the TIER2 re-read's
-  external-read condition. (S8 — H-LAT-BIAS, reviewer call, text only) where `MAX_VOTE_LATENCY` is
-  documented: `tier1_get_vote_latency` reads its reference first, so the latency demote can come up to
-  ~27 s later (within B = 60 s) and a holder lagging within rate × gap of the limit never demotes on
-  that path — off by default, availability only, not the relinquish B bounds. Not in this round (NOT
-  list): flipping `tier1_get_vote_latency`'s read order, the N7 fresh-start gap, `ELAPSED_HEAD_GAP_MAX`,
-  the payload request-stamped gap variant. `SHA256SUMS`: the two daemon rows regenerated; `install.sh`
-  untouched.
+- **Block 6.3 — the watchdog-elapsed proof provider (attested time), the spare's observation surface
+  made a standing property, and the holder-side hardening four review rounds found.** One net entry for
+  the mechanism as shipped and its named residuals; the per-round reds and differential runs are in the
+  commit messages (de21927, 9e3bfa1, e917c04, 7ab7eca and the fix-round-4 commit).
 
-- **Block 6.3 fix round 2 (delta panel wf_5cea260d-efc) — M3 reverted, the own bank's latency
-  reference read first, the elapsed head compare bounded by its gap, token adoption keyed on the full
-  token, persisted and holder-side garbage failing toward held / the fence.** Mechanism, each red first
-  on f22d492 and green after, and each measured for a take sooner / a holder fence later by
-  differential runs (the panel's world driver, the same world on both trees — the sweep's result closes
-  this entry): (R1) watchdog-elapsed's `observed_at`
-  is the evaluation start again and the liveness sample is three fields again — M3 had widened the
-  acceptance window (the shipped-defaults degraded world took at t441, the W1 world at t357 on a
-  holder voting since t320); both now equal de21927 take-for-take (no take; vetoed at t342); (R2) the
-  own-bank `MAX_DELINQUENT_SLOTS` `getSlot` reference is read BEFORE the payload, so a pet or a stall
-  can only make the holder look more current (a holder voting every slot read "Latency 25 > 15" and an
-  armed spare took it at t577; now no episode opens); TIER2's census twin keeps its op sequence and
-  re-reads the holder's `lastVote` after its reference before a latency verdict can confirm (reading
-  the reference first there added a timeout on the TIER2-down path and re-phased a take 11 s sooner —
-  measured, not shipped); (R3) watchdog-elapsed answers BLIND when its head read lands more than
-  `ELAPSED_HEAD_GAP_MAX` = 1 s after the payload (a new derived constant at the one derivation site —
-  the constants census is five names): the pre-fix tree minted with the spare's bank 50–55 slots behind
-  the view; the hidden lag from the STAMPED interval (payload delivery → head answer) is now under 6 / 9
-  slots (2.5 / 3.7 slots/s) on a healthy host, under 23 / 35 with the payload's pet stalled at 7 s
-  (fix round 3, S5 states the part the stamp does NOT cover — the payload's own snapshot → delivery, up
-  to rate × its curl -m 10 = 25 / 37 slots — as a documented residual reachable only with a stale-on-
-  arrival view; no change to `ELAPSED_HEAD_GAP_MAX`); (R4) N4's adoption is keyed on the full classified token line
-  and the stored file's identity (a same-gen re-pair to a lower floor proved at +121 s, now not before
-  +221 s; a reporter-only flap and a same-gen other-host swap under a dormant verdict are a new
-  adoption / a withdrawal); (R5) `load_state` reads every persisted number through `_canon_uint`: a
-  non-canonical lockout/cooldown re-holds in full from now ("0777" had been read as octal — the lockout
-  silently expired; "0999" was dropped); a non-canonical `SAVE_TS` makes the save stale ("0999" had
-  discarded the rest of the startup command); a non-canonical baseline value is not restored, per value
-  — the rest of the fresh save restores, a slot as 0 (a baseline existed: the no-answer gate stays
-  armed). Measured on a 30-world fence matrix, both daemons: the holder fences no later than on
-  f22d492 for every garbage class (the R5 residual — a non-canonical stall / silence / lag stamp
-  starting its timer fresh — was **reversed in fix round 3, S2**, which restores such a stamp as
-  ANCIENT behind the first read's evidence), and a healthy holder with a leading-zero slot is no
-  longer fenced (f22d492: at 0–30 s); discarding the whole snapshot for one bad value had fenced later
-  or never (30 s → never); (R6) on the holder, a present but
-  non-canonical LOCAL slot / `numSlotsBehind` / own or cluster `lastVote` counts as frozen / behind /
-  lagging — never healthy, never the no-answer path (the panel's 288-row matrix, both daemons: every
-  canonical row identical to de21927, every non-canonical row fencing no later than de21927, 114 of
-  them earlier). Tests and texts: (R7) the M2 span-floor claim corrected and its binding world pinned
-  as a differential (t167 → t197, one hold); (R8) the cadence residual documented and pinned (the
-  episode window closes on cycle count, the own bank sees a vote in time); (R9) the heredoc guard
-  removes escaped pairs left to right, renders only at census 0 and then under `env -i … bash -r` (an
-  escaped backslash before `$(…)` had passed and executed; absolute-path and redirect forms now fail
-  loudly and create nothing); (R10/R11) the `PROOF_MAX_AGE` derivation scoped to the span it proves,
-  with the provider's non-convergence stated there (its worst minting evaluation measured 35 s old at
-  the mint, 74 s at the edge); stale sampler and `LOCAL_HEALTH_MAX_BEHIND` comments; `docs/SAFETY.md`
-  restates the MDS row, Σ (on an armed unit one pet per read: measured 50 s = 22 s of reads + 28 s of
-  pets), token adoption, the hidden-lag bound and the cadence residual. Differential sweep, 1,115
-  worlds, f22d492 → this build: 62 take sooner, 119 later, 28 move only a veto. Of the sooner, 43 are
-  R1 — the revert moves the proof's re-mint cycle back by the 10 s M3 had moved `observed_at`, and
-  each equals f22d492 with only M3 reverted; 22 of them take where f22d492 vetoed (in 18 the holder
-  had resumed 0–45 s before the take: the take path's Σ after its last own-bank read — `TIER2` at its
-  bound and a failed `set-identity`'s retry — while f22d492 takes the same family's holders resumed
-  2–47 s before its own take). 18 are R2's added reference read re-phasing the cycle (1–8 s sooner,
-  `MAX_DELINQUENT_SLOTS`=15 with reads or pets that cost time, each a take f22d492 also made;
-  TIER2's re-read shape in its place re-phased 3 worlds, one by 56 s). 1 is R3's head-gap blindness
-  re-phasing a timer-path take by 28 s (2 s pets). The phase and cadence residuals, both ways: the
-  three-lens panel **ratified items 1–3 (the R1 revert, R2's reference-first read, R3's gap bound) as
-  phase-only** — the acceptance predicate is strictly tighter at every instant and the sooner takes are
-  the re-mint / cycle-count window re-phasing in worlds the pre-fix build also took. Item 4 (R5's
-  restore-input classification) was judged a PREDICATE change by all three lenses and is **reversed in
-  fix round 3, S2** (below), not ratified as phase.
-
-- **Block 6.3 fix round 1 (panel wf_4c899880-d5b) — the provider's standing verdict follows the
-  token in force, silence starts are stamped after the answer, non-canonical integers are unusable,
-  an aborted loop fails the unit, and the D0 text is rewritten to the measured truth.** Mechanism,
-  each red first on de21927 and green after: (M1) the reporter and the dormant step re-classify the
-  token at the one derivation site on every serve (local file read, zero network — "zero I/O while
-  dormant" is now "zero network") and WITHDRAW a verdict whose token no longer classifies ok, whose
-  gen changed, or whose re-derived floor exceeds the silence it was minted on; (N4) a token adopted
-  mid-episode restarts the silence (a provider-local stamp per gen — keyed on gen only, so a same-gen
-  re-pair with a lower floor still minted retroactively; fix round 2's R4 keys it on the full token); (M2) every
-  seam stamp that STARTS a span — the observed-span start, the VOTING re-pin, the blind stamp, the
-  pair's first end, the prefetch pin — is taken AFTER the read that established it (the F2 world:
-  minted with true silence 86 s < W+B before, ≥ 100 s after; M2 CAN make the observation-span floor
-  bind where it did not — slow LOCAL reads, TIER2 near its bound — only ever later, +19 to +53 s
-  measured, corrected in fix round 2, R7); (M3) observed_at was set to the answering read's own
-  pre-read stamp — REVERTED in fix round 2 (R1): it widened the acceptance window, a loosening (a
-  proof-gated take at t441 where the evaluation-start stamp never takes); (M4) ONE canonical-integer
-  validator `_canon_uint` (`^(0|[1-9][0-9]{0,18})$`, ≤ 2^63−1) for every external integer the take
-  path, the providers and the self-fence do arithmetic on — "0009999" aborted the main loop and
-  2^64+N wrapped; (M5) a main loop that ends without a shutdown request logs an ERROR and exits 1, so
-  the armed unit (Restart=no, OnFailure on `failed`) fences/pages instead of sitting `inactive`
-  (SIGTERM still exits 0); (M6) Tier-1's and the MAX_DELINQUENT_SLOTS `getSlot` reads are petted —
-  the measured gap between consecutive pets through the watchdog-elapsed evaluation 20 s → 17 s, one
-  op + one pet again (the loop-wide bound stays one op + one pet: the take path's `curl -m 15` reads
-  set it at 22 s, measured, before and after); the pet census 42/43 → 42/45; (M7) a vantage re-pin
-  under a standing verdict withdraws it (the served triple never disagrees with the seam); (M8) a spare
-  paired while its monitor runs says so every heartbeat ("paired, but watchdog-elapsed is NOT
-  registered — restart the monitor"); (M9) `LOCAL_HEALTH_MAX_BEHIND` > 128 is announced at startup as
-  widening Tier-1 (no clamp). The unpaired posture prints the MEASURED provider registry ("NONE — no
-  provider can prove here" where G2 is unconfigured). Tests: the D0 world gets a file-backed clock,
-  an explicit slot-rate knob and the physical minority model (the "processed takes at t145"
-  counterfactual is dropped); six DOCUMENTED RESIDUALS are measured and named with the remedy that
-  would flip each (co-frozen partition after the pin, the latency term Σ, an honest lagging tier,
-  the armed intermittent holder, `LOCAL_HEALTH_MAX_BEHIND` > 128, forged G2 on shared vantages); the
-  reachable post-blindness archetype and `[elapsed-seam]` join the multilayer controls; the heredoc
-  guard censuses the expansions in both deploy heredocs (an escaped backslash before `$(…)` evaded
-  it until fix round 2's R9) and renders both under a canary PATH.
-  Texts: `docs/SAFETY.md` "Shared vantages" rewritten (three premises, the exposure = commitment lag
-  + every tier read before `set-identity` — on an armed unit one pet per read as well, restated in fix
-  round 2 — partitioned-after-open findings, the tip guard's reach,
-  slot time stated in slots — mainnet measured ≈ 3.7 slots/s on 2026-09-26, so `N_HEAD` = 25 slots ≈
-  6.8 s there, stricter than its 10 s derivation); the G2 remedy texts scoped to verified-demote; the
-  checksum claims scoped (a delivery-path intermediary rewrites files and manifest together).
-
-- **Block 6.3 — the watchdog-elapsed proof provider (attested time), and the shared-input property
-  made standing.** The second provider behind the Block-6.1 proof gate, in a new `[elapsed-provider]`
-  twin region (byte-identical in both daemons; armed + spare + registered-gated — zero reads, zero
+  **The provider.** The second provider behind the Block-6.1 proof gate, in the `[elapsed-provider]`
+  twin region (byte-identical in both daemons; armed + spare + registered-gated — zero reads and zero
   events on every un-armed, holder or unpaired host, census-asserted). It registers at armed-spare
   startup ONLY over a pairing token that classifies ok at the one derivation site
-  (`_derive_proof_floors`: fence=real, crc-valid, floor converged and ≥ `TAKEOVER_DELAY`),
-  re-classifies the token at every evaluation (and, since the fix round above, at every serve of a
-  standing verdict), and the PAIRED posture's measured registry now lists it. PROVEN iff the
-  silence OBSERVED on the spare's monotonic clock — from the Block-3 seam's
-  observed span, restarting after every stamped blindness (read through the seam, never a parallel
-  freshness system; the region writes nothing to it) — is ≥ `elapsed_floor` (W + B +
-  `MARGIN_ELAPSED` = 100 s at the shipped 30/60), a fresh same-vantage read still shows the staked
-  `lastVote` at the episode baseline, AND the payload's cluster-max `lastVote` is within ±`N_HEAD`
-  (25) slots of an INDEPENDENT head: the spare's own bank (`LOCAL_RPC` `getSlot`,
-  commitment=processed — the one head no TIER2/TIER3 intermediary can lower; the RPC default would
-  understate a view's lag by ~32 slots). Two-sided: a view lagging the bank, or a bank lagging a
-  live view (a cut-off or lagging spare), reads blind — availability, never a take; `N_HEAD` is used
-  only from the derivation site and is not loosened. Structured verdict (observation_id = token gen
-  + silence start + floor; observed_at = the read the silence rests on), WITHDRAWN — never extended —
-  past `PROOF_MAX_AGE` or when the seam moves under it. Per-cycle, never blocking: zero network reads
-  below the floor and while a verdict stands, at most one paced evaluation per cycle (worst added gap
-  48 s, every read petted; the pet census moves 41/42 → 42/43). UNWIRED into any take path (6.4).
-  `tests/test_elapsed_provider.sh` (52 suites): reds first; the case table; the multilayer rule
-  (token / blindness / floor / head each neutered alone falls through to a named survivor, all four
-  neutered restores the forged acceptance); the `MARGIN_ELAPSED` coupling mutant (floor and `N_HEAD`
-  move together, the provider follows); the inertness census; twin parity. The HOLD loop's named
-  baits gain both provider steps — `_elapsed_step`, and `_g2_step`, whose HOLD-loop splice had
-  tripped nothing. **D0, the executed input map**, is now a standing section of `docs/SAFETY.md`
-  (*Shared vantages — the spare's observation surface*), with its findings named, not fixed: on
-  EVERY config watchdog-elapsed's silence and the take path's vote-FROZEN observation are one
-  TIER2/TIER3 input — attested time, never a second witness (`failover arm`'s "additivity HOLDS"
-  line is now scoped to verified-demote and says so); the spare's own bank is a per-cycle entry
-  gate read at finalized commitment, not a mutation-edge condition, and it never re-anchors —
-  measured, its veto wins only for a holder that resumed ≥ ~13 s before the scheduled mutation
-  (timer path: t112 vetoed, t113 taken; elapsed path: t158 vetoed, t159 taken), so it does not
-  bound the active-intermediary residual; a spare cut off after the episode opened is held by no
-  spare-side gate on the timer path (agave's `getHealth` compares against the node's own
-  blockstore; watchdog-elapsed refuses to prove there only against a LIVE view — with its tiers
-  partitioned together with it, it mints), a spare on a minority fork that PRECEDES the episode is
-  held by the finalized read (one that begins after it opened is the cut-off case), a spare
-  replaying ≤ 128 slots behind passes Tier-1, and `LOCAL_HEALTH_MAX_BEHIND` is inert at or below
-  128 at agave's default distance and WIDENS Tier-1 above it. The G2-vantage texts in
-  `DEPLOYMENT-MANUAL.md`, the standby env template and the deploy script now say a third endpoint
-  restores additivity for G2 only. Found in passing and fixed: the standby deploy script's env
-  heredoc is unquoted, and the 6.2 G2-vantage comment inside it carried bare backticks — every
-  standby deploy ran `failover arm` as a command substitution ("command not found" on stderr, the
-  rendered comment left with a hole); now escaped, with a static-and-render guard
-  (`test_installer_guardrails` (27)) red on the old text.
+  (`_derive_proof_floors`: fence=real, crc-valid, floor converged and ≥ `TAKEOVER_DELAY`); the PAIRED
+  posture prints the measured registry. PROVEN iff the silence OBSERVED on the spare's monotonic clock —
+  the Block-3 seam's observed span, restarting after every STAMPED blindness (read through the seam;
+  the region writes nothing to it), counted from the adoption of the token now in force — is ≥
+  `elapsed_floor` (W + B + `MARGIN_ELAPSED` = 100 s at the shipped 30/60), ONE fresh same-vantage read
+  still shows the staked `lastVote` at the episode baseline, AND the payload's cluster-max `lastVote`
+  is within ±`N_HEAD` (25 slots) of an independent head: this spare's own bank (`LOCAL_RPC` `getSlot`,
+  commitment=processed — the one head no `TIER2`/`TIER3` intermediary can lower), answered within
+  `ELAPSED_HEAD_GAP_MAX` = 1 s of the payload's return (a derived constant at the one derivation site;
+  the constants census is five names; `N_HEAD` is read only there and not loosened). Two-sided: a view
+  lagging the bank, or a bank lagging a live view, reads blind — availability, never a take. The
+  verdict (observation_id = token gen + silence start + floor) carries `observed_at` = the EVALUATION
+  START (the stamp before its fresh read); it is WITHDRAWN — never extended — past `PROOF_MAX_AGE`, when
+  the seam moves under it (a new observed life, a stamped blindness, a vantage re-pin), or when the
+  stored token no longer licenses it (re-classified at every serve: removed, rotted, page-only, another
+  gen, a re-derived floor above the minted silence, or any change of the full token — its classified
+  line or the stored file). Zero NETWORK reads below the floor and while a verdict stands (a local file
+  read + cksum per step), at most one paced evaluation per cycle (worst added gap 48 s, every read
+  petted). UNWIRED into any take path (6.4). Its worst MINTING evaluation is 35 s old at its mint and
+  74 s at the mutation edge — it does not converge under `PROOF_MAX_AGE`; 6.4 decides (re-derive, or
+  accept as availability: the edge refuses, never a take). Hidden lag of the head compare: over the
+  STAMPED interval (payload return → head answer) under 6 / 9 slots on a healthy host (2.5 / 3.7
+  slots/s), under 23 / 35 with the payload's pet stalled at 7 s; the payload's own snapshot → delivery
+  is not stamped and adds rate × that (up to its `curl -m 10` = 25 / 37 slots) — a documented residual
+  reachable only with a stale-on-arrival view (the "bank and view lagging together" residual): a payload
+  snapshotted at its request and delivered 9 s later mints with this bank 47 slots behind the live
+  chain (`N_HEAD` + 22 at 2.5 slots/s), pinned in `test_elapsed_provider` (5l). Token adoption is keyed
+  on the full classified line AND the stored file's identity (inode, size, change time): a new gen, a
+  same-gen re-pair, another host's token with the same bounds, and a rewrite back to the same bytes that
+  no evaluation saw are all new adoptions, whose silence restarts. Not visible: a rewrite back to
+  identical bytes within one ctime granule (a kernel tick on ns-timestamp filesystems; 1 s on ext4 with
+  128-byte inodes, ext3, HFS+). A SYMLINKED token never proves (a dangling link or a link loop too): the
+  provider answers cannot — "the pairing token is a symlink — store it as a regular file, as `failover
+  arm` does" — and the startup posture and the status line say so every interval (no one file identity
+  sees both a rewrite of the link's target and a re-point of the link; `failover arm` always stores a
+  regular file). A spare paired while its monitor runs says so every heartbeat ("paired, but
+  watchdog-elapsed is NOT registered — restart the monitor"); the unpaired posture prints the measured
+  provider registry ("NONE — no provider can prove here" where G2 is unconfigured). Tests
+  (`test_elapsed_provider`): reds first; the case table; the multilayer rule (token / blindness / floor /
+  head each neutered alone falls through to a named survivor; all four neutered restores the forged
+  acceptance); the `MARGIN_ELAPSED` coupling mutant; the inertness census; twin parity; the D0 world on a
+  file-backed clock with an explicit slot rate and the physical minority model; the (3l-R4b) symlink
+  modes (target rewritten in place or by tmp+mv, the link re-pointed away and back: all cannot, the gate
+  refuses; the regular file unchanged); and the HOLD loop's named baits cover both provider steps
+  (`_elapsed_step`, `_g2_step`).
+
+  **The spare's observation surface (D0), a standing section of `docs/SAFETY.md`** (*Shared vantages*),
+  its findings named, not fixed: on EVERY config watchdog-elapsed's silence and the take path's
+  vote-FROZEN observation are one `TIER2`/`TIER3` input — attested time, never a second witness
+  (`failover arm`'s "additivity HOLDS" line, and the G2-vantage texts of the manual, the standby env
+  template and deploy script, are scoped to verified-demote: a third endpoint restores additivity for G2
+  only); the premise has three forms (an active intermediary, an honest tier lagging but advancing, the
+  spare partitioned together with its tiers after the pin); the spare's own bank is a per-cycle entry
+  gate at finalized commitment that never re-anchors the countdown, not a mutation-edge condition — the
+  exposure is its commitment lag (32 slots) PLUS every tier read between the take cycle's own-bank read
+  and `set-identity`, on an armed unit one pet per read too (measured Σ = 50 s: 22 s of reads + 28 s of
+  pets), and an HONEST tier 40 s behind reproduces the zero-latency race on un-armed installs; a spare
+  partitioned AFTER the episode opened is held by no spare-side gate on the timer path (agave's
+  `getHealth` compares against the node's own blockstore), and armed, watchdog-elapsed refuses only
+  against a LIVE view (with its tiers co-frozen it mints); "minority fork: held" holds only for forks that
+  PRECEDE the episode; the tip guard catches only a freeze at or before the pinned first sample; forged
+  G2 on shared vantages (t132); a spare replaying ≤ 128 slots behind passes Tier-1, and
+  `LOCAL_HEALTH_MAX_BEHIND` is inert at or below agave's 128 and WIDENS Tier-1 above it (a startup WARN,
+  no clamp). Six DOCUMENTED RESIDUALS are measured in `test_elapsed_provider`, each with the remedy that
+  would flip it (co-frozen partition after the pin, the latency term Σ, an honest lagging tier, the armed
+  intermittent holder, `LOCAL_HEALTH_MAX_BEHIND` > 128, forged G2 on shared vantages). The checksum
+  claims are scoped (a delivery-path intermediary rewrites files and manifest together). Slot time is
+  stated in slots, with the rate named: mainnet measured ≈ 3.7 slots/s on 2026-09-26, so `N_HEAD` = 25
+  slots ≈ 6.8 s there (stricter than its 10 s derivation).
+
+  **The spare's take path.** Every seam stamp that STARTS a span is taken after the read that
+  established it (a silence start can no longer predate its evidence; it can only make the observation-
+  span floor bind LATER — +19 to +53 s measured, pinned t167 → t197). ONE canonical-integer validator,
+  `_canon_uint` (`^(0|[1-9][0-9]{0,18})$`, ≤ 2^63−1), for every external integer the take path, the
+  providers and the self-fence do arithmetic on ("0009999" had aborted the main loop, 2^64+N wrapped);
+  what non-canonical MEANS is per caller class — the take path and the providers: unusable
+  (cannot-determine / blind / not delinquent); the holder's self-fence: the fencing condition; `load_state`:
+  per value (below); the PRIMARY's opt-in latency demote: ERR locally, "Tier 2 unreachable — trusting
+  local" for `TIER2` fields. A main loop that ends without a shutdown request exits 1 (the armed unit
+  reaches `failed` → OnFailure); SIGTERM still exits 0. Tier-1's and the `MAX_DELINQUENT_SLOTS` `getSlot`
+  reads are petted (the gap between consecutive pets through the watchdog-elapsed evaluation 20 → 17 s;
+  the loop-wide bound stays one op + one pet, 22 s); the pet census is 42 / 46 call sites (primary /
+  standby, definitions included). The own-bank `MAX_DELINQUENT_SLOTS` reference `getSlot` is read BEFORE
+  the payload, so a pet or a stall can only make the holder look more current — the read is MOVED on
+  every check that reaches the latency compare and ADDED only on the checks the payload ends early
+  (listed delinquent, unreachable, no `.result`); a dead holder's detection cost is 0 s at loopback
+  latency, up to one cycle with ~2 s LOCAL reads. `TIER2`'s latency check keeps its op sequence and
+  RE-READS the holder's `lastVote` after its reference before a latency verdict can confirm (one extra
+  external read, only when that verdict fires on a not-yet-listed holder).
+
+  **The holder's self-fence (both daemons, identical code).** A present non-canonical LOCAL slot /
+  `numSlotsBehind` / own or cluster `lastVote` counts as frozen / behind / lagging — never healthy, never
+  the no-answer path's early return (`SELF_FENCE_NOANSWER_SECS=0` still fences through the frozen clock).
+  A non-canonical slot is also no CANONICAL answer: it keeps (or starts, or backdates from the persisted
+  start) the no-answer clock exactly as silence does, and only a canonical answer clears that clock and
+  its restored backdate. A garbage-slot cycle ADDS own-vote-lag (N6) evidence and never removes it: its
+  lagging (or garbage) vote reading counts and applies the restored backdate as ever, while its healthy
+  vote reading neither counts toward the B2 hysteresis reset nor consumes the restored backdate.
+  `load_state` reads every persisted number through `_canon_uint` and decides PER VALUE (never arithmetic
+  on a raw value; the rest of a fresh save restores): a non-canonical lockout/cooldown re-holds IN FULL
+  from now (a leading-zero value had been read as octal — "0777" silently expired the lockout); a
+  non-canonical `SAVE_TS` makes the whole save stale; a non-canonical stall / silence / lag STAMP — and
+  a same-boot one LATER than now — restores as ANCIENT, applied only if the first read after the restore
+  still shows the condition (a healthy first read drops it); a non-canonical SLOT restores as 0 (a
+  baseline existed: the no-answer gate stays armed), the first canonical answer after the restore is
+  only a REFERENCE, and the stall backdate stays pending until a later answer shows the slot not past
+  that reference with the reference at least `SELFFENCE_RESTORE_CONFIRM_SECS` = 15 s old (applied), or
+  past it (dropped); a non-canonical answer applies it; over a YOUNG stall stamp (under one window) the
+  anchor is the restore instant, never earlier, behind the same floor. The floor is a constant at ONE
+  derivation site, byte-identical in both daemons: above the longest hold a HEALTHY confirmed slot shows
+  (assumed, not measured here: 5 consecutive fully-skipped leader windows + 2 slots of confirmation
+  jitter = 22 slots = 8.8 s at 2.5 slots/s, 5.9 s at 3.7) plus the read-timing term (the reference's
+  own `curl -m 5` + 1 s of `mono_now` truncation), and below `SELF_FENCE_ISOLATION_SECS` (30); 15 s =
+  37 / 55 slots — a healthy hold longer than 9 s right after such a restart can be fenced (availability;
+  a corrupted slot and a restart needed). The vote-lag baseline latch restores SET for any present value
+  but 0 (`save_state` writes only 0 or 1); a non-canonical hysteresis streak is not restored.
+
+  **The heredoc guard (27)** (`test_installer_guardrails`): the census flags every expansion in the
+  ENVEOF heredoc lines of both deploy scripts — `$(`, `$((`, `$[`, a bare `$name` / `${`, a backtick —
+  with backslash-newline continuations joined and escaped pairs removed left to right, except the
+  allowlist (the header `$(date …)`, `${CFG_*}`, `$(_envq …)`, an escaped `\$` / `` \` ``); a heredoc is
+  rendered only at census 0, under `env -i PATH=<canary> bash -r` with its CWD in the temp dir, the
+  rec-log path baked into each canary and `enable -n history kill ulimit suspend`. The render is proven
+  only against the forms (27-ctl)/(27-ctl-r) execute (an absolute-path command, an output redirection,
+  `history -w`, `kill`, a per-command `CANARY_LOG=`), not as a general sandbox, and nothing about any
+  other file or heredoc spelling. Found in passing and fixed: the standby deploy script's unquoted env
+  heredoc carried bare backticks in a comment — every standby deploy ran `failover arm` as a command
+  substitution; now escaped, and the guard is red on the old text.
+
+  **The differential bar and the named residuals.** Every holder-fence change is proven by DIFFERENTIAL
+  runs of the review panels' grids — the real `load_state`, startup tail and `check_self_fence_isolation`,
+  both daemons: 8,656 restart / `load_state` rows per tree (a fresh bash per daemon instance), a 288-row
+  still-frozen grid at the turbo cadences, and the in-loop sweep (8,942 sequences per daemon and garbage
+  class) — against de21927, f22d492, e917c04 and 7ab7eca. The bar: never later than e917c04 or 7ab7eca
+  for any input; never later than de21927 / f22d492 except where their fence came from misreading a
+  leading-zero value (a misread that fenced HEALTHY holders too) or from an aborted startup (no READY,
+  no grace) — each such row named here for the reviewer, with two further named exceptions: the floor's
+  own cost against 7ab7eca (1), and the fresh-start rows where de21927 fenced only because it adopted
+  garbage as its baseline (4):
+  (1) *The floor's cost (later than 7ab7eca, never later than e917c04).* A still-frozen holder with a
+  corrupted slot over a stall a window old fences at reference + 15 s — grace 30: 45 s, grace 0: 15 s,
+  both daemons, every cadence — where 7ab7eca decided at the very next answer (35 / 5 s at
+  `CHECK_INTERVAL` 5, 33 / 3 s at 3, 31 / 1 s at 1): the decision that also fenced a PAUSED HEALTHY
+  holder (C F C, C D C, C S F C — 35 / 35 / 40 s at grace 30, 5 / 5 / 10 s at grace 0, one cycle after
+  the reference at the turbo cadences; never now). e917c04: 60 / 30 s; de21927 / f22d492: 60 / 30 s (30
+  at grace 30 for the slots of (2)).
+  (2) *The leading-zero misread (later than de21927 / f22d492 only).* A persisted slot with a leading
+  zero and an 8 or 9 ("0999", "0400000009"): both references fence at 30 s (grace 30) in EVERY world,
+  the healthy holder included (their `[[ ]]` octal misread). Here, as on e917c04 and 7ab7eca, a healthy
+  holder is never fenced, and a frozen one at 45 s (a stall stamp a window old or young; 7ab7eca 33 / 35
+  or 60, e917c04 60); a garbage decision read at 33 / 35 s (7ab7eca the same or 60, e917c04 60); a
+  lagging one at 50 / 51 s, a silent one at 65 s, one across a boot at 60 s, one restarted between the
+  reference and the decision at 65 / 70 / 100 s — each equal to e917c04 and 7ab7eca. In the loop,
+  de21927 misread a LIVE "0400000129" (before any canonical answer) the same way and fenced at
+  30–60 s whatever followed, the healthy G C holder included: those 2,997 in-loop rows (both daemons)
+  are identical to 7ab7eca's here.
+  (3) *The aborted startup (later than de21927 / f22d492 only).* A `SAVE_TS` or `SF_ADVANCE_MONO` in
+  that leading-zero class: the references' `$(( ))` error discarded the rest of `startup_checks` (no
+  READY, no `STARTUP_GRACE`) and their loop fenced at 30 / 33 / 35 s; here the startup completes and
+  the holder fences after the grace, at 60 / 65 s — equal to e917c04 and 7ab7eca.
+  (4) *The fresh-start gap (N7; not changed).* The no-answer gate needs a canonical baseline and silent
+  reads do not run the frozen clock, so a holder silent from a fresh start is fenced by neither: a
+  non-canonical `SAVE_TS` makes the whole save stale — a holder silent across that restart is never
+  fenced, on every tree; and garbage before any canonical answer, then silence (H4-N7-GARBAGE-FIRST) —
+  never on f22d492, e917c04, 7ab7eca and here, where de21927 fenced such sequences at 33–60 s because it
+  adopted the digit garbage as its baseline ("0400000123" read as octal; 2^64+100, or a value just past
+  2^63−1, wrapped): 59 of the in-loop sweep's standby rows and 58 of its primary rows. Letting a present
+  answer arm the gate is an N7 change, not made (`docs/SPLIT-BRAIN-RESIDUAL.md`, no-answer sub-check).
+  (5) *Corrupted-stamp blips (availability; a corrupted stamp needed).* A stamp restored as ANCIENT
+  turns ONE first-read blip into an immediate fence: a silent, non-canonical or lagging first read — or,
+  at `STARTUP_GRACE=0`, a 3–5 s pause — fences at that read (grace 30: 30 s; grace 0: 0 s) where the
+  same holder with canonical stamps arms nothing; the future-dated stamps now share it; the references
+  had the same exposure for octal-valid stamps. Over a corrupted slot a garbage DECISION read applies
+  the pending: C G C fences at 35 / 5 s (33 / 31 s at the faster cadences, grace 30), as on 7ab7eca, and
+  now also over a young stall stamp (never → 35 s at grace 30).
+  (6) *An absent vote-lag latch (every tree; not changed).* A fresh save without
+  `SF_VOTELAG_BASELINE` keeps N6's fresh-start rule (no healthy baseline → not armed): a holder lagging
+  continuously across such a restore is never fenced through N6.
+  (7) *A restart between the reference and the decision (every tree).* The pending is not persisted:
+  the next instance restores the reference as its canonical baseline and fences at its first read after
+  its own grace (65 / 70 / 100 s in the panel's rows; 45 s without the restart), as for a canonical slot.
+  The phase residuals, ratified phase-only by the three-lens panel: the revert of `observed_at` to the
+  evaluation start, the reference-first own-bank read and the head-gap bound re-phase takes (1,115-world
+  sweep before fix round 2: 62 sooner, 119 later, 28 veto-only — each sooner take a world the pre-fix build
+  also took); REG-C — the episode window closes on cycle COUNT while the own bank sees a vote in TIME, so
+  any cadence change re-phases vetoes both ways, on every tree (documented and pinned; flips when the
+  close rule becomes time-based). The PRIMARY's opt-in latency demote (`MAX_VOTE_LATENCY` > 0, off by
+  default) reads its reference first, so a stall or pet between its two reads makes the holder look more
+  current: the demote can come up to ~37 s later (both reads at their `curl -m 10` bound + a 7 s pet: up
+  to 27 s between the snapshots; ~27 s when only the payload stalls), within B = 60 s, and a holder lagging
+  within rate × that gap of the limit never demotes on that path — availability only; not the relinquish
+  B bounds. `SHA256SUMS`: the rows of the changed shipped files regenerated; `install.sh` untouched.
 
 - **Install-verification claims aligned to the mechanism (docs, comments and one runtime output
   line; no logic change).** `install.sh`'s header, `SECURITY.md` ("Verifying what you install") and the README

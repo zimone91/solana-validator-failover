@@ -501,7 +501,7 @@ kill "$M27_SENT" 2>/dev/null
 mutate "$DEPLOY_PRIMARY" "s|^# wraps in \\\\\`timeout 8\\\\\`|# wraps in \$(/usr/bin/touch $WORKDIR_27/PWNED3) \$(true > $WORKDIR_27/PWNED4) \\\\\`timeout 8\\\\\`|" "$WORKDIR_27/mut-r.sh"
 rr=$(hd_render "$WORKDIR_27/mut-r.sh" /opt/solana-failover/failover.env)
 if [[ "$(field "$rr" err)" == *"restricted: cannot specify"* && "$(field "$rr" err)" == *"restricted: cannot redirect output"* && ! -e "$WORKDIR_27/PWNED3" && ! -e "$WORKDIR_27/PWNED4" ]]; then
-  ok "(27-ctl-r) the restricted render ALONE (census bypassed): \$(/usr/bin/touch …) and \$(true > …) fail LOUDLY on stderr ('restricted: cannot specify \`/' in command names', 'restricted: cannot redirect output') and create nothing — a spelling the census misses cannot run an absolute path or write outside the temp dir (pre-fix render: both files CREATED)"
+  ok "(27-ctl-r) the restricted render ALONE (census bypassed): the two forms it executes — an absolute-path command \$(/usr/bin/touch …) and an output redirection \$(true > …) — fail LOUDLY on stderr ('restricted: cannot specify \`/' in command names', 'restricted: cannot redirect output') and create nothing (pre-fix render: both files CREATED). Scope: those forms only, not a general sandbox (the header's scope sentence)"
 else
   bad "(27-ctl-r) err='$(field "$rr" err | cut -c1-200)' files=$(ls "$WORKDIR_27" | tr '\n' ' ')"
 fi
