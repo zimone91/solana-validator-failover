@@ -19,7 +19,9 @@
 #   (H1-h) 6.3 fix round 2, R6: a PRESENT but non-canonical LOCAL slot / numSlotsBehind / own lastVote
 #          fails toward the fencing condition (frozen / behind / lagging), never healthy, never the
 #          no-answer path's returns; (H1-h4/h5) fix round 3, S1: a garbage slot is no canonical answer —
-#          it keeps the no-answer clock (and a restored backdate) running, in the loop and across a restore
+#          it keeps the no-answer clock (and a restored backdate) running, in the loop and across a restore;
+#          (H1-h6/h7) fix round 4, W1: a garbage-slot cycle adds own-vote-lag (N6) evidence, never removes
+#          it — its healthy vote reading neither counts toward the B2 reset nor consumes the restored backdate
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
@@ -282,6 +284,53 @@ if [[ $s1_ok -eq 1 && "$got_steady" == "5" ]]; then
 else
     [[ "$got_steady" == "5" ]] || bad "(H1-h5) restored silence 25 s + steady garbage: fence at $got_steady, want 5"
 fi
+
+# ── (H1-h6/h7) 6.3 fix round 4, W1 (H4-R6-VOTELAG): a garbage-slot cycle ADDS N6 evidence, never removes it ──
+# Per-cycle letters (5 s cycles; the last repeats): C the slot advances and the own vote is current; L the
+# slot advances and the own vote lags the same-payload cluster-max by 100 slots; G a garbage slot with the
+# own vote current; H a garbage slot with the own vote lagging. N6 at the shipped 32 slots / 20 s /
+# RESET_CYCLES 3; ISOLATION and NOANSWER 30. On a G cycle the healthy vote reading must neither count toward
+# the B2 reset nor consume the restored backdate. Pre-fix red (7ab7eca; the same on e917c04, whose R6
+# fall-through opened it): CCCCLGGGL 60, CCCCLGGGGL 65, CCCCLGGGLGGGL 80, CCCCLLLGGGL 70, (LLLGGG)x5 then L
+# 190 (N6 never fired while the alternation lasted) where de21927 and f22d492 fence at 40 / 45 / 40 / 50 /
+# 50; restored lag 100 s + GL / GGL / GGGL at grace 0 → 25 / 30 / 35 where they fence at 5 / 10 / 15.
+# Controls, identical on every tree: CCCCLHHHL 40; the canonical alternation (LLLCCC)x4 then L 160.
+w1_run() {   # $1 = letters, $2 = the garbage JSON token → the fence second from t0, or never
+    local seq="$1" i L t0=$_SIM_NOW
+    for (( i = 0; i < 60; i++ )); do
+        L=${seq:$(( i < ${#seq} ? i : ${#seq} - 1 )):1}
+        _MODE="slot"; _CLUSTER_MAX=$(( 200000 + i * 12 )); _OWN_LV=$(( _CLUSTER_MAX - 1 ))
+        case "$L" in
+            C) _LOCAL_SLOT=$(( 100000 + i * 12 )) ;;
+            L) _LOCAL_SLOT=$(( 100000 + i * 12 )); _OWN_LV=$(( _CLUSTER_MAX - 100 )) ;;
+            G) _LOCAL_SLOT="$2" ;;
+            H) _LOCAL_SLOT="$2"; _OWN_LV=$(( _CLUSTER_MAX - 100 )) ;;
+        esac
+        check_self_fence_isolation >/dev/null
+        [[ "$(cat "$_ID_FILE")" == "$UNSTAKED_PUBKEY" ]] && { echo $(( _SIM_NOW - t0 )); return; }
+        _SIM_NOW=$(( _SIM_NOW + 5 ))
+    done
+    echo never
+}
+echo ""; echo "─── (H1-h6/h7) W1: a garbage-slot cycle adds N6 evidence, never removes it (in the loop and across a restore) ───"
+w1_ok=1; w1_rows=""
+for tok in '"abc"' '"0400000123"'; do
+    for row in CCCCLGGGL:40 CCCCLGGGGL:45 CCCCLGGGLGGGL:40 CCCCLLLGGGL:50 CCCCLLLGGGLLLGGGLLLGGGLLLGGGLLLGGGL:50 CCCCLHHHL:40 CCCCLLLCCCLLLCCCLLLCCCLLLCCCL:160; do
+        _SIM_NOW=1700120000; reset_all
+        got=$(w1_run "${row%%:*}" "$tok")
+        [[ "$got" == "${row##*:}" ]] || { w1_ok=0; bad "(H1-h6) ${row%%:*} $tok: fence at $got, want ${row##*:}"; }
+    done
+done
+[[ $w1_ok -eq 1 ]] && ok "(H1-h6) in the loop, garbage \"abc\" and \"0400000123\": CCCCLGGGL → 40, CCCCLGGGGL → 45, CCCCLGGGLGGGL → 40, CCCCLLLGGGL → 50, (LLLGGG)x5 then L → 50 (= de21927 and f22d492; pre-fix 60 / 65 / 80 / 70 / 190 — the G cycles' healthy vote readings reset the sustain timer), controls CCCCLHHHL → 40 and the canonical (LLLCCC)x4 then L → 160 (every tree)"
+w1_ok=1
+for row in GL:5 GGL:10 GGGL:15 HL:0; do
+    _SIM_NOW=1700130000; reset_all; _last_confirmed_slot=100000   # a restored baseline, restart at t0 (grace 0)
+    _selffence_votelag_baseline=1; _selffence_votelag_healthy=0   # load_state: staked, lagging 100 s at the save
+    _selffence_votelag_restore_pending=1; _selffence_restored_votelag_since=$(( _SIM_NOW - 100 ))
+    got=$(w1_run "${row%%:*}" '"abc"')
+    [[ "$got" == "${row##*:}" ]] || { w1_ok=0; bad "(H1-h7) restored lag 100 s + ${row%%:*}: fence at $got, want ${row##*:}"; }
+done
+[[ $w1_ok -eq 1 ]] && ok "(H1-h7) across a restore (persisted lag 100 s, grace 0): GL → 5, GGL → 10, GGGL → 15 — the garbage cycles' healthy vote readings leave the restored backdate to the first lagging read (= de21927 and f22d492; pre-fix 25 / 30 / 35: the first G consumed and dropped it); control HL → 0 (every tree)"
 
 # ── (H1-g) structural: MAIN LOOP dispatch + v0.6.8 baseline had nothing ───────────────────────
 echo ""; echo "─── (H1-g) shipped STAKED branch dispatches the fence; v0.6.8 had zero ───"

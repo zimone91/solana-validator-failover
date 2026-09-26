@@ -44,9 +44,13 @@ mono_now() {
 # lagging, and no CANONICAL answer so the no-answer clock keeps running) — never healthy, never the
 # no-answer early return that SELF_FENCE_NOANSWER_SECS=0 disables (R6, S1); load_state re-holds a
 # non-canonical lockout/cooldown IN FULL (fail toward held), counts a non-canonical SAVE_TS as stale,
-# restores a stall/silence/lag stamp as ANCIENT behind the first-read evidence and a slot as 0 with a
-# two-read backdate (R5, S2). (The 19-digit bound beyond the regex closes the 2^63..10^19-1 band, which
-# the regex alone admits and bash would wrap negative.)
+# restores a stall/silence/lag stamp as ANCIENT behind the first-read evidence and a slot as 0 with the
+# backdate pending past the reference read (R5, S2; fix round 4, W2) — see _state_get for the per-value
+# list; the PRIMARY's opt-in latency demote (MAX_VOTE_LATENCY > 0; its own caller class) reads a
+# non-canonical LOCAL answer in tier1_get_vote_latency as ERR (-1 — no demote count), and non-canonical
+# TIER2 fields in verify_latency_tiered as "Tier 2 unreachable — trusting local" (the local count
+# confirms the demote). (The 19-digit bound beyond the regex closes the 2^63..10^19-1 band, which the
+# regex alone admits and bash would wrap negative.)
 _canon_uint() {
     [[ "$1" =~ ^(0|[1-9][0-9]{0,18})$ ]] || return 1
     [[ ${#1} -lt 19 ]] && return 0
@@ -472,6 +476,33 @@ _selffence_noanswer_restore_pending=0
 _selffence_restored_noanswer_since=0
 _selffence_votelag_restore_pending=0
 _selffence_restored_votelag_since=0
+# v0.7 (Block 6.3 fix round 4, W2 — H4-RP2-HEALTHY-PAUSE): the unknown-slot restore's REFERENCE read and its
+# live-evidence floor. BYTE-IDENTICAL block in both daemons — SELFFENCE_RESTORE_CONFIRM_SECS is a constant
+# at this ONE derivation site (assigned after the env source: not an operator knob).
+# When the persisted baseline SLOT was non-canonical (load_state restores it as 0: a baseline existed, its
+# value is unknown), the first canonical answer after the restore is only the REFERENCE (stamped in
+# _selffence_restore_ref_ts); the stall backdate — or, over a YOUNG stall stamp, the anchor at the restore
+# instant — stays pending until a later answer shows the slot NOT past that reference with the reference at
+# least SELFFENCE_RESTORE_CONFIRM_SECS old (applied), or an answer past it (dropped); a non-canonical answer
+# applies it at once (the rp=1 rule). The constant must be:
+#   (1) ABOVE the longest hold a HEALTHY confirmed slot shows — round 3 decided at the very next read (3-5 s
+#       later, 1 s in turbo) and fenced a HEALTHY holder whose confirmed slot paused for one cycle. ASSUMED
+#       hold budget (not measured in this repo): 5 consecutive fully-skipped leader windows (4 slots each)
+#       + 2 slots of optimistic-confirmation jitter = 22 slots = 8.8 s at 2.5 slots/s, 5.9 s at the measured
+#       mainnet 3.7 slots/s (docs/SAFETY.md, Slot time). The decision compares two CHECK-START stamps, and
+#       the reference's own answer may land up to its curl -m 5 after its stamp, plus 1 s of mono_now
+#       truncation, so a floor F guarantees only F - 6 s between the two OBSERVATIONS: F >= 8.8 + 6 → 15 s;
+#   (2) BELOW SELF_FENCE_ISOLATION_SECS (30 by default — the BACKUP timing contract): a still-frozen holder
+#       with an unknown slot fences at reference + 15 s, earlier than the plain frozen clock's reference +
+#       30 s (e917c04's timing). The plain frozen clock keeps running from the reference meanwhile, so an
+#       ISOLATION set below 15 still fires first — this floor never delays a fence past it.
+# 15 s = 37 slots at 2.5 slots/s, 55 at 3.7; after the 6 s read-timing term it tolerates a healthy hold of
+# 9 s = 22 / 33 slots. RESIDUAL, named: a HEALTHY holder whose confirmed slot holds longer than that right
+# after such a restart is fenced (availability; a corrupted slot + a restart needed), and a still-frozen one
+# fences up to 15 s - one cycle later than round 3's read-2 decision (which fenced the paused healthy
+# holder too).
+_selffence_restore_ref_ts=0
+SELFFENCE_RESTORE_CONFIRM_SECS=15
 _persisted_role=""                        # role recorded in the last persisted save ("staked"/"unstaked"/"")
 # v0.6.9 (H1.3): wall-clock of the last SELF-FENCE demote (0 = none). Gates attempt_takeover for
 # SELF_FENCE_RETAKE_COOLDOWN seconds; persisted (a Restart=always monitor restart must not clear the
@@ -760,9 +791,12 @@ window_mostly_clear() {
 # non-canonical — a hand edit or corruption: "0777" is read by bash as OCTAL 511 (a lockout/cooldown
 # that silently expired while the log said it was restored), "0999" is an arithmetic error that discards
 # the rest of the enclosing startup command (on an armed holder: READY never sent), 20 digits wrap.
-# The caller picks the fail-toward direction for rc 2 (a lockout/cooldown re-holds IN FULL; a SAVE_TS
-# makes the whole save stale; a self-fence baseline value is not restored — per value, see load_state);
-# no caller ever does arithmetic on a raw persisted value.
+# The caller picks the fail-toward direction for rc 2, per value (see load_state): a lockout/cooldown
+# re-holds IN FULL; a SAVE_TS makes the whole save stale; a stall/silence/lag STAMP restores as ANCIENT
+# behind the first-read evidence (fix round 3, S2 — as does a same-boot stamp later than now, fix round 4,
+# W4); a SLOT restores as 0 with the stall backdate pending past the reference read (S2, W2); the vote-lag
+# baseline LATCH restores SET (W4); the hysteresis streak is not restored (0). No caller ever does
+# arithmetic on a raw persisted value.
 _state_get() {
     local _sg_v
     _sg_v=$(grep -E "^${1}=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
@@ -862,7 +896,8 @@ load_state() {
 
     # v0.6.9 (H3): promoted-holder self-fence baseline continuity across a monitor restart. Freshness-
     # gated (a save older than STATE_MAX_AGE_SECS is discarded — a stale baseline must not fire an
-    # instant false demote). Slot/latch VALUES restore verbatim; TIMESTAMPS restart — EXCEPT that a
+    # instant false demote). Canonical slot/latch VALUES restore verbatim (a non-canonical or future one:
+    # per value, below); TIMESTAMPS restart — EXCEPT that a
     # persisted-STAKED stall/silence/lag arms a pending backdate which check_self_fence_isolation
     # applies only on positive first-read evidence the condition is CONTINUOUS.
     local save_ts role now age
@@ -884,27 +919,41 @@ load_state() {
         return 0
     fi
     if [[ "$STANDBY_SELF_FENCE" == "true" ]]; then
-        local ps pa pn pv pb ph _sg_bad="" _sg_k _sg_ps=0
+        local ps pa pn pv pb ph _sg_bad="" _sg_k _sg_ps=0 _sg_pb=0 _sg_fut=""
         # v0.7 (Block 6.3 fix round 2, R5): a non-canonical baseline value never reaches arithmetic
         # (_state_get prints nothing for it) and is handled PER VALUE — the rest of this fresh save
         # restores as usual (discarding the whole snapshot for one bad value made the holder fence LATER
         # or NEVER where the pre-fix tree fenced: a non-canonical SF_NOANSWER_MONO over a silent LOCAL
-        # 30 s → never, SF_VOTELAG_HEALTHY over a frozen slot 0 → 30 s). A latch value
-        # (SF_VOTELAG_BASELINE / _HEALTHY) is not restored. The slot's key in a FRESH save proves a
-        # baseline existed, so a non-canonical slot restores as 0 and the no-answer gate stays armed.
+        # 30 s → never, SF_VOTELAG_HEALTHY over a frozen slot 0 → 30 s). A non-canonical hysteresis streak
+        # (SF_VOTELAG_HEALTHY) is not restored (0, the fence-ward count). The slot's key in a FRESH save
+        # proves a baseline existed, so a non-canonical slot restores as 0 and the no-answer gate stays armed.
         # v0.7 (Block 6.3 fix round 3, S2): a PRESENT non-canonical stall / silence / lag STAMP restores
         # as ANCIENT (1, the oldest mono stamp) — its backdate still applies only on H3's first-read
-        # evidence that the condition is continuous (frozen / silent / lagging), the exposure a
-        # canonical-but-old stamp already has, so a healthy first read drops it. Round 2 started its
-        # timer fresh: a holder still isolated after the restart fenced up to one window later than the
-        # pre-fix tree (MEASURED at the shipped STARTUP_GRACE 30: silent 30 → 60 s, lagging 30 → 50–51 s).
-        # With a non-canonical SLOT (restored as 0 — every live slot is past it) the stall backdate stays
-        # PENDING across the first two answers (pending 2, see check_self_fence_isolation): the second
-        # advanced past the first → healthy, dropped; it did not → the persisted stall is applied.
+        # evidence that the condition is continuous (frozen / silent / lagging), so a healthy first read
+        # drops it. EXPOSURE (fix round 4, H4-ANCIENT-BLIP): broader than a canonical-but-old stamp's — a
+        # holder healthy at save arms nothing with canonical stamps, but with a corrupted one a single
+        # first-read blip (one silent / non-canonical / lagging read; at STARTUP_GRACE=0 a 3-5 s pause)
+        # fences at once: availability, a corrupted stamp needed (de21927/f22d492 had the same for
+        # octal-valid stamps). Round 2 started such a timer fresh: a holder still isolated after the
+        # restart fenced up to one window later than the pre-fix tree (MEASURED at the shipped
+        # STARTUP_GRACE 30: silent 30 → 60 s, lagging 30 → 50–51 s).
+        # With a non-canonical SLOT (restored as 0 — every live slot is past it) the first canonical answer
+        # is only the REFERENCE and the stall backdate stays PENDING (pending 2, see
+        # check_self_fence_isolation) until an answer shows the slot not past it with the reference at least
+        # SELFFENCE_RESTORE_CONFIRM_SECS old (applied) or past it (dropped) — fix round 4, W2: round 3 decided
+        # at the second answer and fenced a healthy holder whose slot paused one cycle. W2 also covers a
+        # YOUNG stall stamp (< one window) over such a slot: the frozen clock is anchored at the restore
+        # instant, never earlier, gated by the same floor (it restarted at the first answer: +30 s against
+        # the canonical-slot holder at grace 30).
+        # v0.7 (Block 6.3 fix round 4, W4 — H4-CORRUPT-NEVER): a same-boot stamp LATER than now cannot be a
+        # mono stamp of this boot — corrupted, restored as ANCIENT like S2's (a future silence / lag clock
+        # read negative and never fenced); and the vote-lag baseline latch restores SET for any PRESENT
+        # value but 0 (save_state writes only 0 or 1 — anything else is corrupted; unset left N6 unarmed
+        # on a holder lagging across the restart). An ABSENT latch key stays unset (N6's fresh-start rule).
         for _sg_k in SF_LAST_CONFIRMED_SLOT SF_ADVANCE_MONO SF_NOANSWER_MONO SF_VOTELAG_MONO SF_VOTELAG_BASELINE SF_VOTELAG_HEALTHY; do
             _state_get "$_sg_k" >/dev/null; [[ $? -eq 2 ]] && _sg_bad="${_sg_bad:+$_sg_bad }$_sg_k"
         done
-        [[ -n "$_sg_bad" ]] && log_warn "State: self-fence baseline value(s) NON-CANONICAL in $STATE_FILE (${_sg_bad}) — never arithmetic on a raw persisted value: a stall/silence/lag stamp restores as ANCIENT (its backdate applies only if the first read after the restore still shows the condition), a slot restores as 0 (a baseline existed, its value is unknown — the stall backdate then waits for a second read), a vote-lag latch value is not restored"
+        [[ -n "$_sg_bad" ]] && log_warn "State: self-fence baseline value(s) NON-CANONICAL in $STATE_FILE (${_sg_bad}) — never arithmetic on a raw persisted value: a stall/silence/lag stamp restores as ANCIENT (its backdate applies only if the first read after the restore still shows the condition), a slot restores as 0 (a baseline existed, its value is unknown — the stall backdate then waits for live evidence after the first answer), the vote-lag baseline latch restores SET, the hysteresis streak is not restored"
         ps=$(_state_get SF_LAST_CONFIRMED_SLOT); _sg_ps=$?; [[ $_sg_ps -eq 2 ]] && ps=0
         pa=$(_state_get SF_ADVANCE_MONO);  [[ $? -eq 2 ]] && pa=1   # S2: non-canonical → ANCIENT (behind the first-read evidence)
         pn=$(_state_get SF_NOANSWER_MONO); [[ $? -eq 2 ]] && pn=1
@@ -914,21 +963,32 @@ load_state() {
         [[ -z "$pa" ]] && pa=""
         [[ -z "$pn" ]] && pn=0
         [[ -z "$pv" ]] && pv=0
-        pb=$(_state_get SF_VOTELAG_BASELINE);    ph=$(_state_get SF_VOTELAG_HEALTHY)
+        if [[ $_same_boot -eq 1 ]]; then   # W4: a same-boot stamp from the future → ANCIENT (as S2)
+            [[ -n "$pa" && $pa -gt $_mono_now ]] && { pa=1; _sg_fut="SF_ADVANCE_MONO"; }
+            [[ $pn -gt $_mono_now ]] && { pn=1; _sg_fut="${_sg_fut:+$_sg_fut }SF_NOANSWER_MONO"; }
+            [[ $pv -gt $_mono_now ]] && { pv=1; _sg_fut="${_sg_fut:+$_sg_fut }SF_VOTELAG_MONO"; }
+            [[ -n "$_sg_fut" ]] && log_warn "State: self-fence stamp(s) LATER than this boot's monotonic clock (${_mono_now}) in $STATE_FILE (${_sg_fut}) — a same-boot mono stamp cannot be in the future: corrupted, restored as ANCIENT (its backdate applies only if the first read after the restore still shows the condition)"
+        fi
+        pb=$(_state_get SF_VOTELAG_BASELINE); _sg_pb=$?
+        ph=$(_state_get SF_VOTELAG_HEALTHY)
         # v0.7 (Block 3): the persisted stall/silence/lag clocks are mono_now stamps — the backdate
         # pendings arm ONLY within the same boot ($_same_boot). Across a reboot the stamps are from a
         # dead clock: timers restart fresh (a fresh timer can only DELAY a demote, never invent one).
         if [[ -n "$ps" ]]; then
             _last_confirmed_slot="$ps"; _last_confirmed_advance_ts=$_mono_now   # slot verbatim, timer restarts
-            if [[ $_same_boot -eq 1 && "$role" == "staked" && -n "$pa" && $(( _mono_now - pa )) -ge $SELF_FENCE_ISOLATION_SECS ]]; then
-                _selffence_restore_pending=1; _selffence_restored_advance_ts="$pa"
-                [[ $_sg_ps -eq 2 ]] && _selffence_restore_pending=2   # S2: the slot is unknown — the first two answers decide
+            if [[ $_same_boot -eq 1 && "$role" == "staked" && -n "$pa" ]]; then
+                if [[ $(( _mono_now - pa )) -ge $SELF_FENCE_ISOLATION_SECS ]]; then
+                    _selffence_restore_pending=1; _selffence_restored_advance_ts="$pa"
+                    [[ $_sg_ps -eq 2 ]] && _selffence_restore_pending=2   # S2: the slot is unknown — the reference answer, then live evidence (W2), decide
+                elif [[ $_sg_ps -eq 2 ]]; then
+                    _selffence_restore_pending=2; _selffence_restored_advance_ts=$_mono_now   # W2: a YOUNG stall stamp over an unknown slot — the restore instant, never earlier, behind the same floor
+                fi
             fi
         fi
         if [[ $_same_boot -eq 1 && "$role" == "staked" && -n "$pn" && $pn -gt 0 ]]; then
             _selffence_noanswer_restore_pending=1; _selffence_restored_noanswer_since="$pn"
         fi
-        [[ "$pb" == "1" ]] && _selffence_votelag_baseline=1
+        if [[ $_sg_pb -eq 2 ]] || { [[ $_sg_pb -eq 0 ]] && [[ "$pb" != "0" ]]; }; then _selffence_votelag_baseline=1; fi   # W4: any PRESENT value but 0 → SET
         [[ -n "$ph" ]] && _selffence_votelag_healthy=$((10#$ph))
         if [[ $_same_boot -eq 1 && "$role" == "staked" && -n "$pv" && $pv -gt 0 ]]; then
             _selffence_votelag_restore_pending=1; _selffence_restored_votelag_since="$pv"
@@ -3289,6 +3349,11 @@ _proof_startup_check() {
     if [[ -z "$_proof_unpaired_why" ]]; then
         if _derive_proof_floors; then
             log_info "[proof-gate] armed spare PAIRED: token gen=${_proof_token_gen} (watchdog=${_proof_token_w}s, relinquish_bound=${_proof_token_b}s, fence=real) → elapsed_floor=${elapsed_floor}s, N_HEAD=${N_HEAD} slots (proof providers registered: ${_proof_provider_labels:-NONE}; the gate is not wired into any take path)"
+            # (6.3 fix round 4, W3) registered, but a symlinked token proves nothing — say why, loudly
+            local _psc_why
+            if [[ "${_elapsed_registered:-0}" == "1" ]] && _psc_why=$(_elapsed_tok_symlink_why 2>/dev/null); then
+                log_warn "[proof-gate] armed spare PAIRED, but watchdog-elapsed CANNOT prove: ${_psc_why}"
+            fi
             return 0
         fi
         # a VALID-shape fence=real token whose floor did NOT converge (the overflow/wrap backstop
@@ -3305,13 +3370,18 @@ _proof_startup_check() {
 # that classifies ok and NO watchdog-elapsed provider — the unpaired line above goes quiet while
 # silence-based take is still unavailable. The status surface says so, loudly, every interval
 # (a restart registers it; a token whose floor does not derive is named instead — restarting would
-# not register that one).
+# not register that one). (6.3 fix round 4, W3) A REGISTERED provider whose token is a symlink cannot
+# prove either — the same surface names that too, every interval.
 _proof_status_line() {
     _watchdog_active || return 0
     _proof_role_is_spare || return 0
     _proof_unpaired_scan
     if [[ -z "$_proof_unpaired_why" ]]; then
-        [[ "${_elapsed_registered:-0}" == "1" ]] && return 0
+        if [[ "${_elapsed_registered:-0}" == "1" ]]; then
+            local _psl_why
+            _psl_why=$(_elapsed_tok_symlink_why 2>/dev/null) && log_warn "[proof-gate] paired (token gen=${_proof_token_gen}), but watchdog-elapsed CANNOT prove: ${_psl_why}"
+            return 0
+        fi
         if _derive_proof_floors; then
             log_warn "[proof-gate] paired (token gen=${_proof_token_gen}), but watchdog-elapsed is NOT registered — restart the monitor to register (registration runs at startup only; proof providers registered now: ${_proof_provider_labels:-NONE})"
         else
@@ -4181,8 +4251,9 @@ _elapsed_incident_active() { [[ ${FIRST_DELINQUENT_TIME:-0} -gt 0 ]]; }
 # early-snapshot external provider), i.e. inside the "bank and view lagging together" residual below; a
 # live-and-current view carries a snapshot within its transfer time. DOCUMENTED RESIDUAL, not bounded by
 # ELAPSED_HEAD_GAP_MAX (that stamp is the ANSWER's arrival, not its snapshot): a provider that snapshots
-# at request and delivers 9 s later with free pets minted with the bank ~47 slots (~19 s) behind the live
-# chain (MEASURED, both trees — no regression). Bounding it would need the sampler to stamp BEFORE its
+# at request and delivers 9 s later with free pets mints with the bank 47 slots (~19 s) behind the live
+# chain = N_HEAD 25 + 22 at 2.5 slots/s (MEASURED, both trees — no regression; pinned as a DOCUMENTED
+# RESIDUAL, test_elapsed_provider (5l)). Bounding it would need the sampler to stamp BEFORE its
 # call and treat (head answer - payload request) as the gap, which fails toward blind on every slow tier;
 # deferred with the gate's wiring (6.4). No change to ELAPSED_HEAD_GAP_MAX here.
 # WHAT IT DOES NOT SEE, named: this bank and the view lagging or FROZEN TOGETHER —
@@ -4259,19 +4330,26 @@ _elapsed_reset() {
     return 0
 }
 
-# _elapsed_tok_ident — the STORED token's identity: "<inode> <size> <change time>" of the file the path
-# RESOLVES to (stat -L — a symlinked token is keyed on its TARGET, fix round 3, S3: without -L every
-# rewrite of the target was invisible; GNU/busybox stat -L -c, else BSD stat -L -f; an opaque string
-# compared for EQUALITY only — never as a time). A rewrite changes it even when the bytes come back
-# identical (the ceremony stores tmp+mv: a new inode or at least a new change time; an in-place edit: a
-# new change time), so a rot-and-restore that no step saw is still a new token (fix round 2, R4 — the
-# reporter runs inside the gate's $() and cannot record what it saw). rc 1 (nothing printed) when neither
-# form yields one line (a dangling link included) — the caller fails toward NOT proving. Not visible: a
-# rewrite back to identical bytes within one ctime granule (a kernel tick on ns-timestamp filesystems;
-# 1 s on ext4 with 128-byte inodes, ext3, HFS+) — the inode number does not help (ext4 reuses it across
-# a tmp+mv). Zero network; armed + registered paths only.
+# _elapsed_tok_ident — the STORED token's identity: "<inode> <size> <change time>" of the token FILE
+# (GNU/busybox stat -L -c, else BSD stat -L -f; an opaque string compared for EQUALITY only — never as a
+# time). A rewrite changes it even when the bytes come back identical (the ceremony stores tmp+mv: a new
+# inode or at least a new change time; an in-place edit: a new change time), so a rot-and-restore that no
+# step saw is still a new token (fix round 2, R4 — the reporter runs inside the gate's $() and cannot record
+# what it saw). A SYMLINK at the token path → rc 1 on every platform (fix round 4, W3 — P4-S3-REPOINT):
+# round 3 (S3) keyed the link's TARGET (stat -L), which made a link re-pointed away and back invisible at
+# any spacing, while the link's own identity misses every rewrite of the target — no single identity sees
+# both, so a symlinked token fails toward NOT proving, with the loud reason _elapsed_tok_symlink_why prints
+# (`failover arm` always stores a regular file: tmp + mv -f replaces a link). A dangling link and a link
+# loop are symlinks too: rc 1 here on every platform (round 3's comment claimed that for the dangling link,
+# which BSD stat -L reports as the link itself). Any other stat failure → rc 1 (nothing printed); the caller
+# fails toward NOT proving. A DIRECTORY at the path yields an identity — the token classification at the ONE
+# derivation site runs first everywhere and refuses it. Not visible: a rewrite back to identical bytes
+# within one ctime granule (a kernel tick on ns-timestamp filesystems; 1 s on ext4 with 128-byte inodes,
+# ext3, HFS+) — the inode number does not help (ext4 reuses it across a tmp+mv). Zero network; armed +
+# registered paths only.
 _elapsed_tok_ident() {
     local _eti_f="$PROOF_STATE_DIR/pairing-token" _eti_o
+    [[ -L "$_eti_f" ]] && return 1   # W3: a symlinked token never keys an adoption (see _elapsed_tok_symlink_why)
     if _eti_o=$(stat -L -c '%i %s %z' "$_eti_f" 2>/dev/null) && [[ -n "$_eti_o" && "$_eti_o" != *$'\n'* ]]; then
         printf '%s' "$_eti_o"; return 0
     fi
@@ -4279,6 +4357,15 @@ _elapsed_tok_ident() {
         printf '%s' "$_eti_o"; return 0
     fi
     return 1
+}
+
+# _elapsed_tok_symlink_why — prints the LOUD reason (rc 0) when the stored pairing token is a symlink, else
+# rc 1 (nothing printed). The ONE text the step, the reporter and the [proof-gate] posture/status lines
+# print (fix round 4, W3). Zero network.
+_elapsed_tok_symlink_why() {
+    [[ -L "$PROOF_STATE_DIR/pairing-token" ]] || return 1
+    printf 'the pairing token is a symlink — store it as a regular file, as `failover arm` does (%s: a link re-pointed away and back is invisible to any one file identity, so no silence counts under it)' "$PROOF_STATE_DIR/pairing-token"
+    return 0
 }
 
 # _elapsed_verdict_why <now> — "" while the minted verdict still stands, else the MEASURED reason it
@@ -4325,7 +4412,7 @@ _elapsed_verdict_why() {
     # are not enough: a same-gen re-pair with a LOWER floor, another host's token with the same bounds, a
     # rewrite back to the same bytes)
     if ! _evw_ident=$(_elapsed_tok_ident); then
-        printf 'the stored token file identity is unreadable (stat) — a rewrite since the mint cannot be excluded'
+        _elapsed_tok_symlink_why || printf 'the stored token file identity is unreadable (stat) — a rewrite since the mint cannot be excluded'
         return 0
     fi
     if [[ "${_proof_token_line} @ ${_evw_ident}" != "$_elapsed_mint_key" ]]; then
@@ -4385,7 +4472,7 @@ _elapsed_step() {
         # adoption and its silence restarts then. (The gate's reporter runs the same check inside $() and
         # cannot clear anything; the full key below makes whatever it saw count at the next step anyway.)
         case "$_es_why" in
-            "token no longer classifies ok"*|"the stored token"*|"the re-derived elapsed_floor"*) _elapsed_tok_key="" ;;
+            "token no longer classifies ok"*|"the stored token"*|"the pairing token is a symlink"*|"the re-derived elapsed_floor"*) _elapsed_tok_key="" ;;
         esac
         _elapsed_reset "withdrawn: ${_es_why}"
         return 0
@@ -4403,7 +4490,8 @@ _elapsed_step() {
     # step saw are all new adoptions — never count silence from before it
     if ! _es_ident=$(_elapsed_tok_ident); then
         _elapsed_tok_key=""
-        _elapsed_answer="cannot"; _elapsed_reason="the stored token file identity is unreadable (stat) — a rewrite since its adoption cannot be excluded, so no silence counts under it"
+        _elapsed_answer="cannot"
+        _elapsed_reason=$(_elapsed_tok_symlink_why) || _elapsed_reason="the stored token file identity is unreadable (stat) — a rewrite since its adoption cannot be excluded, so no silence counts under it"
         return 0
     fi
     _es_key="${_proof_token_line} @ ${_es_ident}"
@@ -5095,7 +5183,7 @@ _selffence_hard_stop() {
 # Re-arm the self-fence tracker (after any demote / identity change / startup). Same fields as the
 # primary, incl. the v0.6.9 (H3) pending-restore flags (a post-demote tenure must not inherit
 # pre-restart clocks).
-_selffence_reset() { _last_confirmed_slot=""; _last_confirmed_advance_ts=$(mono_now); _selffence_noanswer_since=0; _selffence_votelag_since=0; _selffence_votelag_baseline=""; _selffence_votelag_healthy=0; _selffence_restore_pending=0; _selffence_noanswer_restore_pending=0; _selffence_votelag_restore_pending=0; _collision_strikes=0; _last_collision_check=0; }   # v0.6.9 (B1/S-6): also clear the collision-detector flap streak so each staked tenure debounces fresh
+_selffence_reset() { _last_confirmed_slot=""; _last_confirmed_advance_ts=$(mono_now); _selffence_noanswer_since=0; _selffence_votelag_since=0; _selffence_votelag_baseline=""; _selffence_votelag_healthy=0; _selffence_restore_pending=0; _selffence_restore_ref_ts=0; _selffence_noanswer_restore_pending=0; _selffence_votelag_restore_pending=0; _collision_strikes=0; _last_collision_check=0; }   # v0.6.9 (B1/S-6): also clear the collision-detector flap streak so each staked tenure debounces fresh
 
 # v0.6.9 (H1.3): the ONE demote path for every standby self-fence signal. Order per N2: safety action
 # FIRST (give_back_identity — which itself pages GAVE BACK ✅ / FAILED / escalates via the hard stop),
@@ -5204,13 +5292,32 @@ check_self_fence_isolation() {
     # canonical answer is only the REFERENCE (it becomes the baseline below) and the backdate stays
     # pending for the next answer — advanced past the reference → healthy, dropped; not past it (or
     # garbage) → the persisted stall is continuous → applied.
+    # v0.7 (Block 6.3 fix round 4, W2 — H4-RP2-HEALTHY-PAUSE): "not past it" needs LIVE evidence — while
+    # the slot has not advanced past the reference and the reference is younger than
+    # SELFFENCE_RESTORE_CONFIRM_SECS (derived at its one site) the pending is KEPT; an advance past it drops
+    # the pending; a non-canonical answer applies it (the rp=1 rule); a silent read never reaches here.
+    # Round 3 decided at the next answer, 3-5 s after the reference, and fenced a HEALTHY holder whose
+    # confirmed slot paused one cycle (backdated to the persisted stall). The plain frozen clock keeps
+    # running from the reference meanwhile, so a still-frozen holder fences no later than reference +
+    # min(the floor, SELF_FENCE_ISOLATION_SECS). What is applied: the persisted stall stamp, or — over a
+    # YOUNG stall stamp (load_state) — the restore instant, never earlier.
+    local _sf_rp_ref="${_selffence_restore_ref_ts:-0}" _sf_rp_keep=0
+    if [[ ${_selffence_restore_pending:-0} -eq 1 && $_sf_rp_ref -gt 0 && $_sf_garbage -eq 0 && -n "$_last_confirmed_slot" ]]; then
+        [[ $slot -le $_last_confirmed_slot && $(( now - _sf_rp_ref )) -lt $SELFFENCE_RESTORE_CONFIRM_SECS ]] && _sf_rp_keep=1
+    fi
     if [[ ${_selffence_restore_pending:-0} -eq 2 && $_sf_garbage -eq 0 ]]; then
-        _selffence_restore_pending=1
+        _selffence_restore_pending=1; _selffence_restore_ref_ts=$now
+    elif [[ $_sf_rp_keep -eq 1 ]]; then
+        log_info "[self-fence] LOCAL confirmed slot not past the post-restart reference read yet (${slot} <= ${_last_confirmed_slot}; the reference is $(( now - _sf_rp_ref ))s old < ${SELFFENCE_RESTORE_CONFIRM_SECS}s) — the restored stall stays pending (W2)"
     elif [[ ${_selffence_restore_pending:-0} -ge 1 ]]; then
-        _selffence_restore_pending=0
+        _selffence_restore_pending=0; _selffence_restore_ref_ts=0
         if [[ -n "$_last_confirmed_slot" ]] && { [[ $_sf_garbage -eq 1 ]] || [[ $slot -le $_last_confirmed_slot ]]; }; then
             _last_confirmed_advance_ts=$_selffence_restored_advance_ts
-            log_warn "[self-fence] LOCAL confirmed slot still not past the persisted baseline (${slot:0:40} <= $_last_confirmed_slot) across the monitor restart — stall treated as continuous; advance clock backdated $(( now - _last_confirmed_advance_ts ))s (v0.6.9 H3)"
+            if [[ $_sf_rp_ref -gt 0 ]]; then
+                log_warn "[self-fence] LOCAL confirmed slot not past the post-restart reference read (${slot:0:40} <= $_last_confirmed_slot; the reference is $(( now - _sf_rp_ref ))s old, the persisted baseline slot was non-canonical) — stall treated as continuous; advance clock anchored $(( now - _last_confirmed_advance_ts ))s back (W2)"
+            else
+                log_warn "[self-fence] LOCAL confirmed slot still not past the persisted baseline (${slot:0:40} <= $_last_confirmed_slot) across the monitor restart — stall treated as continuous; advance clock backdated $(( now - _last_confirmed_advance_ts ))s (v0.6.9 H3)"
+            fi
         fi
     fi
 
@@ -5290,7 +5397,13 @@ check_self_fence_isolation() {
             if [[ $_sf_vgarb -eq 1 ]]; then vlag=$(( SELF_FENCE_VOTE_LAG_SLOTS + 1 )); _sf_vshow="a NON-CANONICAL lastVote"; else vlag=$(( cluster_max - own_lv )); [[ $vlag -lt 0 ]] && vlag=0; _sf_vshow="${vlag} slots"; fi
             # v0.6.9 (H3): restart continuity for N6 — still over threshold on the first read after a
             # restore (with the restored healthy baseline) → inherit the persisted sustain clock.
-            if [[ ${_selffence_votelag_restore_pending:-0} -eq 1 ]]; then
+            # v0.7 (Block 6.3 fix round 4, W1 — H4-R6-VOTELAG): a GARBAGE-SLOT cycle ADDS N6 evidence and
+            # never REMOVES it: its lagging (or garbage) vote reading consumes and applies the pending as
+            # ever; its HEALTHY vote reading leaves the pending to a canonical cycle and does not count
+            # toward the B2 reset below. (R6's fall-through let a node answering garbage on its slot reset
+            # the sustain timer and drop the restored backdate — fencing later than de21927/f22d492, without
+            # bound under an alternating pattern.)
+            if [[ ${_selffence_votelag_restore_pending:-0} -eq 1 ]] && { [[ $_sf_garbage -eq 0 ]] || [[ $vlag -gt $SELF_FENCE_VOTE_LAG_SLOTS ]]; }; then
                 _selffence_votelag_restore_pending=0
                 if [[ $vlag -gt $SELF_FENCE_VOTE_LAG_SLOTS && -n "$_selffence_votelag_baseline" ]]; then
                     _selffence_votelag_since=$_selffence_restored_votelag_since
@@ -5302,8 +5415,10 @@ check_self_fence_isolation() {
                 # SELF_FENCE_VOTE_LAG_RESET_CYCLES CONSECUTIVE healthy cycles (a flapping egress must
                 # not zero an accumulating timer with a single burst dip).
                 _selffence_votelag_baseline=1
-                [[ $_selffence_votelag_healthy -lt $SELF_FENCE_VOTE_LAG_RESET_CYCLES ]] && _selffence_votelag_healthy=$(( _selffence_votelag_healthy + 1 ))
-                [[ $_selffence_votelag_healthy -ge $SELF_FENCE_VOTE_LAG_RESET_CYCLES ]] && _selffence_votelag_since=0
+                if [[ $_sf_garbage -eq 0 ]]; then   # W1: a garbage-slot cycle's healthy vote reading is not a healthy CYCLE
+                    [[ $_selffence_votelag_healthy -lt $SELF_FENCE_VOTE_LAG_RESET_CYCLES ]] && _selffence_votelag_healthy=$(( _selffence_votelag_healthy + 1 ))
+                    [[ $_selffence_votelag_healthy -ge $SELF_FENCE_VOTE_LAG_RESET_CYCLES ]] && _selffence_votelag_since=0
+                fi
             elif [[ -n "$_selffence_votelag_baseline" ]]; then
                 # Over threshold AND a healthy baseline exists (not fresh-start/catch-up) → time it.
                 _selffence_votelag_healthy=0
