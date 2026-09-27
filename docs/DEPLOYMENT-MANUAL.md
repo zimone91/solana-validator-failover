@@ -687,9 +687,11 @@ timeline is identical to v0.6.6 (~70s).
 > its own node (`curl -m 2` + a watchdog pet) that withdraws the take if the holder shows voting there,
 > the read fails, or the spare's own head is not advancing — and the spare samples its own head through
 > the episode and before each external read of the take cycle: five to twelve bounded local reads per
-> take cycle, milliseconds on a healthy node; measured +14 to +15 s when every local read takes 1 s; as a
-> local read nears its 2 s bound the take slides later, and at 2 s or more the spare never takes (loudly:
-> the veto page, then the starvation page) (`docs/SAFETY.md`, *What it costs, measured*). The per-class
+> take cycle at the defaults (one more on an armed unit, up to four more with the opt-in witness fast
+> path), milliseconds on a healthy node; measured +9 to +15 s when every local read takes 1 s (+9 s at
+> the wizard's preset); as a local read nears its 2 s bound the take slides later, and at 2 s or more the
+> spare never takes (loudly: the veto page, then the starvation page) (`docs/SAFETY.md`, *What it costs,
+> measured*). The per-class
 > measurement of the whole ordering — holder fence vs the spare's earliest take, including the rows
 > where it does not hold — is in `docs/SAFETY.md`, *The cross-node invariant*.
 

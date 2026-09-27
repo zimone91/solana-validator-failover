@@ -26,7 +26,9 @@ Two independent mechanisms enforce this:
    the spare's own head is not advancing. That read is not the only added cost: the spare also samples
    its own head (`getSlot` at *confirmed*) — once per cycle of an open episode, before each external
    read of the take cycle, and at the head of the take — so a take cycle carries five to twelve bounded
-   LOCAL reads (each `curl -m 2` + a pet; five with prompt tiers and `GOSSIP_VERIFY` off, seven on), plus
+   LOCAL reads at the defaults (each `curl -m 2` + a pet; five with prompt tiers and `GOSSIP_VERIFY` off,
+   seven on, twelve with `TIER2` failing at the probe and the fence and taking the confirm's latency path;
+   an armed unit's watchdog-elapsed evaluation adds one, the opt-in witness fast path up to four), plus
    up to one loop cycle of re-phasing: milliseconds on a healthy loopback; measured against the 6.3 build,
    **+15 s** (`MAX_DELINQUENT_SLOTS`=0) / **+14 s** (=15; +9 s at the wizard preset) when every LOCAL read
    takes 1 s. **As a LOCAL read approaches its 2 s bound the take slides later, and at 2 s or more the
@@ -857,8 +859,9 @@ piece is **veto-only** — it can turn a take into a hold, never the reverse.
   the pinned vantage's own frozen answer carries the take. Against the first 6.3.1 build this changes two decisions: a
   `TIER3` answer showing an advance now aborts while the pair is pinned on `TIER2` (that build never read
   `TIER3` once `TIER2` answered: it took the MIRROR world — `TIER2` pinned and splicing or lagging, `TIER3`
-  honest — at t165, 25 s into the holder's voting; now never, `test_own_view` (7f)); and pinned on `TIER3`,
-  a recovered `TIER2` answering without an advance (frozen, backwards or stale) no longer aborts as a flip —
+  honest — at t165, 25 s into the holder's voting (at `MAX_DELINQUENT_SLOTS` 15 and 3.7 slots/s t105, 15 s);
+  now never, `test_own_view` (7f)); and pinned on `TIER3`, a recovered `TIER2` answering without an advance
+  (frozen, backwards or stale) no longer aborts as a flip —
   the pinned `TIER3`'s frozen answer carries the take (fix round 1's text called this "aborted as a vantage
   flip"; what the DL-1 worlds needed was the other case: `TIER2`'s answer showing the ADVANCE). **Its cost,
   named:** the re-check now waits for the slower tier — with one tier down (its reads time out at 10 s)

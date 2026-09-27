@@ -29,11 +29,13 @@ All notable changes are documented here. Versions follow the project's internal 
     the fresh re-check and before the `DRY_RUN` branch; a failed read is a veto (blind), a voting holder
     re-anchors, no cooldown. The act-then-alert rule now reads everywhere it is stated: **no network, no
     alerts; one bounded local veto read allowed.** The added cost is not one read: with the own-head
-    samples a take cycle makes five to twelve bounded LOCAL reads (each `curl -m 2` + a pet) —
-    milliseconds on a healthy loopback; measured against the 6.3 build +14 to +15 s when every LOCAL
-    read takes 1 s; as a LOCAL read nears its 2 s bound the take slides later, and at 2 s or more the
-    spare never takes, loudly (an earlier text of this entry gave "+26 to +30 s with every read at its
-    bound" — a harness idealization in which LOCAL reads answer at their bound).
+    samples a take cycle makes five to twelve bounded LOCAL reads at the defaults (each `curl -m 2` + a
+    pet; one more on an armed unit, up to four more with the opt-in witness fast path) —
+    milliseconds on a healthy loopback; measured against the 6.3 build +15 / +14 s at
+    `MAX_DELINQUENT_SLOTS` 0 / 15 and +9 s at the wizard preset when every LOCAL read takes 1 s; as a
+    LOCAL read nears its 2 s bound the take slides later, and at 2 s or more the spare never takes, loudly
+    (an earlier text of this entry gave "+26 to +30 s with every read at its bound" — a harness
+    idealization in which LOCAL reads answer at their bound).
   - **The spare's own head (D4):** own-head samples on the take path; at every take the head must have
     advanced within the last `OWN_HEAD_H` = 16 s; watchdog-elapsed's new `[elapsed-rate]` layer
     abstains when this head AVERAGED less than 2.5 slots/s over the silence span; `N_HEAD` =
@@ -84,7 +86,7 @@ All notable changes are documented here. Versions follow the project's internal 
     are read at once (the wall time is the slower tier's, not the sum; `PROOF_MAX_AGE`'s span stays 32 s),
     any answer showing an advance aborts, and only the pinned vantage's own frozen answer carries the take —
     which also closes the mirror world the sequential call had always taken (pinned on a splicing or
-    lagging `TIER2`, `TIER3` honest: taken 25 s into the voting); its cost, named: with one tier down every
+    lagging `TIER2`, `TIER3` honest: taken 15–25 s into the voting); its cost, named: with one tier down every
     take attempt waits out its 10 s timeout (+10 … +1 s). **An own-head sample before EVERY external read of
     the take cycle** (S2): the gossip advisory's two `-m 15` reads had one sample before the pair, so a slow
     `TIER2` advisory read left no baseline and a dead holder was never taken (starvation page at t374);

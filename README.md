@@ -49,7 +49,8 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
   take is the spare's **own** node (v0.7): one bounded read (`curl -m 2` + a watchdog pet) that
   withdraws the take if its own node shows the holder voting, cannot answer, or is not advancing; the
   spare also samples its own head through the episode and before each external read of the take cycle
-  — five to twelve bounded local reads per take cycle, milliseconds on a healthy node (measured: +14 to
+  — five to twelve bounded local reads per take cycle at the defaults (one more on an armed unit, up to
+  four more with the opt-in witness fast path), milliseconds on a healthy node (measured: +9 to
   +15 s when every local read takes 1 s; as a local read nears its 2 s bound the take slides later, and at
   2 s or more the spare never takes — loudly: the veto page, then the starvation page). How that ordering
   holds up per failure class, measured, including where it does not:
@@ -80,7 +81,7 @@ PRIMARY ──self-fence ~30s──►  STANDBY ──takes at 60s──►  BAC
 holds staked, steps down       takes staked              (120s, only if STANDBY is also down)
 ```
 
-A spare's take also waits for its own-view reads (milliseconds on a healthy node; measured +14 to +15 s
+A spare's take also waits for its own-view reads (milliseconds on a healthy node; measured +9 to +15 s
 when every local read takes 1 s; a spare whose local reads take 2 s or more never takes, and pages) after
 the delays shown.
 Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
