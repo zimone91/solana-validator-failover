@@ -255,9 +255,16 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
     tower rebuilds from the bank.
 - **Delinquency threshold = 128 slots** (`DELINQUENT_VALIDATOR_SLOT_DISTANCE`; `getHealth` uses the
   same 128). A vote account is `current` iff `lastVote > tip − 128`, else `delinquent`. Reason in
-  **slots, not seconds** — mainnet slot time varies and `lastVote` (read at finalized by default)
-  lags and advances in bursts; the daemon samples liveness at `processed` and uses a slot-delta
-  rule, never a wall-clock conversion.
+  **slots, not seconds** — mainnet slot time varies and `lastVote` (the detection reads use
+  `finalized`, spelled out in every request since v0.7 Block 6.3.1 — agave's default) lags and
+  advances in bursts; the daemon samples liveness at `processed` and uses a slot-delta rule, never a
+  wall-clock conversion. At the take, the spare re-reads its **own** node at `confirmed` (the own-view
+  veto, v0.7): the slow reliable view triggers, the fast one vetoes.
+- **`LOCAL_HEALTH_MAX_BEHIND` (STANDBY, Tier-1) — the real threshold is 128.** agave's `getHealth`
+  reports "behind" only beyond its `--health-check-slot-distance` (128 by default), so the daemon uses
+  `min(LOCAL_HEALTH_MAX_BEHIND, 128)` since v0.7 (Block 6.3.1): a larger value is **clamped** at start
+  with a loud WARN (above 128 it would admit a spare that far behind as ready to take over); a smaller
+  value behaves as 128 at agave's default distance. The default is 128.
 
 ### Compatibility & tuning notes
 
@@ -273,21 +280,16 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   delinquent before the cluster marks the node delinquent. It only moves PRIMARY toward
   *unstaked* (the safe direction) and STANDBY still requires external confirmation + the authoritative vote-liveness fence (gossip advisory),
   so it is safe to opt into; left opt-in to avoid false positives on a busy node.
-  - **Reference-first read bias (`MAX_VOTE_LATENCY` PRIMARY path, measured, unchanged):** on this
-    opt-in path `tier1_get_vote_latency` reads its `getSlot` reference **before** the
-    `getVoteAccounts` payload, so a stall or pet between the two makes the holder look *more*
-    current. Whenever the threshold crossing falls inside that snapshot gap (up to 27 s: both reads
-    at their `curl -m 10` bound and a 7 s pet between them), the latency demote comes up to **one
-    full STAKED loop cycle** later than the reverse order — `DELINQUENCY_RETRIES` consecutive
-    over-limit reads are needed, and the bias hides one. That is a cycle, not a fixed number: 37 s
-    measured in a latency-only cycle at `CHECK_INTERVAL` 3 and 64 s in one at `CHECK_INTERVAL` 30; a full
-    default STAKED cycle with every per-cycle read and pet is ~103 s (more with the own-vote-lag read or
-    the armed sleep's chunk pets). A still-voting holder
-    lagging within (slot rate × that gap — up to 67 slots at 2.5 slots/s, 100 at 3.7) of the limit
-    never demotes on this path. It is an **availability** cost only (a lagging holder is still live),
-    and it does not touch the self-fence relinquish that the cross-node margin `B` bounds (the
-    self-fence's own-vote-lag check reads a single same-payload snapshot, no cross-read skew). Off by
-    default; stated, not changed.
+  - **Payload-first read order (`MAX_VOTE_LATENCY` PRIMARY path — fixed in v0.7 Block 6.3.1):** on
+    this opt-in path `tier1_get_vote_latency` reads its `getVoteAccounts` payload **first**, then its
+    `getSlot` reference, so a stall or pet between the two (up to 27 s: both reads at their
+    `curl -m 10` bound and a 7 s pet) can only make the holder look *less* current — the demote comes
+    sooner, never later. (Until 6.3 the reference came first and the bias could delay the demote by a
+    full STAKED loop cycle; the measured numbers are in `docs/SAFETY.md`.) The price: a live holder
+    whose two reads straddle a long stall reads over-limit on that cycle — a demote still needs
+    `DELINQUENCY_RETRIES` consecutive over-limit reads and Tier-2's own verdict. This path is **not**
+    part of the cross-node invariant: it may fire after a spare's take; the margin `B` bounds the
+    self-fence only (whose own-vote-lag check reads a single same-payload snapshot). Off by default.
 - **Recovery mode (`RECOVERY_MODE`):** `manual` is the **default and recommended** path —
   operator-driven switch-back (see Manual switch-back). `rpc` is an **opt-in** automatic path:
   in v0.6.3 it gets **vote-liveness parity** — PRIMARY re-takes the staked identity only when the
@@ -667,6 +669,12 @@ timeline is identical to v0.6.6 (~70s).
 ---
 
 ## Expected timelines
+
+> **v0.7 (Block 6.3.1):** every take below ends with the spare's own-view veto — one bounded read of
+> its own node (up to 2 s plus a watchdog pet, added to each take) that withdraws the take if the
+> holder shows voting there, the read fails, or the spare's own head is not advancing. The per-class
+> measurement of the whole ordering — holder fence vs the spare's earliest take, including the rows
+> where it does not hold — is in `docs/SAFETY.md`, *The cross-node invariant*.
 
 > **Read the cross-node invariant first (v0.6.6 N1).** The spare's `TAKEOVER_DELAY` must be **≥
 > `EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS` (= 60 by default)** so the PRIMARY

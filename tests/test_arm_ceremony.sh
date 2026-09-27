@@ -70,6 +70,10 @@
 #        failure / verify disagreement → REFUSE[INSTALL-legacy] + manual commands, no enable,
 #        no token; absent → zero legacy stop/disable events (both names still PROBED);
 #        the unit FILE stays on disk (operator cleanup, said aloud)
+#   (16) P0 state directory (Block 6.3.1 D5 — the daemon's R-SYM rule mirrored): a symlinked
+#        ARM_STATE_DIR, a symlinked ancestor, every non-resolved spelling (trailing '/', '//', '/./',
+#        '/../', relative) and a FILE at the path → REFUSE[STATE-dir-*] before any write or install;
+#        a missing directory is created and passes; placement; arm ↔ daemon agreement on 7 spellings
 #   (13) reuse parity: _validator_pid + _detect_validator_unit BYTE-IDENTICAL arm ↔ fence
 #   (14) bash -n + shellcheck (if installed)
 #   (B)  boundary grep-proof: canonical /etc + /run/systemd paths untouched by the whole run;
@@ -79,7 +83,8 @@
 #   (M)  mutation controls (each refuse-gate neutered → its case would go RED): M1 patsub, M2
 #        socat, M3 identity, M4 probe-marker, M5 verify, M6 pre-probe stale clean (panel M-A),
 #        M7 capability, M8 unverifiable-identity, M9 sibling, M10 render-verify tripwire,
-#        M11 legacy-retire (neutered → the dual-monitor arm completes, observed).
+#        M11 legacy-retire (neutered → the dual-monitor arm completes, observed), M12 P0
+#        state-dir symlink (neutered → the gen counter lands through the link, observed).
 #        Survivors named at the end.
 
 set +e
@@ -220,6 +225,10 @@ done
 
 # ── scenario plumbing ───────────────────────────────────────────────────────────────────────────
 MOCK_PARENT=$(mktemp -d "${TMPDIR:-/tmp}/arm-mocks.XXXXXX")
+# v0.7 (Block 6.3.1 D5): the arm now REFUSES a state directory that is not its own resolved path
+# (P0, the daemon's R-SYM rule mirrored) — so every mock root is spelled RESOLVED: macOS's TMPDIR sits
+# under the /var -> /private/var symlink and ends in '/' (a '//' in the joined path)
+MOCK_PARENT=$(CDPATH='' cd -P -- "$MOCK_PARENT" && pwd -P)
 # a v0.7-SHAPED daemon fixture: patsub guard + the WATCHDOG CAPABILITY markers P1 requires
 # (Block 5.3 fix round — the panel armed a v0.6.10 daemon: guard present, ZERO petting lines;
 # P1 now requires _watchdog_active() + ≥1 READY=1 emission + ≥10 _watchdog_pet sites, all
@@ -898,11 +907,22 @@ else
     bad "(11c) token line=$t_line ARMED line=$a_line"
 fi
 T11_TOKEN="$tok"
+# (11d) the gen write fails → the arm REFUSES to complete. Root-proof sabotage of exactly ONE move: an
+# `mv` wrapper (fronting the real one on this run's PATH) fails the move onto the gen counter and runs
+# every other mv for real. (Until Block 6.3.1 the sabotage was a FILE at ARM_STATE_DIR; P0 now refuses
+# that before anything is installed — (16e) — so the TOKEN-persist write branch gets its own sabotage.)
+STUB_MVFAIL="$STUB_PARENT/mvfail"; mkdir -p "$STUB_MVFAIL"; cp "$STUB_DIR"/* "$STUB_MVFAIL/"
+cat > "$STUB_MVFAIL/mv" <<STUB
+#!/bin/sh
+for a in "\$@"; do last="\$a"; done
+case "\$last" in */arm-generation) echo "mv-sabotaged \$*" >> "\$EVENTS"; exit 1 ;; esac
+exec "$TOOLDIR/mv" "\$@"
+STUB
+chmod +x "$STUB_MVFAIL/mv"
 new_mock
-rm -rf "$MOCK_DIR/state"; : > "$MOCK_DIR/state"      # ARM_STATE_DIR is a FILE → gen write must fail (root-proof sabotage)
-run_arm
-if [[ "$RC" == "1" ]] && grep -q 'REFUSE\[TOKEN-persist\]' "$MOCK_DIR/out" && [[ -z "$(token_line)" ]] && ! grep -q 'ceremony complete' "$MOCK_DIR/out"; then
-    ok "(11d) token cannot persist → arm REFUSES to complete (exit 1, no token, no ARMED line; re-pair is ceremony)"
+ARM_PATH="$STUB_MVFAIL" run_arm
+if [[ "$RC" == "1" ]] && grep -q 'REFUSE\[TOKEN-persist\]' "$MOCK_DIR/out" && grep -q 'could not persist the bumped config-generation counter' "$MOCK_DIR/out" && grep -q '^mv-sabotaged ' "$EVENTS" && [[ -z "$(token_line)" ]] && ! grep -q 'ceremony complete' "$MOCK_DIR/out"; then
+    ok "(11d) token cannot persist (the gen move fails) → arm REFUSES to complete (exit 1, no token, no ARMED line; re-pair is ceremony)"
 else
     bad "(11d) rc=$RC token=$(token_line) out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
 fi
@@ -1017,6 +1037,110 @@ if grep -q '^systemctl is-active solana-failover.service$' "$EVENTS" && grep -q 
     ok "(15h) …and BOTH wizard unit names were probed on that arm (detection is N-is-all over the derived set, every run)"
 else
     bad "(15h) probes: $(grep 'is-active' "$EVENTS" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# ── (16) P0: the state directory must be its own resolved path (Block 6.3.1 D5) ──────────────────
+# The spare daemon's R-SYM rule (6.3 fix round 5) mirrored at the arm: a pairing token whose directory
+# is reached through a symlink never proves (watchdog-elapsed keys the token FILE's identity; a
+# directory re-pointed away and back leaves it untouched). The arm refuses to write (spare:
+# pairing-token; holder: arm-generation) into a state directory that does not canonicalize to itself,
+# BEFORE anything is written or installed. Pre-fix red (the 6.3 build): every case below ARMED —
+# the symlinked directory got the gen counter (the token, on a spare) written THROUGH the link.
+echo ""; echo "─── (16) P0: symlinked / non-canonical / non-directory ARM_STATE_DIR → REFUSE before any write or install ───"
+p0_refused() {   # $1 = gate id; the refusal happened before ANY install step and printed no token
+    [[ "$RC" == "1" ]] && grep -q "REFUSE\[$1\]" "$MOCK_DIR/out" && [[ -z "$(token_line)" ]] \
+        && ! grep -q '^systemctl daemon-reload' "$EVENTS" && [[ -z "$(ls "$MOCK_DIR/etc-systemd" 2>/dev/null)" ]] \
+        && ! grep -q 'precondition 1 OK' "$MOCK_DIR/out"
+}
+# (16a) the state directory itself is a symlink to a real directory
+new_mock
+mkdir -p "$MOCK_DIR/real-state"; rm -rf "$MOCK_DIR/state"; ln -s "$MOCK_DIR/real-state" "$MOCK_DIR/state"
+run_arm
+if p0_refused STATE-dir-symlink && grep -q "resolves to $MOCK_DIR/real-state" "$MOCK_DIR/out" && grep -q "FIX: point ARM_STATE_DIR at the resolved path — ARM_STATE_DIR=$MOCK_DIR/real-state" "$MOCK_DIR/out" \
+      && [[ ! -e "$MOCK_DIR/real-state/arm-generation" ]]; then
+    ok "(16a) ARM_STATE_DIR is a symlink → REFUSE[STATE-dir-symlink] naming the resolved path and the exact fix (ARM_STATE_DIR=<resolved> + the spare's PROOF_STATE_DIR), exit 1 before ANY install step; nothing written through the link"
+else
+    bad "(16a) rc=$RC gen=$(ls "$MOCK_DIR/real-state" 2>/dev/null | tr '\n' ' ') out: $(grep -E 'REFUSE|FIX' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-400)"
+fi
+# (16b) a symlinked ANCESTOR (the directory itself is real)
+new_mock
+mkdir -p "$MOCK_DIR/real-anc/state"; ln -s "$MOCK_DIR/real-anc" "$MOCK_DIR/anc"
+run_arm ARM_STATE_DIR="$MOCK_DIR/anc/state"
+if p0_refused STATE-dir-symlink && grep -q "resolves to $MOCK_DIR/real-anc/state" "$MOCK_DIR/out"; then
+    ok "(16b) a symlinked ANCESTOR (ARM_STATE_DIR=…/anc/state, anc → real-anc) → REFUSE[STATE-dir-symlink] — the whole path must resolve to itself, as in the daemon"
+else
+    bad "(16b) rc=$RC out: $(grep -E 'REFUSE|precondition 0' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-300)"
+fi
+# (16c) spellings that are not the resolved path — each refused (the daemon's list); a LEADING '//'
+# is kept by pwd -P as its own root on Linux (and dropped on macOS) — asserted only as "agrees with
+# the daemon" in (16g)
+sp_ct=0; sp_red=0; sp_miss=""
+for sp in "$MOCK_DIR/state/" "$MOCK_DIR//state" "$MOCK_DIR/./state" "$MOCK_DIR/state/../state"; do
+    sp_ct=$((sp_ct + 1)); new_mock
+    run_arm ARM_STATE_DIR="$sp"
+    if p0_refused STATE-dir-symlink; then sp_red=$((sp_red + 1)); else sp_miss="$sp_miss [$sp rc=$RC]"; fi
+done
+new_mock
+( cd "$MOCK_DIR" && env -i PATH="$STUB_DIR:$TOOLDIR" EVENTS="$EVENTS" MOCK_DIR="$MOCK_DIR" ARM_SYSTEMD_DIR="$MOCK_DIR/etc-systemd" ARM_RUNTIME_DIR="$MOCK_DIR/run-systemd" ARM_INSTALL_DIR="$MOCK_DIR/opt" FENCE_MARKER_DIR="$MOCK_DIR/markers" ARM_STATE_DIR="state" "$BASH_BIN" "$ARM" > "$MOCK_DIR/out" 2>&1 ); RC=$?
+sp_ct=$((sp_ct + 1)); if p0_refused STATE-dir-symlink; then sp_red=$((sp_red + 1)); else sp_miss="$sp_miss [relative rc=$RC]"; fi
+if [[ "$sp_red" == "$sp_ct" ]]; then
+    ok "(16c) every non-resolved spelling REFUSED ($sp_ct/$sp_ct: trailing '/', internal '//', '/./', '/../', a relative path) — the daemon's exact rule, before any install"
+else
+    bad "(16c) $((sp_ct - sp_red))/$sp_ct spellings ARMED:$sp_miss"
+fi
+# (16d) a missing directory under a resolved parent is CREATED, then passes (the arm's mkdir -p, as before)
+new_mock
+rm -rf "$MOCK_DIR/state"
+run_arm
+if [[ "$RC" == "0" && -d "$MOCK_DIR/state" && -f "$MOCK_DIR/state/arm-generation" ]] && grep -q "precondition 0 OK: the state directory $MOCK_DIR/state is its own resolved path" "$MOCK_DIR/out" && [[ -n "$(token_line)" ]]; then
+    ok "(16d) a MISSING state directory under a resolved parent → created, P0 OK line, arm completes with the token (no availability cost for the fresh-host case)"
+else
+    bad "(16d) rc=$RC out: $(tail -2 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+# (16e) a FILE at ARM_STATE_DIR → REFUSE[STATE-dir-missing] before anything is installed (it used to
+# install the units and refuse only at the token — (11d)'s old sabotage)
+new_mock
+rm -rf "$MOCK_DIR/state"; : > "$MOCK_DIR/state"
+run_arm
+if p0_refused STATE-dir-missing && grep -q "remove whatever non-directory sits at that path BY HAND" "$MOCK_DIR/out"; then
+    ok "(16e) a FILE at ARM_STATE_DIR → REFUSE[STATE-dir-missing] with the by-hand fix, BEFORE any unit is rendered (was: units installed, then REFUSE[TOKEN-persist])"
+else
+    bad "(16e) rc=$RC out: $(grep -E 'REFUSE|FIX' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-300)"
+fi
+# (16f) ORDER: P0 runs after the role/env detection (whose sourced env cannot re-point the roots) and
+# before P1 and the first write into the directory (P3's flock probe)
+p0_ln=$(grep -n '^[[:space:]]*_pre_state_dir_check[[:space:]]*#' "$ARM" | cut -d: -f1)
+role_ln=$(grep -n '^[[:space:]]*_arm_detect_role_env$' "$ARM" | cut -d: -f1)
+p1_ln=$(grep -n '^[[:space:]]*_pre_v07_check$' "$ARM" | cut -d: -f1)
+p3_ln=$(grep -n '^[[:space:]]*_pre_flock_check$' "$ARM" | cut -d: -f1)
+if [[ -n "$p0_ln" && -n "$role_ln" && -n "$p1_ln" && -n "$p3_ln" && $p0_ln -eq $((role_ln + 1)) && $p0_ln -lt $p1_ln && $p0_ln -lt $p3_ln ]]; then
+    ok "(16f) main(): _pre_state_dir_check runs right after the role/env detection (l$role_ln → l$p0_ln), before P1 (l$p1_ln) and P3's first write (l$p3_ln)"
+else
+    bad "(16f) placement: role=$role_ln p0=$p0_ln p1=$p1_ln p3=$p3_ln"
+fi
+# (16g) MIRRORED, not re-invented: the arm's canonicalization is the daemon's, character for character
+# (modulo the variable), and on every spelling above the daemon's own reason-printer agrees
+arm_can=$(grep -o "CDPATH='' cd -P -- \"\$ARM_STATE_DIR\" 2>/dev/null && pwd -P" "$ARM" | head -1)
+dmn_can=$(grep -o "CDPATH='' cd -P -- \"\$PROOF_STATE_DIR\" 2>/dev/null && pwd -P" "$HARNESS_DIR/solana-standby-failover.sh" | head -1)
+why_def=$(awk '/^_elapsed_tok_symlink_why\(\) \{/,/^\}/' "$HARNESS_DIR/solana-standby-failover.sh")
+agree=1; disagree=""
+if [[ -n "$arm_can" && -n "$dmn_can" && "${arm_can//ARM_STATE_DIR/X}" == "${dmn_can//PROOF_STATE_DIR/X}" && -n "$why_def" ]]; then
+    new_mock
+    mkdir -p "$MOCK_DIR/real-state"; ln -s "$MOCK_DIR/real-state" "$MOCK_DIR/lnk"
+    for sp in "$MOCK_DIR/state" "$MOCK_DIR/lnk" "$MOCK_DIR/state/" "$MOCK_DIR//state" "$MOCK_DIR/./state" "$MOCK_DIR/state/../state" "//$MOCK_DIR/state"; do
+        d_says=$( eval "$why_def"; PROOF_STATE_DIR="$sp"; if _elapsed_tok_symlink_why >/dev/null; then echo refuse; else echo ok; fi )
+        run_arm ARM_STATE_DIR="$sp"
+        if grep -q 'REFUSE\[STATE-dir-' "$MOCK_DIR/out"; then a_says=refuse; else a_says=ok; fi
+        [[ "$a_says" == "$d_says" ]] || { agree=0; disagree="$disagree [$sp arm=$a_says daemon=$d_says]"; }
+        new_mock; mkdir -p "$MOCK_DIR/real-state"; ln -s "$MOCK_DIR/real-state" "$MOCK_DIR/lnk"
+    done
+else
+    agree=0; disagree="the canonicalization lines differ or the daemon's reason-printer was not found (arm='$arm_can' daemon='$dmn_can')"
+fi
+if [[ $agree -eq 1 ]]; then
+    ok "(16g) the arm's test IS the daemon's R-SYM test (same cd -P/pwd -P line) and they AGREE on all 7 spellings (resolved, symlink, trailing '/', '//', '/./', '/../', leading '//')"
+else
+    bad "(16g) arm and daemon disagree:$disagree"
 fi
 
 # ── (13) reuse parity: the unit-discovery helpers are BYTE-IDENTICAL arm ↔ fence ────────────────
@@ -1257,6 +1381,18 @@ if [[ -f "$ARM" ]]; then
             ok "(M11) retire step neutered → the dual-monitor arm completes (token printed, new monitor enabled, legacy STILL active+enabled): case (15) observes a load-bearing step"
         else
             bad "(M11) control vacuous: rc=$RC token=$(token_line) legacy-active=$([[ -f "$MOCK_DIR/active.solana-failover.service" ]] && echo yes || echo no)"
+        fi
+    fi
+    # M12 (Block 6.3.1 D5): the P0 symlinked-state-directory refusal — neutered, a symlinked
+    # ARM_STATE_DIR ARMS and the gen counter lands THROUGH the link (the pre-6.3.1 behavior)
+    if mutate "$ARM" 's/^\( *\)_arm_refuse "STATE-dir-symlink"/\1: "STATE-dir-symlink"/' "$MUT"; then
+        new_mock
+        mkdir -p "$MOCK_DIR/real-state"; rm -rf "$MOCK_DIR/state"; ln -s "$MOCK_DIR/real-state" "$MOCK_DIR/state"
+        ARM_OVERRIDE="$MUT" run_arm
+        if ! grep -q 'REFUSE\[STATE-dir-symlink\]' "$MOCK_DIR/out" && [[ -n "$(token_line)" && -f "$MOCK_DIR/real-state/arm-generation" ]]; then
+            ok "(M12) P0 symlink refusal neutered → a symlinked state directory ARMS and the gen counter is written THROUGH the link (case 16a observes a load-bearing gate)"
+        else
+            bad "(M12) control vacuous: rc=$RC out: $(tail -2 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
         fi
     fi
     echo "  survivors (named, per HARNESS.md discipline): P3 flock and the P4 page-only/frankendancer/"

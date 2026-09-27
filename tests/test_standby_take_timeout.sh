@@ -53,6 +53,12 @@ scenario() {
     # reachable. No assertion weakened — T-b still requires lfv=9000 (the frozen re-check must not
     # re-base the pin).
     get_staked_liveness_sample(){ echo "9000 99999"; }
+    # v0.7 (Block 6.3.1): take_staked_identity now runs the own-view veto (ONE bounded LOCAL batch read)
+    # right after the fresh re-check. The veto is test_own_view's subject; this suite drives the take's
+    # set-identity mechanics BEHIND it, so the veto is shadowed to "no veto" (return 0) — labeled, not
+    # stubbed at the curl level. The veto is VETO-ONLY: the shadow can only let MORE takes through
+    # here, never fewer, so no assertion below is weakened by it.
+    _own_view_veto(){ return 0; }
     _RC_SETID="$rc_setid"; _RC_ADD="$rc_add"; _RC_REMOVE="$rc_remove"; _APPLIED="$applied"
     timeout(){
         case "$*" in

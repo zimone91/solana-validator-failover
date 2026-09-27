@@ -8,6 +8,10 @@
 #
 # Structure (TASK-block53 / addendum §2.1-rev2.1, §2.3, §2.6):
 #   preconditions → probe → install → verify → token
+#   0. state directory (Block 6.3.1 D5): ARM_STATE_DIR — where the spare stores the pairing token
+#      and the holder its config-generation counter — must be its own resolved path (the spare
+#      daemon's R-SYM rule mirrored: a token whose directory is reached through a symlink never
+#      proves); REFUSE[STATE-dir-*] before anything is written or installed
 #   1. self v0.7 check (patsub guard in the installed daemons — the rev3.2 release condition,
 #      self-enforced: the ceremony IS the upgrade-then-arm checkpoint)
 #   2. socat present (§2.6: the SOLE armed transport in v0.7 — refuse, never fall back)
@@ -151,6 +155,34 @@ _arm_detect_role_env() {
     # ambiguity fails toward inert, announced in precondition 5.
     if [[ "${DRY_RUN:-}" == "false" ]]; then ARM_INTENT="real"; else ARM_INTENT="page-only"; fi
     _arm_log "role: $ARM_ROLE (env: $ARM_ENV_FILE)"
+}
+
+# ── precondition 0: the state directory is its own resolved path (Block 6.3.1 D5) ───────────────
+# The spare daemon's R-SYM rule (6.3 fix round 5), MIRRORED at the arm: a pairing token whose
+# directory is reached through a symlink never proves on the spare — watchdog-elapsed keys the token
+# file's identity, and a DIRECTORY re-pointed away and back leaves that file untouched, so the daemon
+# refuses to count any silence under it (_elapsed_tok_ident / _elapsed_tok_symlink_why). The arm
+# therefore REFUSES to write into (spare: pairing-token; holder: arm-generation) a state directory
+# that does not canonicalize to itself — the daemon's exact test: `cd -P` + `pwd -P` of ARM_STATE_DIR
+# must equal ARM_STATE_DIR as configured (a symlink anywhere on the path, or any spelling that is not
+# the resolved path: a trailing '/', an internal '//', '.', '..', a relative path; a LEADING '//' is
+# kept by pwd -P as its own root and passes, as in the daemon). A missing directory is created first
+# (mkdir -p — what P3/P5/the token already did) and then checked, so a symlinked ANCESTOR is refused
+# too; a directory that cannot be created or entered (e.g. a FILE at the path) is refused here, before
+# anything is installed, instead of at the token after the units are in place. Runs before P3 (the
+# first write into the directory). NOT closed (named in docs/SAFETY.md's threat model): a local root
+# that RENAME-swaps the directory's contents away and back between two daemon steps.
+_pre_state_dir_check() {
+    local _sd_p
+    mkdir -p "$ARM_STATE_DIR" 2>/dev/null
+    _sd_p=$(CDPATH='' cd -P -- "$ARM_STATE_DIR" 2>/dev/null && pwd -P)
+    if [[ -z "$_sd_p" ]]; then
+        _arm_refuse "STATE-dir-missing" "ARM_STATE_DIR=$ARM_STATE_DIR cannot be created or entered as a directory — the pairing token (spare) and the config-generation counter (holder) are stored there" "make $ARM_STATE_DIR a real, writable directory (remove whatever non-directory sits at that path BY HAND, then: mkdir -p $ARM_STATE_DIR), then re-run 'failover arm'"
+    fi
+    if [[ "$_sd_p" != "$ARM_STATE_DIR" ]]; then
+        _arm_refuse "STATE-dir-symlink" "ARM_STATE_DIR=$ARM_STATE_DIR is not its own resolved path (it resolves to $_sd_p: a symlink on the path, or a spelling that is not the resolved path — a trailing '/', '//', '.', '..', a relative path) — a pairing token stored through it NEVER proves on the spare (the daemon's R-SYM rule: a directory re-pointed away and back is invisible to the token file's identity, so watchdog-elapsed counts no silence under it)" "point ARM_STATE_DIR at the resolved path — ARM_STATE_DIR=$_sd_p — and set the spare daemon's PROOF_STATE_DIR to the same value (or replace the symlink with a real directory at $ARM_STATE_DIR), then re-run 'failover arm'"
+    fi
+    _arm_log "precondition 0 OK: the state directory $ARM_STATE_DIR is its own resolved path (the daemon's R-SYM rule — a pairing token stored here can prove)"
 }
 
 # ── precondition 1: self v0.7 check (rev3.2 release condition, self-enforced at arm) ────────────
@@ -1079,6 +1111,7 @@ _arm_token() {
 main() {
     _arm_log "failover arm — the v0.7 Block 5.3 ceremony (preconditions → probe → install → verify → token)"
     _arm_detect_role_env
+    _pre_state_dir_check      # P0 (Block 6.3.1 D5): ARM_STATE_DIR must be its own resolved path (the daemon's R-SYM rule mirrored) — REFUSE[STATE-dir-*] before any write or install
     _pre_v07_check
     _pre_socat_check
     _pre_flock_check
