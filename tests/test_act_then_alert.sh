@@ -610,7 +610,7 @@ dec_rc() {   # $1 = daemon script, $2 = pin (T2|T3), $3 = TIER2 answers (1|0), $
   )
 }
 _dec_pre=$(mktemp "${TMPDIR:-/tmp}/ata-recheck-prefix.XXXXXX")
-mutate "$STANDBY" '/^_fresh_proof_recheck() {/,/^}/s/^    if \[\[ "\${_liveness_first_provider:-}" == "T3" .*; then$/    if false; then/' "$_dec_pre"
+mutate "$STANDBY" '/^_fresh_proof_recheck() {/,/^}/s/^    if \[\[ "[$]{_liveness_first_provider:-}" == "T3" .*; then$/    if false; then/' "$_dec_pre"
 dec_ok=1; dec_rows=""; dec_diff=""
 for _cell in "T3 1 1" "T3 0 1" "T3 1 0" "T3 0 0" "T2 1 1" "T2 0 1" "T2 1 0" "T2 0 0"; do
     # shellcheck disable=SC2086
@@ -748,7 +748,7 @@ fi
 echo ""; echo "─── (14) the recovery path's own-view veto on ONE chain model: the band it can pass in; a VOTING / BLIND veto re-elapses RECOVERY_DELAY ───"
 W14=$(mktemp -d "${TMPDIR:-/tmp}/aa14.XXXXXX")
 mutate "$PRIMARY" '/^attempt_safe_recovery() {/,/^}/s/if \[\[ \${_own_bank_active_time:-0} -gt \$recovery_anchor \]\]; then/if false; then/' "$W14/p-m12.sh"   # the panel's M12: the own-bank anchor input dropped
-mutate "$PRIMARY" '/^attempt_safe_recovery() {/,/^}/s/if \[\[ \${_last_blind_end:-0} -gt \$recovery_anchor \]\]; then/if false; then/' "$W14/p-mblind.sh"   # the blind anchor input dropped
+mutate "$PRIMARY" '/^attempt_safe_recovery() {/,/^}/s/if \[\[ [$]{_last_blind_end:-0} -gt \$recovery_anchor \]\]; then/if false; then/' "$W14/p-mblind.sh"   # the blind anchor input dropped
 for _s in "$PRIMARY" "$W14/p-m12.sh" "$W14/p-mblind.sh"; do seam_cut "$_s" >/dev/null; done
 c14() { local n="$1"; shift; ( for kv in "$@"; do export "$kv"; done; sim_chain 2>/dev/null | grep '^EVENTS=' | cut -c8- > "$W14/$n" ) & }
 c14 rd10 RD=10 HZ=250; c14 rd20 RD=20 HZ=250; c14 rd40 RD=40 HZ=250; c14 rd45 RD=45 HZ=250; c14 rd50 RD=50 HZ=250

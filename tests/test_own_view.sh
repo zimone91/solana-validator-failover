@@ -960,7 +960,7 @@ mutate "$WORK/s-nofpd2.sh" "$M_CUR" "$WORK/s-nofpd2cur.sh"                      
 mutate "$STANDBY" '/^attempt_takeover() {/,/^}/s/^    _own_head_sample$/    : r3 sample removed/' "$WORK/s-r3a.sh" \
   && mutate "$WORK/s-r3a.sh" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 1, R3).*$/\1: r3 sample removed/' "$WORK/s-r3b.sh" \
   && mutate "$WORK/s-r3b.sh" 's/^    if \[\[ -n "\$TIER2_RPC" && -n "\$TIER3_RPC" && "\$TIER2_RPC" != "\$TIER3_RPC" \]\]; then$/    if false; then/' "$WORK/s-r3c.sh" \
-  && mutate "$WORK/s-r3c.sh" 's/^    if \[\[ "\${_liveness_first_provider:-}" == "T3" && -n "\$TIER2_RPC" .*; then$/    if false; then/' "$WORK/s-nor3.sh"   # R3: EVERY layer (the take-path samples, the fence's split, the pinned-first re-check) — the all-neutered control
+  && mutate "$WORK/s-r3c.sh" 's/^    if \[\[ "[$]{_liveness_first_provider:-}" == "T3" && -n "\$TIER2_RPC" .*; then$/    if false; then/' "$WORK/s-nor3.sh"   # R3: EVERY layer (the take-path samples, the fence's split, the pinned-first re-check) — the all-neutered control
 rm -f "$WORK/s-r3a.sh" "$WORK/s-r3b.sh" "$WORK/s-r3c.sh" "$WORK/s-nrno-a.sh"
 for _s in "$STANDBY" "$WORK"/s-*.sh; do seam_cut "$_s" >/dev/null; done
 wlaunch() {   # wlaunch <name> VAR=val … — one world() in the background (at most OV_PAR at once) → $WORK/wr.<name>
