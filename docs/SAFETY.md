@@ -293,7 +293,12 @@ mainnet RPC, ten 60 s samples of 212–226 slots — re-run it to check), so the
 bank's delinquency rule is 128 slots (≈ 51 s at 2.5/s, ≈ 35 s at 3.7/s); *finalized* trails
 *processed* by 32 slots (≈ 13 s / ≈ 9 s); `getHealth`'s distance is 128 slots; `N_HEAD` is 25 slots —
 10 s at its assumed rate, ≈ 6.8 s on today's mainnet: **stricter** than its derivation (more blind
-reads — availability, never a take). A *slower* cluster would loosen it (25 slots = 15 s at 600 ms).
+reads — availability, never a take). A *slower* cluster LOOSENS it — and that is the **safety**
+direction: at 600 ms slots, 25 slots are 15 s of lag against the 10 s budget, so measured silence can
+overstate true silence by up to 15 s and the 100 s floor admits a proof at a true silence of 85 s <
+W+B = 90 s; clusters slow down during incidents. A named residual until 6.3.1, which makes the provider
+abstain (blind) whenever the rate it measures between its two head reads is below the assumed 2.5
+slots/s.
 Measured at 3.7 slots/s, the timing race below opens its episode at t45 instead of t65, takes at
 t105 instead of t125, and its veto boundary is the same 32 slots — ≈ 9 s (t96 vetoed, t97 taken
 after 8 s).
