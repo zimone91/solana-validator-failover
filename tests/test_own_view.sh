@@ -9,7 +9,8 @@
 #   (0) D0.2 N-is-all — the TAKE-path census, by structure: every set-identity token in the shipped set is
 #       pinned by file, function and kind, the take functions' arguments are the STAKED key's literal and
 #       every other one the UNSTAKED key's; each take runs _fresh_proof_recheck, then _own_view_veto, BEFORE
-#       its DRY_RUN branch; the veto is called nowhere else; (0a-ctl) the panel's evasions E0–E5, red
+#       its DRY_RUN branch; the veto is called nowhere else; (0a-ctl) the panel's evasions E0–E5, red; (0d) fix
+#       round 2 (T2-REDEF): no function defined twice, nested, or after the MAIN LOOP marker (both daemons)
 #   (1) D1 — explicit commitments: (1a) every RPC curl body in both daemons is a literal the census PARSES
 #       (jq), and every getVoteAccounts/getSlot request names params[0].commitment; (1b) the site table
 #       (function, method, commitment) is pinned — the detection reads say finalized; (1c) control: a body
@@ -39,9 +40,14 @@
 #       own-bank lastVote ADVANCE inside the episode is holder voting and the veto's agave-current rule (L1),
 #       with each layer alone and both neutered, the current rule's slow-cluster cost and a world it alone
 #       holds; (7b) R2 — a failed MAX_DELINQUENT_SLOTS reference is not holder-voting evidence (AV-2); (7c)
-#       R3 — a baseline at every veto on slow take cycles (AV-3/AV-6: healthy holds, starvation; all R3 layers
-#       neutered together → every red back) and (7c-age) the measured baseline ages with the one residual
-#       cell; (7d) L4 — the fast path never skips D2's timer; (7e) L3 — Tier-1 is the node's own health verdict
+#       R3 + fix round 2's S2 — a baseline at every veto on slow take cycles (AV-3/AV-6: healthy holds,
+#       starvation; the delta panel's DAV-1/CK-2: the gossip advisory's pair; every baseline layer neutered
+#       together → every red back) and (7c-age) the measured baseline ages over the three matrix axes with the
+#       named advisory residual; (7d) L4 — the fast path never skips D2's timer; (7e) L3 — Tier-1 is the
+#       node's own health verdict; (7f) FIX ROUND 2, S1 — the fresh re-check reads EVERY tier that answers
+#       (the delta panel's DL-1 worlds, red on round 1's pinned-first order; the symmetric worlds, red on
+#       the first 6.3.1 build's sequential call); (7g) S2's census — every external read of the take cycle has an own-head
+#       sample before it (N-is-all, by structure; the ones no world can make load-bearing are named there)
 # The A8 rule these cases enforce, as every site states it since 6.3.1: between the fresh re-check's
 # return-0 and set-identity — no network, no alerts; one bounded local veto read allowed.
 #
@@ -83,6 +89,10 @@ SHIPPED="$HARNESS_DIR/install.sh $PRIMARY $STANDBY $HARNESS_DIR/deploy-failover.
 # "$STAKED_KEYPAIR" inside the two take functions and "$UNSTAKED_KEYPAIR" everywhere else. (0a-ctl) runs the panel's
 # own evasions E0–E5 through both layers; the dynamic half is test_act_then_alert (15): every staked set-identity in
 # that suite's sims follows the veto's read.
+# LIMIT (fix round 2 — the delta panel's T3-SPELL, stated, not hardened): the token is the literal 'set-identity'
+# after comment stripping — a verb escaped or split by quoting (set-\identity, set-"identity") or assembled in a
+# variable is not seen by either layer (eval, a quoted array element and a here-string are red on the table layer
+# only); the dynamic half (15) is what catches such a take, because the audited validator stub sees the call.
 setid_scan() {   # $1=file [$2=args] → "<fn>:<commands>/<texts> …" per function holding a set-identity token; args → the bad COMMAND arguments
     code_of "$1" | awk -v mode="${2:-count}" '
         /^[A-Za-z_][A-Za-z0-9_]*\(\) *\{/ { fn = $1; sub(/\(\).*/, "", fn); one = ($0 ~ /\}[[:space:]]*$/) }
@@ -200,6 +210,47 @@ else
     bad "(0c) the pre-warm exclusion no longer reads as stated"
 fi
 
+# (0d) T2-REDEF (fix round 2 — the delta panel's T2-REDEF): every census above reads a function's FIRST column-0
+# definition, and every suite loads the daemon only up to the MAIN LOOP marker — so a later or nested redefinition
+# (one line after the marker, or inside startup_checks) neuters a safety function in production while every census
+# and every suite stays green (the panel's sV1/sV2). The rule, by structure, on both daemons: every function is
+# defined exactly ONCE, at column 0, never indented (inside another body) and never after the marker; and what
+# follows the marker is exactly this top-level shape: startup_checks, the alpenglow gate's if/else/fi, the main
+# loop's while … done, the post-loop if … fi, the exit log line. LIMIT, named: a definition assembled at run time
+# (`eval "f() …"`, `source` of another file, `declare -f` tricks) is not a definition this census can see — none
+# exists in either daemon (the net guard and the dynamic censuses of test_act_then_alert (15) see the behavior).
+REDEF_AWK='
+BEGIN { post = 0 }
+/^# =* MAIN LOOP =*$/ { post = 1; next }
+{ line = $0; sub(/[[:space:]]#.*$/, "", line) }
+line ~ /^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*(\{|$)/ { n = line; sub(/[[:space:]]*\(.*$/, "", n); def[n]++; if (post) printf "DEF-AFTER-MARKER %d %s\n", NR, n }
+line ~ /^[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*(\{|$)/ { printf "NESTED-DEF %d %s\n", NR, line }
+line ~ /^[[:space:]]*function[[:space:]]+[A-Za-z_]/ { printf "FUNCTION-KEYWORD %d %s\n", NR, line }
+post && line ~ /^[^[:space:]#]/ { top = top NR ":" substr(line, 1, 24) "|" }
+END { for (n in def) if (def[n] > 1) printf "DUPLICATE %s x%d\n", n, def[n]; printf "TOP %s\n", top }'
+redef_census() {   # redef_census <daemon> — violations (one per line) + the post-marker top-level shape (TOP …)
+    awk "$REDEF_AWK" "$1"
+}
+rd_ok=1; rd_rows=""
+for _d in "$STANDBY" "$PRIMARY"; do
+    _o=$(redef_census "$_d"); _v=$(printf '%s\n' "$_o" | grep -v '^TOP ')
+    _shape=$(printf '%s\n' "$_o" | sed -n 's/^TOP //p' | tr '|' '\n' | sed 's/^[0-9]*://' | tr '\n' '|')
+    [[ -z "$_v" && "$_shape" == 'startup_checks|if [[ "${ALPENGLOW_GATE_|else|fi|while $_running; do|done|if [[ "$_running" == "tr|fi|log_info "Main loop exit||' ]] || { rd_ok=0; rd_rows="$rd_rows [$(basename "$_d"): $(printf '%s' "$_v" | tr '\n' ';') shape=$_shape]"; }
+    rd_rows="$rd_rows $(basename "$_d")=$(grep -cE '^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)' "$_d")-functions"
+done
+mutate "$STANDBY" 's/^# ========================= MAIN LOOP =========================================$/&\
+_own_view_veto() { return 0; }/' "$WORK/s-redef1.sh"                                                                 # the panel's sV1
+mutate "$STANDBY" 's/^startup_checks() {$/&\
+    _own_view_veto() { return 0; }/' "$WORK/s-redef2.sh"                                                                  # sV2: nested in startup_checks
+mutate "$STANDBY" 's/^_own_head_sample() {$/_fresh_proof_recheck() { return 0; }\
+&/' "$WORK/s-redef3.sh"                                                                                                  # a second column-0 definition, BEFORE the marker
+r1=$(redef_census "$WORK/s-redef1.sh" | grep -v '^TOP '); r2=$(redef_census "$WORK/s-redef2.sh" | grep -v '^TOP '); r3=$(redef_census "$WORK/s-redef3.sh" | grep -v '^TOP ')
+if [[ $rd_ok -eq 1 && "$r1" == *"DEF-AFTER-MARKER"*"_own_view_veto"* && "$r1" == *"DUPLICATE _own_view_veto"* && "$r2" == *"NESTED-DEF"*"_own_view_veto"* && "$r3" == *"DUPLICATE _fresh_proof_recheck"* ]]; then
+    ok "(0d) T2-REDEF — every function in both daemons is defined exactly once, at column 0, never nested and never after the MAIN LOOP marker, and the marker is followed by exactly startup_checks, the alpenglow gate, the main loop, the post-loop block and the exit line:$rd_rows; controls, each red: the panel's sV1 (a one-line _own_view_veto after the marker — DEF-AFTER-MARKER + DUPLICATE), sV2 (nested inside startup_checks — NESTED-DEF), a second column-0 _fresh_proof_recheck before the marker (DUPLICATE)"
+else
+    bad "(0d) T2-REDEF:$rd_rows :: sV1=[$r1] sV2=[$r2] dup=[$r3]"
+fi
+
 # ── (1) D1 — explicit commitments, census-enforced ─────────────────────────────────────────────────
 echo ""; echo "─── (1) D1: every getVoteAccounts/getSlot body spells its commitment; the site table; zero behavior change ───"
 # net_scan — every NETWORK primitive in a shell text on stdin (comment-stripped by the caller), one TAB-separated
@@ -211,6 +262,12 @@ echo ""; echo "─── (1) D1: every getVoteAccounts/getSlot body spells its c
 # '$( curl' and '/usr/bin/curl' are invocations. Backslash-continued lines are joined first; a one-line function
 # ends on its own line. A double-quoted body is unescaped; a whole-string ${var} becomes "__VAR__", a number-position
 # ${var} (after : [ ,) becomes 0; a $( ), a backtick, a bare "$body", @file or two bodies is NOT a literal.
+# LIMIT (fix round 2 — the delta panel's T3-SPELL, stated, not hardened): the command word must be the unquoted,
+# unescaped literal — "curl", \curl, a "$var" command word or a quoted absolute path is NOT an invocation to this
+# scan (a getVoteAccounts read spelled that way with no commitment stays green in (1a)/(1b); a network call so
+# spelled in a function the A8 closure walks stays green in (3c-seg)); the sims shadow the log/alert functions, so
+# (15) does not see a network call added INSIDE them. As shipped nothing uses those spellings (every code curl is a
+# plain `curl`, counted). The harness net guard intercepts `curl` / `command curl`, not an absolute /usr/bin/curl.
 NETSCAN_AWK='
 function isb(ch) { return (ch == "" || ch ~ /[ \t;|&(!{}\/]/) }
 function argopt(wd,   l) {
@@ -818,6 +875,11 @@ fi
 # window (the fresh re-check or its return … and set-identity) AND makes a no/zero/only/never claim about network,
 # reads, I/O, calls or alerts. Each statement must carry the exact rule within ±2 lines — the rule:
 # no network, no alerts; one bounded local veto read allowed.
+# LIMIT (fix round 2 — the delta panel's T4-EPTXT, stated, not hardened): a statement is found by its CLAIM WORDS —
+# a restatement worded without them ("no RPC request of any kind", "zero HTTP traffic", "nothing is sent", "no
+# outbound connection"), one naming the window differently ("the identity switch"), or one spread over more than
+# three lines is not a statement to this scan; the check is on the rule's text where it is stated, not on every
+# sentence about the window.
 RULE="no network, no alerts; one bounded local veto read allowed"
 A8TEXT_AWK='
 function norm(s) { gsub(/[#*`>|]/, " ", s); gsub(/[[:space:]]+/, " ", s); return s }
@@ -957,10 +1019,24 @@ mutate "$WORK/s-noadv.sh" "$M_CUR" "$WORK/s-noadvcur.sh"                        
 mutate "$WORK/s-nod2.sh" "$M_CUR" "$WORK/s-nod2cur.sh"                                               # D2's anchor input + the current rule
 mutate "$STANDBY" 's/^        \[\[ \${_own_bank_active_time:-0} -gt 0 \]\] && _fp_d2_left=.*$/        : L4 D2 hold removed/' "$WORK/s-nofpd2.sh"   # L4: the fast path's D2 hold neutered
 mutate "$WORK/s-nofpd2.sh" "$M_CUR" "$WORK/s-nofpd2cur.sh"                                           # L4: + the current rule (every layer that stops that take)
+# the veto's BASELINE (fix rounds 1-2 — R3, S2, S1's concurrent re-check): EVERY layer neutered together — the
+# all-neutered control: every take-cycle own-head sample R3 and S2 added (attempt_takeover's Gate-2 sample, the
+# R3- and S2-tagged ones), every two-tier split (the fence's, the liveness probe's, the watchdog-elapsed step's)
+# and the concurrent re-check → the ONE sequential sampler call (a TIER2 failure, then TIER3 — 6.3.1 as first built)
 mutate "$STANDBY" '/^attempt_takeover() {/,/^}/s/^    _own_head_sample$/    : r3 sample removed/' "$WORK/s-r3a.sh" \
   && mutate "$WORK/s-r3a.sh" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 1, R3).*$/\1: r3 sample removed/' "$WORK/s-r3b.sh" \
-  && mutate "$WORK/s-r3b.sh" 's/^    if \[\[ -n "\$TIER2_RPC" && -n "\$TIER3_RPC" && "\$TIER2_RPC" != "\$TIER3_RPC" \]\]; then$/    if false; then/' "$WORK/s-r3c.sh" \
-  && mutate "$WORK/s-r3c.sh" 's/^    if \[\[ "[$]{_liveness_first_provider:-}" == "T3" && -n "\$TIER2_RPC" .*; then$/    if false; then/' "$WORK/s-nor3.sh"   # R3: EVERY layer (the take-path samples, the fence's split, the pinned-first re-check) — the all-neutered control
+  && mutate "$WORK/s-r3b.sh" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 2, S2.*$/\1: s2 sample removed/' "$WORK/s-r3c.sh" \
+  && mutate "$WORK/s-r3c.sh" 's/^\( *\)if \[\[ -n "\$TIER2_RPC" && -n "\$TIER3_RPC" && "\$TIER2_RPC" != "\$TIER3_RPC" \]\]; then$/\1if false; then/' "$WORK/s-nor3.sh"
+# S1 (fix round 2 — the delta panel's DL-1): the re-check's concurrent read replaced by round 1's PINNED-FIRST order
+# (the regression) and by the first 6.3.1 build's ONE sequential call (TIER2, TIER3 only on its failure)
+S1_LINE='^        s=\$(_recheck_tier_read T2 & _recheck_tier_read T3 & wait)$'
+# (the triple's name spliced in by @LFP@ — run_all's stage (3): no suite dereferences the freshness triple in its text)
+S1_R1=$(cat <<'EOS'
+        if [[ "${@LFP@:-}" == "T3" ]]; then s=$(_recheck_tier_read T3) || s=$(_recheck_tier_read T2) || s=""; else s=$(_recheck_tier_read T2) || s=$(_recheck_tier_read T3) || s=""; fi
+EOS
+)
+mutate "$STANDBY" "s/$S1_LINE/${S1_R1//@LFP@/_liveness_first_provider}/" "$WORK/s-s1r1.sh"
+mutate "$STANDBY" "s/$S1_LINE/        s=\$(get_staked_liveness_sample) || s=\"\"/" "$WORK/s-s1seq.sh"
 rm -f "$WORK/s-r3a.sh" "$WORK/s-r3b.sh" "$WORK/s-r3c.sh" "$WORK/s-nrno-a.sh"
 for _s in "$STANDBY" "$WORK"/s-*.sh; do seam_cut "$_s" >/dev/null; done
 wlaunch() {   # wlaunch <name> VAR=val … — one world() in the background (at most OV_PAR at once) → $WORK/wr.<name>
@@ -1029,7 +1105,7 @@ for _mds in 15 0; do for _r in 25 37; do
         [[ $_r == 37 ]] && wlaunch "swa_${_mds}_${_r}_${_ci}_$_k" ARMED=1 GATE=1 MDS=$_mds SLOT_NUM=$_sn SLOT_DEN=$_sd CI=$_ci VOTES=0:$_k HORIZON=190
     done; done
 done; done
-for _mds in 15 0; do for _ci in 1 5; do for ((_k = 0; _k < _ci; _k++)); do
+for _mds in 15 0; do for _ci in 1 3 5; do for ((_k = 0; _k < _ci; _k++)); do   # fix round 2 (CK-9): CHECK_INTERVAL 3 too
     wlaunch "swa_${_mds}_2525_${_ci}_$_k" ARMED=1 GATE=1 MDS=$_mds SLOT_NUM=101 SLOT_DEN=40 CI=$_ci VOTES=0:$_k HORIZON=200
 done; done; done
 # (7) FIX ROUND 1 — R1 (the panel's L1 worlds, verbatim knobs; the verifier's labels): a holder voting INTO the
@@ -1070,8 +1146,9 @@ wlaunch r2wiz60   GV=true CI=3 MDS=15 REFMODE=down REFFROM=60 REFTO=61 HORIZON=2
 wlaunch r2r37     SLOT_NUM=37 SLOT_DEN=10 MDS=15 REFMODE=down REFFROM=30 REFTO=31 HORIZON=200
 wlaunch r2a37     ARMED=1 GATE=1 SLOT_NUM=37 SLOT_DEN=10 MDS=15 REFMODE=down REFFROM=40 REFTO=41 HORIZON=240
 wlaunch r2mds0    MDS=0 REFMODE=down REFFROM=40 REFTO=41 HORIZON=200
-# R3 (the panel's AV-3 worlds: the own confirmed head HOLDS, aligned with the veto, on slow take cycles; AV-6's
-# starvation worlds; the baseline ages) — shipped, and every R3 layer neutered together
+# R3 + S2 (the panel's AV-3 worlds: the own confirmed head HOLDS, aligned with the veto, on slow take cycles; AV-6's
+# starvation worlds; the delta panel's DAV-1/CK-2 worlds — the gossip advisory's reads, TIER2's at its 15 s bound;
+# the baseline ages) — shipped, and every baseline layer (R3, S2, S1's concurrent re-check) neutered together
 for _m in ship nor3; do
     _ws=""; [[ "$_m" != "ship" ]] && _ws="WSCRIPT=$WORK/s-$_m.sh"
     wlaunch "h5gv_$_m" $_ws GV=true T2LAT=5 HOLDFROM=140 HOLDTO=146 HORIZON=320
@@ -1082,14 +1159,44 @@ for _m in ship nor3; do
     wlaunch "hd0_$_m"  $_ws T2DOWN=1 T3LAT_ALL=0 HOLDFROM=140 HOLDTO=151 HORIZON=320
     wlaunch "d7_$_m"   $_ws T2DOWN=1 T3LAT_ALL=7 HORIZON=320
     wlaunch "m15d7_$_m" $_ws T2DOWN=1 T3LAT_ALL=7 MDS=15 HORIZON=320
+    wlaunch "gv15_$_m"  $_ws GV=true GCNLAT_T2=15 GCNLAT_T3=2 GCNONLYADV=1 STARVE=300 HORIZON=420
+    wlaunch "gv15w_$_m" $_ws GV=true MDS=15 CI=3 GCNLAT_T2=15 GCNLAT_T3=2 GCNONLYADV=1 STARVE=300 HORIZON=420
+    wlaunch "c3g_$_m"   $_ws GV=true T2LAT=3 T3LAT_ALL=10 HORIZON=320
 done
 wlaunch hd4_8     T2DOWN=1 T3LAT_ALL=4 HOLDFROM=144 HOLDTO=153 HORIZON=320
 wlaunch hd4_7     T2DOWN=1 T3LAT_ALL=4 HOLDFROM=145 HOLDTO=153 HORIZON=320
-for _x in 1 2 3 4 5 6 7 8 9; do wlaunch "age_t2_$_x" T2LAT=$_x HORIZON=320; done
+for _x in 1 2 3 4 5 6 7 8 9 10; do wlaunch "age_t2_$_x" T2LAT=$_x HORIZON=320; done
 wlaunch age_t2_5gv GV=true T2LAT=5 HORIZON=320
 for _y in 1 2 3 4 5 6 8 9; do wlaunch "age_d_$_y" T2DOWN=1 T3LAT_ALL=$_y HORIZON=320; done
+for _x in 0 1 2 4 5 6 7 8 9; do wlaunch "age_cg_$_x" GV=true T2LAT=$_x T3LAT_ALL=10 HORIZON=320; done
+for _x in 0 4 7; do wlaunch "age_c_$_x" T2LAT=$_x T3LAT_ALL=10 HORIZON=320; done
+# the NAMED residual (fix round 2, S2): ONE gossip-advisory read of ~15 s (TIER3's, TIER2's answering) before prompt
+# fence / re-check reads; TIER2 at 1 / 2 / 3 s — the ages, and a 4 s hold (10 slots) aligned with the TIER2-2 s veto
+for _x in 1 2 3; do wlaunch "gadv_$_x" GV=true T2LAT=$_x GCNLAT_T3=15 GCNONLYADV=1 HORIZON=360; done
+wlaunch gadv_2h4   GV=true T2LAT=2 GCNLAT_T3=15 GCNONLYADV=1 HOLDFROM=144 HOLDTO=149 HORIZON=360
 wlaunch x9np      WSCRIPT="$WORK/s-nopretake.sh" T2LAT=9 HORIZON=320
 wlaunch d9np      WSCRIPT="$WORK/s-nopretake.sh" T2DOWN=1 T3LAT_ALL=9 HORIZON=320
+# S1 (fix round 2 — the delta panel's DL-1, verbatim knobs): the pair pinned on TIER3 (TIER2 refusing at the fence),
+# TIER2 recovering before the re-check and showing the holder's vote ADVANCED (the holder voting again from t140;
+# the spare's own node and TIER3 40 s behind): (a) MDS 0, TIER3 1 s; (b) MDS 15, 3.7 slots/s, 30 s behind, TIER3
+# 2 s; (c) GOSSIP_VERIFY on; (d) TIER3 3 s (TIER3 honest-but-late in a–c, TIER2 honest at the tip) — shipped vs
+# round 1's pinned-first order; the control (TIER2 never recovers); and the SYMMETRIC worlds (the pair pinned on
+# TIER2 while it splices or lags, TIER3 honest): shipped vs the first 6.3.1 build's one sequential call; the dead-holder control
+for _m in ship s1r1; do
+    _ws=""; [[ "$_m" != "ship" ]] && _ws="WSCRIPT=$WORK/s-$_m.sh"
+    wlaunch "dl1a_$_m" $_ws MDS=0 LAG=40 VOTES=0:0,140:-1 T2MODE=honest T2TLAG=0 T3MODE=honest T3TLAG=40 T2BADFROM=0 T2BADTO=167 T3LAT_ALL=1 HORIZON=260
+    wlaunch "dl1b_$_m" $_ws MDS=15 SLOT_NUM=37 SLOT_DEN=10 LAG=30 VOTES=0:0,90:-1 T2MODE=honest T2TLAG=0 T3MODE=honest T3TLAG=30 T3LAT_ALL=2 T2BADFROM=0 T2BADTO=109 HORIZON=220
+    wlaunch "dl1c_$_m" $_ws GV=true MDS=0 LAG=40 VOTES=0:0,140:-1 T2MODE=honest T2TLAG=0 T3MODE=honest T3TLAG=40 T2BADFROM=0 T2BADTO=168 T3LAT_ALL=1 HORIZON=260
+    wlaunch "dl1d_$_m" $_ws MDS=0 LAG=40 VOTES=0:0,140:-1 T2MODE=honest T2TLAG=0 T2BADFROM=0 T2BADTO=170 T3LAT_ALL=3 HORIZON=300
+done
+wlaunch dl1a_ctl  MDS=0 LAG=40 VOTES=0:0,140:-1 T2MODE=honest T2TLAG=0 T3MODE=honest T3TLAG=40 T2BADFROM=0 T2BADTO=999 T3LAT_ALL=1 HORIZON=260
+for _m in ship s1seq; do
+    _ws=""; [[ "$_m" != "ship" ]] && _ws="WSCRIPT=$WORK/s-$_m.sh"
+    wlaunch "symsp_$_m"   $_ws MDS=0 LAG=40 VOTES=0:0,140:-1 T2MODE=splice T3MODE=honest T3TLAG=0 HORIZON=260
+    wlaunch "symlag_$_m"  $_ws MDS=0 LAG=40 VOTES=0:0,140:-1 T2MODE=honest T2TLAG=40 T3MODE=honest T3TLAG=0 HORIZON=260
+    wlaunch "symsp15_$_m" $_ws MDS=15 SLOT_NUM=37 SLOT_DEN=10 LAG=30 VOTES=0:0,90:-1 T2MODE=splice T3MODE=honest T3TLAG=0 HORIZON=220
+done
+wlaunch symdead   MDS=0 LAG=40 VOTES=0:0 T2MODE=splice T3MODE=honest T3TLAG=0 HORIZON=260
 # L4 (the panel's forged-flip world: WITNESS_FASTPATH with a PRESENTED flip, the intermittent holder) and L3 (a node
 # run at --health-check-slot-distance 64, the spare replaying 44 s = 110 slots behind, the holder resuming at t130)
 wlaunch fp        FASTPATH=1 MDS=15 VOTES=0:0,40:40 HORIZON=200
@@ -1130,6 +1237,10 @@ fi
 # '', $((0)), unset) is a CLOSE and must reach an _own_view_reset at its own indentation before its block ends —
 # except the column-0 declarations and the blindness re-pin (_note_blind_cycle zeroes only the OBSERVED span; the
 # episode goes on). The standby's STAKED-tenure close writes none of them and is named. Then the reset's behavior.
+# LIMIT (fix round 2 — the delta panel's T4-EPTXT, stated, not hardened): a write is found by the spellings above —
+# an indexed write (FIRST_DELINQUENT_TIME[0]=0, which zeroes the scalar in bash), a quoted `unset "VAR"`, or
+# `printf -v "$name"` over a variable holding the name closes an episode unseen (eval and `read <<<` are red); a
+# new close site so spelled would need the behavior checks below to catch it.
 EP_AWK='
 function kindof(v,   t) { t = v; sub(/[[:space:];&|)].*$/, "", t); return (t ~ /^(0|"0"|\0470\047|""|\047\047|\$\(\(0\)\))?$/) ? "zero" : "set" }
 function emit(v, k) { printf "%s %s %s %d %d\n", (fn == "" ? (ind == 0 ? "(global)" : "(top)") : fn), v, k, NR, ind }
@@ -1255,12 +1366,12 @@ if [[ "$(wf cut110 mutation)" == "125" && "$(wf cut110 hvafter)" == "1" && "$(wf
 else
     bad "(4b-residual) cut110=$(wr cut110) :: cut15@65=$(wr cut15_65)"
 fi
-if [[ "$(wf t2d mutation)" == "140" && "$(wf t2d_np mutation)" == "140" && "$(wf t2d_l6 mutation)" == "158" && "$(wf t2d_l7 mutation)" == "161" \
-      && "$(wf x9np mutation)" == "none" && "$(wf x9np ov_veto)" == "148:blind" && "$(wf d9np mutation)" == "none" && "$(wf d9np ov_veto)" == "167:blind" \
-      && "$(wf age_t2_9 mutation)" == "148" && "$(wf age_t2_9 ov_age)" == "9" && "$(wf age_d_9 mutation)" == "167" && "$(wf age_d_9 ov_age)" == "9" ]]; then
-    ok "(4b-pretake) the PRE-TAKE own-head sample (take_staked_identity's head, before the re-check), after fix round 1 (R3): a dead holder behind a dead TIER2 is taken at t140 with or without it (the samples R3 added before each external read of the take cycle hold the baseline; 6.3.1 as first shipped: t150, and never without it); TIER2 down + TIER3 6 s / 7 s late → t158 / t161 (first shipped: t168 / NEVER — every veto blind). It is still load-bearing where ONE read spans the re-check's own window: TIER2 answering in 9 s (the fence's read and the re-check's, each 9 s) → the baseline is this sample (9 s old), taken t148; removed → every veto BLIND, never taken; the same at TIER2 down + TIER3 9 s (t167 / never)"
+if [[ "$(wf t2d mutation)" == "150" && "$(wf t2d_np mutation)" == "150" && "$(wf t2d_l6 mutation)" == "162" && "$(wf t2d_l7 mutation)" == "164" \
+      && "$(wf x9np mutation)" == "none" && "$(wf x9np ov_veto)" == "148:blind" && "$(wf d9np mutation)" == "none" && "$(wf d9np ov_veto)" == "168:blind" \
+      && "$(wf age_t2_9 mutation)" == "148" && "$(wf age_t2_9 ov_age)" == "9" && "$(wf age_d_9 mutation)" == "168" && "$(wf age_d_9 ov_age)" == "10" ]]; then
+    ok "(4b-pretake) the PRE-TAKE own-head sample (take_staked_identity's head, before the re-check), after fix round 2: a dead holder behind a dead TIER2 is taken at t150 with or without it (the sample between the fence's TIER2 timeout and its TIER3 read is 10 s old at the veto; fix round 1's pinned-first re-check, which skipped TIER2, took it at t140; 6.3.1 as first shipped: t150, and never without it); TIER2 down + TIER3 6 s / 7 s late → t162 / t164 (fix round 1: t158 / t161; first shipped: t168 / NEVER — every veto blind). It is load-bearing where ONE read spans the re-check's own window: TIER2 answering in 9 s (the fence's read and the re-check's, each 9 s) → the baseline is this sample (9 s old), taken t148; removed → every veto BLIND, never taken; TIER2 down + TIER3 9 s → this sample (10 s old: the concurrent re-check waits out TIER2's timeout), taken t168; removed → never"
 else
-    bad "(4b-pretake) t2down=$(wr t2d) :: no-pretake=$(wr t2d_np) :: t3+6=$(wr t2d_l6) :: t3+7=$(wr t2d_l7) :: t2@9 no-pretake=$(wr x9np) :: t2down+t3@9 no-pretake=$(wr d9np)"
+    bad "(4b-pretake) t2down=$(wr t2d) :: no-pretake=$(wr t2d_np) :: t3+6=$(wr t2d_l6) :: t3+7=$(wr t2d_l7) :: t2@9 no-pretake=$(wr x9np) :: t2down+t3@9 no-pretake=$(wr d9np) :: t2@9=$(wf age_t2_9 mutation)/$(wf age_t2_9 ov_age) t2down+t3@9=$(wf age_d_9 mutation)/$(wf age_d_9 ov_age)"
 fi
 oh_p=$(code_of "$PRIMARY" | grep -c '^OWN_HEAD_H=16 '); oh_s=$(code_of "$STANDBY" | grep -c '^OWN_HEAD_H=16 ')
 oh_all=0; for _f in "$PRIMARY" "$STANDBY" "$HARNESS_DIR/install.sh" "$HARNESS_DIR/failover-arm.sh" "$HARNESS_DIR/deploy-failover.sh" "$HARNESS_DIR/deploy-failover-standby.sh"; do
@@ -1342,9 +1453,9 @@ swmin() {   # swmin <u|a> <mds> <rate> <cis…> → the minimum over every phase
     echo "${m:-none}"
 }
 m_u15_25=$(swmin u 15 25 1 3 5); m_u15_37=$(swmin u 15 37 1 3 5); m_u0_25=$(swmin u 0 25 1 3 5); m_u0_37=$(swmin u 0 37 1 3 5)
-m_a15_37=$(swmin a 15 37 1 3 5); m_a0_37=$(swmin a 0 37 1 3 5); m_a15_2525=$(swmin a 15 2525 1 5); m_a0_2525=$(swmin a 0 2525 1 5)
+m_a15_37=$(swmin a 15 37 1 3 5); m_a0_37=$(swmin a 0 37 1 3 5); m_a15_2525=$(swmin a 15 2525 1 3 5); m_a0_2525=$(swmin a 0 2525 1 3 5)
 if [[ "$m_u15_25" == "79" && "$m_u15_37" == "73" && "$m_u0_25" == "125" && "$m_u0_37" == "104" && "$m_a15_37" == "119" && "$m_a0_37" == "150" && "$m_a15_2525" == "125" && "$m_a0_2525" == "170" ]]; then
-    ok "(6-min) THE SPARE'S EARLIEST, measured as the minimum over the read phase and CHECK_INTERVAL 1 / 3 / 5 (the panel's CC-5/F6 — the default phase above is not the earliest): un-armed take 79 s / 73 s at MAX_DELINQUENT_SLOTS=15 and 125 s / 104 s at 0 (2.5 / 3.7 slots/s); armed watchdog-elapsed MINT 119 s at 15 and 150 s at 0 (3.7), 125 s and 170 s at 2.525 slots/s (CHECK_INTERVAL 1 / 5), never at exactly 2.5 — the numbers docs/SAFETY.md's D6 table holds the holder column (test_d6_holder) against"
+    ok "(6-min) THE SPARE'S EARLIEST, measured as the minimum over the read phase and CHECK_INTERVAL 1 / 3 / 5 (the panel's CC-5/F6 — the default phase above is not the earliest): un-armed take 79 s / 73 s at MAX_DELINQUENT_SLOTS=15 and 125 s / 104 s at 0 (2.5 / 3.7 slots/s); armed watchdog-elapsed MINT 119 s at 15 and 150 s at 0 (3.7), 125 s and 170 s at 2.525 slots/s (CHECK_INTERVAL 1 / 3 / 5); at exactly 2.5 none on a SMOOTH head (not swept here — an anchor hold mints: 126 / 171 s, docs/SAFETY.md 'Slot time') — the numbers docs/SAFETY.md's D6 table holds the holder column (test_d6_holder) against"
 else
     bad "(6-min) un-armed 15:2.5/3.7=$m_u15_25/$m_u15_37 0:2.5/3.7=$m_u0_25/$m_u0_37 :: mint 15/0 @3.7=$m_a15_37/$m_a0_37 @2.525=$m_a15_2525/$m_a0_2525"
 fi
@@ -1361,10 +1472,10 @@ r1_row() {   # r1_row <world> <want mutation> <want last own-bank advance> [arme
     if [[ -n "$a" ]]; then [[ "$(wf "$w" emint)" == "$m" && $m -ge $(( oa + 100 )) ]] || { r1_ok=0; r1_why="$r1_why [$w armed: emint=$(wf "$w" emint)]"; }
     else [[ $m -ge $(( oa + 60 )) ]] || { r1_ok=0; r1_why="$r1_why [$w inside the window: $m < $oa + 60]"; }; fi
 }
-r1_row l1a 123 63; r1_row l1b25 135 75; r1_row l1b37 130 70; r1_row l1c 154 90; r1_row l1d 171 71 armed; r1_row l1lag 135 75
+r1_row l1a 123 63; r1_row l1b25 135 75; r1_row l1b37 130 70; r1_row l1c 155 91; r1_row l1d 171 71 armed; r1_row l1lag 135 75
 for w in l1e l1f l1dres; do [[ "$(wf "$w" mutation)" == "none" && "$(wf "$w" emint)" == "none" ]] || { r1_ok=0; r1_why="$r1_why [$w taken: $(wr "$w" | cut -c1-200)]"; }; done
 if [[ $r1_ok -eq 1 ]]; then
-    ok "(7a) RED FIRST (R1 — the panel's L1, BLOCKER): at MAX_DELINQUENT_SLOTS=15 a holder voting INTO the open episode — each vote 20 slots late ('delinquent' by the latency test, agave-current), or on-time votes whose not-delinquent window falls between two reads — was folded into the own-bank maximum with no D2 stamp; the 6.3.1 build took (a) t75 (25 s after the last vote), (b) t75 / t70 at 2.5 / 3.7 slots/s (13 s / 9 s), (c) t108 (28 s), the lag-62 world t75 (13 s), and armed (d) minted + took t117 (55 s < W+B). Now each own-bank lastVote ADVANCE inside the episode stamps D2 and no take lands inside TAKEOVER_DELAY of the last one (no mint inside the floor, armed): (a) t123 = 63 + 60, (b) t135 / t130, (c) t154, lag-62 t135, (d) mint + take t171 = 71 + 100; the holder silent at every take (hvafter=0). Resuming after the would-be take — (e) 2.5 slots/s, (f) 3.7, (dres) armed: the 6.3.1 build took each (t75 / t108 / t117) with the holder voting at the mutation; now none is taken"
+    ok "(7a) RED FIRST (R1 — the panel's L1, BLOCKER): at MAX_DELINQUENT_SLOTS=15 a holder voting INTO the open episode — each vote 20 slots late ('delinquent' by the latency test, agave-current), or on-time votes whose not-delinquent window falls between two reads — was folded into the own-bank maximum with no D2 stamp; the 6.3.1 build took (a) t75 (25 s after the last vote), (b) t75 / t70 at 2.5 / 3.7 slots/s (13 s / 9 s), (c) t108 (28 s), the lag-62 world t75 (13 s), and armed (d) minted + took t117 (55 s < W+B). Now each own-bank lastVote ADVANCE inside the episode stamps D2 and no take lands inside TAKEOVER_DELAY of the last one (no mint inside the floor, armed): (a) t123 = 63 + 60, (b) t135 / t130, (c) t155, the last advance t91 (fix round 1: t154 / t90 — this world's LOCAL reads take 1 s each, and fix round 2's added own-head samples (S2) move it by one second), lag-62 t135, (d) mint + take t171 = 71 + 100; the holder silent at every take (hvafter=0). Resuming after the would-be take — (e) 2.5 slots/s, (f) 3.7, (dres) armed: the 6.3.1 build took each (t75 / t108 / t117) with the holder voting at the mutation; now none is taken"
 else
     bad "(7a) R1:$r1_why"
 fi
@@ -1397,28 +1508,140 @@ if [[ $r2_ok -eq 1 ]]; then
 else
     bad "(7b) R2:$r2_why"
 fi
-# (7c) R3 — the veto's baseline on slow take cycles
+# (7c) R3 + S2 — the veto's baseline on slow take cycles
 r3_ok=1; r3_why=""
-for spec in h5gv:145:15 h6:142:12 h8:146:16 hm15:99:14 hwiz:104:12 hd0:140:16; do
+for spec in h5gv:145:15 h6:142:12 h8:146:16 hm15:99:14 hwiz:104:12; do
     w=${spec%%:*}; rest=${spec#*:}; m=${rest%%:*}; age=${rest#*:}
     [[ "$(wf "${w}_ship" mutation)" == "$m" && "$(wf "${w}_ship" ov_veto)" == "none" && "$(wf "${w}_ship" ov_age)" == "$age" ]] || { r3_ok=0; r3_why="$r3_why [${w}: $(wr "${w}_ship" | cut -c1-200)]"; }
-    [[ "$(wf "${w}_nor3" ov_veto)" == *":blind" && $(wf "${w}_nor3" mutation) -ge $(( m + 60 )) ]] || { r3_ok=0; r3_why="$r3_why [${w} all-R3-neutered not blind: $(wr "${w}_nor3" | cut -c1-200)]"; }
+    [[ "$(wf "${w}_nor3" ov_veto)" == *":blind" && $(wf "${w}_nor3" mutation) -ge $(( m + 60 )) ]] || { r3_ok=0; r3_why="$r3_why [${w} all-neutered not blind: $(wr "${w}_nor3" | cut -c1-200)]"; }
 done
-[[ "$(wf d7_ship mutation)" == "161" && "$(wf m15d7_ship mutation)" == "116" && "$(wf d7_nor3 mutation)" == "none" && "$(wf d7_nor3 ov_veto)" == "171:blind" && "$(wf m15d7_nor3 mutation)" == "none" ]] || { r3_ok=0; r3_why="$r3_why [starvation: d7=$(wf d7_ship mutation)/$(wf d7_nor3 mutation) m15d7=$(wf m15d7_ship mutation)/$(wf m15d7_nor3 mutation)]"; }
+# an 11 s hold (27 slots — BEYOND the 22-slot budget) with TIER2 down: BLIND on both (the concurrent re-check waits out
+# TIER2's 10 s timeout, as 6.3.1 first did; round 1's pinned-first re-check took it at t140 with a 16 s baseline)
+[[ "$(wf hd0_ship ov_veto)" == "150:blind" && "$(wf hd0_ship mutation)" == "252" && "$(wf hd0_ship ov_age)" == "10" && "$(wf hd0_nor3 ov_veto)" == "150:blind" ]] || { r3_ok=0; r3_why="$r3_why [hd0: $(wr hd0_ship | cut -c1-160) / $(wr hd0_nor3 | cut -c1-120)]"; }
+[[ "$(wf d7_ship mutation)" == "164" && "$(wf d7_ship ov_age)" == "10" && "$(wf m15d7_ship mutation)" == "119" && "$(wf d7_nor3 mutation)" == "none" && "$(wf d7_nor3 ov_veto)" == "171:blind" && "$(wf m15d7_nor3 mutation)" == "none" ]] || { r3_ok=0; r3_why="$r3_why [starvation: d7=$(wf d7_ship mutation)/$(wf d7_nor3 mutation) m15d7=$(wf m15d7_ship mutation)/$(wf m15d7_nor3 mutation)]"; }
+[[ "$(wf gv15_ship mutation)" == "142" && "$(wf gv15_ship ov_age)" == "2" && "$(wf gv15w_ship mutation)" == "98" && "$(wf gv15_nor3 mutation)" == "none" && "$(wf gv15_nor3 starve)" == "374" && "$(wf gv15w_nor3 mutation)" == "none" && "$(wf gv15w_nor3 starve)" == "330" ]] || { r3_ok=0; r3_why="$r3_why [advisory pair: gv15=$(wf gv15_ship mutation)/$(wf gv15_ship ov_age) wiz=$(wf gv15w_ship mutation) :: neutered $(wf gv15_nor3 mutation)/$(wf gv15_nor3 starve) wiz $(wf gv15w_nor3 mutation)/$(wf gv15w_nor3 starve)]"; }
+[[ "$(wf c3g_ship ov_age)" == "13" && "$(wf c3g_ship mutation)" == "154" && "$(wf c3g_nor3 ov_age)" == "3" ]] || { r3_ok=0; r3_why="$r3_why [TIER3 down: $(wr c3g_ship | cut -c1-120) / neutered age $(wf c3g_nor3 ov_age)]"; }
 if [[ $r3_ok -eq 1 ]]; then
-    ok "(7c) RED FIRST (R3 — the panel's AV-3, BLOCKER, and AV-6): a HEALTHY confirmed-head hold inside the 22-slot budget, aligned with the veto, on a slow take cycle — the 6.3.1 build's baseline was the pre-take sample alone (as old as the re-check: 5–8 s here) → BLIND and +85..+93 s: GOSSIP_VERIFY on, TIER2 5 s, a 6 s hold t145 → t230; TIER2 6 s, a 7 s hold t142 → t229; TIER2 8 s, a 9 s hold (22 slots, the budget's edge) t146 → t239; MAX_DELINQUENT_SLOTS=15, TIER2 7 s, an 8 s hold t99 → t190; the wizard preset (TIER2 6 s, a 7 s hold) t104 → t195. With TIER2 down its baseline was 10 s (the re-check's TIER2 timeout), so only a hold BEYOND the budget vetoed there (11 s, 27 slots: BLIND at t150, taken t252), and TIER2 down + TIER3 7 s late was never taken (every veto blind; at MAX_DELINQUENT_SLOTS=15 too). Now own-head samples bracket every external read of the take cycle and the re-check asks the pinned vantage first: every world takes on time (t145 / t142 / t146 / t99 / t104 / t140) with baselines 15 / 12 / 16 / 14 / 12 / 16 s, and the starvation is gone (t161; t116 at 15). All R3 layers neutered together → every red back"
+    ok "(7c) RED FIRST (R3 — the panel's AV-3 and AV-6; S2 — the delta panel's DAV-1/CK-2/DAV-2): a HEALTHY confirmed-head hold inside the 22-slot budget, aligned with the veto, on a slow take cycle — 6.3.1 as first built (every baseline layer neutered together: every R3/S2 sample, every two-tier split and the concurrent re-check → one sequential call) → BLIND and +85..+93 s: GOSSIP_VERIFY on, TIER2 5 s, a 6 s hold t145 → t230; TIER2 6 s, a 7 s hold t142 → t229; TIER2 8 s, a 9 s hold (22 slots, the budget's edge) t146 → t239; MAX_DELINQUENT_SLOTS=15, TIER2 7 s, an 8 s hold t99 → t190; the wizard preset (TIER2 6 s, a 7 s hold) t104 → t195; TIER2 down + TIER3 7 s late never taken (every veto blind; at MAX_DELINQUENT_SLOTS=15 too); the gossip advisory's pair unbracketed (TIER2's read at its 15 s bound, TIER3's 2 s) never taken — starvation page t374 (the wizard preset: t330; the same on fix round 1's build); TIER3 down + TIER2 3 s, GOSSIP_VERIFY on: a 3 s baseline. Shipped: every hold world takes on time (t145 / t142 / t146 / t99 / t104, baselines 15 / 12 / 16 / 14 / 12 s), the starvation is gone (t164 / t119 at 15, baseline 10 s — 3 s later than fix round 1: the concurrent re-check waits out TIER2's timeout), the advisory pair takes at t142 / t98 (baseline 2 s: the named residual, (7c-age)), TIER3 down → 13 s (t154); an 11 s hold (27 slots, BEYOND the budget) with TIER2 down stays BLIND (t150 → t252, as 6.3.1 first built; fix round 1 took it at t140)"
 else
-    bad "(7c) R3:$r3_why"
+    bad "(7c) R3/S2:$r3_why"
 fi
 a_ok=1; a_got=""
-for spec in age_t2_1:16 age_t2_2:16 age_t2_3:16 age_t2_4:16 age_t2_5:16 age_t2_5gv:15 age_t2_6:12 age_t2_7:14 age_t2_8:16 age_t2_9:9 age_d_1:13 age_d_2:16 age_d_3:16 age_d_4:8 age_d_5:10 age_d_6:12 d7_ship:14 age_d_8:16 age_d_9:9; do
+for spec in age_t2_1:16 age_t2_2:16 age_t2_3:16 age_t2_4:16 age_t2_5:16 age_t2_5gv:15 age_t2_6:12 age_t2_7:14 age_t2_8:16 age_t2_9:9 age_t2_10:10 \
+            t2d:10 age_d_1:11 age_d_2:12 age_d_3:13 age_d_4:14 age_d_5:15 age_d_6:16 d7_ship:10 age_d_8:10 age_d_9:10 \
+            age_cg_0:10 age_cg_1:11 age_cg_2:12 c3g_ship:13 age_cg_4:14 age_cg_5:15 age_cg_6:16 age_cg_7:10 age_cg_8:10 age_cg_9:10 age_c_0:16 age_c_4:14 age_c_7:10 \
+            gadv_1:2 gadv_2:4 gadv_3:6; do
     w=${spec%%:*}; want=${spec#*:}; got=$(wf "$w" ov_age); a_got="$a_got $w=$got"
     [[ "$got" == "$want" && "$(wf "$w" ov_veto)" == "none" ]] || a_ok=0
 done
-if [[ $a_ok -eq 1 && "$(wf hd4_8 ov_veto)" == "152:blind" && "$(wf hd4_8 mutation)" == "254" && "$(wf hd4_7 mutation)" == "152" && "$(wf hd4_7 ov_veto)" == "none" ]]; then
-    ok "(7c-age) the baseline age at the veto, MEASURED (the docs quote these): TIER2 answering in 1 / 2 / 3 / 4 / 5 s → 16 s (15 at 5 s with GOSSIP_VERIFY on), 6 → 12, 7 → 14, 8 → 16, 9 → 9 s; TIER2 down and TIER3 in 1 → 13, 2 → 16, 3 → 16, 4 → 8, 5 → 10, 6 → 12, 7 → 14, 8 → 16, 9 → 9 s — the oldest sample one-external-read spacing leaves inside OWN_HEAD_H. NAMED RESIDUAL (the one cell worse than the 6.3.1 build, whose re-check made the pre-take sample 14 s old there): TIER2 down + TIER3 4 s gives an 8 s baseline, and a veto-aligned hold of 8 s (20 slots, inside the 22-slot budget) is BLIND (t152 → taken t254; a 7 s hold passes, t152)"
+if [[ $a_ok -eq 1 && "$(wf hd4_8 mutation)" == "158" && "$(wf hd4_8 ov_veto)" == "none" && "$(wf hd4_7 mutation)" == "158" && "$(wf gadv_2h4 ov_veto)" == "148:blind" && "$(wf gadv_2h4 mutation)" == "233" ]]; then
+    ok "(7c-age) the baseline age at the veto, MEASURED (the docs quote these; the same at MAX_DELINQUENT_SLOTS 0/15, CHECK_INTERVAL 5/3, 2.5/3.7 slots/s — the 176-cell sweep behind the fix round): TIER2 answering in 1–5 s → 16 s (15 at 5 s with GOSSIP_VERIFY on), 6 → 12, 7 → 14, 8 → 16, 9 → 9, at its 10 s bound → 10; TIER2 down and TIER3 in 0..6 s → 10..16 (10 + y), 7 / 8 / 9 → 10; TIER3 down (at its bound), GOSSIP_VERIFY on, TIER2 in 0..6 s → 10 + x, 7..9 → 10 (off: 16 at 0, 14 at 4, 10 at 7) — 9–16 s over the matrix. Fix round 1's residual cell (TIER2 down + TIER3 4 s: an 8 s baseline, an 8 s hold BLIND t152 → t254) now 14 s: taken t158 with that hold. NAMED RESIDUAL (the gossip advisory): ONE advisory read of ~15 s (TIER3's) with TIER2 at 1 / 2 / 3 s → 2 / 4 / 6 s, and a 4 s hold (10 slots, inside the budget) aligned with the veto → BLIND t148, taken t233 (+85 s) — the reviewer's options in attempt_takeover's S2 note"
 else
-    bad "(7c-age)$a_got :: hd4 8s-hold=$(wf hd4_8 mutation)/$(wf hd4_8 ov_veto) 7s-hold=$(wf hd4_7 mutation)/$(wf hd4_7 ov_veto)"
+    bad "(7c-age)$a_got :: hd4 8s-hold=$(wf hd4_8 mutation)/$(wf hd4_8 ov_veto) 7s-hold=$(wf hd4_7 mutation) :: advisory 4s-hold=$(wf gadv_2h4 mutation)/$(wf gadv_2h4 ov_veto)"
+fi
+# (7f) S1 — the fresh re-check reads EVERY tier that answers (the delta panel's DL-1, a regression round 1 introduced)
+s1_ok=1; s1_why=""
+for spec in dl1a:168 dl1b:111 dl1c:169 dl1d:174; do
+    w=${spec%%:*}; m=${spec#*:}
+    [[ "$(wf "${w}_ship" mutation)" == "none" ]] || { s1_ok=0; s1_why="$s1_why [${w} shipped TOOK: $(wr "${w}_ship" | cut -c1-160)]"; }
+    [[ "$(wf "${w}_s1r1" mutation)" == "$m" && "$(wf "${w}_s1r1" hvafter)" == "1" ]] || { s1_ok=0; s1_why="$s1_why [${w} pinned-first: $(wr "${w}_s1r1" | cut -c1-160)]"; }
+done
+[[ "$(wf dl1a_ctl mutation)" == "168" && "$(wf dl1a_ctl hvafter)" == "1" ]] || { s1_ok=0; s1_why="$s1_why [control: $(wr dl1a_ctl | cut -c1-160)]"; }
+for spec in symsp:165 symlag:165 symsp15:105; do
+    w=${spec%%:*}; m=${spec#*:}
+    [[ "$(wf "${w}_ship" mutation)" == "none" ]] || { s1_ok=0; s1_why="$s1_why [${w} shipped TOOK: $(wr "${w}_ship" | cut -c1-160)]"; }
+    [[ "$(wf "${w}_s1seq" mutation)" == "$m" && "$(wf "${w}_s1seq" hvafter)" == "1" ]] || { s1_ok=0; s1_why="$s1_why [${w} sequential: $(wr "${w}_s1seq" | cut -c1-160)]"; }
+done
+[[ "$(wf symdead mutation)" == "165" && "$(wf symdead hvafter)" == "0" ]] || { s1_ok=0; s1_why="$s1_why [dead control: $(wr symdead | cut -c1-160)]"; }
+if [[ $s1_ok -eq 1 ]]; then
+    ok "(7f) RED FIRST (S1 — the delta panel's DL-1, BLOCKER): the pair pinned on TIER3, TIER2 recovering before the re-check and showing the holder's vote ADVANCED — round 1's pinned-first re-check never read TIER2 and TOOK a voting holder (the holder voting at the mutation, 28 / 21 / 29 / 34 s after it resumed): (a) t168, (b) MAX_DELINQUENT_SLOTS=15 at 3.7 slots/s t111, (c) GOSSIP_VERIFY on t169, (d) t174; shipped (both tiers read at once, any answer showing an advance aborts, only the pinned vantage's own frozen answer carries the take) → never taken, as on the 6.3 build and the first 6.3.1 build. The control: TIER2 never recovering → t168 on every build (no vantage shows the vote — what TIER2's answer is worth). And the SYMMETRIC worlds the concurrent read also closes (pre-existing on the 6.3 build and the first 6.3.1 build: their one sequential call reads TIER3 only when TIER2 fails): the pair pinned on TIER2 while it splices or lags, TIER3 honest and showing the advance → the sequential call takes t165 / t165 / t105 (MAX_DELINQUENT_SLOTS=15, 3.7) with the holder voting 25 / 25 / 15 s; shipped never; the dead-holder control t165 on both"
+else
+    bad "(7f) S1:$s1_why"
+fi
+# (7g) S2 — N-is-all over the take cycle's EXTERNAL reads, by structure (fix round 2 — the delta panel's DAV-1/
+# CK-2 and T5-UNPINNED's class): every external read between a take cycle's own sample and the veto has an own-head
+# sample since the previous external read. The walker reads each take-cycle function's comment-stripped body (string
+# contents blanked), in order; events: _own_head_sample (a sample); `curl` on a line not naming LOCAL_RPC, the
+# liveness sampler, the concurrent re-check (ONE read), and a call to a function whose first read its CALLER must
+# have sampled for (C: the confirm, TIER2's / TIER3's delinquency reads, the fence, the re-check) — each a read that
+# needs a sample since the previous read; a call to a function that samples before each of its own reads (S: the
+# gossip advisory, peer_has_relinquished, take_staked_identity) — a read that brings its sample. if / elif / else /
+# fi branches are walked apart and merged (a branch ending in an unconditional return ends there — a return inside a
+# `cmd || { … }` group or a case arm is conditional; an if / elif chain with no else keeps its fall-through path). A function's own
+# first read is covered by its caller for the C functions (start clean) and needs a sample for the S functions and
+# attempt_takeover (start dirty: armed, the watchdog-elapsed evaluation's reads precede it in the cycle; _elapsed_step
+# itself follows the main loop's per-cycle sample — its first read is caller-covered). OUTSIDE this census: the
+# alerts (a throttled page is not a read — the one before the fence, the confirm's TIER2-unreachable page, precedes
+# the sample between the TIER2 failure and TIER3); LOCAL reads (a sample IS one); the primary's recovery pass (its
+# samples are pinned by test_act_then_alert (14)). What the census cannot say is which sample a world makes the
+# baseline: MEASURED (7c)/(7c-age) — deleting the advisory's, the fence's, the fence split's, the pre-take and the
+# per-cycle sample each changes a measured world; the confirm's reference samples, the fast path's, the probe's and
+# the watchdog-elapsed split's changed none of 40 worlds (their reads are either rare at the take — the reference
+# path runs only while TIER2 shows the holder within 128 slots — or followed by a chain longer than OWN_HEAD_H):
+# N-is-all keeps them (one LOCAL read each), this census pins them.
+S2_AWK='
+function rd(w) { if (st == 1) { printf "%s:%d: %s — an external read with no own-head sample since the previous one\n", fn, NR, w; nb++ } if (st != -1) st = 1 }
+function mrg(v) { if (v == -1) return; mg[sp] = (mg[sp] == -1 || v > mg[sp]) ? v : mg[sp] }
+BEGIN { st = start + 0; sp = 0; nb = 0; cg = 0; n = split(cset, a, " "); for (i = 1; i <= n; i++) C[a[i]]; n = split(sset, a, " "); for (i = 1; i <= n; i++) S[a[i]]; n = split(lset, a, " "); for (i = 1; i <= n; i++) L[a[i]] }
+NR == 1 { next }
+{
+  line = $0; sub(/^[[:space:]]*#.*$/, "", line); sub(/[[:space:]]#[[:space:]].*$/, "", line)
+  loc = (line ~ /LOCAL_RPC/); gsub(/"[^"]*"/, "\"\"", line)
+  t = line; sub(/^[[:space:]]+/, "", t)
+  if (t ~ /^(else|elif)([[:space:]]|$)/) { mrg(st); st = sv[sp]; if (t ~ /^else/) hel[sp] = 1 }
+  if (t ~ /^fi([[:space:];)]|$)/) { mrg(st); if (!hel[sp]) mrg(sv[sp]); st = mg[sp]; sp-- }
+  n = split(line, tk, /[^A-Za-z0-9_]+/); rr = 0
+  for (i = 1; i <= n; i++) {
+    w = tk[i]
+    if (w == "_own_head_sample") { if (st != -1) st = 0 }
+    else if (w == "curl" && loc) { if (st != -1) st = 1 }                   # a LOCAL read: a gap an external read after it must see a sample past
+    else if (w in L) { if (st != -1) st = 1 }
+    else if (w == "curl") rd(w)
+    else if (w == "get_staked_liveness_sample" || (w in C)) rd(w)
+    else if (w == "_recheck_tier_read") { if (!rr) { rd(w); rr = 1 } }
+    else if (w in S) { if (st != -1) st = 1 }
+  }
+  if (t ~ /^if[[:space:]]/ && line !~ /;[[:space:]]*fi([[:space:];)]|$)/) { sp++; sv[sp] = st; mg[sp] = -1; hel[sp] = 0 }   # a one-line if … fi is one statement
+  if (t ~ /^return([[:space:]]|$)/ && cg == 0) st = -1                        # a conditional group / case arm (below) does not end the path
+  if (line ~ /(\|\||&&)[[:space:]]*\{[[:space:]]*$/ || t ~ /^case[[:space:]]/) cg++
+  if (cg > 0 && (t ~ /^\}/ || line ~ /(^|[[:space:];])esac([[:space:];]|$)/)) cg--
+}
+END { exit (nb > 0) }'
+S2_STANDBY_FNS="attempt_takeover:1 confirm_delinquency_external:0 tier2_check_delinquency:0 tier3_confirm_delinquency:0 check_primary_dropped_identity:1 peer_has_relinquished:1 staked_is_actively_voting:0 take_staked_identity:1 _fresh_proof_recheck:0 _elapsed_step:0"
+S2_STANDBY_C="tier2_check_delinquency tier3_confirm_delinquency confirm_delinquency_external staked_is_actively_voting _fresh_proof_recheck"
+S2_STANDBY_S="check_primary_dropped_identity peer_has_relinquished take_staked_identity"
+# the PRIMARY's recovery pass (the take path's other daemon — T5-UNPINNED's three primary lines among its samples)
+S2_PRIMARY_FNS="attempt_safe_recovery:1 _check_rpc_delinquency:0 _check_single_rpc:1 check_standby_has_identity:1 staked_is_actively_voting:0 switch_to_staked:1 _fresh_proof_recheck:0"
+S2_PRIMARY_C="_check_rpc_delinquency staked_is_actively_voting _fresh_proof_recheck"
+S2_PRIMARY_S="check_standby_has_identity _check_single_rpc switch_to_staked"
+S2_LOCAL="tier1_check_delinquency local_check_delinquency get_local_identity"
+s2_census() {   # s2_census <daemon> <fn:start …> <C set> <S set> — every violation, one per line; rc 1 if any
+    local d="$1" fns="$2" cs="$3" ss="$4" f st rc=0
+    for f in $fns; do
+        st=${f##*:}; f=${f%%:*}
+        [[ -n "$(fn_body "$d" "$f")" ]] || { echo "$f: NOT FOUND"; rc=1; continue; }
+        fn_body "$d" "$f" | awk -v fn="$f" -v start="$st" -v cset="$cs" -v sset="$ss" -v lset="$S2_LOCAL" "$S2_AWK" || rc=1
+    done
+    return $rc
+}
+s2_sb() { s2_census "$1" "$S2_STANDBY_FNS" "$S2_STANDBY_C" "$S2_STANDBY_S"; }
+s2_pr() { s2_census "$1" "$S2_PRIMARY_FNS" "$S2_PRIMARY_C" "$S2_PRIMARY_S"; }
+s2_out=$(s2_sb "$STANDBY"); s2_rc=$?; s2p_out=$(s2_pr "$PRIMARY"); s2p_rc=$?
+s2_nsamp=$(for _f in attempt_takeover confirm_delinquency_external tier2_check_delinquency check_primary_dropped_identity peer_has_relinquished staked_is_actively_voting take_staked_identity _elapsed_step; do fn_body "$STANDBY" "$_f" | code_of | grep -o '_own_head_sample' ; done | wc -l | tr -d ' ')
+mutate "$STANDBY" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 2, S2 — the delta panel.s DAV-1\/CK-2).*$/\1: deleted/' "$WORK/s-c7g-a.sh"
+mutate "$STANDBY" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 2, S2): between the reference and the re-read.*$/\1: deleted/' "$WORK/s-c7g-b.sh"
+mutate "$STANDBY" 's/^\(        _watchdog_pet   # §5 per-op pet (Block 5.2\/FF-B1 N-audit): bounded op completed (rc captured above) — post-op placement covers EVERY exit (holder-present return.*\)$/\1\
+        _x=$(curl -s -m 5 "$TIER2_RPC" -d x)/' "$WORK/s-c7g-c.sh"
+mutate "$STANDBY" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 2, S2): before the probe.s first read.*$/\1: deleted/' "$WORK/s-c7g-d.sh"
+mutate "$PRIMARY" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 1, R3): before the pass.s TIER2 read.*$/\1: deleted/' "$WORK/p-c7g-e.sh"   # T5-UNPINNED's pre-TIER2 sample
+c7g_e=$(s2_pr "$WORK/p-c7g-e.sh"); c7g_er=$?
+c7g_a=$(s2_sb "$WORK/s-c7g-a.sh"); c7g_ar=$?; c7g_b=$(s2_sb "$WORK/s-c7g-b.sh"); c7g_br=$?
+c7g_c=$(s2_sb "$WORK/s-c7g-c.sh"); c7g_cr=$?; c7g_d=$(s2_sb "$WORK/s-c7g-d.sh"); c7g_dr=$?
+if [[ $s2_rc -eq 0 && -z "$s2_out" && $s2p_rc -eq 0 && -z "$s2p_out" && $c7g_er -ne 0 && "$c7g_e" == *"attempt_safe_recovery:"*"_check_rpc_delinquency"* && "$s2_nsamp" == "13" && $c7g_ar -ne 0 && "$c7g_a" == *"check_primary_dropped_identity:"*"curl"* && $c7g_br -ne 0 && "$c7g_b" == *"tier2_check_delinquency:"* \
+      && $c7g_cr -ne 0 && "$c7g_c" == *"check_primary_dropped_identity:"* && $c7g_dr -ne 0 && "$c7g_d" == *"attempt_takeover:"*"get_staked_liveness_sample"* ]]; then
+    ok "(7g) S2 census (N-is-all, by structure): every external read of the take cycle — the probe, the gossip prefetch, peer_has_relinquished, the confirm (TIER2's payload / reference / re-read, TIER3), the gossip advisory (EACH tier), the fence (both tiers), the re-check (one concurrent read) — has an own-head sample since the previous read (a LOCAL read in between is a gap too), over the 10 take-cycle functions ($s2_nsamp sample sites); the PRIMARY's recovery pass likewise (its TIER2 check, the fence's split, the gossip advisory's reads, the re-check); controls, each red: the advisory's sample deleted (the delta panel's DAV-1 shape) → check_primary_dropped_identity's curl; the confirm's re-read sample deleted → tier2_check_delinquency; an unsampled TIER2 curl added to the advisory → red; the probe's new sample deleted → attempt_takeover's sampler; the primary's pre-TIER2 sample deleted (T5-UNPINNED — it survived every suite) → attempt_safe_recovery's TIER2 check. Every take-cycle sample line of both daemons, deleted one at a time, turns this census red except the per-cycle / per-pass samples it does not walk (the main loop's, the recovery pass's first, the ladder's, the delay tail's — pinned by worlds: (4b), (7c), test_act_then_alert (14))"
+else
+    bad "(7g) S2 census rc=$s2_rc samples=$s2_nsamp :: $s2_out :: primary rc=$s2p_rc $s2p_out e=$c7g_er[$c7g_e] :: controls a=$c7g_ar[$c7g_a] b=$c7g_br[$c7g_b] c=$c7g_cr[$c7g_c] d=$c7g_dr[$c7g_d]"
 fi
 # (7d) L4 — WITNESS_FASTPATH with a PRESENTED flip (forgeable on shared vantages): D2's timer is never skipped
 if [[ "$(wf fp mutation)" == "119" && "$(wf fp ob_last)" == "59" && "$(wf fp_nod2 mutation)" == "93" && "$(wf fp_nod2 ov_veto)" == "66:voting" \
@@ -1429,7 +1652,7 @@ else
 fi
 # (7e) L3 — Tier-1 at a node run with a smaller non-default --health-check-slot-distance
 if [[ "$(wf dist64 mutation)" == "none" && "$(wf dist64 t1_behind_from)" == "0" && "$(wf dist64r mutation)" == "none" && "$(wf dist64r t1_behind_from)" == "0" ]]; then
-    ok "(7e) RED FIRST (the panel's L3): a node run with --health-check-slot-distance 64, the spare replaying 44 s (110 slots) behind: agave reports it 'behind by 110'; the 6.3.1 build's 128 cap admitted it and took at t170 with the holder voting for 40 s (RESUME t130; 30 s at t140); the 6.3 build (default 100) held. Now every 'behind' report fails Tier-1 (the effective tolerance is min(configured, the node's own distance) — below every report): Tier-1 BEHIND from t0, no take — never looser than the 6.3 build at any distance (test_config_drift (h4)/(h5))"
+    ok "(7e) RED FIRST (the panel's L3): a node run with --health-check-slot-distance 64, the spare replaying 44 s (110 slots) behind: agave reports it 'behind by 110'; the 6.3.1 build's 128 cap admitted it and took at t170 with the holder voting for 40 s (RESUME t130; 30 s at t140); the 6.3 build (default 100) held. Now every 'behind' report fails Tier-1 (Tier-1 is ready only on getHealth's ok: LOCAL_HEALTH_MAX_BEHIND enters no decision — fix round 2, S5): Tier-1 BEHIND from t0, no take — never looser than the 6.3 build at any distance (test_config_drift (h4)/(h5))"
 else
     bad "(7e) L3 dist64=$(wr dist64 | cut -c1-200) :: resume140=$(wf dist64r mutation)"
 fi

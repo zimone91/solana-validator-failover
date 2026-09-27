@@ -18,9 +18,10 @@
 #       role-specific knob tables (structural, like test_provider_pinning's (g))
 #   (h) LOCAL_HEALTH_MAX_BEHIND (Block 6.3.1 D5, tightened in its fix round 1 — the panel's L3): the 6.3 M9
 #       announce BECAME a clamp to the node's OWN --health-check-slot-distance (read from the validator's
-#       command line, else agave's 128) — effective = min(configured, that distance), above it WARNs, below it
-#       is announced as behaving as the distance — and Tier-1 treats EVERY getHealth "behind" report as not
-#       ready (agave reports it only beyond that distance); the clamp lives outside the announce-only section
+#       command line, else agave's 128) — above it WARNs and clamps, at or below it is announced as having no
+#       effect — and Tier-1 treats EVERY getHealth "behind" report as not ready (agave reports it only beyond
+#       that distance): the knob enters no decision (fix round 2, S5); the clamp lives outside the announce-only
+#       section
 #   (g) CONTROL (non-vacuous): neuter the announce path → (a) records ZERO lines (the suite's
 #       assertions genuinely depend on the shipped code); plus the startup call-site exists in both
 #       daemons AFTER validate_numeric_config and BEFORE the main loop
@@ -192,10 +193,11 @@ else
 fi
 
 # ── (h) LOCAL_HEALTH_MAX_BEHIND: the 6.3 M9 announce BECAME THE CLAMP (Block 6.3.1 D5; fix round 1, R7 — L3) ─
-# Effective value = min(configured, THIS node's own --health-check-slot-distance), and agave reports a node
-# "behind" only when it is MORE than that distance behind (agave 4.2.1 rpc_health.rs check(); the default
-# distance is DELINQUENT_VALIDATOR_SLOT_DISTANCE = 128 — json_rpc_config.rs): every "behind by N" report has
-# N above the effective value, so Tier-1 refuses EVERY report — the spare is ready iff getHealth answers ok.
+# The knob enters NO decision (fix round 2, S5 — the delta panel's DL-2/CK-5: "effective = min(configured, the
+# distance)" was only the clamped variable, which nothing reads): agave reports a node "behind" only when it is
+# MORE than THIS node's own --health-check-slot-distance behind (agave 4.2.1 rpc_health.rs check(); the default
+# distance is DELINQUENT_VALIDATOR_SLOT_DISTANCE = 128 — json_rpc_config.rs) and no lag inside it, and Tier-1
+# refuses EVERY report — the spare is ready iff getHealth answers ok, whatever the value.
 # At startup the cap is the distance read from the validator's command line (get_validator_args), else
 # agave's default 128:
 #   above the cap → ONE loud [config-clamp] WARN naming the value and the cap, the knob set to the cap (h1)
@@ -205,7 +207,7 @@ fi
 # cap still admitted 'behind by 101..128' at the default (a node run at a SMALLER distance — the panel's L3:
 # a spare 110 slots behind took over 40 s into the holder's voting) where the 6.3 build's default 100 held — (h5).
 # The clamp mutates the knob, so it lives OUTSIDE announce_config_drift (INVARIANT(announce-only)) — (h3).
-echo ""; echo "─── (h) LOCAL_HEALTH_MAX_BEHIND → min(configured, the node's own --health-check-slot-distance); Tier-1 refuses every 'behind' report (6.3.1 D5 + fix round 1 L3) ───"
+echo ""; echo "─── (h) LOCAL_HEALTH_MAX_BEHIND: clamped above the node's own --health-check-slot-distance, no effect at or below it; Tier-1 refuses every 'behind' report (6.3.1 D5 + fix round 1 L3; fix round 2 S5) ───"
 clamp_out() {   # $1=script $2=value [$3=the validator's argv] → the clamp's log lines, then "eff=<value after the clamp>"
     (
         SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$1" > "$SRC"
@@ -222,7 +224,7 @@ clamp_out() {   # $1=script $2=value [$3=the validator's argv] → the clamp's l
 A64="/usr/bin/agave-validator --identity /x/id.json --health-check-slot-distance 64 --ledger /l"
 A200="/usr/bin/agave-validator --health-check-slot-distance=200 --ledger /l"
 out=$(clamp_out "$STANDBY" 200); out64=$(clamp_out "$STANDBY" 200 "$A64")
-if [[ "$(printf '%s\n' "$out" | grep -c '^WARN \[config-clamp\]')" == "1" && "$out" == *"LOCAL_HEALTH_MAX_BEHIND=200 CLAMPED to 128"* && "$out" == *"effective = min(configured, the node's own distance)"* \
+if [[ "$(printf '%s\n' "$out" | grep -c '^WARN \[config-clamp\]')" == "1" && "$out" == *"LOCAL_HEALTH_MAX_BEHIND=200 CLAMPED to 128"* && "$out" == *"it cannot take effect"* && "$out" != *"min(configured"* \
       && "$out" == *"not on its command line"* && "$out" == *"set LOCAL_HEALTH_MAX_BEHIND=128"* && "$out" == *"eff=128 dist=" \
       && "$(printf '%s\n' "$out64" | grep -c '^WARN \[config-clamp\]')" == "1" && "$out64" == *"CLAMPED to 64"* && "$out64" == *"(64, from its command line)"* && "$out64" == *"eff=64 dist=64" ]]; then
     ok "(h1) LOCAL_HEALTH_MAX_BEHIND=200 → ONE loud [config-clamp] WARN (the value, the cap, why it cannot take effect, how to align): the cap is the node's own --health-check-slot-distance when its command line shows one (64 → CLAMPED to 64), else agave's default 128"
@@ -280,7 +282,7 @@ for cfg in 0 100 128 200; do
 done
 r64=$(t1_out "$STANDBY" 128 110 64)
 if [[ $h5_ok -eq 1 && "$r64" == "rc=1 "* && "$r64" == *"health-check distance (64)"* ]]; then
-    ok "(h5) RED FIRST (the panel's L3): every 'behind by N' report is NOT ready at every configured value (0 / 100 / 128 / 200 × N = 65 / 100 / 101 / 110 / 128 / 129) — agave reports 'behind' only beyond the node's own distance, above min(configured, that distance). The 6.3.1 build ADMITTED 'behind by 101..128' at its default 128 (a node at a smaller distance: a spare 110 slots behind took over 40 s into the holder's voting — test_own_view (7e)); the 6.3 build admitted 'behind by N <= 100' at its default 100 — never looser than that now, at any distance; the log names the node's distance when the command line shows it (64)"
+    ok "(h5) RED FIRST (the panel's L3): every 'behind by N' report is NOT ready at every configured value (0 / 100 / 128 / 200 × N = 65 / 100 / 101 / 110 / 128 / 129) — agave reports 'behind' only beyond the node's own distance, and the knob enters no decision. The 6.3.1 build ADMITTED 'behind by 101..128' at its default 128 (a node at a smaller distance: a spare 110 slots behind took over 40 s into the holder's voting — test_own_view (7e)); the 6.3 build admitted 'behind by N <= 100' at its default 100 — never looser than that now, at any distance; the log names the node's distance when the command line shows it (64)"
 else
     bad "(h5)$h5_bad :: distance-64 log='$r64'"
 fi
