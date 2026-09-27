@@ -2406,8 +2406,12 @@ _derive_proof_floors() {
     # an ASSUMED rate — a floor below the real one, not a model of it: mainnet MEASURED ~3.7
     # slots/s on 2026-09-26 (docs/SAFETY.md, 'Slot time'), so 25 slots is
     # ~6.8 s there — STRICTER than its 10 s derivation (more blind reads: availability, never a
-    # take); a SLOWER cluster would loosen it (25 slots = 15 s at 600 ms slots). Staleness beyond
-    # the allowance reads as BLIND (wait) — availability, never safety.
+    # take). A SLOWER cluster LOOSENS it, and that is the SAFETY direction: at 600 ms slots 25 slots
+    # are 15 s of lag against the 10 s budget, so measured silence can overstate true silence by up to
+    # 15 s and the 100 s floor admits a proof at a true silence of 85 s < W+B = 90 s — and clusters
+    # slow down during incidents. A NAMED RESIDUAL until 6.3.1 (the provider reads two heads, so it
+    # knows Δslot/Δt: below the assumed 2.5 slots/s it will abstain — blind). Lag beyond N_HEAD SLOTS
+    # reads as BLIND (wait) — availability; the slow-cluster case above is the exception in SECONDS.
     # The other terms of "measured - true", named (6.3 fix round, M2 — they are NOT absorbed
     # through MARGIN_ELAPSED: MARGIN drives N_HEAD, and N_HEAD is never loosened — pre-reg. (b)):
     #   δ — the START stamp's lead over the observation it stands for. A start stamped BEFORE the
