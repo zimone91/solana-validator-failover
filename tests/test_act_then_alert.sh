@@ -63,6 +63,12 @@
 #       (13c) DRY_RUN mirrors the veto (no WOULD TAKE); (13d) a voting-once veto's re-anchor is
 #       CONSUMED (the take lands at veto + TAKEOVER_DELAY); (13e) the veto page throttles (the (12)
 #       idiom) while the starvation page still fires
+#   (14) the primary's recovery path on ONE chain model (sim_chain): the RECOVERY_DELAY band, the named
+#       default-config cost, a VOTING/BLIND veto re-elapsing the full delay (the M12 / blind-anchor mutants)
+#   (15) the DYNAMIC halves of the take-path and A8 censuses (fix round 1, the panel's T3/T4): every STAKED
+#       set-identity in this suite's sims followed the veto's read with nothing but log lines between (the
+#       agave-validator stub audits each), and a logging curl FIRST in PATH saw no curl-binary call; controls:
+#       the veto call deleted → red; the panel's A1 (`command curl` after the veto) → caught, red, never sent
 # RED (captured before the slice-5 daemon changes): cases 1–7 fail — the order case sees NET (🔍)
 # before MUTATE and no re-check SAMPLE; the abort cases see MUTATE despite fresh VOTING; (7) has no
 # helper to compare. (9)/(10) were observed red by MUTATION (branch neutered → red) after landing;
@@ -123,6 +129,36 @@ a8_between() {
       "$(printf '%s' "$seg" | tr ';' '\n' | grep -c '^NET')"
 }
 
+# ── the net guard + the STAKED-MUTATE audit (6.3.1 fix round 1, R6 — the panel's T4 and T3) ─────────────
+# Every sim puts a logging `curl` FIRST in PATH: the sims shadow curl as a shell FUNCTION, so only `command curl`,
+# `env curl` or an exec'd curl reaches a curl BINARY — the logger records it as a NET event (in the sim's event log
+# and the suite log) and fails it (rc 7): no request leaves a sim, and the A8 census sees it (the panel's A1 sent 5
+# real requests to the public cluster through `command curl` and stayed green). The agave-validator stub AUDITS
+# every set-identity to the STAKED keypair: the events since the last veto read (READ LOCAL batch — sim_chain's
+# veto logs CLEAR), log lines aside — case (15) requires that list empty for every staked MUTATE in the suite.
+_MUT_AUDIT=$(mktemp "${TMPDIR:-/tmp}/ata-mut.XXXXXX"); _CURLBIN_LOG=$(mktemp "${TMPDIR:-/tmp}/ata-curl.XXXXXX")
+export _MUT_AUDIT _CURLBIN_LOG
+sim_stubs() {   # $1=stub dir — writes the logging curl and the auditing agave-validator stub
+  cat > "$1/curl" <<'EOS'
+#!/bin/sh
+printf 'NET CURLBIN %s\n' "$*" | cut -c1-160 >> "$_EVT_FILE"
+printf '%s\n' "$*" >> "$_CURLBIN_LOG"
+exit 7
+EOS
+  cat > "$1/agave-validator" <<'EOS'
+#!/bin/sh
+case "$*" in
+  *set-identity*)
+    case "$*" in *"set-identity $_STAKED_KP"*)
+      awk -v m="${_VETO_MARK:-^READ LOCAL batch\$}" '$0 ~ m { s = 1; b = ""; next } s && !/^LOG / { b = b $0 ";" } END { printf "STAKED veto=%s between=[%s]\n", (s ? "yes" : "NO"), b }' "$_EVT_FILE" >> "$_MUT_AUDIT" ;;
+    esac
+    if [ -n "$_MUT_T" ]; then echo "MUTATE t=$(( _SIM_NOW - 100000 ))"; else echo "MUTATE"; fi >> "$_EVT_FILE" ;;
+esac
+exit 0
+EOS
+  chmod +x "$1/curl" "$1/agave-validator"
+}
+
 # ── STANDBY sim: REAL attempt_takeover → REAL take_staked_identity over a timeline ─────────────
 #   $1 = re-check mode: what the sampler returns while _IN_TAKE=1
 #        (frozen | advance | blind | flip)   — outside the take it is always frozen-consistent
@@ -137,13 +173,8 @@ sim_sb() {
   _RMODE="$rmode"
   EVT=$(mktemp); export _EVT_FILE="$EVT"
   STUB=$(mktemp -d)
-  cat > "$STUB/agave-validator" <<'EOS'
-#!/bin/sh
-case "$*" in *set-identity*) echo "MUTATE" >> "$_EVT_FILE" ;; esac
-exit 0
-EOS
-  chmod +x "$STUB/agave-validator"
-  KP=$(mktemp); echo '[1]' > "$KP"; STAKED_KEYPAIR="$KP"
+  sim_stubs "$STUB"; PATH="$STUB:$PATH"
+  KP=$(mktemp); echo '[1]' > "$KP"; STAKED_KEYPAIR="$KP"; export _STAKED_KP="$KP"
   trap 'rm -f "$KP" "$EVT"; rm -rf "$STUB"' EXIT
   STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VOTE_PUBKEY="V1"
   SOLANA_PATH="$STUB"; LEDGER_PATH="/mock/ledger"; VALIDATOR_TYPE="agave"; SETIDENTITY_TIMEOUT=15
@@ -248,13 +279,8 @@ sim_pr() {
   _RMODE="$rmode"
   EVT=$(mktemp); export _EVT_FILE="$EVT"
   STUB=$(mktemp -d)
-  cat > "$STUB/agave-validator" <<'EOS'
-#!/bin/sh
-case "$*" in *set-identity*) echo "MUTATE" >> "$_EVT_FILE" ;; esac
-exit 0
-EOS
-  chmod +x "$STUB/agave-validator"
-  KP=$(mktemp); echo '[1]' > "$KP"; STAKED_KEYPAIR="$KP"
+  sim_stubs "$STUB"; PATH="$STUB:$PATH"
+  KP=$(mktemp); echo '[1]' > "$KP"; STAKED_KEYPAIR="$KP"; export _STAKED_KP="$KP"
   trap 'rm -f "$KP" "$EVT"; rm -rf "$STUB"' EXIT
   STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VOTE_PUBKEY="V1"
   SOLANA_PATH="$STUB"; LEDGER_PATH="/mock/ledger"; VALIDATOR_TYPE="agave"; SETIDENTITY_TIMEOUT=15
@@ -312,6 +338,95 @@ EOS
   )
 }
 
+# ── sim_chain — the PRIMARY's recovery path on ONE chain model (6.3.1 fix round 1, R6 — the panel's L5/T8) ──
+# Every view the recovery path reads comes from ONE chain: the head advances RATE_N/RATE_D slots/s from
+# 900000 at T0; the staked vote account's votes land at the head of their second (a vote at t is for slot(t) − 1,
+# landed in slot(t)): its last regular vote at TV (default 0 — the holder's demote), VOTE1=<t> one more vote
+# (someone voted the staked identity once). LOCAL_RPC — the processed head slot(t), confirmed −2, finalized −32;
+# getVoteAccounts at the commitment asked with agave's 128-slot current/delinquent partition (tier1's finalized
+# read, the veto's filtered confirmed batch); getClusterNodes: this node (U1) at 1.2.3.4:8001. TIER2/TIER3 —
+# HONEST, the same chain (processed for the liveness sampler, finalized for the tier-2 check and the gossip
+# advisory's vote-account read; the staked identity S1 in gossip at OUR endpoint: nobody else holds it).
+# OVDOWN=1: the veto's batch read fails (rc 7). The loop: attempt_safe_recovery every CI s (default 3);
+# every sleep — the recovery ladder's, switch_to_staked's — advances the clock; LAST_SWITCH_TIME = T0.
+# Events: PASS-START t= (a recovery-eligible pass), TAKE-ENTER t=, VETO <kind> t=, CLEAR age= (the veto's
+# baseline age), MUTATE t=. WSCRIPT: a mutant primary.
+sim_chain() {
+  (
+  set +e
+  load_seam "${WSCRIPT:-$PRIMARY}"
+  EVT=$(mktemp); export _EVT_FILE="$EVT"
+  STUB=$(mktemp -d)
+  sim_stubs "$STUB"; PATH="$STUB:$PATH"; export _MUT_T=1 _VETO_MARK='^CLEAR age='
+  KP=$(mktemp); echo '[1]' > "$KP"; STAKED_KEYPAIR="$KP"; export _STAKED_KP="$KP"
+  trap 'rm -f "$KP" "$EVT"; rm -rf "$STUB"' EXIT
+  STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VOTE_PUBKEY="V1"
+  LOCAL_RPC="http://local.mock"; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"
+  SOLANA_PATH="$STUB"; LEDGER_PATH="/mock/ledger"; VALIDATOR_TYPE="agave"; SETIDENTITY_TIMEOUT=15
+  RECOVERY_DELAY=${RD:-300}; RECOVERY_CHECKS=${RC:-3}; RECOVERY_CHECK_INTERVAL=${RI:-30}; RECOVERY_COOLDOWN=0
+  VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_MIN_INTERVAL=10; VOTE_LIVENESS_EPSILON=0; VOTE_LIVENESS_MIN_SPAN=40
+  DRY_RUN=false; TG_ENABLED=false; ALERT_THROTTLE=600
+  harness_clock_shims
+  export _SIM_NOW
+  log(){ :;}; log_error(){ :;}; log_warn(){ case "$*" in *"[own-view] VETO (holder voting)"*) printf 'VETO voting t=%s\n' $(( _SIM_NOW - T0 )) >> "$_EVT_FILE" ;; *"[own-view] VETO (blind)"*) printf 'VETO blind t=%s\n' $(( _SIM_NOW - T0 )) >> "$_EVT_FILE" ;; esac; }
+  log_info(){ case "$*" in *"[own-view] veto read clear"*) local _a="${*##*baseline }"; _a="${_a#* (}"; _a="${_a%% s old*}"; printf 'CLEAR age=%s t=%s\n' "$_a" $(( _SIM_NOW - T0 )) >> "$_EVT_FILE" ;; esac; }
+  alert(){ :;}; alert_info(){ :;}; alert_warn(){ :;}; send_telegram(){ return 0; }; send_webhook(){ :; }
+  save_state(){ :;}
+  sleep(){ local _s="${1%%.*}"; case "$_s" in ''|*[!0-9]*) _s=0 ;; esac; _SIM_NOW=$(( _SIM_NOW + _s )); export _SIM_NOW; }
+  get_local_identity(){ echo "$STAKED_PUBKEY"; }
+  timeout(){ [[ "$1" == "-k" ]] && shift 2; shift; "$@"; }
+  _slot(){ echo $(( 900000 + $1 * ${RATE_N:-1} / ${RATE_D:-1} )); }
+  _lv_in(){   # the staked account's lastVote as a bank at slot $1 shows it
+      local b=$1 v s
+      s=$(_slot "${TV:-0}"); v=$(( s - 1 ))
+      if [[ -n "${VOTE1:-}" ]]; then s=$(_slot "$VOTE1"); [[ $s -le $b ]] && v=$(( s - 1 )); fi
+      echo "$v"
+  }
+  _gva(){   # $1 = bank slot, $2 = "all"|"filtered" → a getVoteAccounts result object
+      local b=$1 lv acct part="current"; lv=$(_lv_in "$b")
+      [[ $lv -le $(( b - 128 )) ]] && part="delinquent"
+      acct="{\"votePubkey\":\"V1\",\"nodePubkey\":\"S1\",\"lastVote\":$lv}"
+      if [[ "$2" == "filtered" ]]; then
+          if [[ "$part" == "current" ]]; then printf '{"current":[%s],"delinquent":[]}' "$acct"; else printf '{"current":[],"delinquent":[%s]}' "$acct"; fi
+      elif [[ "$part" == "current" ]]; then printf '{"current":[{"votePubkey":"OTHER","nodePubkey":"X","lastVote":%s},%s],"delinquent":[]}' $(( b - 1 )) "$acct"
+      else printf '{"current":[{"votePubkey":"OTHER","nodePubkey":"X","lastVote":%s}],"delinquent":[%s]}' $(( b - 1 )) "$acct"; fi
+  }
+  curl(){
+      local url="" d="" src what comm t h b ida idb
+      while [[ $# -gt 0 ]]; do case "$1" in -d) d="$2"; shift 2 ;; http*) url="$1"; shift ;; *) shift ;; esac; done
+      case "$url" in "$LOCAL_RPC") src=LOCAL ;; "$TIER2_RPC"|"$TIER3_RPC") src=EXT ;; *) return 7 ;; esac
+      what=other; case "$d" in "["*) what=batch ;; *getSlot*) what=getSlot ;; *getVoteAccounts*) what=getVoteAccounts ;; *getClusterNodes*) what=getClusterNodes ;; esac
+      comm=finalized; case "$d" in *'"commitment":"processed"'*) comm=processed ;; *'"commitment":"confirmed"'*) comm=confirmed ;; esac
+      t=$(( _SIM_NOW - T0 )); h=$(_slot "$t")
+      case "$comm" in processed) b=$h ;; confirmed) b=$(( h - 2 )) ;; *) b=$(( h - 32 )) ;; esac
+      case "$what" in
+          getSlot) printf '{"jsonrpc":"2.0","id":1,"result":%s}' "$b" ;;
+          getVoteAccounts) printf '{"jsonrpc":"2.0","id":1,"result":%s}' "$(_gva "$b" all)" ;;
+          getClusterNodes) printf '{"jsonrpc":"2.0","id":1,"result":[{"pubkey":"S1","gossip":"1.2.3.4:8001"},{"pubkey":"U1","gossip":"1.2.3.4:8001"}]}' ;;
+          batch)
+              [[ "$src" == LOCAL && "${OVDOWN:-0}" != "1" ]] || return 7
+              b=$(( h - 2 )); ida=${d#*\"id\":}; ida=${ida%%,*}; idb=${d##*\"id\":}; idb=${idb%%,*}
+              printf '[{"jsonrpc":"2.0","id":%s,"result":%s},{"jsonrpc":"2.0","id":%s,"result":%s}]' "$ida" "$b" "$idb" "$(_gva "$b" filtered)" ;;
+          *) return 7 ;;
+      esac
+      return 0
+  }
+  eval "$(declare -f switch_to_staked | sed '1s/^switch_to_staked/_real_switch_to_staked/')"
+  switch_to_staked(){ printf 'TAKE-ENTER t=%s\n' $(( _SIM_NOW - T0 )) >> "$_EVT_FILE"; _real_switch_to_staked "$@"; }
+  eval "$(declare -f tier1_check_delinquency | sed '1s/^tier1_check_delinquency/_real_tier1_check_delinquency/')"
+  tier1_check_delinquency(){ printf 'PASS-START t=%s\n' $(( _SIM_NOW - T0 )) >> "$_EVT_FILE"; _real_tier1_check_delinquency; }   # the recovery pass's first read (a pass the anchor let through)
+  _SIM_NOW=$T0; export _SIM_NOW
+  LAST_SWITCH_TIME=$T0; _last_recovery_log=0; _recovery_confirm_count=0; _standby_alert_sent=""
+  _liveness_first_vote=""; _liveness_first_tip=""; _liveness_first_ts=0; _liveness_first_provider=""
+  _last_blind_end=0; _liveness_obs_since=0; CURRENT_IDENTITY="U1"; _own_view_reset
+  while [[ $(( _SIM_NOW - T0 )) -le ${HZ:-400} ]]; do
+      attempt_safe_recovery >/dev/null 2>&1
+      grep -q '^MUTATE' "$EVT" && break
+      _SIM_NOW=$(( _SIM_NOW + ${CI:-3} )); export _SIM_NOW
+  done
+  printf 'EVENTS=%s\n' "$(tr '\n' ';' < "$EVT")"
+  )
+}
 evline(){ printf '%s\n' "$1" | grep '^EVENTS=' | head -1 | cut -c8-; }
 stline(){ printf '%s\n' "$1" | grep '^STATE='  | head -1 | cut -c7-; }
 
@@ -325,7 +440,7 @@ echo "    trace: $ev"
 if [[ "$ev" == *MUTATE* ]]; then
     pre="${ev%%MUTATE*}"; post="${ev#*MUTATE}"; seg="${pre#*TAKE-ENTER}"
     [[ "$pre" != *"NET"* ]] \
-        && ok "(1a) ZERO NET before MUTATE — no 🔍 pre-take alert, nothing between the Gate-3 verdict / re-check and set-identity (condition 3)" \
+        && ok "(1a) ZERO NET before MUTATE — no 🔍 pre-take alert; between the re-check and set-identity: no network, no alerts; one bounded local veto read allowed (condition 3)" \
         || bad "(1a) a NET event precedes MUTATE: $pre"
     [[ "$seg" == *"SAMPLE"* ]] \
         && ok "(1b) a fresh re-check SAMPLE sits between TAKE-ENTER and MUTATE (condition 1)" \
@@ -571,5 +686,76 @@ if [[ "$ev" != *MUTATE* && "$vetos" -ge 20 && "$vpages" -ge 3 && "$vpages" -le 6
 else
     bad "(13e) mutate=$([[ "$ev" == *MUTATE* ]] && echo yes || echo no) vetoes=$vetos pages=$vpages starv=$starv"
 fi
+
+# ── (14) the PRIMARY's recovery veto on ONE chain model (6.3.1 fix round 1, R6 — the panel's L5 and T8) ─────────
+# (6) and (13) drive switch_to_staked's veto in a world no node can produce (tier1's finalized view calls the staked
+# account NOT delinquent at lastVote 5000 while the veto's confirmed view at 800000+ calls it delinquent — L5). Here
+# every view comes from ONE chain (sim_chain): tier1 NEEDS the account not-delinquent in the FINALIZED view (lastVote
+# > finalized − 128) and the veto needs it delinquent in the CONFIRMED view (lastVote <= confirmed − 128; confirmed =
+# finalized + 30) — so the take pass can pass only while its instant is 128 to 158 slots after the account's last
+# vote: a 30-slot band (30 s at 1.0 slots/s, 12 s at 2.5, 8 s at 3.7), every earlier recovery pass inside tier1's
+# window too.
+echo ""; echo "─── (14) the recovery path's own-view veto on ONE chain model: the band it can pass in; a VOTING / BLIND veto re-elapses RECOVERY_DELAY ───"
+W14=$(mktemp -d "${TMPDIR:-/tmp}/aa14.XXXXXX")
+mutate "$PRIMARY" '/^attempt_safe_recovery() {/,/^}/s/if \[\[ \${_own_bank_active_time:-0} -gt \$recovery_anchor \]\]; then/if false; then/' "$W14/p-m12.sh"   # the panel's M12: the own-bank anchor input dropped
+mutate "$PRIMARY" '/^attempt_safe_recovery() {/,/^}/s/if \[\[ \${_last_blind_end:-0} -gt \$recovery_anchor \]\]; then/if false; then/' "$W14/p-mblind.sh"   # the blind anchor input dropped
+for _s in "$PRIMARY" "$W14/p-m12.sh" "$W14/p-mblind.sh"; do seam_cut "$_s" >/dev/null; done
+c14() { local n="$1"; shift; ( for kv in "$@"; do export "$kv"; done; sim_chain 2>/dev/null | grep '^EVENTS=' | cut -c8- > "$W14/$n" ) & }
+c14 rd10 RD=10 HZ=250; c14 rd20 RD=20 HZ=250; c14 rd40 RD=40 HZ=250; c14 rd45 RD=45 HZ=250; c14 rd50 RD=50 HZ=250
+c14 def0 RATE_N=5 RATE_D=2 HZ=420; c14 sb280 RATE_N=5 RATE_D=2 TV=280 HZ=520; c14 sb280rc1 RATE_N=5 RATE_D=2 TV=280 RC=1 RI=0 HZ=520
+c14 t8 RC=1 RI=0 RD=60 HZ=260; c14 t8m12 WSCRIPT="$W14/p-m12.sh" RC=1 RI=0 RD=60 HZ=260
+c14 bl OVDOWN=1 RC=1 RI=0 RD=60 HZ=260; c14 blm WSCRIPT="$W14/p-mblind.sh" OVDOWN=1 RC=1 RI=0 RD=60 HZ=260
+wait
+e14() { cat "$W14/$1" 2>/dev/null; }
+mut14() { local e; e=$(e14 "$1"); e="${e#*MUTATE t=}"; [[ "$e" == "$(e14 "$1")" ]] && { echo none; return 0; }; echo "${e%%;*}"; }
+after14() { local e t; e=$(e14 "$1"); for t in $(printf '%s' "$e" | tr ';' '\n' | sed -n 's/^PASS-START t=//p'); do [[ $t -gt $2 ]] && { echo "$t"; return 0; }; done; echo none; }   # the first recovery pass after t=$2
+if [[ "$(mut14 rd20)" == "129" && "$(e14 rd20)" == *"CLEAR age=15 t=129"* && "$(mut14 rd40)" == "150" && "$(mut14 rd45)" == "153" \
+      && "$(mut14 rd10)" == "none" && "$(e14 rd10)" == *"VETO voting t=120"* && "$(mut14 rd50)" == "none" && "$(e14 rd50)" != *"TAKE-ENTER"* ]]; then
+    ok "(14a) L5 — THE BAND, measured on one chain (1.0 slots/s; the staked account last voted at t0; RECOVERY_CHECKS 3 × 30 s, CHECK_INTERVAL 3): RECOVERY_DELAY 20 / 40 / 45 → recovered at t129 / t150 / t153 (the take pass inside [t128+, t159): the veto CLEAR with a 15 s baseline — the ladder sleep's own-head samples, R3); RECOVERY_DELAY 10 → the take pass at t120 (before the band: the account still in agave's current list) → VOTING veto, never recovered by t250; RECOVERY_DELAY 50 → the take pass at t159, tier1 reads the account delinquent → never. The window is the take instant 128–158 slots after the last vote"
+else
+    bad "(14a) rd20=$(mut14 rd20) rd40=$(mut14 rd40) rd45=$(mut14 rd45) rd10=$(mut14 rd10) rd50=$(mut14 rd50) :: $(e14 rd10 | tr ';' '\n' | grep -v '^PASS-START' | tr '\n' ';')"
+fi
+if [[ "$(mut14 def0)" == "none" && "$(e14 def0)" != *"TAKE-ENTER"* && "$(mut14 sb280)" == "none" && "$(e14 sb280)" != *"TAKE-ENTER"* \
+      && "$(mut14 sb280rc1)" == "342" && "$(e14 sb280rc1)" == *"CLEAR age=15 t=342"* ]]; then
+    ok "(14a-def) NAMED COST (L5) — at the shipped defaults (RECOVERY_DELAY 300, RECOVERY_CHECKS 3 × 30 s, the 40 s span floor) and 2.5 slots/s, RECOVERY_MODE=rpc completes on NEITHER world: the account last voted at the demote (t0) → tier1 reads it delinquent from the first eligible pass (t300), never recovered; a spare that voted it until t280 and died → the 3-pass ladder outlasts tier1's not-delinquent window (64 s at 2.5 slots/s), never recovered. RECOVERY_CHECKS=1 → recovered at t342 (the take pass inside the 12 s band). The default RECOVERY_MODE=manual is untouched; rpc recovery needs a slow cluster (below ~1.5 slots/s with the default ladder) or one short check"
+else
+    bad "(14a-def) def0=$(mut14 def0) sb280=$(mut14 sb280) sb280rc1=$(mut14 sb280rc1): $(e14 sb280rc1 | tr ';' '\n' | grep -v '^PASS-START' | tr '\n' ';')"
+fi
+if [[ "$(e14 t8)" == *"VETO voting t=102"* && "$(after14 t8 102)" == "162" && "$(mut14 t8)" == "none" \
+      && "$(e14 t8m12)" == *"VETO voting t=102"* && "$(after14 t8m12 102)" == "105" && "$(mut14 t8m12)" == "129" ]]; then
+    ok "(14b) T8 — a VOTING veto on the recovery path re-elapses the full RECOVERY_DELAY (RECOVERY_CHECKS=1, RECOVERY_DELAY 60, 1.0 slots/s): the take pass at t102 reads the account in agave's current list → VOTING, the next recovery pass is at t162 = t102 + 60 (and tier1 then reads it delinquent — never recovered). NEUTER CONTROL (the panel's surviving mutant M12 — the own-bank anchor input dropped): passes resume at t105, vetoed every cycle until the account leaves the current list, and it is re-taken at t129 — 27 s after a VOTING veto"
+else
+    bad "(14b) shipped: next pass=$(after14 t8 102) mut=$(mut14 t8) :: M12: next pass=$(after14 t8m12 102) mut=$(mut14 t8m12)"
+fi
+if [[ "$(e14 bl)" == *"VETO blind t=102"* && "$(after14 bl 102)" == "162" && "$(e14 blm)" == *"VETO blind t=102"* && "$(after14 blm 102)" == "105" ]]; then
+    ok "(14c) a BLIND veto on the recovery path (the veto's read fails) re-elapses the full RECOVERY_DELAY: BLIND at t102, the next recovery pass at t162 (the blind anchor, INVARIANT(blindness-is-life)); the blind anchor input dropped → passes resume at t105. The per-veto cost on this path: a full RECOVERY_DELAY (300 s shipped) + the span floor + the ladder, and on the measured worlds tier1's window closes meanwhile"
+else
+    bad "(14c) shipped next pass=$(after14 bl 102) :: blind-anchor-neutered next pass=$(after14 blm 102)"
+fi
+rm -rf "$W14"
+
+# ── (15) the DYNAMIC halves of the take-path and A8 censuses (6.3.1 fix round 1, R6 — the panel's T3 and T4) ─────
+echo ""; echo "─── (15) every STAKED set-identity in this suite's sims followed the veto's read; no curl binary ran ───"
+nmut=$(grep -c '^STAKED ' "$_MUT_AUDIT"); nbad=$(grep -v '^STAKED veto=yes between=\[\]$' "$_MUT_AUDIT" | grep -c .); ncb=$(grep -c . "$_CURLBIN_LOG")
+# the controls, each a mutant standby through the REAL sim_sb (their audit and curl log kept apart from the suite's):
+#   V1 — the veto call deleted from take_staked_identity: the take lands with no veto read → the audit is red
+#   V2 — the panel's A1 (`command curl` to TIER3 right after the veto): the logger catches the BINARY call — a NET
+#        between the veto and MUTATE, so (1e)'s census and the audit are red — and no request left the sim
+W15=$(mktemp -d "${TMPDIR:-/tmp}/ata15.XXXXXX")
+mkdir -p "$W15/v1" "$W15/v2"
+mutate "$STANDBY" '/^take_staked_identity() {/,/^}/{/^[[:space:]]*_own_view_veto || return 1$/d;}' "$W15/v1/solana-standby-failover.sh"
+awk '!d && /^[[:space:]]*_own_view_veto \|\| return 1$/ { print; print "    command curl -s -m 1 \"$TIER3_RPC\" -X POST -H \"Content-Type: application/json\" -d '"'"'{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}'"'"' >/dev/null 2>&1"; d = 1; next } { print }' "$STANDBY" > "$W15/v2/solana-standby-failover.sh"
+v1=$(_MUT_AUDIT="$W15/v1.audit" _CURLBIN_LOG="$W15/v1.curl" STANDBY="$W15/v1/solana-standby-failover.sh" sim_sb frozen false 0)
+v2=$(_MUT_AUDIT="$W15/v2.audit" _CURLBIN_LOG="$W15/v2.curl" STANDBY="$W15/v2/solana-standby-failover.sh" sim_sb frozen false 0)
+v2a8=$(a8_between "$(evline "$v2")" "MUTATE")
+v1a=$(cat "$W15/v1.audit" 2>/dev/null); v2a=$(cat "$W15/v2.audit" 2>/dev/null); v2c=$(grep -c . "$W15/v2.curl" 2>/dev/null)
+if [[ $nmut -ge 5 && "$nbad" == "0" && "$ncb" == "0" ]] \
+   && [[ "$(evline "$v1")" == *MUTATE* && "$v1a" == "STAKED veto=NO between="* ]] \
+   && [[ "$(evline "$v2")" == *"NET CURLBIN"*MUTATE* && "$v2a8" == *"net=1"* && "$v2a" == *"between=[NET CURLBIN "* && "$v2c" == "1" ]]; then
+    ok "(15) DYNAMIC: every STAKED set-identity in this suite's sims ($nmut) followed the veto's read with nothing but log lines between, and the logging curl first in PATH saw no curl-binary call in the whole suite; CONTROLS on the REAL sim_sb — V1 the veto call deleted: the take lands with NO veto read → red; V2 the panel's A1 (command curl to TIER3 after the veto): the logger catches it between the veto and MUTATE (A8 census: $v2a8) → red, and the one call never left the sim (before fix round 1 it reached the public cluster and (1e) stayed green) — the rule: no network, no alerts; one bounded local veto read allowed"
+else
+    bad "(15) suite: staked-mutates=$nmut bad=$nbad curl-binary=$ncb [$(grep -v '^STAKED veto=yes between=\[\]$' "$_MUT_AUDIT" | head -2 | tr '\n' ' ')] :: V1: $v1a :: V2: a8=$v2a8 audit=$v2a curl=$v2c"
+fi
+rm -rf "$W15"; rm -f "$_MUT_AUDIT" "$_CURLBIN_LOG"
 
 results_banner

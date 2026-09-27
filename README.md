@@ -46,10 +46,13 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
 - The STANDBY takes only after `TAKEOVER_DELAY` (default **60s** = the PRIMARY's ~30s self-fence + a 30s
   cross-node margin) **and** a vote-liveness check that the previous holder's vote account has stopped
   advancing. A hand-edited delay below the safe floor **refuses to start**. The last read before the
-  take is the spare's **own** node (v0.7): one bounded read — up to 2 s plus a watchdog pet, added to
-  every take — that withdraws the take if its own node shows the holder voting, cannot answer, or is
-  not advancing. How that ordering holds up per failure class, measured, including where it does
-  not: [docs/SAFETY.md — the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
+  take is the spare's **own** node (v0.7): one bounded read (`curl -m 2` + a watchdog pet) that
+  withdraws the take if its own node shows the holder voting, cannot answer, or is not advancing; the
+  spare also samples its own head through the episode and around each external read of the take cycle
+  — five to eight bounded local reads per take cycle, milliseconds on a healthy node (measured: +13 to
+  +14 s when every local read takes 1 s, +26 to +30 s with every read at its bound). How that ordering
+  holds up per failure class, measured, including where it does not:
+  [docs/SAFETY.md — the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
 - On a v0.7 **armed** spare, a relinquish-proof gate additionally decides *how* the old holder is known
   to be gone. Its strongest proof is **verified-demote (G2)**: the holder's *unstaked* identity observed
   in gossip at the staked identity's exact endpoint, and still there ≥60s later on two pinned RPC
@@ -76,7 +79,8 @@ PRIMARY ──self-fence ~30s──►  STANDBY ──takes at 60s──►  BAC
 holds staked, steps down       takes staked              (120s, only if STANDBY is also down)
 ```
 
-A spare's take lands up to the own-view read's bound (2 s plus a watchdog pet) after the delays shown.
+A spare's take also waits for its own-view reads (milliseconds on a healthy node; measured +13 to +30 s
+when its local reads are slow or at their bounds) after the delays shown.
 Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Requirements
@@ -150,7 +154,7 @@ See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 ```bash
 cd tests && bash run_all.sh
 ```
-53 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
+54 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
 mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Note the
 limit: these are function-level tests — they do **not** prove cross-process ordering between two live
 systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.

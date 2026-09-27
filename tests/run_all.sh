@@ -35,7 +35,7 @@ done
 echo ""
 echo "═══ (2) RUN gate: execute every suite ═══"
 # A vanished/misnamed suite must FAIL this gate, not silently shrink it (bump when adding a suite).
-EXPECTED_SUITES=53
+EXPECTED_SUITES=54
 run_pass=0; run_fail=0; failed=""
 _suite_out=$(mktemp)
 # Every diagnostic line carries the NAME of the suite that produced it (reviewer, 6.2 GO nit): an

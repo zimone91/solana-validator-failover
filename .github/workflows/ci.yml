@@ -152,6 +152,10 @@ jobs:
           # twin region reads only mono_now (zero `date +%s`) and has no patsub site; the
           # LOCAL_HEALTH_MAX_BEHIND clamp reads no clock. What moved, deliberately and with its own
           # comment, is the (14b) pet census 42/46 → 44/48 (the region's two petted LOCAL reads).
+          # v0.7 Block 6.3.1 FIX ROUND 1: pins RE-DERIVED by grep and UNCHANGED at 21/22 and 4/4 — the
+          # take cycle's added own-head samples and the recovery ladder's sampled tail call the existing
+          # sampler (mono_now only), the Tier-1 health verdict and its clamp read no clock, and none adds a
+          # patsub site; the pet census is unchanged (the sampler's one pet serves every new call site).
           [ "$d_pri" = "21" ] || { echo "primary 'date +%s' lines: $d_pri != pinned 21 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$d_sby" = "22" ] || { echo "standby 'date +%s' lines: $d_sby != pinned 22 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$p_pri" = "4" ]  || { echo "primary patsub \${var//} lines: $p_pri != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }

@@ -31,6 +31,9 @@ title_banner() {
 }
 results_banner() {   # prints the RESULTS banner, cleans the seam-cut cache, exits 0/1
     echo ""
+    if [[ -s "${_HARNESS_NETLOG:-}" ]]; then   # the net guard (below): named, never silent
+        echo "  net-guard: $(grep -c . "$_HARNESS_NETLOG") curl-binary call(s) intercepted — answered rc 7, none sent (first: $(head -1 "$_HARNESS_NETLOG" | cut -c1-100))"
+    fi
     echo "============================================="
     echo "  RESULTS: $PASS passed, $FAIL failed"
     echo "============================================="
@@ -56,6 +59,25 @@ STANDBY="$HARNESS_DIR/solana-standby-failover.sh"
 # The size component closes the same-second collision: a file rewritten with different content
 # within one mtime second would otherwise key to the same cache entry and serve a STALE cut.
 _HARNESS_TMP=$(mktemp -d)
+
+# ── the net guard (v0.7 Block 6.3.1 fix round 1 — the panel's T10, N-is-all over the suites) ───────────
+# A failing, logging `curl` FIRST in PATH for every suite that sources this harness. The suites shadow the
+# daemons' reads as shell FUNCTIONS, so only an unshadowed caller (or `command curl`) reaches a curl BINARY —
+# and on a host with a validator RPC on 127.0.0.1:8899 it would query that live node (with the port
+# filtered, each call would wait out its -m bound). The guard answers rc 7 (connection refused — what an
+# unanswered LOCAL read returns), so a suite behaves as it did where nothing listens, and no suite reaches
+# the network anywhere; results_banner names what it intercepted. Enumerated with a logging curl first in
+# PATH over every suite: 12 suites' own-head samples (the [own-view] sampler, unshadowed there) reached
+# 127.0.0.1:8899 this way; test_act_then_alert (15) holds its own sims to zero with a sim-level logger.
+mkdir -p "$_HARNESS_TMP/netguard"
+cat > "$_HARNESS_TMP/netguard/curl" <<'EOS'
+#!/bin/sh
+printf '%s\n' "$*" >> "${_HARNESS_NETLOG:-/dev/null}"
+exit 7
+EOS
+chmod +x "$_HARNESS_TMP/netguard/curl"
+_HARNESS_NETLOG="$_HARNESS_TMP/netguard/log"; export _HARNESS_NETLOG
+PATH="$_HARNESS_TMP/netguard:$PATH"; export PATH
 seam_cut() {
     local script="$1" mt sz cache
     [[ -f "$script" ]] || { echo "  ❌ FAIL: seam_cut: no such script: $script" >&2; return 1; }

@@ -1193,7 +1193,7 @@ c_ok=1
 for d in "$STANDBY" "$PRIMARY"; do
     census_constants "$d" || { c_ok=0; bad "(11) census failed on $(basename "$d"): $CENSUS_FAIL"; }
 done
-# no OTHER shipped script assigns any of the five names (the whole shipped set)
+# no OTHER shipped script assigns any of the census's names (the whole shipped set)
 others=0
 for f in "$HARNESS_DIR/install.sh" "$HARNESS_DIR/failover-arm.sh" "$HARNESS_DIR/deploy-failover.sh" "$HARNESS_DIR/deploy-failover-standby.sh" "$HARNESS_DIR/systemd/failover-fence.sh" "$HARNESS_DIR/systemd/failover-fence-page-only.sh"; do
     n=$(grep -cE '(^[[:space:]]*((local|declare|export|readonly)[[:space:]]+([-][[:alnum:]]+[[:space:]]+)*)?(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX|ELAPSED_RATE_MIN_SPAN|OWN_HEAD_H)=)|(\(\([[:space:]]*(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX|ELAPSED_RATE_MIN_SPAN|OWN_HEAD_H)[[:space:]]*=)' "$f" 2>/dev/null)

@@ -59,6 +59,10 @@ scenario() {
     # stubbed at the curl level. The veto is VETO-ONLY: the shadow can only let MORE takes through
     # here, never fewer, so no assertion below is weakened by it.
     _own_view_veto(){ return 0; }
+    # fix round 1 (R6 — the panel's T10): the PRE-TAKE own-head sample (take_staked_identity's head) is shadowed
+    # too — unshadowed it issued a REAL curl to the daemon default LOCAL_RPC (127.0.0.1:8899: a live validator's
+    # RPC on a host running one) on every take here; a sample only feeds the veto shadowed above
+    _own_head_sample(){ :; }
     _RC_SETID="$rc_setid"; _RC_ADD="$rc_add"; _RC_REMOVE="$rc_remove"; _APPLIED="$applied"
     timeout(){
         case "$*" in

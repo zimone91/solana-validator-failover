@@ -10,41 +10,75 @@ All notable changes are documented here. Versions follow the project's internal 
   can splice) now testifies at every take, and every piece is veto-only — it can turn a take into a
   hold, never the reverse. The mechanism, its measured costs and the residuals it leaves:
   [docs/SAFETY.md — the spare's own view](docs/SAFETY.md#the-spares-own-view-v07-block-631); the
-  cross-node invariant measured per failure class, with every crossing named:
+  cross-node invariant measured per failure class, every crossing found named — the review of the first
+  build found crossings its table missed, now rows:
   [docs/SAFETY.md — the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
   - **Explicit commitments (D1).** Every `getVoteAccounts`/`getSlot` request body in both daemons
-    spells its commitment out (a census test fails on one that does not); the detection reads say
-    `finalized` — agave's default, so the change is behavior-neutral (measured, both daemons).
+    spells its commitment out in `params[0]` (a census test parses every RPC body with jq and fails on
+    one that does not); the detection reads say `finalized` — agave's default, so the change is
+    behavior-neutral by D0.1 (the agave source: a missing commitment resolves to the `Finalized`
+    default).
   - **The own bank's "holder voting" restarts the countdown (D2)** — a fourth takeover-anchor input of
     its own, and watchdog-elapsed's silence restarts with it (`[elapsed-own]`); reset at every
-    episode-close site. Its availability cost — a failure behind a flickering own bank starves, loudly —
-    is measured on both presets.
+    episode-close site; the `WITNESS_FASTPATH` skip never skips it. Its availability cost — a failure
+    behind a flickering own bank starves, loudly — is measured on both presets.
   - **One bounded local veto read before the switch (D3)**, on every take path (the standby's
     `take_staked_identity`, the primary's `switch_to_staked`): one `LOCAL_RPC` batch
     `[getSlot{confirmed}, getVoteAccounts{confirmed, votePubkey}]`, `curl -m 2` + its pet, right after
     the fresh re-check and before the `DRY_RUN` branch; a failed read is a veto (blind), a voting holder
     re-anchors, no cooldown. The act-then-alert rule now reads everywhere it is stated: **no network, no
-    alerts; one bounded local veto read allowed.** Every take lands up to that bound later.
+    alerts; one bounded local veto read allowed.** The added cost is not one read: with the own-head
+    samples a take cycle makes five to eight bounded LOCAL reads (each `curl -m 2` + a pet) —
+    milliseconds on a healthy loopback; measured against the 6.3 build +13 to +14 s when every LOCAL
+    read takes 1 s, +26 to +30 s with every read at its bound.
   - **The spare's own head (D4):** own-head samples on the take path; at every take the head must have
     advanced within the last `OWN_HEAD_H` = 16 s; watchdog-elapsed's new `[elapsed-rate]` layer
-    abstains unless this head's rate is provably ≥ 2.5 slots/s; `N_HEAD` = (`MARGIN_ELAPSED` − 1) × 5/2
-    = 22 slots (τ budgeted; the floor stays 100 s); the slow-cluster residual is retired.
-  - **The small calls (D5):** `LOCAL_HEALTH_MAX_BEHIND` is clamped to agave's 128 (the default is
-    128; a larger value is announced as clamped); the holder's opt-in latency demote reads its payload
-    first (a stall now demotes sooner, never later; not part of the cross-node invariant); `failover
-    arm` refuses a symlinked or non-canonical state directory (`REFUSE[STATE-dir-symlink]`,
-    `REFUSE[STATE-dir-missing]`). No change, documented: no lazy provider registration; the lxcfs
+    abstains when this head AVERAGED less than 2.5 slots/s over the silence span; `N_HEAD` =
+    (`MARGIN_ELAPSED` − 1) × 5/2 = 22 slots (τ budgeted; the floor stays 100 s). The layer narrows the
+    slow-cluster residual and does not retire it (an earlier text of this entry said it did): a slowdown
+    late in the span, a spare catching up, or a confirmation hold at the anchor sample still mints on a
+    view staler than the budget — named with its executed worlds in
+    [docs/SAFETY.md — slot time](docs/SAFETY.md#shared-vantages--the-spares-observation-surface-a-standing-property-v07).
+  - **The small calls (D5):** Tier-1 is the node's own health verdict — every `getHealth` "behind"
+    report is not ready, and `LOCAL_HEALTH_MAX_BEHIND` is clamped to the validator's own
+    `--health-check-slot-distance` (read from its command line, else agave's 128; the default is 128, a
+    larger value is announced as clamped); the holder's opt-in latency demote reads its payload first (a
+    stall now demotes sooner, never later; not part of the cross-node invariant); `failover arm` refuses
+    a symlinked or non-canonical state directory before creating anything (`REFUSE[STATE-dir-symlink]`,
+    `REFUSE[STATE-dir-spelling]`, `REFUSE[STATE-dir-missing]`). No change, documented: no lazy provider registration; the lxcfs
     "future" stamps and the state-directory rename swap by a local root (SAFETY's local-host threat
     model); the "(v0.7)" markers stay.
   - **The invariant, measured (D6):** holder fence vs the spare's earliest take / mint per failure
-    class, both detect presets, both rates; the silent-restart residual executed in real systemd
-    (249 and 255): armed, an answering admin socket sends READY and nothing fences, a silent one is
-    fenced by the start timeout; un-armed, nothing fences any silent class.
+    class, both detect presets, both rates — t = 0 the holder's last landed vote, the holder's latest
+    read phase against the spare's earliest (over read phase and `CHECK_INTERVAL`), a worst-case I/O
+    column; the crossings named, among them a plain monitor restart during a stall (the startup blind
+    window), the wedged demote's hard stop, and a fully wedged validator under a running monitor (never
+    fenced); the holder column pinned by a test of its own. The silent-restart residual executed in real
+    systemd (249 and 255): armed, an answering admin socket sends READY and nothing fences, a silent one
+    is fenced by the start timeout; un-armed, nothing fences any silent class.
+  - **Fix round 1 (the review panel on the first 6.3.1 build), each red first on the panel's worlds:**
+    an own-bank `lastVote` ADVANCE inside the episode is holder voting, and the veto reads the holder
+    VOTING whenever agave's `current` list holds it (at `MAX_DELINQUENT_SLOTS` 15 the D0 race class was
+    still taken — t75, the armed mint t117 — now held a full delay after the last advance); a FAILED
+    latency reference is no longer holder-voting evidence (it had delayed a dead holder's take silently by
+    15–39 s); a baseline for the veto on slow take cycles — an own-head sample before each external read
+    of the take cycle, the fence's tiers read apart, the re-check asking the pinned vantage first (a
+    healthy confirmed-head hold had vetoed a dead holder's take for +85 to +93 s, and one dead tier with
+    the other ≥ 7 s late starved it; `PROOF_MAX_AGE`'s span 49 → 32 s); the primary's recovery path
+    sampled the same way (the first build's recovery veto read BLIND at every take in the measured
+    worlds); the fast path keeps D2's timer; the censuses read structure instead of spelling (the
+    take-path census, the commitment census by jq, the A8 census over the whole take segment and its
+    calls, the rule text in every shipped file, the episode-close sites) and a logging `curl` first in
+    PATH makes the dynamic A8 census and every suite hermetic. The named costs and the one cell made worse
+    are in SAFETY.
   - Tests: `test_own_view` (new — the take-path census, the commitment census, the veto's predicate
-    table, the A8 census by exact spelling, each mechanism red on the 6.3 build, the controls — the veto
-    neutered alone, each guard alone, all neutered); `test_elapsed_provider` (the new layers in the
-    layer census, the D0 residuals re-asserted as flipped); `test_act_then_alert`,
-    `test_config_drift`, `test_arm_ceremony`, `test_proof_gate`. This round adds no commit hashes to
+    table, the A8 census by structure, each mechanism red on the 6.3 build, the controls — the veto
+    neutered alone, each guard alone, all neutered — and each census red on the review's own evasions);
+    `test_d6_holder` (new — the invariant table's holder column, driven through the real primary startup
+    and main loop); `test_elapsed_provider` (the new layers in the layer census, the D0 residuals
+    re-asserted as flipped, the shipped provider pinned at a certified rate beside every neutered row);
+    `test_act_then_alert`, `test_config_drift`, `test_arm_ceremony`, `test_proof_gate`,
+    `test_primary_demote_timeout`, `test_primary_self_fence`. This round adds no commit hashes to
     public files (the history is being rewritten): rounds and sections are cited instead.
 
 - **Block 6.3 — the watchdog-elapsed proof provider (attested time), the spare's observation surface
