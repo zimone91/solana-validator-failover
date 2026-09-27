@@ -57,6 +57,7 @@ Also: `🛑` shutdown → Telegram only; `♥` heartbeat status → **log file o
 - `⚠️ Recovery blocked: staked identity is ACTIVELY VOTING elsewhere (the STANDBY holds it). Manual switch-back needed.`
 - `⚠️ STANDBY has staked identity. Manual switch-back needed.`
 - `⚠️ TIER2_RPC == TIER3_RPC — single vantage point. …` *(v0.6.9 M8, at startup)*
+- `⚠️ Take VETOED by this spare's own view: …` / `… (it could not testify): …` *(v0.7 Block 6.3.1 — the RPC-recovery re-take withdrawn by the own-view veto; throttled)*
 
 ### ℹ️ Info (`alert_info` → Telegram only)
 - `🚀 PRIMARY v0.6.8 started [DRY_RUN|LIVE]`
@@ -97,6 +98,7 @@ Also: `🛑` shutdown → Telegram only; `♥` heartbeat status → **log file o
 - `⚠️ GIVE_BACK_MODE=auto is not implemented — treated as manual.` *(v0.6.9 M6, at startup)*
 - `⚠️ TIER2_RPC == TIER3_RPC — single vantage point. …` *(v0.6.9 M8, at startup; also fail-closes the fast-path)*
 - `⚠️ UNSAFE cross-node timing ACCEPTED via ALLOW_UNSAFE_TIMING=true …` *(v0.6.9 M9, lab override)*
+- `⚠️ Take VETOED by this spare's own view: …` / `… (it could not testify): …` *(v0.7 Block 6.3.1 — the take withdrawn at its last step: the spare's own node showed the holder voting, could not answer its bounded read, or is not advancing; no action taken, the countdown restarts; throttled per `ALERT_THROTTLE`)*
 
 ### ℹ️ Info (`alert_info` → Telegram only)
 - `🚀 STANDBY v0.6.8 started [DRY_RUN|LIVE]`

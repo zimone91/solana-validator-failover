@@ -33,6 +33,8 @@
 #   (1e) no token → arm PROCEEDS + §2.7 unpaired posture + end-of-summary UNPAIRED warning
 #   (1f) directory at the store path → REFUSE[P5-store] (the A10 mv-swallow discipline)
 #   (1g) primary-role arm + stray ARM_PAIRING_TOKEN → announced IGNORED (holder generates)
+#   (1n) (Block 6.3.1 D5) a SYMLINKED state directory → REFUSE[STATE-dir-symlink] before the token is
+#        stored (the daemon's R-SYM rule mirrored at the arm; the full P0 matrix is test_arm_ceremony (16))
 #   (2)  zero-stake (§2.4, per entry, N-is-all): (2a) all entries zero/absent → green with a
 #        VERIFIED line PER entry (live census = list length); (2b) one staked among clean →
 #        REFUSE[P5-staked-unstaked] with the ~48 h CRDS extended_timeout reason + MEASURED
@@ -47,9 +49,9 @@
 #        round-trips through the SHIPPED spare intake (green + stored); (3c) same payload →
 #        same crc through the DAEMON's own helper (emission↔daemon-parse mechanical tie)
 # DAEMON SIDE ([proof-gate] twin block, source-to-MAIN-LOOP seam, clock-stubbed):
-#   (4)  armed + valid token → _derive_proof_floors: elapsed_floor=100, N_HEAD=25,
-#        MARGIN_ELAPSED=10 (values read from the SAME shell that derived them)
-#   (5)  COUPLING [6.0-COND-3]: MARGIN_ELAPSED 10→20 mutant → elapsed_floor=110 AND N_HEAD=50
+#   (4)  armed + valid token → _derive_proof_floors: elapsed_floor=100, N_HEAD=22 (6.3.1: τ budgeted —
+#        (MARGIN_ELAPSED − 1) × 5 / 2; 25 before), MARGIN_ELAPSED=10 (values read from the SAME shell)
+#   (5)  COUPLING [6.0-COND-3]: MARGIN_ELAPSED 10→20 mutant → elapsed_floor=110 AND N_HEAD=47
 #        move TOGETHER; control (5b): coupling additionally broken (static N_HEAD) → the
 #        together-assertion goes RED (observed on the double mutant)
 #   (6)  §2.7 loud unpaired [6.0-COND-4]: armed+no token → (a) CRITICAL page at EVERY start
@@ -75,9 +77,10 @@
 #        present at the check in BOTH daemons
 #   (11) constants census (N-is-all for constants, allowlist style): elapsed_floor /
 #        MARGIN_ELAPSED / N_HEAD / PROOF_MAX_AGE / ELAPSED_HEAD_GAP_MAX (the fifth: 6.3 fix round 2,
-#        R3) assigned ONLY at the derivation sites (5 allowlisted lines per daemon; zero assignments
-#        in any other shipped script); (11b) injection control: every evading spelling, the new
-#        name included → census red observed
+#        R3) / ELAPSED_RATE_MIN_SPAN and OWN_HEAD_H (the sixth and seventh: Block 6.3.1, D4) assigned
+#        ONLY at the derivation sites (7 allowlisted lines per daemon; zero assignments in any other
+#        shipped script); (11b) injection control: every evading spelling, the new names included →
+#        census red observed
 #   (12) twin: [proof-gate] extract+cmp BYTE-IDENTICAL across both daemons (the [fence-rot]
 #        ritual)
 #
@@ -191,6 +194,10 @@ for _t in $PG_REAL_TOOLS; do
 done
 
 MOCK_PARENT=$(mktemp -d "${TMPDIR:-/tmp}/pg61-mocks.XXXXXX")
+# v0.7 (Block 6.3.1 D5): the arm now REFUSES a state directory that is not its own resolved path
+# (P0, the daemon's R-SYM rule mirrored) — so every mock root is spelled RESOLVED: macOS's TMPDIR sits
+# under the /var -> /private/var symlink and ends in '/' (a '//' in the joined path)
+MOCK_PARENT=$(CDPATH='' cd -P -- "$MOCK_PARENT" && pwd -P)
 write_daemon() {   # v0.7-shaped daemon fixture (P1: patsub guard + watchdog capability)
     {
         echo '#!/bin/bash'
@@ -456,6 +463,18 @@ if [[ "$RC" == "0" ]] && out_has "ARM_PAIRING_TOKEN is set on a 'primary' arm �
     ok "(1g) primary-role arm + stray ARM_PAIRING_TOKEN → announced IGNORED (the holder GENERATES tokens); nothing stored"
 else
     bad "(1g) rc=$RC tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# (1n) Block 6.3.1 D5 — the arm REFUSES a symlinked state directory BEFORE the token is stored (the
+# daemon's R-SYM rule mirrored: a token stored through a symlinked directory never proves on this
+# spare). Pre-fix red (the 6.3 build): the token was accepted and stored THROUGH the link — PAIRED.
+new_mock standby
+mkdir -p "$MOCK_DIR/real-state"; rm -rf "$MOCK_DIR/state"; ln -s "$MOCK_DIR/real-state" "$MOCK_DIR/state"
+run_arm ARM_PAIRING_TOKEN="$TOK_OK"
+if [[ "$RC" == "1" ]] && out_has 'REFUSE\[STATE-dir-symlink\]' && out_has 'NEVER proves on the spare' && [[ ! -e "$MOCK_DIR/real-state/pairing-token" ]] && ! out_has 'pairing summary: PAIRED' && ! out_has 'ceremony complete'; then
+    ok "(1n) spare arm, valid token, SYMLINKED state directory → REFUSE[STATE-dir-symlink] (a token stored through it never proves — the daemon's R-SYM rule); nothing stored through the link, no PAIRED summary"
+else
+    bad "(1n) rc=$RC stored=$([[ -e "$MOCK_DIR/real-state/pairing-token" ]] && echo yes || echo no) tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
 fi
 
 # ── (2) zero-stake verification (§2.4 arm condition; per entry, N-is-all) ───────────────────────
@@ -781,8 +800,8 @@ case_floors() {
     echo "rc=$rc|floor=${elapsed_floor:-unset}|nhead=${N_HEAD:-unset}|margin=${MARGIN_ELAPSED:-unset}|gen=${_proof_token_gen:-unset}"
 }
 r=$(drive_gate "$STANDBY" 1 "" ok case_floors | tail -1)
-if [[ "$(field "$r" rc)" == "0" && "$(field "$r" floor)" == "100" && "$(field "$r" nhead)" == "25" && "$(field "$r" margin)" == "10" && "$(field "$r" gen)" == "7" ]]; then
-    ok "(4) armed + valid token → elapsed_floor=100 (W30+B60+MARGIN10), N_HEAD=25, MARGIN_ELAPSED=10 — read from the deriving shell"
+if [[ "$(field "$r" rc)" == "0" && "$(field "$r" floor)" == "100" && "$(field "$r" nhead)" == "22" && "$(field "$r" margin)" == "10" && "$(field "$r" gen)" == "7" ]]; then
+    ok "(4) armed + valid token → elapsed_floor=100 (W30+B60+MARGIN10), N_HEAD=22 ((MARGIN−1)×5/2 — τ budgeted, 6.3.1), MARGIN_ELAPSED=10 — read from the deriving shell"
 else
     bad "(4) $r"
 fi
@@ -854,16 +873,16 @@ fi
 # (5) coupling: MARGIN_ELAPSED 10→20 mutant → floor AND N_HEAD move TOGETHER
 mutate "$STANDBY" 's/^    MARGIN_ELAPSED=10$/    MARGIN_ELAPSED=20/' "$WORK/margin20.sh"
 r=$(drive_gate "$WORK/margin20.sh" 1 "" ok case_floors | tail -1)
-if [[ "$(field "$r" floor)" == "110" && "$(field "$r" nhead)" == "50" ]]; then
-    ok "(5) MARGIN_ELAPSED 10→20 → elapsed_floor 110 AND N_HEAD 50 move TOGETHER (coupled at the derivation site, [6.0-COND-3])"
+if [[ "$(field "$r" floor)" == "110" && "$(field "$r" nhead)" == "47" ]]; then
+    ok "(5) MARGIN_ELAPSED 10→20 → elapsed_floor 110 AND N_HEAD 47 move TOGETHER (coupled at the derivation site, [6.0-COND-3])"
 else
     bad "(5) $r (a static N_HEAD is exactly the red this asserts against)"
 fi
 # (5b) control: coupling ADDITIONALLY broken (N_HEAD static) → the together-assertion goes red
-mutate "$WORK/margin20.sh" 's|MARGIN_ELAPSED \* 5 / 2|25|' "$WORK/coupling-broken.sh"
+mutate "$WORK/margin20.sh" 's|(MARGIN_ELAPSED - 1) \* 5 / 2|22|' "$WORK/coupling-broken.sh"
 r=$(drive_gate "$WORK/coupling-broken.sh" 1 "" ok case_floors | tail -1)
-if [[ "$(field "$r" floor)" == "110" && "$(field "$r" nhead)" == "25" ]]; then
-    ok "(5b) coupling broken (static N_HEAD) → floor 110 with N_HEAD 25: (5)'s together-assertion observed RED on the mutant"
+if [[ "$(field "$r" floor)" == "110" && "$(field "$r" nhead)" == "22" ]]; then
+    ok "(5b) coupling broken (static N_HEAD) → floor 110 with N_HEAD 22: (5)'s together-assertion observed RED on the mutant"
 else
     bad "(5b) double mutant gave: $r — the coupling control cannot be trusted"
 fi
@@ -1144,9 +1163,9 @@ else
 fi
 
 # ── (11) constants census: N-is-all for the derived names, allowlist style ──────────────────────
-echo ""; echo "─── (11) constants census: elapsed_floor/MARGIN_ELAPSED/N_HEAD/PROOF_MAX_AGE/ELAPSED_HEAD_GAP_MAX only at the derivation sites ───"
+echo ""; echo "─── (11) constants census: elapsed_floor/MARGIN_ELAPSED/N_HEAD/PROOF_MAX_AGE/ELAPSED_HEAD_GAP_MAX/ELAPSED_RATE_MIN_SPAN/OWN_HEAD_H only at the derivation sites ───"
 
-census_constants() {   # $1=file → rc 0 iff EXACTLY the 5 allowlisted assignment lines exist
+census_constants() {   # $1=file → rc 0 iff EXACTLY the 7 allowlisted assignment lines exist
     local f="$1" lines n
     # (panel FND-1) BROADENED beyond the bare '^\s*NAME=' form: also catch the prefixed spellings
     # (local|declare|export|readonly, including attribute flags like `declare -i`) and arithmetic-
@@ -1155,16 +1174,19 @@ census_constants() {   # $1=file → rc 0 iff EXACTLY the 5 allowlisted assignme
     # the old regex missed (6-of-8 spellings evaded, panel-executed). The string-context occurrence
     # in the PAIRED log line (→ elapsed_floor=${elapsed_floor}s, N_HEAD=…) is deliberately NOT
     # matched: it is neither at a line-start assignment position, nor keyword-prefixed, nor inside
-    # (( — so honest daemons still count EXACTLY 5 (asserted below; 4 before 6.3 fix round 2 added
-    # ELAPSED_HEAD_GAP_MAX, R3), while every evading spelling now goes RED (11b widened to match).
-    lines=$(grep -nE '(^[[:space:]]*((local|declare|export|readonly)[[:space:]]+([-][[:alnum:]]+[[:space:]]+)*)?(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX)=)|(\(\([[:space:]]*(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX)[[:space:]]*=)' "$f")
+    # (( — so honest daemons still count EXACTLY 7 (asserted below; 4 before 6.3 fix round 2 added
+    # ELAPSED_HEAD_GAP_MAX, R3; 5 before Block 6.3.1 added ELAPSED_RATE_MIN_SPAN and OWN_HEAD_H, D4),
+    # while every evading spelling now goes RED (11b widened to match).
+    lines=$(grep -nE '(^[[:space:]]*((local|declare|export|readonly)[[:space:]]+([-][[:alnum:]]+[[:space:]]+)*)?(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX|ELAPSED_RATE_MIN_SPAN|OWN_HEAD_H)=)|(\(\([[:space:]]*(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX|ELAPSED_RATE_MIN_SPAN|OWN_HEAD_H)[[:space:]]*=)' "$f")
     n=$(printf '%s\n' "$lines" | grep -c .)
-    [[ "$n" == "5" ]] || { CENSUS_FAIL="count=$n: $(printf '%s' "$lines" | tr '\n' ' ')"; return 1; }
+    [[ "$n" == "7" ]] || { CENSUS_FAIL="count=$n: $(printf '%s' "$lines" | tr '\n' ' ')"; return 1; }
     printf '%s\n' "$lines" | grep -q 'MARGIN_ELAPSED=10$'                                            || { CENSUS_FAIL="margin line"; return 1; }
     printf '%s\n' "$lines" | grep -q 'elapsed_floor=\$(( _proof_token_w + _proof_token_b + MARGIN_ELAPSED ))' || { CENSUS_FAIL="floor line"; return 1; }
-    printf '%s\n' "$lines" | grep -q 'N_HEAD=\$(( MARGIN_ELAPSED \* 5 / 2 ))'                        || { CENSUS_FAIL="nhead line"; return 1; }
+    printf '%s\n' "$lines" | grep -q 'N_HEAD=\$(( (MARGIN_ELAPSED - 1) \* 5 / 2 ))'                  || { CENSUS_FAIL="nhead line"; return 1; }
     printf '%s\n' "$lines" | grep -q 'PROOF_MAX_AGE=50$'                                             || { CENSUS_FAIL="age line"; return 1; }
     printf '%s\n' "$lines" | grep -q 'ELAPSED_HEAD_GAP_MAX=1$'                                       || { CENSUS_FAIL="head-gap line"; return 1; }
+    printf '%s\n' "$lines" | grep -q 'ELAPSED_RATE_MIN_SPAN=24$'                                     || { CENSUS_FAIL="rate-span line"; return 1; }
+    printf '%s\n' "$lines" | grep -qE 'OWN_HEAD_H=16[[:space:]]'                                     || { CENSUS_FAIL="own-head line"; return 1; }
     return 0
 }
 c_ok=1
@@ -1174,11 +1196,11 @@ done
 # no OTHER shipped script assigns any of the five names (the whole shipped set)
 others=0
 for f in "$HARNESS_DIR/install.sh" "$HARNESS_DIR/failover-arm.sh" "$HARNESS_DIR/deploy-failover.sh" "$HARNESS_DIR/deploy-failover-standby.sh" "$HARNESS_DIR/systemd/failover-fence.sh" "$HARNESS_DIR/systemd/failover-fence-page-only.sh"; do
-    n=$(grep -cE '(^[[:space:]]*((local|declare|export|readonly)[[:space:]]+([-][[:alnum:]]+[[:space:]]+)*)?(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX)=)|(\(\([[:space:]]*(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX)[[:space:]]*=)' "$f" 2>/dev/null)
+    n=$(grep -cE '(^[[:space:]]*((local|declare|export|readonly)[[:space:]]+([-][[:alnum:]]+[[:space:]]+)*)?(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX|ELAPSED_RATE_MIN_SPAN|OWN_HEAD_H)=)|(\(\([[:space:]]*(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX|ELAPSED_RATE_MIN_SPAN|OWN_HEAD_H)[[:space:]]*=)' "$f" 2>/dev/null)
     [[ "$n" == "0" ]] || { others=1; bad "(11) $(basename "$f") re-declares a derived constant ($n sites)"; }
 done
 if [[ $c_ok -eq 1 && $others -eq 0 ]]; then
-    ok "(11) census: the 5 names are assigned EXACTLY at the derivation-site allowlist in each daemon (ELAPSED_HEAD_GAP_MAX=1 among them — 6.3 fix round 2, R3); zero assignments anywhere else in the shipped set"
+    ok "(11) census: the 7 names are assigned EXACTLY at the derivation-site allowlist in each daemon (ELAPSED_HEAD_GAP_MAX=1 — 6.3 fix round 2, R3; ELAPSED_RATE_MIN_SPAN=24 and OWN_HEAD_H=16 — 6.3.1, D4); zero assignments anywhere else in the shipped set"
 fi
 # (11b) injection control: a stray re-declaration must be census-visible in EVERY spelling the
 # (11) label claims to cover (panel FND-1 — the old control exercised ONLY the bare top-level
@@ -1186,7 +1208,7 @@ fi
 # fresh copy and must drive the census RED; the bare form is kept and the prefixed/arithmetic
 # forms (which evaded the old regex, panel-executed) are added.
 inj_ct=0; inj_red=0; inj_miss=""
-for spell in 'N_HEAD=7' 'local N_HEAD=7' 'declare -i N_HEAD=7' 'export PROOF_MAX_AGE=9' 'readonly elapsed_floor=5' ': $(( N_HEAD=7 ))' '(( PROOF_MAX_AGE = 9 ))' 'ELAPSED_HEAD_GAP_MAX=12' 'local ELAPSED_HEAD_GAP_MAX=12' '(( ELAPSED_HEAD_GAP_MAX = 12 ))'; do
+for spell in 'N_HEAD=7' 'local N_HEAD=7' 'declare -i N_HEAD=7' 'export PROOF_MAX_AGE=9' 'readonly elapsed_floor=5' ': $(( N_HEAD=7 ))' '(( PROOF_MAX_AGE = 9 ))' 'ELAPSED_HEAD_GAP_MAX=12' 'local ELAPSED_HEAD_GAP_MAX=12' '(( ELAPSED_HEAD_GAP_MAX = 12 ))' 'ELAPSED_RATE_MIN_SPAN=5' 'local ELAPSED_RATE_MIN_SPAN=5' 'OWN_HEAD_H=99' '(( OWN_HEAD_H = 99 ))'; do
     inj_ct=$((inj_ct + 1))
     cp "$STANDBY" "$WORK/inject.sh"; printf '\n%s\n' "$spell" >> "$WORK/inject.sh"
     if census_constants "$WORK/inject.sh"; then
@@ -1196,7 +1218,7 @@ for spell in 'N_HEAD=7' 'local N_HEAD=7' 'declare -i N_HEAD=7' 'export PROOF_MAX
     fi
 done
 if [[ "$inj_red" == "$inj_ct" ]]; then
-    ok "(11b) census RED on ALL $inj_ct evading spellings (bare + local + declare -i + export + readonly + two arithmetic forms, and the fifth name bare / local / arithmetic): the control's red-capability matches the (11) claim's breadth"
+    ok "(11b) census RED on ALL $inj_ct evading spellings (bare + local + declare -i + export + readonly + two arithmetic forms, the fifth name bare / local / arithmetic, and the 6.3.1 names bare / local / arithmetic): the control's red-capability matches the (11) claim's breadth"
 else
     bad "(11b) $((inj_ct - inj_red))/$inj_ct spellings EVADED the broadened census:$inj_miss"
 fi

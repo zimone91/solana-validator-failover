@@ -234,6 +234,8 @@ echo -e "            Use for your main backup server in a different DC."
 echo ""
 echo -e "  ${YELLOW}BACKUP${NC}   — Cold spare. Takes over at 120s, only if BOTH PRIMARY"
 echo -e "            and STANDBY are down. Last line of defense."
+echo -e "  ${DIM}v0.7: either spare's take ends with one bounded read of its OWN node (up to 2s plus a watchdog${NC}"
+echo -e "  ${DIM}pet) that withdraws the take if the holder shows voting there — each take lands that much later.${NC}"
 echo ""
 echo -e "  ${BOLD}${CYAN}Recommended 3-node setup:${NC}"
 echo ""
@@ -439,8 +441,8 @@ ask_numeric "Takeover delay (seconds of sustained delinquency)" "${TAKEOVER_DELA
 CFG_TAKEOVER_DELAY="$REPLY"
 warn_if_below_rec_takeover_delay "$CFG_TAKEOVER_DELAY" "$REC_TAKEOVER_DELAY" || true   # nudge only (N1 clamp below enforces the floor)
 
-echo -e "  ${DIM}Not a lag guard below 129: agave's getHealth reports 'behind' only beyond 128 slots (its default distance), so <= 128 is inert; > 128 lets a spare that far behind take over.${NC}"
-ask_numeric "Local health max behind (slots; inert <= 128, WIDENS Tier-1 above)" "${LOCAL_HEALTH_MAX_BEHIND:-100}" 0
+echo -e "  ${DIM}Real threshold 128: agave's getHealth reports 'behind' only beyond 128 slots (its default distance). The daemon uses min(value, 128) — above 128 is clamped at start (loud WARN); below 128 behaves as 128.${NC}"
+ask_numeric "Local health max behind (slots; effective max 128 — above is clamped, below behaves as 128)" "${LOCAL_HEALTH_MAX_BEHIND:-128}" 0
 CFG_MAX_BEHIND="$REPLY"
 
 echo ""

@@ -2,9 +2,11 @@
 # v0.7 (Block 3, slice 5): ACT-THEN-ALERT (A8) + fresh-proof re-check. The reviewer's pre-registered
 # conditions (slice 3.5): (1) immediately before set-identity a FRESH re-check — arithmetic on the
 # existing pinned baseline PLUS one short re-sample, not a gate-cycle re-run; (2) re-check yielding
-# VOTING or cannot-determine → ABORT, not proceed; (3) ZERO network calls between the re-check and
-# set-identity (no alert, no network log, no gossip advisory). Extends the demote path's "safety
-# action FIRST" rule (N2) to the take path.
+# VOTING or cannot-determine → ABORT, not proceed; (3) between the re-check and set-identity: no
+# network, no alerts; one bounded local veto read allowed (the rule as it stands since Block 6.3.1 —
+# the one read is the own-view veto's single LOCAL_RPC batch, curl -m 2; before 6.3.1 the rule
+# admitted zero network calls). Extends the demote path's "safety action FIRST" rule (N2) to the
+# take path.
 #
 # harness: tests/lib/harness.sh — load_seam, harness_clock_shims, field, dump_freshness (the sole
 # reader of the freshness triple), extract_twin, ok/bad+banners. An ordered EVENT LOG
@@ -17,6 +19,14 @@
 #   MUTATE      — a REAL stub `agave-validator` binary on SOLANA_PATH logs set-identity calls
 #   TAKE-ENTER / TAKE-EXIT rc=N — the wrapper brackets
 #   LOG <text>  — log_warn lines emitted while inside the take (message-content guard)
+#   READ <LOCAL|EXT> <what> — the shadowed curl (6.3.1): every HTTP request, in order — the A8 census
+#                 counts them between the re-check SAMPLE and MUTATE (exactly ONE: READ LOCAL batch,
+#                 the own-view veto). The LOCAL answers: the confirmed head advancing 4 slots/s; the
+#                 veto batch per OVMODE — pass (default: the holder DELINQUENT in the confirmed view at
+#                 lastVote 5000 = the own-bank maximum) | voting (not delinquent) | voting-once (voting on
+#                 the first batch only) | down (the batch read fails, rc 7). Each sim cycle takes the
+#                 main loop's own-head sample and own-bank note (the standby's per-cycle [own-view]
+#                 callers; the primary's recovery path takes its own)
 # Cases (standby unless said otherwise):
 #   (1) ORDER-PROCEED end-to-end: REAL attempt_takeover to a successful take — no NET before
 #       MUTATE (the 🔍 pre-take alert is gone), a re-check SAMPLE between TAKE-ENTER and MUTATE,
@@ -46,6 +56,13 @@
 #   (12) ABORT-ALERT THROTTLE: a vantage flipping at EVERY re-check aborts forever — the abort
 #       page must throttle per ALERT_THROTTLE (first immediate), while the starvation page still
 #       fires — no per-≈20s page storm
+#   (13) THE OWN-VIEW VETO at the A8 edge (Block 6.3.1, D3): (1e)/(5b)/(6e) — ONE LOCAL read (the
+#       veto batch) between the re-check SAMPLE and MUTATE / WOULD TAKE, zero NET, zero other reads;
+#       (13a) a VOTING veto → no MUTATE, rc 1, _own_bank_active_time stamped BEFORE the alert (the
+#       ST8 snapshot), no cooldown; (13b) a failed veto read → no MUTATE, the blind stamp re-anchors;
+#       (13c) DRY_RUN mirrors the veto (no WOULD TAKE); (13d) a voting-once veto's re-anchor is
+#       CONSUMED (the take lands at veto + TAKEOVER_DELAY); (13e) the veto page throttles (the (12)
+#       idiom) while the starvation page still fires
 # RED (captured before the slice-5 daemon changes): cases 1–7 fail — the order case sees NET (🔍)
 # before MUTATE and no re-check SAMPLE; the abort cases see MUTATE despite fresh VOTING; (7) has no
 # helper to compare. (9)/(10) were observed red by MUTATION (branch neutered → red) after landing;
@@ -58,6 +75,53 @@ T0=100000            # mono origin (never 0 — 0 collides with the "unset" sent
 DELAY=60             # TAKEOVER_DELAY / RECOVERY_DELAY (shipped default)
 MININT=10            # VOTE_LIVENESS_MIN_INTERVAL (shipped default)
 SPAN=40              # VOTE_LIVENESS_MIN_SPAN (shipped default)
+
+# ── ov_curl_shim — the LOCAL_RPC the [own-view] region reads (6.3.1); installed inside each sim ────
+# Every curl is logged READ <LOCAL|EXT> <what> in order (the A8 census). LOCAL getSlot = the confirmed
+# head (800000 + 4 slots/s — advancing); the veto batch per OVMODE (see the header); EXT → rc 7.
+ov_curl_shim() {
+  LOCAL_RPC="http://local.mock"
+  curl(){
+      local url="" d="" src what ida idb off hc m
+      while [[ $# -gt 0 ]]; do case "$1" in -d) d="$2"; shift 2 ;; http*) url="$1"; shift ;; *) shift ;; esac; done
+      src=EXT; [[ "$url" == "$LOCAL_RPC" ]] && src=LOCAL
+      what=other; case "$d" in "["*) what=batch ;; *getSlot*) what=getSlot ;; *getVoteAccounts*) what=getVoteAccounts ;; esac
+      printf 'READ %s %s\n' "$src" "$what" >> "$_EVT_FILE"
+      [[ "$src" == "LOCAL" ]] || return 7
+      off=$(( _SIM_NOW - T0 )); hc=$(( 800000 + 4 * off ))
+      case "$what" in
+          getSlot) printf '{"jsonrpc":"2.0","id":1,"result":%s}' "$hc"; return 0 ;;
+          batch)
+              m="${OVMODE:-pass}"
+              if [[ "$m" == "voting-once" ]]; then
+                  if [[ $(grep -c '^READ LOCAL batch' "$_EVT_FILE") -le 1 ]]; then m=voting; else m=pass; fi
+              fi
+              [[ "$m" == "down" ]] && return 7
+              ida=${d#*\"id\":}; ida=${ida%%,*}; idb=${d##*\"id\":}; idb=${idb%%,*}
+              if [[ "$m" == "voting" ]]; then
+                  printf '[{"jsonrpc":"2.0","id":%s,"result":%s},{"jsonrpc":"2.0","id":%s,"result":{"current":[{"votePubkey":"V1","nodePubkey":"S1","lastVote":%s}],"delinquent":[]}}]' "$ida" "$hc" "$idb" "$(( hc - 1 ))"
+              else
+                  printf '[{"jsonrpc":"2.0","id":%s,"result":%s},{"jsonrpc":"2.0","id":%s,"result":{"current":[],"delinquent":[{"votePubkey":"V1","nodePubkey":"S1","lastVote":5000}]}}]' "$ida" "$hc" "$idb"
+              fi
+              return 0 ;;
+      esac
+      return 7
+  }
+}
+
+# a8_between <events> <end-marker-glob> — the reads/NETs between the LAST re-check SAMPLE before the
+# end marker and the marker itself: "local=<n> batch=<n> other=<n> net=<n>"
+a8_between() {
+  local ev="$1" endm="$2" pre seg
+  pre="${ev%%"$endm"*}"
+  [[ "$pre" == "$ev" ]] && { echo "local=- batch=- other=- net=- (no end marker)"; return 0; }
+  seg="${pre##*SAMPLE }"; seg="${seg#*;}"
+  printf 'local=%s batch=%s other=%s net=%s\n' \
+      "$(printf '%s' "$seg" | tr ';' '\n' | grep -c '^READ LOCAL')" \
+      "$(printf '%s' "$seg" | tr ';' '\n' | grep -c '^READ LOCAL batch$')" \
+      "$(printf '%s' "$seg" | tr ';' '\n' | grep -c '^READ EXT')" \
+      "$(printf '%s' "$seg" | tr ';' '\n' | grep -c '^NET')"
+}
 
 # ── STANDBY sim: REAL attempt_takeover → REAL take_staked_identity over a timeline ─────────────
 #   $1 = re-check mode: what the sampler returns while _IN_TAKE=1
@@ -93,7 +157,7 @@ EOS
   send_telegram(){
       local t="${1//$'\n'/ }"
       printf 'NET %s\n' "${t:0:120}" >> "$_EVT_FILE"
-      printf 'ST8 lla=%s lfv=%s obs=%s\n' "$LAST_LIVENESS_ACTIVE_TIME" "$_liveness_first_vote" "$(field "$(dump_freshness)" observed_since)" >> "$_EVT_FILE"
+      printf 'ST8 lla=%s lfv=%s obs=%s oba=%s bl=%s\n' "$LAST_LIVENESS_ACTIVE_TIME" "$_liveness_first_vote" "$(field "$(dump_freshness)" observed_since)" "${_own_bank_active_time:-0}" "$(field "$(dump_freshness)" blind_until)" >> "$_EVT_FILE"
       return 0
   }
   send_webhook(){ local t="${1//$'\n'/ }"; printf 'NET %s\n' "${t:0:120}" >> "$_EVT_FILE"; return 0; }
@@ -127,6 +191,7 @@ EOS
       fi
       printf '5000 %s T2\n' $(( 900000 + off )); return 0
   }
+  ov_curl_shim
   # Case 8: the permanent revert-control — a no-op re-check reproduces the parent's behavior.
   if [[ "$shadow" == "1" ]]; then _fresh_proof_recheck(){ return 0; }; fi
   # Wrapper: brackets the REAL body (renamed via declare -f) so the event log can see the take
@@ -151,6 +216,9 @@ EOS
   if [[ $hz -gt 0 ]]; then stopmark='^MUTATE'; else hz=$(( DELAY + 5 )); fi
   for ((t=0; t<=hz; t++)); do
       _SIM_NOW=$(( T0 + t ))
+      # 6.3.1: the standby main loop's per-cycle [own-view] callers in an open episode — the own-head sample
+      # and the own-bank note (local_check_delinquency's holder lastVote: 5000, delinquent)
+      _own_head_sample >/dev/null 2>&1; _own_bank_note 5000
       attempt_takeover >/dev/null 2>&1
       grep -q "$stopmark" "$EVT" && break
   done
@@ -163,9 +231,10 @@ EOS
   [[ $obs   -gt 0 ]] && obs=$((   obs - T0 ))
   [[ $blind -gt 0 ]] && blind=$(( blind - T0 ))
   printf 'EVENTS=%s\n' "$(tr '\n' ';' < "$EVT")"
-  printf 'STATE=rc=%s|lla=%s|lfv=%s|lftip=%s|lfts=%s|lfp=%s|obs=%s|blind=%s|ltt=%s|mutoff=%s\n' \
+  local oba=${_own_bank_active_time:-0}; [[ $oba -gt 0 ]] && oba=$(( oba - T0 ))
+  printf 'STATE=rc=%s|lla=%s|lfv=%s|lftip=%s|lfts=%s|lfp=%s|obs=%s|blind=%s|ltt=%s|mutoff=%s|oba=%s\n' \
       "$_take_rc" "$lla" "$_liveness_first_vote" "$_liveness_first_tip" "$lfts" \
-      "$(field "$(dump_freshness)" vantage)" "$obs" "$blind" "$LAST_TAKEOVER_TIME" "$mutoff"
+      "$(field "$(dump_freshness)" vantage)" "$obs" "$blind" "$LAST_TAKEOVER_TIME" "$mutoff" "$oba"
   )
 }
 
@@ -206,7 +275,8 @@ EOS
   save_state(){ :;}; sleep(){ :;}
   get_local_identity(){ echo "$STAKED_PUBKEY"; }
   timeout(){ shift 3; "$@"; }
-  tier1_check_delinquency(){ return 1; }       # local: no longer delinquent
+  tier1_check_delinquency(){ _t1_holder_lv=5000; return 1; }   # local: no longer delinquent (6.3.1: exposes the holder's lastVote as the real one does — the recovery path folds it into the own-bank maximum)
+  ov_curl_shim
   _check_rpc_delinquency(){ return 1; }        # tier2: no longer delinquent
   check_standby_has_identity(){ return 1; }    # gossip advisory: nobody else visible (runs BEFORE switch_to_staked)
   get_staked_liveness_sample(){
@@ -266,6 +336,10 @@ if [[ "$ev" == *MUTATE* ]]; then
     [[ "$(field "$st" rc)" == "0" ]] \
         && ok "(1d) take succeeded (rc 0)" \
         || bad "(1d) take rc=$(field "$st" rc)"
+    a8=$(a8_between "$ev" "MUTATE")
+    [[ "$a8" == "local=1 batch=1 other=0 net=0" ]] \
+        && ok "(1e) A8 census (6.3.1): between the re-check SAMPLE and MUTATE exactly ONE read — READ LOCAL batch, the own-view veto — and zero NET, zero other reads (no network, no alerts; one bounded local veto read allowed)" \
+        || bad "(1e) A8 census between the re-check SAMPLE and MUTATE: $a8 (want local=1 batch=1 other=0 net=0)"
 else
     bad "(1) no MUTATE at all — the take never happened: $ev"
 fi
@@ -347,10 +421,11 @@ else
 fi
 out=$(sim_sb frozen true 0)
 ev=$(evline "$out")
-if [[ "$ev" == *"WOULD TAKE"* && "$ev" != *MUTATE* ]]; then
-    ok "(5b) DRY_RUN + all-frozen → WOULD TAKE fires, and no MUTATE ever (dry run never touches the binary)"
+a8=$(a8_between "$ev" "LOG [DRY RUN] Would TAKE")
+if [[ "$ev" == *"WOULD TAKE"* && "$ev" != *MUTATE* && "$a8" == "local=1 batch=1 other=0 net=0" ]]; then
+    ok "(5b) DRY_RUN + all-frozen → WOULD TAKE fires, and no MUTATE ever (dry run never touches the binary); A8 census (6.3.1): ONE read — the veto's READ LOCAL batch — between the re-check SAMPLE and the WOULD TAKE, zero NET (the veto runs BEFORE the DRY_RUN branch)"
 else
-    bad "(5b) DRY_RUN frozen path wrong: $ev"
+    bad "(5b) DRY_RUN frozen path wrong (A8 census: $a8): $ev"
 fi
 
 # ── (6) PRIMARY TWIN ────────────────────────────────────────────────────────────────────────────
@@ -369,6 +444,10 @@ if [[ "$ev" == *MUTATE* ]]; then
     [[ "$post" == *"NET"* && "$post" == *"RECOVERED TO STAKED"* ]] \
         && ok "(6c) NET (RECOVERED TO STAKED) only AFTER MUTATE" \
         || bad "(6c) no post-MUTATE recovery alert: $post"
+    a8=$(a8_between "$ev" "MUTATE")
+    [[ "$a8" == "local=1 batch=1 other=0 net=0" ]] \
+        && ok "(6e) A8 census on the PRIMARY twin (6.3.1): ONE read — the veto's READ LOCAL batch — between the re-check SAMPLE and MUTATE, zero NET" \
+        || bad "(6e) A8 census on the recovery path: $a8"
 else
     bad "(6a-c) no MUTATE — the recovery switch never happened: $ev"
 fi
@@ -446,5 +525,51 @@ echo "    abort pages=$aborts starvation pages=$starv"
 [[ "$starv" -ge 2 ]] \
     && ok "(12c) the starvation page still fires alongside ($starv pages) — a re-check-starved episode is loud" \
     || bad "(12c) starvation pages=$starv (want >=2) — re-check starvation went quiet"
+
+# ── (13) THE OWN-VIEW VETO at the A8 edge (Block 6.3.1, D3) ─────────────────────────────────────
+echo ""; echo "─── (13) the own-view veto: voting / failed read / DRY_RUN mirror / re-anchor consumed / page throttle ───"
+out=$(OVMODE=voting sim_sb frozen false 0)
+ev=$(evline "$out"); st=$(stline "$out")
+if [[ "$ev" != *MUTATE* && "$(field "$st" rc)" == "1" && "$(field "$st" oba)" == "60" && "$(field "$st" ltt)" == "0" \
+      && "$ev" == *"Take VETOED by this spare's own view"* && "$ev" == *"ST8 lla=0 lfv=5000 obs=$T0 oba=$((T0+60))"* \
+      && "$(a8_between "$ev" "LOG [own-view] VETO")" == "local=1 batch=1 other=0 net=0" ]]; then
+    ok "(13a) VOTING veto (the holder NOT delinquent in the confirmed view) → NO MUTATE, rc 1; _own_bank_active_time = the veto read (t0+60) is written BEFORE the alert (the alert-time ST8 already shows it); NO cooldown (a withdrawn verdict, not a failed take)"
+else
+    bad "(13a) rc=$(field "$st" rc) oba=$(field "$st" oba) ltt=$(field "$st" ltt): $ev"
+fi
+out=$(OVMODE=down sim_sb frozen false 0)
+ev=$(evline "$out"); st=$(stline "$out")
+if [[ "$ev" != *MUTATE* && "$(field "$st" rc)" == "1" && "$(field "$st" blind)" == "60" && "$(field "$st" oba)" == "0" && "$(field "$st" ltt)" == "0" \
+      && "$ev" == *"it could not testify"* && "$ev" == *"oba=0 bl=$((T0+60))"* ]]; then
+    ok "(13b) the veto read FAILS (rc 7) → NO MUTATE, rc 1; a BLIND veto: _last_blind_end = the read (t0+60) — the re-check's blind-abort semantics — written BEFORE the alert; no own-bank stamp, no cooldown"
+else
+    bad "(13b) rc=$(field "$st" rc) blind=$(field "$st" blind) oba=$(field "$st" oba): $ev"
+fi
+out=$(OVMODE=voting sim_sb frozen true 0)
+ev=$(evline "$out")
+if [[ "$ev" != *"WOULD TAKE"* && "$ev" == *"Take VETOED"* ]]; then
+    ok "(13c) DRY_RUN + a VOTING veto → NO '[DRY RUN] WOULD TAKE' (the veto sits BEFORE the DRY_RUN branch: DRY_RUN mirrors the live decision)"
+else
+    bad "(13c) DRY_RUN did not mirror the veto: $ev"
+fi
+out=$(OVMODE=voting-once sim_sb frozen false 0 200)
+ev=$(evline "$out"); st=$(stline "$out")
+enters=$(printf '%s' "$ev" | grep -o 'TAKE-ENTER' | grep -c . )
+if [[ "$enters" == "2" && "$ev" == *MUTATE* && "$(field "$st" rc)" == "0" && "$(field "$st" mutoff)" == "120" ]]; then
+    ok "(13d) a VOTING veto at t0+60 (once) → the take lands at t0+120 = veto + TAKEOVER_DELAY: the own-bank stamp is an anchor input CONSUMED by the countdown (D2), two take attempts"
+else
+    bad "(13d) enters=$enters mutoff=$(field "$st" mutoff) rc=$(field "$st" rc): $ev"
+fi
+out=$(OVMODE=down sim_sb frozen false 0 2000)
+ev=$(evline "$out")
+vpages=$(( $(printf '%s' "$ev" | grep -o 'Take VETOED' | grep -c . ) / 2 ))
+starv=$(( $(printf '%s' "$ev" | grep -o 'TAKEOVER STARVATION' | grep -c . ) / 2 ))
+vetos=$(printf '%s' "$ev" | tr ';' '\n' | grep -c '^LOG \[own-view\] VETO (blind)')
+echo "    veto pages=$vpages over $vetos vetoes; starvation pages=$starv"
+if [[ "$ev" != *MUTATE* && "$vetos" -ge 20 && "$vpages" -ge 3 && "$vpages" -le 6 && "$starv" -ge 2 ]]; then
+    ok "(13e) a veto read failing for 2000 s: NO take; $vetos vetoes, the veto page THROTTLED to $vpages (first immediate, repeats per ALERT_THROTTLE=600 — the (12) idiom) while the starvation page still fires ($starv)"
+else
+    bad "(13e) mutate=$([[ "$ev" == *MUTATE* ]] && echo yes || echo no) vetoes=$vetos pages=$vpages starv=$starv"
+fi
 
 results_banner
