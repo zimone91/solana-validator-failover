@@ -45,7 +45,9 @@
 #       DRY_RUN + all-frozen → WOULD TAKE fires, no MUTATE ever
 #   (6) PRIMARY TWIN: ORDER-PROCEED and FRESH-VOTING ABORT through the REAL attempt_safe_recovery
 #       → switch_to_staked (test_primary_recovery_liveness Part-1 idiom, RECOVERY_CHECKS=1)
-#   (7) BYTE-IDENTITY: _fresh_proof_recheck body identical across daemons
+#   (7) BYTE-IDENTITY: _fresh_proof_recheck body identical across daemons; (7c) its DECISION per (pinned
+#       vantage, answering tiers), cell by cell on both daemons, against the pre-fix body (fix round 1, R3:
+#       the re-check asks the pinned vantage first — exactly one cell changed)
 #   (8) PERMANENT REVERT-CONTROL: scenario 2 with _fresh_proof_recheck(){ return 0; } shadowed →
 #       MUTATE HAPPENS despite the fresh VOTING sample — documents the parent's behavior and
 #       proves case 2 bites
@@ -579,6 +581,54 @@ P_R=$TWIN_P; S_R=$TWIN_S
 [[ -n "$P_R" && "$P_R" == "$S_R" ]] \
     && ok "(7) _fresh_proof_recheck body BYTE-IDENTICAL in both daemons ($(printf '%s\n' "$P_R" | wc -l | tr -d ' ') lines)" \
     || bad "(7) _fresh_proof_recheck missing or DIVERGED between the daemons"
+
+# ── (7c) the re-check's DECISION per (pinned vantage, answering tiers) — fix round 1, R3 ──────────────
+# R3 (the panel's AV-6 alternative) made the re-check ask the PINNED vantage first when the pin is TIER3 and the
+# tiers are distinct; an answer from the other tier can only abort. The whole table, cell by cell, on BOTH
+# daemons' REAL _fresh_proof_recheck — a frozen same-vantage lastVote with the reference advanced, so the
+# pin/answer pair is the only thing left to decide; the sampler shadow asks TIER2 then TIER3 and skips an empty
+# URL, as the real one does. The pre-fix body (one two-tier call) is the shipped one with the pinned-first
+# branch disabled by mutation. Exactly ONE cell may differ: pinned on TIER3 with TIER2 answering again — the
+# pre-fix re-check aborted it as a provider flip; now it proceeds on TIER3's same-vantage reading (the
+# own-view veto still follows it).
+echo ""; echo "─── (7c) the re-check's decision per (pinned vantage, answering tiers): both daemons + the pre-fix body ───"
+dec_rc() {   # $1 = daemon script, $2 = pin (T2|T3), $3 = TIER2 answers (1|0), $4 = TIER3 answers (1|0) → the rc
+  (
+    set +e
+    load_seam "$1" >/dev/null 2>&1
+    harness_clock_shims; _SIM_NOW=$(( T0 + 100 ))
+    log(){ :;}; log_info(){ :;}; log_warn(){ :;}; log_error(){ :;}; _recheck_abort_alert(){ :;}
+    VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_EPSILON=0; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"
+    _liveness_first_vote=5000; _liveness_first_tip=900000; _liveness_first_provider="$2"; _liveness_first_ts=$T0
+    _DA2="$3"; _DA3="$4"
+    get_staked_liveness_sample(){
+        if [[ -n "$TIER2_RPC" && $_DA2 -eq 1 ]]; then echo "5000 900100 T2"; return 0; fi
+        if [[ -n "$TIER3_RPC" && $_DA3 -eq 1 ]]; then echo "5000 900100 T3"; return 0; fi
+        return 1
+    }
+    _fresh_proof_recheck >/dev/null 2>&1; echo $?
+  )
+}
+_dec_pre=$(mktemp "${TMPDIR:-/tmp}/ata-recheck-prefix.XXXXXX")
+mutate "$STANDBY" '/^_fresh_proof_recheck() {/,/^}/s/^    if \[\[ "\${_liveness_first_provider:-}" == "T3" .*; then$/    if false; then/' "$_dec_pre"
+dec_ok=1; dec_rows=""; dec_diff=""
+for _cell in "T3 1 1" "T3 0 1" "T3 1 0" "T3 0 0" "T2 1 1" "T2 0 1" "T2 1 0" "T2 0 0"; do
+    # shellcheck disable=SC2086
+    set -- $_cell
+    _want=1; { [[ "$1" == "T2" && "$2" == "1" ]] || [[ "$1" == "T3" && "$3" == "1" ]]; } && _want=0
+    _dp=$(dec_rc "$PRIMARY" "$1" "$2" "$3"); _ds=$(dec_rc "$STANDBY" "$1" "$2" "$3"); _do=$(dec_rc "$_dec_pre" "$1" "$2" "$3")
+    dec_rows="$dec_rows $1 pin, T2 $([[ $2 -eq 1 ]] && echo up || echo down)/T3 $([[ $3 -eq 1 ]] && echo up || echo down) → $([[ $_ds -eq 0 ]] && echo proceed || echo ABORT);"
+    [[ "$_dp" == "$_want" && "$_ds" == "$_want" ]] || { dec_ok=0; dec_diff="$dec_diff [$_cell: primary=$_dp standby=$_ds want=$_want]"; }
+    if [[ "$_cell" == "T3 1 1" ]]; then
+        [[ "$_do" == "1" ]] || { dec_ok=0; dec_diff="$dec_diff [pre-fix $_cell: $_do, want 1 (the flip abort)]"; }
+    else
+        [[ "$_do" == "$_want" ]] || { dec_ok=0; dec_diff="$dec_diff [pre-fix $_cell: $_do, want $_want]"; }
+    fi
+done
+rm -f "$_dec_pre"
+[[ $dec_ok -eq 1 ]] \
+    && ok "(7c) the re-check's DECISION, cell by cell on BOTH daemons' real _fresh_proof_recheck (a frozen same-vantage lastVote, the reference advanced):$dec_rows it proceeds only on the PINNED tier's answer. The pre-fix body (the pinned-first branch disabled) differs in exactly ONE cell: pinned on TIER3 with TIER2 answering, it aborted as a provider flip; now it proceeds on TIER3's same-vantage frozen reading, the own-view veto still after it (fix round 1, R3)" \
+    || bad "(7c) re-check decision table:$dec_diff"
 
 # ── (8) PERMANENT REVERT-CONTROL ────────────────────────────────────────────────────────────────
 echo ""; echo "─── (8) revert-control: _fresh_proof_recheck(){ return 0; } → the parent's behavior ───"
