@@ -260,14 +260,15 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   advances in bursts; the daemon samples liveness at `processed` and uses a slot-delta rule, never a
   wall-clock conversion. At the take, the spare re-reads its **own** node at `confirmed` (the own-view
   veto, v0.7): the slow reliable view triggers, the fast one vetoes.
-- **`LOCAL_HEALTH_MAX_BEHIND` (STANDBY, Tier-1) — the real threshold is the node's own health-check
-  distance.** agave's `getHealth` reports "behind" only beyond the validator's
-  `--health-check-slot-distance` (128 by default), so since v0.7 (Block 6.3.1, tightened in its fix
-  round 1) Tier-1 treats **every** "behind" report as not ready, whatever this knob says, and the
-  knob's effective value is `min(LOCAL_HEALTH_MAX_BEHIND, that distance)` — the distance read from the
-  validator's command line, else agave's 128. A larger value is **clamped** at start with a loud WARN
-  (it would admit a spare that far behind as ready to take over); a smaller one is announced as behaving
-  as the distance. The default is 128.
+- **`LOCAL_HEALTH_MAX_BEHIND` (STANDBY, Tier-1) — enters no decision; the threshold is the node's own
+  health-check distance.** agave's `getHealth` reports "behind" only beyond the validator's
+  `--health-check-slot-distance` (128 by default) and reports no lag inside it, so since v0.7 (Block
+  6.3.1, tightened in its fix round 1) Tier-1 is ready iff `getHealth` answers ok and treats **every**
+  "behind" report as not ready, whatever this knob says. A value above that distance (read from the
+  validator's command line, else agave's 128) is **clamped** at start with a loud WARN — it could never
+  take effect; a value at or below it has **no effect** (an info line says so): it cannot tighten Tier-1.
+  To bound how far behind a spare may be when it takes (the own view's residual 2 in
+  `docs/SAFETY.md`), lower the validator's own `--health-check-slot-distance`. The default is 128.
 
 ### Compatibility & tuning notes
 
@@ -300,7 +301,13 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   advancing (the STANDBY holds it), recovery is refused. The v0.6.2 full-`ip:port` gossip check
   stays as advisory corroboration (it can still abort recovery — the safe direction). `manual`
   remains recommended because automatic re-take is inherently riskier than a human deciding. The
-  daemon logs a startup notice when `rpc` is selected. `auto` is reserved/disabled.
+  daemon logs a startup notice when `rpc` is selected. `auto` is reserved/disabled. Since v0.7 the
+  `rpc` re-take passes only inside a band of the staked account's age (128–158 slots after its last
+  vote), so at the shipped defaults on a fast cluster it may never complete (`docs/SAFETY.md`, *What it
+  costs, measured*); a recovery still unstaked `RECOVERY_DELAY` + `VOTE_LIVENESS_MIN_SPAN` +
+  `RECOVERY_CHECKS` × `RECOVERY_CHECK_INTERVAL` after its first eligible pass (430 s at the defaults)
+  pages "eligible for Ns and NOT completing" with the last hold, throttled per `ALERT_THROTTLE` — switch
+  back manually when the account is safe.
 
 - **PRIMARY self-fence / "vote lease" (`PRIMARY_SELF_FENCE`, v0.6.3):** mitigates the residual
   partition case — a PRIMARY that is alive but **isolated from the supermajority** (partition /
@@ -679,9 +686,10 @@ timeline is identical to v0.6.6 (~70s).
 > **v0.7 (Block 6.3.1):** every take below ends with the spare's own-view veto — one bounded read of
 > its own node (`curl -m 2` + a watchdog pet) that withdraws the take if the holder shows voting there,
 > the read fails, or the spare's own head is not advancing — and the spare samples its own head through
-> the episode and around each external read of the take cycle: five to eight bounded local reads per
-> take cycle, milliseconds on a healthy node; measured +13 to +14 s when every local read takes 1 s and
-> +26 to +30 s with every read at its bound (`docs/SAFETY.md`, *What it costs, measured*). The per-class
+> the episode and before each external read of the take cycle: five to twelve bounded local reads per
+> take cycle, milliseconds on a healthy node; measured +14 to +15 s when every local read takes 1 s; as a
+> local read nears its 2 s bound the take slides later, and at 2 s or more the spare never takes (loudly:
+> the veto page, then the starvation page) (`docs/SAFETY.md`, *What it costs, measured*). The per-class
 > measurement of the whole ordering — holder fence vs the spare's earliest take, including the rows
 > where it does not hold — is in `docs/SAFETY.md`, *The cross-node invariant*.
 

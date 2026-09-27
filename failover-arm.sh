@@ -13,7 +13,9 @@
 #      daemon's R-SYM rule mirrored: a token whose directory is reached through a symlink never
 #      proves); REFUSE[STATE-dir-spelling] / REFUSE[STATE-dir-symlink] / REFUSE[STATE-dir-missing] before
 #      anything is created, written or installed (6.3.1 fix round 1: the spelling first, then the nearest
-#      existing ancestor — a refused path is never left created on disk)
+#      existing ancestor — a refused path is never left created on disk; fix round 2: a mkdir that fails
+#      partway removes what it created — the one exception left is a symlink raced onto the path between
+#      the checks and the creation, refused but not cleaned: nothing is removed through a symlink)
 #   1. self v0.7 check (patsub guard in the installed daemons — the rev3.2 release condition,
 #      self-enforced: the ceremony IS the upgrade-then-arm checkpoint)
 #   2. socat present (§2.6: the SOLE armed transport in v0.7 — refuse, never fall back)
@@ -181,7 +183,10 @@ _arm_detect_role_env() {
 #       REFUSE[STATE-dir-missing];
 #   (c) only then the missing tail is created (mkdir -p — what P3/P5/the token already did) and the WHOLE
 #       path is re-checked with the daemon's exact line (a race that swaps a symlink in between is still
-#       refused, as before; (16g) asserts the line is the daemon's, character for character).
+#       refused, as before; (16g) asserts the line is the daemon's, character for character). A mkdir that
+#       FAILS partway (fix round 2 — the delta panel's CK-8: a 300-character component left its parent
+#       created) removes the tail it created, deepest first, rmdir only (empty directories, no symlink
+#       followed); the raced-symlink refusal removes nothing (nothing is removed through a symlink).
 # Runs before P3 (the first write into the directory). NOT closed (named in docs/SAFETY.md's threat
 # model): a local root that RENAME-swaps the directory's contents away and back between two daemon steps.
 _state_dir_spelling_ok() {   # $1 = a path; 0 iff it is spelled as `pwd -P` prints a directory with no symlink on its path
@@ -221,7 +226,17 @@ _pre_state_dir_check() {
     mkdir -p "$ARM_STATE_DIR" 2>/dev/null
     _sd_p=$(CDPATH='' cd -P -- "$ARM_STATE_DIR" 2>/dev/null && pwd -P)
     if [[ -z "$_sd_p" ]]; then
-        _arm_refuse "STATE-dir-missing" "ARM_STATE_DIR=$ARM_STATE_DIR cannot be created or entered as a directory — the pairing token (spare) and the config-generation counter (holder) are stored there" "make $ARM_STATE_DIR a real, writable directory (remove whatever non-directory sits at that path BY HAND, then: mkdir -p $ARM_STATE_DIR), then re-run 'failover arm'"
+        # fix round 2 (S5 — the delta panel's CK-8): a mkdir -p that failed PARTWAY (a component name too long, a
+        # full disk, a permission lost on the way) left the directories it did create. Remove them, deepest first,
+        # under the canonical ancestor (b) resolved — the missing tail only, and `rmdir` only: it removes nothing but
+        # an EMPTY directory and follows no symlink, so a directory another process filled in the meantime stays.
+        local _rm_tail="$_tail" _rm_p
+        while [[ -n "$_rm_tail" ]]; do
+            _rm_p="${_anc_p%/}$_rm_tail"
+            [[ -d "$_rm_p" && ! -L "$_rm_p" ]] && rmdir "$_rm_p" 2>/dev/null
+            _rm_tail="${_rm_tail%/*}"
+        done
+        _arm_refuse "STATE-dir-missing" "ARM_STATE_DIR=$ARM_STATE_DIR cannot be created or entered as a directory — the pairing token (spare) and the config-generation counter (holder) are stored there; what this run created on the way was removed" "make $ARM_STATE_DIR a real, writable directory (remove whatever non-directory sits at that path BY HAND, then: mkdir -p $ARM_STATE_DIR), then re-run 'failover arm'"
     fi
     if [[ "$_sd_p" != "$ARM_STATE_DIR" ]]; then
         _arm_refuse "STATE-dir-symlink" "ARM_STATE_DIR=$ARM_STATE_DIR is not its own resolved path (it resolves to $_sd_p: a symlink on the path, or a spelling that is not the resolved path — a trailing '/', '//', '.', '..', a relative path) — a pairing token stored through it NEVER proves on the spare (the daemon's R-SYM rule: a directory re-pointed away and back is invisible to the token file's identity, so watchdog-elapsed counts no silence under it)" "point ARM_STATE_DIR at the resolved path — ARM_STATE_DIR=$_sd_p — and set the spare daemon's PROOF_STATE_DIR to the same value (or replace the symlink with a real directory at $ARM_STATE_DIR), then re-run 'failover arm'"

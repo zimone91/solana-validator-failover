@@ -236,7 +236,8 @@ echo -e "  ${YELLOW}BACKUP${NC}   — Cold spare. Takes over at 120s, only if BO
 echo -e "            and STANDBY are down. Last line of defense."
 echo -e "  ${DIM}v0.7: either spare's take ends with one bounded read of its OWN node (curl -m 2 plus a watchdog${NC}"
 echo -e "  ${DIM}pet) that withdraws the take if the holder shows voting there; with its own-head samples a take${NC}"
-echo -e "  ${DIM}cycle makes 5-8 bounded local reads — milliseconds on a healthy node, +13-30s when they are slow.${NC}"
+echo -e "  ${DIM}cycle makes 5-12 bounded local reads — milliseconds on a healthy node, +14-15s when each takes 1s;${NC}"
+echo -e "  ${DIM}a node whose local reads take 2s or more never takes over (it pages instead).${NC}"
 echo ""
 echo -e "  ${BOLD}${CYAN}Recommended 3-node setup:${NC}"
 echo ""
@@ -442,8 +443,8 @@ ask_numeric "Takeover delay (seconds of sustained delinquency)" "${TAKEOVER_DELA
 CFG_TAKEOVER_DELAY="$REPLY"
 warn_if_below_rec_takeover_delay "$CFG_TAKEOVER_DELAY" "$REC_TAKEOVER_DELAY" || true   # nudge only (N1 clamp below enforces the floor)
 
-echo -e "  ${DIM}Real threshold: the validator's own --health-check-slot-distance (agave's default 128) — getHealth reports 'behind' only beyond it, and every 'behind' report fails Tier-1. The daemon uses min(value, that distance): above it is clamped at start (loud WARN); below it behaves as the distance.${NC}"
-ask_numeric "Local health max behind (slots; effective = min(value, the node's health-check distance, default 128))" "${LOCAL_HEALTH_MAX_BEHIND:-128}" 0
+echo -e "  ${DIM}This value enters no decision: Tier-1 is ready iff getHealth answers ok — within the validator's own --health-check-slot-distance (agave's default 128); every 'behind' report fails Tier-1. Above that distance it is clamped at start (loud WARN); at or below it, it has no effect. To bound how far behind this spare may be when it takes, lower the validator's own --health-check-slot-distance.${NC}"
+ask_numeric "Local health max behind (slots; no effect at or below the node's health-check distance, default 128 — clamped above it)" "${LOCAL_HEALTH_MAX_BEHIND:-128}" 0
 CFG_MAX_BEHIND="$REPLY"
 
 echo ""

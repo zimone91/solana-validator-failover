@@ -69,6 +69,9 @@ _HARNESS_TMP=$(mktemp -d)
 # the network anywhere; results_banner names what it intercepted. Enumerated with a logging curl first in
 # PATH over every suite: 12 suites' own-head samples (the [own-view] sampler, unshadowed there) reached
 # 127.0.0.1:8899 this way; test_act_then_alert (15) holds its own sims to zero with a sim-level logger.
+# LIMIT (6.3.1 fix round 2 — the delta panel's T3-SPELL, stated): the guard is PATH-based — `curl` and `command
+# curl` reach it, an absolute /usr/bin/curl does not (the real binary runs); and its banner line names what it
+# intercepted but never fails a suite.
 mkdir -p "$_HARNESS_TMP/netguard"
 cat > "$_HARNESS_TMP/netguard/curl" <<'EOS'
 #!/bin/sh

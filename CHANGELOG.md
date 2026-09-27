@@ -10,8 +10,9 @@ All notable changes are documented here. Versions follow the project's internal 
   can splice) now testifies at every take, and every piece is veto-only — it can turn a take into a
   hold, never the reverse. The mechanism, its measured costs and the residuals it leaves:
   [docs/SAFETY.md — the spare's own view](docs/SAFETY.md#the-spares-own-view-v07-block-631); the
-  cross-node invariant measured per failure class, every crossing found named — the review of the first
-  build found crossings its table missed, now rows:
+  cross-node invariant measured per failure class, every crossing measured named — the reviews of the
+  first build and of its first fix round found crossings the table missed (an earlier text of this entry
+  said every crossing found was named), now rows:
   [docs/SAFETY.md — the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
   - **Explicit commitments (D1).** Every `getVoteAccounts`/`getSlot` request body in both daemons
     spells its commitment out in `params[0]` (a census test parses every RPC body with jq and fails on
@@ -28,9 +29,11 @@ All notable changes are documented here. Versions follow the project's internal 
     the fresh re-check and before the `DRY_RUN` branch; a failed read is a veto (blind), a voting holder
     re-anchors, no cooldown. The act-then-alert rule now reads everywhere it is stated: **no network, no
     alerts; one bounded local veto read allowed.** The added cost is not one read: with the own-head
-    samples a take cycle makes five to eight bounded LOCAL reads (each `curl -m 2` + a pet) —
-    milliseconds on a healthy loopback; measured against the 6.3 build +13 to +14 s when every LOCAL
-    read takes 1 s, +26 to +30 s with every read at its bound.
+    samples a take cycle makes five to twelve bounded LOCAL reads (each `curl -m 2` + a pet) —
+    milliseconds on a healthy loopback; measured against the 6.3 build +14 to +15 s when every LOCAL
+    read takes 1 s; as a LOCAL read nears its 2 s bound the take slides later, and at 2 s or more the
+    spare never takes, loudly (an earlier text of this entry gave "+26 to +30 s with every read at its
+    bound" — a harness idealization in which LOCAL reads answer at their bound).
   - **The spare's own head (D4):** own-head samples on the take path; at every take the head must have
     advanced within the last `OWN_HEAD_H` = 16 s; watchdog-elapsed's new `[elapsed-rate]` layer
     abstains when this head AVERAGED less than 2.5 slots/s over the silence span; `N_HEAD` =
@@ -40,12 +43,15 @@ All notable changes are documented here. Versions follow the project's internal 
     view staler than the budget — named with its executed worlds in
     [docs/SAFETY.md — slot time](docs/SAFETY.md#shared-vantages--the-spares-observation-surface-a-standing-property-v07).
   - **The small calls (D5):** Tier-1 is the node's own health verdict — every `getHealth` "behind"
-    report is not ready, and `LOCAL_HEALTH_MAX_BEHIND` is clamped to the validator's own
-    `--health-check-slot-distance` (read from its command line, else agave's 128; the default is 128, a
-    larger value is announced as clamped); the holder's opt-in latency demote reads its payload first (a
-    stall now demotes sooner, never later; not part of the cross-node invariant); `failover arm` refuses
-    a symlinked or non-canonical state directory before creating anything (`REFUSE[STATE-dir-symlink]`,
-    `REFUSE[STATE-dir-spelling]`, `REFUSE[STATE-dir-missing]`). No change, documented: no lazy provider registration; the lxcfs
+    report is not ready, so `LOCAL_HEALTH_MAX_BEHIND` enters no decision: the validator's own
+    `--health-check-slot-distance` (agave's 128 by default) is the threshold; a larger knob value is
+    announced as clamped, a smaller one has no effect — lower the validator's distance to tighten it (an
+    earlier text said the effective value was the smaller of the two); the holder's opt-in latency demote
+    reads its payload first (a stall now demotes sooner, never later; not part of the cross-node
+    invariant); `failover arm` refuses a symlinked or non-canonical state directory
+    (`REFUSE[STATE-dir-symlink]`, `REFUSE[STATE-dir-spelling]`, `REFUSE[STATE-dir-missing]`) before
+    creating anything, and a `REFUSE[STATE-dir-missing]` after a `mkdir -p` that failed partway removes
+    what it created (fix round 2; an earlier text said nothing was ever created). No change, documented: no lazy provider registration; the lxcfs
     "future" stamps and the state-directory rename swap by a local root (SAFETY's local-host threat
     model); the "(v0.7)" markers stay.
   - **The invariant, measured (D6):** holder fence vs the spare's earliest take / mint per failure
@@ -63,21 +69,49 @@ All notable changes are documented here. Versions follow the project's internal 
     latency reference is no longer holder-voting evidence (it had delayed a dead holder's take silently by
     15–39 s); a baseline for the veto on slow take cycles — an own-head sample before each external read
     of the take cycle, the fence's tiers read apart, the re-check asking the pinned vantage first (a
-    healthy confirmed-head hold had vetoed a dead holder's take for +85 to +93 s, and one dead tier with
-    the other ≥ 7 s late starved it; `PROOF_MAX_AGE`'s span 49 → 32 s); the primary's recovery path
+    regression — fix round 2 below) (a healthy confirmed-head hold had vetoed a dead holder's take for +85
+    to +93 s, and one dead tier with the other ≥ 7 s late starved it; `PROOF_MAX_AGE`'s span 49 → 32 s); the primary's recovery path
     sampled the same way (the first build's recovery veto read BLIND at every take in the measured
     worlds); the fast path keeps D2's timer; the censuses read structure instead of spelling (the
     take-path census, the commitment census by jq, the A8 census over the whole take segment and its
     calls, the rule text in every shipped file, the episode-close sites) and a logging `curl` first in
-    PATH makes the dynamic A8 census and every suite hermetic. The named costs and the one cell made worse
-    are in SAFETY.
+    PATH makes the dynamic A8 census and every suite hermetic. The named costs are in SAFETY (its "one
+    cell made worse" was not the only one — fix round 2 re-measured them).
+  - **Fix round 2 (the delta review on fix round 1), each red first on the review's own worlds:**
+    **the fresh re-check reads EVERY tier that answers** (S1 — a safety regression fix round 1 introduced:
+    with the pair pinned on `TIER3` it never read a `TIER2` that recovered and showed the holder's vote
+    ADVANCED, and took a voting holder 21–34 s into its voting where the 6.3 build and the first 6.3.1 build aborted): both tiers
+    are read at once (the wall time is the slower tier's, not the sum; `PROOF_MAX_AGE`'s span stays 32 s),
+    any answer showing an advance aborts, and only the pinned vantage's own frozen answer carries the take —
+    which also closes the mirror world the sequential call had always taken (pinned on a splicing or
+    lagging `TIER2`, `TIER3` honest: taken 25 s into the voting); its cost, named: with one tier down every
+    take attempt waits out its 10 s timeout (+10 … +1 s). **An own-head sample before EVERY external read of
+    the take cycle** (S2): the gossip advisory's two `-m 15` reads had one sample before the pair, so a slow
+    `TIER2` advisory read left no baseline and a dead holder was never taken (starvation page at t374);
+    now N-is-all over the cycle's reads (a structural census: `test_own_view` (7g)), the baseline measured
+    over a 256-cell matrix (9–16 s wherever a tier answers), and the one class samples cannot split — ONE long advisory read, 2–6 s
+    baselines, +77 … +90 s on an aligned in-budget hold — named with the reviewer's options. **R1's cost
+    with honest tiers named** (S3: a holder that voted into the episode costs one more `TAKEOVER_DELAY`,
+    +27 … +51 s at `MAX_DELINQUENT_SLOTS` 15, none at 0; the vote-time-estimate option written beside it,
+    the anchor unchanged). **The D6 holder table with every daemon term** (S4: the hard stop's
+    `systemctl mask --runtime` bound and the set-identity-hang wedge order — the SIGKILL path crosses the
+    73 / 79 s spares even at prompt RPC I/O, by up to 23 / 17 s; every slow-I/O row swept over the collision
+    check's 60 s phase — the wedged demote with slow LOCAL reads up to 160 s, the frozen worst case 127 s;
+    a second I/O mix; the model's integer-clock limits stated). The notes (S5): `LOCAL_HEALTH_MAX_BEHIND`'s
+    texts; the local-read cost summaries (2 s never takes); the per-BLIND-veto cost (a full delay plus a
+    take cycle: +77 … +102 s with slow tiers); **`RECOVERY_MODE=rpc` that cannot complete now pages**
+    (it was silent forever: `RECOVERY_DELAY` + the span floor + the ladder after its first eligible pass,
+    throttled); the slow-cluster threshold per cadence; the arm's partial `mkdir`; a structural census of
+    the take cycle's samples in both daemons, and the fix-round lines that survived deletion (the
+    primary's delay-tail sample and R1 pass stop, now with worlds that need them).
   - Tests: `test_own_view` (new — the take-path census, the commitment census, the veto's predicate
     table, the A8 census by structure, each mechanism red on the 6.3 build, the controls — the veto
     neutered alone, each guard alone, all neutered — and each census red on the review's own evasions);
     `test_d6_holder` (new — the invariant table's holder column, driven through the real primary startup
     and main loop); `test_elapsed_provider` (the new layers in the layer census, the D0 residuals
     re-asserted as flipped, the shipped provider pinned at a certified rate beside every neutered row);
-    `test_act_then_alert`, `test_config_drift`, `test_arm_ceremony`, `test_proof_gate`,
+    `test_act_then_alert` (fix round 2: the re-check's decision table with the advance answers, the stuck
+    page, the T5 worlds), `test_config_drift`, `test_arm_ceremony`, `test_proof_gate`,
     `test_primary_demote_timeout`, `test_primary_self_fence`. This round adds no commit hashes to
     public files (the history is being rewritten): rounds and sections are cited instead.
 
