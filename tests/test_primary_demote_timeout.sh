@@ -62,11 +62,13 @@ kill()  { _kills=$((_kills+1)); [[ ${_proc_immortal:-0} -eq 1 ]] || _proc_alive=
 # timeout mock: drives the rc of the wrapped admin-socket call by inspecting the command.
 # _RC_SETID / _RC_REMOVE / _RC_SYSTEMCTL = 0 (ok) or 124/137 (timed out / killed). everything else = ok.
 _RC_SETID=0; _RC_REMOVE=0; _RC_SYSTEMCTL=0
+_SETID_LOG=$(mktemp)   # the promote's set-identity runs inside $( ) — a FILE counts it across the subshell
+trap 'rm -f "$KP_STAKED" "$KP_UNSTAKED" "$_SETID_LOG"' EXIT
 timeout() {
     shift                                          # drop the -k flag (next token is its arg / seconds)
     case "$*" in
         *set-identity*"$UNSTAKED_KEYPAIR"*) return $_RC_SETID ;;
-        *set-identity*"$STAKED_KEYPAIR"*)   return $_RC_SETID ;;
+        *set-identity*"$STAKED_KEYPAIR"*)   printf 'staked\n' >> "$_SETID_LOG"; return $_RC_SETID ;;   # counted: (B1-f)'s non-vacuity conjunct
         *remove-all*)                       return $_RC_REMOVE ;;
         *systemctl*)                        return $_RC_SYSTEMCTL ;;
         *)                                  return 0 ;;     # authorized-voter add, etc.
@@ -76,7 +78,17 @@ timeout() {
 _IDENT_AFTER="$UNSTAKED_PUBKEY"
 get_local_identity() { echo "$_IDENT_AFTER"; }
 
-reset_obs() { _alert_status=""; _alert_calls=0; _kills=0; _proc_alive=1; _proc_immortal=0; _RC_SETID=0; _RC_REMOVE=0; _RC_SYSTEMCTL=0; CURRENT_IDENTITY="$STAKED_PUBKEY"; DRY_RUN=false; SELF_FENCE_HARD_STOP=true; }
+reset_obs() { _alert_status=""; _alert_calls=0; _kills=0; _proc_alive=1; _proc_immortal=0; _RC_SETID=0; _RC_REMOVE=0; _RC_SYSTEMCTL=0; : > "$_SETID_LOG"; CURRENT_IDENTITY="$STAKED_PUBKEY"; DRY_RUN=false; SELF_FENCE_HARD_STOP=true; }
+# v0.7 (Block 6.3.1 fix round 1, R6 — the panel's T1/T10): switch_to_staked runs a PRE-TAKE own-head sample and
+# the own-view veto (ONE bounded LOCAL read each) before its set-identity. They are test_own_view's subject; this
+# suite drives the promote's set-identity mechanics BEHIND them, so both are shadowed — labeled, the
+# take_timeout idiom: the sample to a no-op, the veto to "no veto" (return 0). Unshadowed (6.3.1 as first
+# shipped), the veto's REAL curl (a DNS lookup of http://mock-local) failed, the veto went BLIND and the promote
+# returned BEFORE its set-identity — (B1-f) passed without exercising the promote-hang fail-safe at all (a
+# promote-hang-kills mutant stayed green). The veto is VETO-ONLY: the shadow can only let MORE promotes reach
+# set-identity here, never fewer; (B1-f) now also requires that the mocked set-identity WAS invoked.
+_own_head_sample(){ :; }
+_own_view_veto(){ return 0; }
 
 title_banner "PRIMARY demote timeout + hard stop + retry discipline (v0.6.8 B1)"
 
@@ -125,9 +137,10 @@ echo ""; echo "─── (B1-f) switch_to_staked set-identity hangs → FAIL-SAF
 reset_obs; _RC_SETID=124; _IDENT_AFTER="$UNSTAKED_PUBKEY"   # promote 'fails' → re-read still unstaked
 CURRENT_IDENTITY="$UNSTAKED_PUBKEY"
 switch_to_staked "test: promote hang"; rc=$?
-[[ $rc -eq 1 && $_kills -eq 0 && "$_alert_status" != *"HARD STOP"* ]] \
-    && ok "(B1-f) promote hang → no kill, recovery reads failed (rc 1), node stays on safe unstaked identity" \
-    || bad "(B1-f) promote path escalated/killed (rc=$rc kills=$_kills status='$_alert_status')"
+_setid_staked=$(grep -c '^staked$' "$_SETID_LOG")
+[[ $rc -eq 1 && $_kills -eq 0 && "$_alert_status" != *"HARD STOP"* && $_setid_staked -ge 1 ]] \
+    && ok "(B1-f) promote hang → the mocked set-identity to STAKED WAS invoked ($_setid_staked×) and timed out → no kill, recovery reads failed (rc 1), node stays on safe unstaked identity" \
+    || bad "(B1-f) promote path escalated/killed or never reached set-identity (rc=$rc kills=$_kills setid_staked=$_setid_staked status='$_alert_status')"
 
 # ════════ (S4) _selffence_hard_stop VERIFIES the stop before reporting success ════════
 echo ""; echo "─── (S4-confirmed) systemctl ok + process dies → rc 0 (confirmed down) ───"

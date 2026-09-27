@@ -1071,22 +1071,57 @@ if p0_refused STATE-dir-symlink && grep -q "resolves to $MOCK_DIR/real-anc/state
 else
     bad "(16b) rc=$RC out: $(grep -E 'REFUSE|precondition 0' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-300)"
 fi
-# (16c) spellings that are not the resolved path — each refused (the daemon's list); a LEADING '//'
-# is kept by pwd -P as its own root on Linux (and dropped on macOS) — asserted only as "agrees with
-# the daemon" in (16g)
+# (16c) spellings that are not the resolved path — each refused (the daemon's list) with their OWN code,
+# STATE-dir-spelling (6.3.1 fix round 1, R7 — the panel's CC-7: they were refused as "symlink" though
+# none involves one); a LEADING '//' is kept by pwd -P as its own root on Linux (and dropped on macOS) —
+# asserted only as "agrees with the daemon" in (16g)
 sp_ct=0; sp_red=0; sp_miss=""
 for sp in "$MOCK_DIR/state/" "$MOCK_DIR//state" "$MOCK_DIR/./state" "$MOCK_DIR/state/../state"; do
     sp_ct=$((sp_ct + 1)); new_mock
     run_arm ARM_STATE_DIR="$sp"
-    if p0_refused STATE-dir-symlink; then sp_red=$((sp_red + 1)); else sp_miss="$sp_miss [$sp rc=$RC]"; fi
+    if p0_refused STATE-dir-spelling; then sp_red=$((sp_red + 1)); else sp_miss="$sp_miss [$sp rc=$RC $(grep -o 'REFUSE\[[^]]*\]' "$MOCK_DIR/out" | head -1)]"; fi
 done
 new_mock
 ( cd "$MOCK_DIR" && env -i PATH="$STUB_DIR:$TOOLDIR" EVENTS="$EVENTS" MOCK_DIR="$MOCK_DIR" ARM_SYSTEMD_DIR="$MOCK_DIR/etc-systemd" ARM_RUNTIME_DIR="$MOCK_DIR/run-systemd" ARM_INSTALL_DIR="$MOCK_DIR/opt" FENCE_MARKER_DIR="$MOCK_DIR/markers" ARM_STATE_DIR="state" "$BASH_BIN" "$ARM" > "$MOCK_DIR/out" 2>&1 ); RC=$?
-sp_ct=$((sp_ct + 1)); if p0_refused STATE-dir-symlink; then sp_red=$((sp_red + 1)); else sp_miss="$sp_miss [relative rc=$RC]"; fi
+sp_ct=$((sp_ct + 1)); if p0_refused STATE-dir-spelling; then sp_red=$((sp_red + 1)); else sp_miss="$sp_miss [relative rc=$RC $(grep -o 'REFUSE\[[^]]*\]' "$MOCK_DIR/out" | head -1)]"; fi
 if [[ "$sp_red" == "$sp_ct" ]]; then
-    ok "(16c) every non-resolved spelling REFUSED ($sp_ct/$sp_ct: trailing '/', internal '//', '/./', '/../', a relative path) — the daemon's exact rule, before any install"
+    ok "(16c) every non-resolved spelling REFUSED[STATE-dir-spelling] ($sp_ct/$sp_ct: trailing '/', internal '//', '/./', '/../', a relative path) — the daemon's exact rule, its own code (nothing on the filesystem is wrong, the value is), before any install"
 else
-    bad "(16c) $((sp_ct - sp_red))/$sp_ct spellings ARMED:$sp_miss"
+    bad "(16c) $((sp_ct - sp_red))/$sp_ct spellings not refused as STATE-dir-spelling:$sp_miss"
+fi
+# (16h) NOTHING IS CREATED by a refusal (6.3.1 fix round 1, R7 — the panel's CC-7: P0 ran mkdir -p BEFORE
+# canonicalizing, so every refused path below was left on disk — MEASURED red on the 6.3.1 build: new1/sub,
+# rel/state, s2, s3, s4 created under their refused spellings, and real/newsub and realanc/newsub created
+# THROUGH the links). Each case: the refusal code, and the refused directory (or its resolved target)
+# absent afterwards.
+cr_ct=0; cr_ok=0; cr_miss=""
+p0_nothing_created() {   # $1 = code, $2.. = paths that must NOT exist afterwards
+    local _code="$1" _x; shift
+    cr_ct=$((cr_ct + 1))
+    if p0_refused "$_code"; then
+        for _x in "$@"; do [[ -e "$_x" || -L "$_x" ]] && { cr_miss="$cr_miss [$_code: $_x CREATED]"; return 0; }; done
+        cr_ok=$((cr_ok + 1))
+    else
+        cr_miss="$cr_miss [$_code: rc=$RC $(grep -o 'REFUSE\[[^]]*\]' "$MOCK_DIR/out" | head -1)]"
+    fi
+}
+new_mock; run_arm ARM_STATE_DIR="$MOCK_DIR/new1/sub/"; p0_nothing_created STATE-dir-spelling "$MOCK_DIR/new1"
+new_mock; run_arm ARM_STATE_DIR="$MOCK_DIR/s2//x"; p0_nothing_created STATE-dir-spelling "$MOCK_DIR/s2"
+new_mock; run_arm ARM_STATE_DIR="$MOCK_DIR/s3/./x"; p0_nothing_created STATE-dir-spelling "$MOCK_DIR/s3"
+new_mock; run_arm ARM_STATE_DIR="$MOCK_DIR/s4/y/../x"; p0_nothing_created STATE-dir-spelling "$MOCK_DIR/s4"
+new_mock
+( cd "$MOCK_DIR" && env -i PATH="$STUB_DIR:$TOOLDIR" EVENTS="$EVENTS" MOCK_DIR="$MOCK_DIR" ARM_SYSTEMD_DIR="$MOCK_DIR/etc-systemd" ARM_RUNTIME_DIR="$MOCK_DIR/run-systemd" ARM_INSTALL_DIR="$MOCK_DIR/opt" FENCE_MARKER_DIR="$MOCK_DIR/markers" ARM_STATE_DIR="rel/state" "$BASH_BIN" "$ARM" > "$MOCK_DIR/out" 2>&1 ); RC=$?
+p0_nothing_created STATE-dir-spelling "$MOCK_DIR/rel"
+new_mock; mkdir -p "$MOCK_DIR/real"; ln -s "$MOCK_DIR/real" "$MOCK_DIR/lnk"
+run_arm ARM_STATE_DIR="$MOCK_DIR/lnk/newsub"; p0_nothing_created STATE-dir-symlink "$MOCK_DIR/real/newsub"
+new_mock; mkdir -p "$MOCK_DIR/realanc"; ln -s "$MOCK_DIR/realanc" "$MOCK_DIR/anc2"
+run_arm ARM_STATE_DIR="$MOCK_DIR/anc2/newsub/deeper"; p0_nothing_created STATE-dir-symlink "$MOCK_DIR/realanc/newsub"
+new_mock; ln -s "$MOCK_DIR/nowhere" "$MOCK_DIR/dangling"
+run_arm ARM_STATE_DIR="$MOCK_DIR/dangling/state"; p0_nothing_created STATE-dir-symlink "$MOCK_DIR/nowhere"
+if [[ "$cr_ok" == "$cr_ct" ]]; then
+    ok "(16h) a refusal creates NOTHING ($cr_ok/$cr_ct: trailing '/', '//', '/./', '/../' and a relative path under missing parents → STATE-dir-spelling; a symlinked ancestor with a missing leaf (one and two levels) and a DANGLING symlink ancestor → STATE-dir-symlink) — the nearest existing ancestor is checked before any mkdir"
+else
+    bad "(16h) $((cr_ct - cr_ok))/$cr_ct:$cr_miss"
 fi
 # (16d) a missing directory under a resolved parent is CREATED, then passes (the arm's mkdir -p, as before)
 new_mock

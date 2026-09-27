@@ -11,7 +11,9 @@
 #   0. state directory (Block 6.3.1 D5): ARM_STATE_DIR — where the spare stores the pairing token
 #      and the holder its config-generation counter — must be its own resolved path (the spare
 #      daemon's R-SYM rule mirrored: a token whose directory is reached through a symlink never
-#      proves); REFUSE[STATE-dir-*] before anything is written or installed
+#      proves); REFUSE[STATE-dir-spelling] / REFUSE[STATE-dir-symlink] / REFUSE[STATE-dir-missing] before
+#      anything is created, written or installed (6.3.1 fix round 1: the spelling first, then the nearest
+#      existing ancestor — a refused path is never left created on disk)
 #   1. self v0.7 check (patsub guard in the installed daemons — the rev3.2 release condition,
 #      self-enforced: the ceremony IS the upgrade-then-arm checkpoint)
 #   2. socat present (§2.6: the SOLE armed transport in v0.7 — refuse, never fall back)
@@ -166,14 +168,56 @@ _arm_detect_role_env() {
 # that does not canonicalize to itself — the daemon's exact test: `cd -P` + `pwd -P` of ARM_STATE_DIR
 # must equal ARM_STATE_DIR as configured (a symlink anywhere on the path, or any spelling that is not
 # the resolved path: a trailing '/', an internal '//', '.', '..', a relative path; a LEADING '//' is
-# kept by pwd -P as its own root and passes, as in the daemon). A missing directory is created first
-# (mkdir -p — what P3/P5/the token already did) and then checked, so a symlinked ANCESTOR is refused
-# too; a directory that cannot be created or entered (e.g. a FILE at the path) is refused here, before
-# anything is installed, instead of at the token after the units are in place. Runs before P3 (the
-# first write into the directory). NOT closed (named in docs/SAFETY.md's threat model): a local root
-# that RENAME-swaps the directory's contents away and back between two daemon steps.
+# kept by pwd -P as its own root and passes, as in the daemon). Every refusal comes BEFORE anything is
+# created (6.3.1 fix round 1, R7 — the panel's CC-7: the check used to mkdir -p first, so a refused
+# spelling or a path under a symlinked ancestor was left CREATED on disk; measured, 'rel/state' and a
+# trailing '/' both refused as "symlink" with dir_created=yes):
+#   (a) the SPELLING, lexically, with no filesystem access — absolute, no trailing '/', no '//' past a
+#       leading one, no '.' or '..' component → REFUSE[STATE-dir-spelling] (its own code: nothing on the
+#       filesystem is wrong, the value is);
+#   (b) the NEAREST EXISTING ancestor (the directory itself when it exists), canonicalized with the
+#       daemon's `cd -P` + `pwd -P`: a symlink on that existing prefix → REFUSE[STATE-dir-symlink]; an
+#       existing component that cannot be entered as a directory (a FILE, no permission) →
+#       REFUSE[STATE-dir-missing];
+#   (c) only then the missing tail is created (mkdir -p — what P3/P5/the token already did) and the WHOLE
+#       path is re-checked with the daemon's exact line (a race that swaps a symlink in between is still
+#       refused, as before; (16g) asserts the line is the daemon's, character for character).
+# Runs before P3 (the first write into the directory). NOT closed (named in docs/SAFETY.md's threat
+# model): a local root that RENAME-swaps the directory's contents away and back between two daemon steps.
+_state_dir_spelling_ok() {   # $1 = a path; 0 iff it is spelled as `pwd -P` prints a directory with no symlink on its path
+    local _p="$1" _b
+    case "$_p" in /*) ;; *) return 1 ;; esac        # relative
+    [[ "$_p" == "/" || "$_p" == "//" ]] && return 0
+    _b="${_p#/}"; [[ "$_b" == /* ]] && _b="${_b#/}"  # one extra leading '/' — a leading '//' is its own root to pwd -P (Linux), as in the daemon
+    case "$_b" in /*|*/|*//*) return 1 ;; esac       # three or more leading '/', a trailing '/', an internal '//'
+    case "/$_b/" in */./*|*/../*) return 1 ;; esac   # a '.' or '..' component
+    return 0
+}
 _pre_state_dir_check() {
-    local _sd_p
+    local _sd_p _anc="$ARM_STATE_DIR" _tail="" _anc_p _cand
+    # (a) the spelling — before any filesystem access
+    if ! _state_dir_spelling_ok "$ARM_STATE_DIR"; then
+        _arm_refuse "STATE-dir-spelling" "ARM_STATE_DIR=$ARM_STATE_DIR is not spelled as a resolved path (a relative path, a trailing '/', an internal '//', or a '.'/'..' component) — the spare daemon compares PROOF_STATE_DIR with its own \`pwd -P\` spelling, and a pairing token stored under any other spelling NEVER proves (the daemon's R-SYM rule); nothing was created" "spell ARM_STATE_DIR as the directory's absolute resolved path (e.g. ARM_STATE_DIR=/var/lib/solana-failover — no trailing '/', no '//', '.' or '..'), set the spare daemon's PROOF_STATE_DIR to the same value, then re-run 'failover arm'"
+    fi
+    # (b) the nearest existing ancestor (a dangling symlink counts as existing — it IS a symlink on the path)
+    while [[ ! -e "$_anc" && ! -L "$_anc" ]]; do
+        _tail="/${_anc##*/}$_tail"; _anc="${_anc%/*}"
+        [[ -z "$_anc" ]] && _anc="/"
+    done
+    # a leading '//' is its own root to pwd -P on Linux (the daemon keeps it) — a walk that reached the root keeps it too
+    [[ "$_anc" == "/" && "$ARM_STATE_DIR" == //* && "$ARM_STATE_DIR" != ///* ]] && _anc="//"
+    if [[ -L "$_anc" && ! -e "$_anc" ]]; then
+        _arm_refuse "STATE-dir-symlink" "ARM_STATE_DIR=$ARM_STATE_DIR is reached through a dangling symlink ($_anc) — a pairing token stored through a symlink NEVER proves on the spare (the daemon's R-SYM rule); nothing was created" "replace the symlink $_anc with a real directory (BY HAND) or point ARM_STATE_DIR at a real path, set the spare daemon's PROOF_STATE_DIR to the same value, then re-run 'failover arm'"
+    fi
+    _anc_p=$(CDPATH='' cd -P -- "$_anc" 2>/dev/null && pwd -P)
+    if [[ -z "$_anc_p" ]]; then
+        _arm_refuse "STATE-dir-missing" "ARM_STATE_DIR=$ARM_STATE_DIR cannot be created or entered as a directory ($_anc exists but cannot be entered as one) — the pairing token (spare) and the config-generation counter (holder) are stored there; nothing was created" "make $ARM_STATE_DIR a real, writable directory (remove whatever non-directory sits at that path BY HAND, then: mkdir -p $ARM_STATE_DIR), then re-run 'failover arm'"
+    fi
+    if [[ -z "$_tail" ]]; then _cand="$_anc_p"; else _cand="${_anc_p%/}$_tail"; fi
+    if [[ "$_cand" != "$ARM_STATE_DIR" ]]; then
+        _arm_refuse "STATE-dir-symlink" "ARM_STATE_DIR=$ARM_STATE_DIR is not its own resolved path (it resolves to $_cand: a symlink on the path) — a pairing token stored through it NEVER proves on the spare (the daemon's R-SYM rule: a directory re-pointed away and back is invisible to the token file's identity, so watchdog-elapsed counts no silence under it); nothing was created" "point ARM_STATE_DIR at the resolved path — ARM_STATE_DIR=$_cand — and set the spare daemon's PROOF_STATE_DIR to the same value (or replace the symlink with a real directory at $ARM_STATE_DIR), then re-run 'failover arm'"
+    fi
+    # (c) create the missing tail, then the daemon's exact check on the whole path
     mkdir -p "$ARM_STATE_DIR" 2>/dev/null
     _sd_p=$(CDPATH='' cd -P -- "$ARM_STATE_DIR" 2>/dev/null && pwd -P)
     if [[ -z "$_sd_p" ]]; then

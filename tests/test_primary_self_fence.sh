@@ -334,6 +334,15 @@ done
 # fires with ZERO notifier calls completed before it and ZERO added latency: the safety demote must
 # never wait on notification I/O. A negative control replays the OLD (alert-first) order to prove the
 # measurement is non-vacuous (it would observe 2 notifier calls before the demote).
+# 6.3.1 fix round 1 (R6 — N2 load-robustness): the latency is measured in MILLISECONDS (EPOCHREALTIME on bash >= 5,
+# else perl's Time::HiRes — both present on the gate hosts; integer SECONDS only as the last resort) and bounded
+# at 500 ms — the path measures 2–4 ms and ONE hanging notifier would add 1000 ms. The integer-second form
+# (elapsed == 0) failed once under heavy load with the ORDER correct (elapsed=1: a SECONDS tick between the two
+# reads). The property is unchanged: ZERO notifiers complete before the demote, and the demote waits on none.
+_n2_ms() {   # a millisecond wall clock, or empty when none is available
+    if [[ -n "${EPOCHREALTIME:-}" ]]; then local _u="${EPOCHREALTIME//[!0-9]/}"; echo $(( 10#$_u / 1000 )); return 0; fi
+    perl -MTime::HiRes=time -e 'printf "%d\n", time() * 1000' 2>/dev/null
+}
 echo ""; echo "─── (N2) no-answer branch: demote BEFORE external alert (notifiers mocked to sleep) ───"
 _n2=$(
   set +e
@@ -349,12 +358,12 @@ _n2=$(
   send_telegram(){ sleep 1; _notify_done=$((_notify_done+1)); return 0; }   # endpoint hangs ~1s
   send_webhook(){  sleep 1; _notify_done=$((_notify_done+1)); }             # endpoint hangs ~1s
   _switch_called=0; _before=-1; _elapsed=-1
-  switch_to_unstaked(){ _switch_called=1; _before=$_notify_done; _elapsed=$(( SECONDS - _t0 )); CURRENT_IDENTITY="$UNSTAKED_PUBKEY"; return 0; }
+  switch_to_unstaked(){ _switch_called=1; _before=$_notify_done; _elapsed=$(( SECONDS - _t0 )); _m1=$(_n2_ms); [[ -n "$_m0" && -n "$_m1" ]] && _elapsed_ms=$(( _m1 - _m0 )); CURRENT_IDENTITY="$UNSTAKED_PUBKEY"; return 0; }
   curl(){ return 7; }   # LOCAL getSlot silent (no-answer)
   _last_confirmed_slot=1000; _selffence_noanswer_since=$(( $(date +%s) - SELF_FENCE_NOANSWER_SECS - 5 ))
-  _t0=$SECONDS
+  _elapsed_ms=""; _t0=$SECONDS; _m0=$(_n2_ms)
   check_self_fence_isolation >/dev/null 2>&1; rc=$?
-  echo "POS rc=$rc switch=$_switch_called before=$_before elapsed=$_elapsed"
+  echo "POS rc=$rc switch=$_switch_called before=$_before elapsed=$_elapsed ms=${_elapsed_ms:-none}"
   # negative control: replay the OLD alert-first order with the SAME mocks → expect before=2
   _notify_done=0; _switch_called=0; _before=-1; _t0=$SECONDS
   alert "x" "y" "z"; switch_to_unstaked "x"
@@ -362,9 +371,11 @@ _n2=$(
 )
 _pos=$(sed -n 's/^POS //p' <<<"$_n2"); _neg=$(sed -n 's/^NEG //p' <<<"$_n2")
 # shellcheck disable=SC2086
-set -- $_pos; _rc="${1#rc=}"; _sw="${2#switch=}"; _bf="${3#before=}"; _el="${4#elapsed=}"
-[[ "$_rc" -eq 0 && "$_sw" -eq 1 && "$_bf" -eq 0 && "$_el" -eq 0 ]] \
-    && ok "(N2) demote ran before any external alert (notifiers-before-demote=0, added latency=0s)" \
+set -- $_pos; _rc="${1#rc=}"; _sw="${2#switch=}"; _bf="${3#before=}"; _el="${4#elapsed=}"; _ms="${5#ms=}"
+if [[ "$_ms" == "none" ]]; then _lat_ok=0; [[ "$_el" -le 1 ]] && _lat_ok=1; _lat="${_el} s (no ms clock on this host: integer SECONDS, a tick allowed)"
+else _lat_ok=0; [[ "$_ms" -lt 500 ]] && _lat_ok=1; _lat="${_ms} ms (< 500; one hanging notifier = 1000)"; fi
+[[ "$_rc" -eq 0 && "$_sw" -eq 1 && "$_bf" -eq 0 && $_lat_ok -eq 1 ]] \
+    && ok "(N2) demote ran before any external alert (notifiers-before-demote=0, added latency ${_lat})" \
     || bad "(N2) demote did not precede the alert / was delayed ($_pos)"
 [[ "$_neg" == "before=2" ]] \
     && ok "(N2 control) old alert-first order is detectable (2 notifier calls precede the demote) → assertion non-vacuous" \

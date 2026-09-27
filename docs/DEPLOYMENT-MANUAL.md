@@ -260,11 +260,14 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   advances in bursts; the daemon samples liveness at `processed` and uses a slot-delta rule, never a
   wall-clock conversion. At the take, the spare re-reads its **own** node at `confirmed` (the own-view
   veto, v0.7): the slow reliable view triggers, the fast one vetoes.
-- **`LOCAL_HEALTH_MAX_BEHIND` (STANDBY, Tier-1) — the real threshold is 128.** agave's `getHealth`
-  reports "behind" only beyond its `--health-check-slot-distance` (128 by default), so the daemon uses
-  `min(LOCAL_HEALTH_MAX_BEHIND, 128)` since v0.7 (Block 6.3.1): a larger value is **clamped** at start
-  with a loud WARN (above 128 it would admit a spare that far behind as ready to take over); a smaller
-  value behaves as 128 at agave's default distance. The default is 128.
+- **`LOCAL_HEALTH_MAX_BEHIND` (STANDBY, Tier-1) — the real threshold is the node's own health-check
+  distance.** agave's `getHealth` reports "behind" only beyond the validator's
+  `--health-check-slot-distance` (128 by default), so since v0.7 (Block 6.3.1, tightened in its fix
+  round 1) Tier-1 treats **every** "behind" report as not ready, whatever this knob says, and the
+  knob's effective value is `min(LOCAL_HEALTH_MAX_BEHIND, that distance)` — the distance read from the
+  validator's command line, else agave's 128. A larger value is **clamped** at start with a loud WARN
+  (it would admit a spare that far behind as ready to take over); a smaller one is announced as behaving
+  as the distance. The default is 128.
 
 ### Compatibility & tuning notes
 
@@ -463,7 +466,10 @@ timer unchanged). The interactive installers write them; you can also hand-edit 
 
 **What the fast-path does NOT change.** It only skips the *timer wait*. A take still requires the
 external-confirm to say delinquent **and** `staked_is_actively_voting()==frozen` (a fresh ≥`MIN_INTERVAL`
-sample); `voting` and `cannot-determine` both BLOCK exactly as on the timer path. The holder must already
+sample); `voting` and `cannot-determine` both BLOCK exactly as on the timer path. Since v0.7 (Block 6.3.1,
+fix round 1) it never skips the spare's **own-bank** timer either: while its own node showed the holder
+voting within the last `TAKEOVER_DELAY`, a presented flip does not skip the wait (measured on the review's
+forged-flip world: the take moved from t66 to t119 — a full delay after the last own-bank voting read, t59). The holder must already
 be on its unstaked identity (which structurally cannot vote the staked account) for the flip to be visible.
 
 **The flip is anchored to the holder (v0.6.8 F-A).** The fast-path fires only when a watched unstaked
@@ -671,8 +677,11 @@ timeline is identical to v0.6.6 (~70s).
 ## Expected timelines
 
 > **v0.7 (Block 6.3.1):** every take below ends with the spare's own-view veto — one bounded read of
-> its own node (up to 2 s plus a watchdog pet, added to each take) that withdraws the take if the
-> holder shows voting there, the read fails, or the spare's own head is not advancing. The per-class
+> its own node (`curl -m 2` + a watchdog pet) that withdraws the take if the holder shows voting there,
+> the read fails, or the spare's own head is not advancing — and the spare samples its own head through
+> the episode and around each external read of the take cycle: five to eight bounded local reads per
+> take cycle, milliseconds on a healthy node; measured +13 to +14 s when every local read takes 1 s and
+> +26 to +30 s with every read at its bound (`docs/SAFETY.md`, *What it costs, measured*). The per-class
 > measurement of the whole ordering — holder fence vs the spare's earliest take, including the rows
 > where it does not hold — is in `docs/SAFETY.md`, *The cross-node invariant*.
 
