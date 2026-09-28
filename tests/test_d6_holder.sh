@@ -518,7 +518,7 @@ row c3d "PID 1 slow: the stop and the mask each at their 15 s bounds, the valida
 row c3e "the OTHER wedge order: remove-all ANSWERS in 7 s (the worst-case column's admin latency), then the set-identity to unstaked hangs to its bound + 5; the stop client times out, SIGTERM ignored, a prompt mask" "74-76 / 74-78" "$(g35 s7)" 78
 row c3f "… remove-all answering in 14 s" "81-83 / 81-85" "$(g35 s14)" 85
 row c3g "… remove-all in 7 s and the mask at its 15 s bound" "89-91 / 89-93" "$(g35 s7m)" 93
-row c3h "the other wedge order with EVERY op at its -k bound: remove-all answering in 14 s (SETIDENTITY_TIMEOUT − 1), the set-identity, the stop and the mask each at 15 + 5 s, SIGTERM ignored — the row's latest at prompt RPC I/O (fix round 3, the delta panel 2's CKB-1)" "106-108 / 106-110" "$(g35 s14k)" 110
+row c3h "the other wedge order with EVERY op at its -k bound: remove-all answering in 14 s (SETIDENTITY_TIMEOUT − 1), the set-identity, the stop and the mask each at 15 + 5 s, SIGTERM ignored — the row's latest at prompt RPC I/O with a prompt admin socket (c3j: the admin socket at 7 s) (fix round 3, the delta panel 2's CKB-1)" "106-108 / 106-110" "$(g35 s14k)" 110
 row c4 "c3 + the tiers at their -m bounds (the collision check's reads; phase-swept — at the read phases only: 70-72 / 68-72)" "67-89 / 67-91" "$(g35p wkhT)" 91
 row c4m "c4 + the mask at its bound" "82-104 / 82-106" "$(g35p wkhmT)" 106
 row c4mk "c4 with every op at its -k bound" "92-114 / 92-116" "$(g35p wkhmkT)" 116

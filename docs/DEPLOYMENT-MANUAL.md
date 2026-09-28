@@ -700,12 +700,13 @@ timeline is identical to v0.6.6 (~70s).
 > tiers (+9 s at the wizard's preset), up to +40 s in the measured cells with a slow tier as well; as a
 > local read nears its 2 s bound the take slides later, and at 2 s or more the spare never takes (loudly:
 > the veto page, then the starvation page) (`docs/SAFETY.md`, *What it costs, measured*). Nor does a spare
-> whose `TIER2` times out while `TIER3` answers 7 s or later (5 s when every local read takes 1 s): the
-> own view's residual 7 — repair that `TIER2`, or while it is broken leave `TIER2_RPC` empty (the witness
-> fast path and G2's default vantage, which need two tiers, are then off), or use a `TIER3` that answers
-> the full `getVoteAccounts` well under ~5 s; a `TIER2` that refuses at once does not starve the take. The per-class
-> measurement of the whole ordering — holder fence vs the spare's earliest take, including the rows
-> where it does not hold — is in `docs/SAFETY.md`, *The cross-node invariant*.
+> whose `TIER2` times out while `TIER3` answers 7 s or later (5 s when every local read takes 1 s; on a
+> real host one second less is vetoed too, at some phases): the own view's residual 7 — repair that
+> `TIER2`, or while it is broken leave `TIER2_RPC` empty (the witness fast path and G2's default vantage,
+> which need two tiers, are then off), or use a `TIER3` that answers the full `getVoteAccounts` well under
+> ~5 s; a `TIER2` that refuses at once does not starve the take. The per-class measurement of the whole
+> ordering — holder fence vs the spare's earliest take, including the rows where it does not hold — is in
+> `docs/SAFETY.md`, *The cross-node invariant*.
 
 > **Read the cross-node invariant first (v0.6.6 N1).** The spare's `TAKEOVER_DELAY` must be **≥
 > `EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS` (= 60 by default)** so the PRIMARY

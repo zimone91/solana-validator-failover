@@ -22,10 +22,10 @@ All notable changes are documented here. Versions follow the project's internal 
   - **The spare's own head:** sampled before every external read of the take cycle (a structural census);
     watchdog-elapsed's `[elapsed-rate]` layer abstains below an average of 2.5 slots/s; `N_HEAD` =
     (`MARGIN_ELAPSED` − 1) × 5/2 = 22 slots. This narrows the slow-cluster residual; it does not retire it.
-  - **Small calls:** Tier 1 is the node's own health verdict (`LOCAL_HEALTH_MAX_BEHIND` enters no decision); a
-    failed latency reference is no longer holder-voting evidence; the holder's opt-in latency demote reads its
-    payload first (not part of the cross-node invariant); `failover arm` refuses a symlinked or non-canonical
-    state directory, by its spelling or its nearest existing ancestor before creating anything.
+  - **Small calls:** Tier 1 is the node's own health verdict (`LOCAL_HEALTH_MAX_BEHIND` enters no decision); a failed
+    latency reference is no longer holder-voting evidence; the holder's opt-in latency demote reads its payload first
+    (not part of the cross-node invariant); `failover arm` refuses a symlinked or non-canonical state directory before
+    creating anything, unless a symlink is raced onto the path mid-arm (a local root's race, named in SAFETY).
   - **The fresh re-check is the 6.3 build's, unchanged;** two changes tried during review opened take-while-voting
     paths and were reverted. Two residuals come with it, named in SAFETY: the mirror world (residual 6), the 6.3
     build's own; and the re-check's starvation (residual 7) — a `TIER2` that times out while `TIER3` is slow
