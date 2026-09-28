@@ -268,8 +268,11 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   validator's command line, else agave's 128) is **clamped** at start with a loud WARN — it could never
   take effect; a value at or below it has **no effect** (below it an info line says so; at it — the default
   128 at agave's default distance — the daemon is silent): it cannot tighten Tier-1.
-  To bound how far behind a spare may be when it takes (the own view's residual 2 in
-  `docs/SAFETY.md`), lower the validator's own `--health-check-slot-distance`. The default is 128.
+  To bound how far behind a spare may be when it takes (the own view's residuals 2 and 6 in
+  `docs/SAFETY.md`: a spare lagging L seconds can take a holder that resumed within those L seconds), lower
+  the validator's own `--health-check-slot-distance`. The default is 128 (≈ 51 s at 2.5 slots/s); measured
+  at the shipped defaults, at 64 slots a holder resuming inside the episode is taken at most 25 s into its
+  voting, at 38 slots at most 15 s — and a spare that lags past its distance cannot take at all.
 
 ### Compatibility & tuning notes
 
@@ -304,10 +307,13 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   remains recommended because automatic re-take is inherently riskier than a human deciding. The
   daemon logs a startup notice when `rpc` is selected. `auto` is reserved/disabled. Since v0.7 the
   `rpc` re-take passes only inside a band of the staked account's age (128–158 slots after its last
-  vote), so at the shipped defaults on a fast cluster **the veto band can keep an `rpc` recovery from
-  ever completing, and nothing pages but the veto's own throttled page** (`docs/SAFETY.md`, *What it
-  costs, measured*): the daemon logs the held pass at INFO ("Still delinquent (Tier 1)") and stays
-  unstaked — watch for it and switch back manually when the account is safe. (An earlier v0.7 build paged such a
+  vote), so at the shipped defaults, at any cluster rate depending on phase (measured at 1.0 and 2.5
+  slots/s), **the veto band can keep an `rpc` recovery from ever completing, and nothing pages but the
+  veto's own throttled page** (`docs/SAFETY.md`, *What it costs, measured*): the daemon logs the held pass
+  at INFO ("Still delinquent (Tier 1)") and stays unstaked — watch for it and switch back manually when
+  the account is safe. After a failover an `rpc`-mode PRIMARY sends no page at all: while its own node
+  sees the STANDBY voting the identity, each recovery pass ends before the fence, so the "Recovery
+  blocked … ACTIVELY VOTING elsewhere" page is not sent — the STANDBY's `TOOK STAKED ✅` is the signal. (An earlier v0.7 build paged such a
   recovery; that page misfired — in recoveries that complete, and forever in the ordinary failed-over
   state — and was removed.) The default `RECOVERY_MODE=manual` is unaffected.
 
@@ -690,10 +696,14 @@ timeline is identical to v0.6.6 (~70s).
 > the read fails, or the spare's own head is not advancing — and the spare samples its own head through
 > the episode and before each external read of the take cycle: five to twelve bounded local reads per
 > take cycle at the defaults (one more on an armed unit, up to four more with the opt-in witness fast
-> path), milliseconds on a healthy node; measured +9 to +15 s when every local read takes 1 s (+9 s at
-> the wizard's preset); as a local read nears its 2 s bound the take slides later, and at 2 s or more the
-> spare never takes (loudly: the veto page, then the starvation page) (`docs/SAFETY.md`, *What it costs,
-> measured*). The per-class
+> path), milliseconds on a healthy node; measured +9 to +15 s when every local read takes 1 s with prompt
+> tiers (+9 s at the wizard's preset), up to +40 s in the measured cells with a slow tier as well; as a
+> local read nears its 2 s bound the take slides later, and at 2 s or more the spare never takes (loudly:
+> the veto page, then the starvation page) (`docs/SAFETY.md`, *What it costs, measured*). Nor does a spare
+> whose `TIER2` times out while `TIER3` answers 7 s or later (5 s when every local read takes 1 s): the
+> own view's residual 7 — repair that `TIER2`, or while it is broken leave `TIER2_RPC` empty (the witness
+> fast path and G2's default vantage, which need two tiers, are then off), or use a `TIER3` that answers
+> the full `getVoteAccounts` well under ~5 s; a `TIER2` that refuses at once does not starve the take. The per-class
 > measurement of the whole ordering — holder fence vs the spare's earliest take, including the rows
 > where it does not hold — is in `docs/SAFETY.md`, *The cross-node invariant*.
 

@@ -31,8 +31,13 @@ Two independent mechanisms enforce this:
    an armed unit's watchdog-elapsed evaluation adds one, the opt-in witness fast path up to four), plus
    up to one take cycle of re-phasing: milliseconds on a healthy loopback; measured against the 6.3 build,
    **+15 s** (`MAX_DELINQUENT_SLOTS`=0) / **+14 s** (=15; +9 s at the wizard preset) when every LOCAL read
-   takes 1 s with prompt tiers, and up to **+30 s** with a slow tier as well (the probe's sample can push the
-   first frozen verdict under the span floor — a whole take cycle). **As a LOCAL read approaches its 2 s bound the take slides later, and at 2 s or more the
+   takes 1 s with prompt tiers; with a slow tier as well, where the take lands, up to **+40 s** in the
+   measured cells (the probe's sample can push the first frozen verdict under the span floor — a whole take
+   cycle; phase-dependent: a measured maximum, not a bound). **With `TIER2` timing out and a slow `TIER3` the
+   spare never takes a dead holder** (residual 7 — the first 6.3.1 build's, an availability regression
+   against the 6.3 build, which takes there): the veto's own-head baseline must span `TIER2`'s timeout,
+   `TIER3`'s answer and two LOCAL reads within 16 s — `TIER3` 7 s late or more with prompt LOCAL reads, 5 s
+   or more when every LOCAL read takes 1 s. **As a LOCAL read approaches its 2 s bound the take slides later, and at 2 s or more the
    spare never takes** — the veto's own read times out, every veto is BLIND; loudly: the veto page, then
    the takeover starvation page. (A harness world with EVERY read at its bound, +28 / +32 s, is an
    idealization — it lets LOCAL reads answer at their bound; it is not a real world.)
@@ -85,7 +90,7 @@ below drops that assumption.
 | egress-only (own votes not landing, N6: `SELF_FENCE_VOTE_LAG_SLOTS` / rate to cross its lag, then its 20 s clock) | 34 / 35–37 / 34–38 s at 2.5; 29 / 30–32 / 29–33 s at 3.7 | margin ≥ 41 s (2.5) / ≥ 40 s (3.7) | margin ≥ 71 s | margin ≥ 86 s |
 | garbage answers (non-canonical slot) | 30 / 28–30 / 26–30 s | margin ≥ 43 s | margin ≥ 74 s | margin ≥ 89 s |
 | `getHealth` reporting behind (a minority-gossip partition); the internet-lost demote | never later than the frozen / no-answer rows: `getHealth`'s own path (150 slots, past agave's 128) needs ~60 s at 2.5 slots/s; the internet-lost demote fires after `CONNECTIVITY_RETRIES` failed rounds — not crossings | as frozen | as frozen | as frozen |
-| **wedged demote → hard stop**, every daemon term (6.3.1 fix rounds 2–3): the stop lands at trigger + the demote (remove-all to `SETIDENTITY_TIMEOUT`, + its `-k 5`; or remove-all ANSWERING after r s and then the set-identity to unstaked to its bound, + 5) + `systemctl stop` (15 s, + 5) + — only after a failed stop — `systemctl mask --runtime` (15 s, + 5) + SIGTERM, 2 s, SIGKILL; at `SETIDENTITY_TIMEOUT` = 15 (the default; the daemon only lower-bounds it, at 8 — a larger value moves every cell by the difference, the other wedge order's by up to twice it: the timeout enters that order twice, as remove-all's answer time and as the set-identity's bound); `CHECK_INTERVAL` 3 / 5 | prompt `systemctl stop`: 45–47 / 45–49 s; the CLI needing its `-k 5`: 50–52 / 50–54 s; the `systemctl` client timing out with SIGTERM ignored (the daemon's SIGKILL), a prompt mask: 67–69 / 67–71 s; **with the mask at its 15 s bound** 82–84 / 82–86 s (remove-all at its plain bound: 77–79 / 77–81 s; PID 1 slow, the validator honouring SIGTERM: 75–77 / 75–79 s); **every op at its `-k` bound** 92–94 / 92–96 s; **the other wedge order** (remove-all answering in 7 / 14 s, then the set-identity hanging to its bound + 5; SIGTERM ignored): 74–76 / 74–78 and 81–83 / 81–85 s, with the mask at its bound 89–91 / 89–93 s, **and with the stop and the mask at their `-k` bounds too (remove-all answering in 14 s) 106–108 / 106–110 s — the row's latest at prompt RPC I/O** (6.3.1 fix round 3 — the delta review of fix round 2, CKB-1: fix round 2's row stopped at 92–96 s) — all at prompt RPC I/O; + the tiers at their bounds, over the collision check's phase: 67–89 / 67–91 s (with the mask 82–104 / 82–106, every op at `-k` 92–114 / 92–116, the other order at `-k` 106–128 / 106–130); + every LOCAL read at 4 s: 80–106 / 84–135 s (with the mask 95–121 / 99–150, every op at `-k` 105–131 / 109–160, the other order at `-k` 119–145 / 123–174) | **CROSSING on the SIGKILL path even at prompt RPC I/O**: the mask at its bound crosses the 73 / 79 s spares by up to 13 / 7 s, every op at `-k` by 23 / 17 s, the other wedge order the 73 s spare by up to 5 s with remove-all answering in 7 s (the 79 s spare holds by 1 s — not a margin) and both by 12 / 6 s at 14 s, **with the stop and the mask at `-k` too by 37 / 31 s**; with the tiers at their bounds by up to 57 / 51 s; with slow LOCAL reads by up to 101 / 95 s (the prompt-stop rows hold: 49 / 54 s at the latest) | **CROSSING even at prompt RPC I/O**: the other wedge order with every op at `-k`, 110 s — by 6 s; with the tiers at their bounds (the mask: 106 s, by 2 s; every op at `-k` by 12 s; the other order at `-k` 130 s: by 26 / 5 s — the 125 s spare too) and with slow LOCAL reads (135 s by 31 / 10 s; up to 174 s: by 70 / 49 s) | **CROSSING** with the tiers at their bounds: the other wedge order at `-k` 130 s crosses 119 by 11 s (the first order at `-k`: 116 s, 3 s short of 119 — not a margin); with slow LOCAL reads: 135 s crosses 119 by 16 s; with the mask 150 s crosses 119 by 31 s and ties 150; every op at `-k` 160 s crosses 119 / 150 by 41 / 10 s; the other order at `-k` up to 174 s by 55 / 24 s |
+| **wedged demote → hard stop**, every daemon term (6.3.1 fix rounds 2–3): the stop lands at trigger + the demote (remove-all to `SETIDENTITY_TIMEOUT`, + its `-k 5`; or remove-all ANSWERING after r s and then the set-identity to unstaked to its bound, + 5) + `systemctl stop` (15 s, + 5) + — only after a failed stop — `systemctl mask --runtime` (15 s, + 5) + SIGTERM, 2 s, SIGKILL; at `SETIDENTITY_TIMEOUT` = 15 (the default; the daemon only lower-bounds it, at 8 — a larger value moves every cell by the difference, the other wedge order's by up to twice it: the timeout enters that order twice, as remove-all's answer time and as the set-identity's bound); `CHECK_INTERVAL` 3 / 5 | prompt `systemctl stop`: 45–47 / 45–49 s; the CLI needing its `-k 5`: 50–52 / 50–54 s; the `systemctl` client timing out with SIGTERM ignored (the daemon's SIGKILL), a prompt mask: 67–69 / 67–71 s; **with the mask at its 15 s bound** 82–84 / 82–86 s (remove-all at its plain bound: 77–79 / 77–81 s; PID 1 slow, the validator honouring SIGTERM: 75–77 / 75–79 s); **every op at its `-k` bound** 92–94 / 92–96 s; **the other wedge order** (remove-all answering in 7 / 14 s, then the set-identity hanging to its bound + 5; SIGTERM ignored): 74–76 / 74–78 and 81–83 / 81–85 s, with the mask at its bound 89–91 / 89–93 s, **and with the stop and the mask at their `-k` bounds too (remove-all answering in 14 s — the latest answer on this integer clock; on a host up to ~15 s, about +1 s on these cells) 106–108 / 106–110 s — the row's latest at prompt RPC I/O with a prompt admin socket** (6.3.1 fix round 3 — the delta review of fix round 2, CKB-1: fix round 2's row stopped at 92–96 s) — all at prompt RPC I/O; **the admin socket at 7 s** (the worst-case column's admin latency; the tiers and LOCAL reads prompt): every op at `-k` 92–101 / 98–109 s, the other order at `-k` 106–115 / 112–123 s; + the tiers at their bounds, over the collision check's phase: 67–89 / 67–91 s (with the mask 82–104 / 82–106, every op at `-k` 92–114 / 92–116, the other order at `-k` 106–128 / 106–130); + every LOCAL read at 4 s: 80–106 / 84–135 s (with the mask 95–121 / 99–150, every op at `-k` 105–131 / 109–160, the other order at `-k` 119–145 / 123–174); + every LOCAL read 1 s inside its own `-m` bound instead: every op at `-k` 98–169 / 97–175, the other order at `-k` 112–183 / 111–189; **the worst-case column's own mixes** (the tiers at their bounds and the admin socket at 7 s): with every LOCAL read at 4 s every op at `-k` 100–175 / 102–181, **the other order at `-k` 114–189 / 116–195 s — the row's latest over the measured mixes** (not a maximum over every mix: the frozen trigger is not monotonic in latency); with every LOCAL read 1 s inside its bound 105–135 / 107–139 and 119–149 / 121–153 | **CROSSING on the SIGKILL path even at prompt RPC I/O**: the mask at its bound crosses the 73 / 79 s spares by up to 13 / 7 s, every op at `-k` by 23 / 17 s, the other wedge order the 73 s spare by up to 5 s with remove-all answering in 7 s (the 79 s spare holds by 1 s — not a margin) and both by 12 / 6 s at 14 s, **with the stop and the mask at `-k` too by 37 / 31 s** (the admin socket at 7 s: 123 s, by 50 / 44 s); with the tiers at their bounds by up to 57 / 51 s; with slow LOCAL reads as well by up to 116 / 110 s (189 s), and under the worst-case column's own mix by up to **122 / 116 s** (195 s) (the prompt-stop rows hold: 49 / 54 s at the latest) | **CROSSING even at prompt RPC I/O**: the other wedge order with every op at `-k`, 110 s — by 6 s (the admin socket at 7 s: the first order at `-k` 109 s by 5 s, the other order 123 s by 19 s — the 125 s spare holds by 2 s, not a margin); with the tiers at their bounds (the mask: 106 s, by 2 s; every op at `-k` by 12 s; the other order at `-k` 130 s: by 26 / 5 s — the 125 s spare too), with slow LOCAL reads (135 s by 31 / 10 s; 174 s by 70 / 49 s; 189 s by 85 / 64 s) and under the worst-case column's own mix (181 s by 77 / 56 s; up to 195 s: by **91 / 70 s**) | **CROSSING already with the admin socket at 7 s** (the tiers and LOCAL reads prompt): the other wedge order at `-k` 123 s crosses 119 by 4 s (the first order at `-k`: 109 s, 10 s short). With the tiers at their bounds: the other wedge order at `-k` 130 s crosses 119 by 11 s (the first order at `-k`: 116 s, 3 s short of 119 — not a margin); with slow LOCAL reads: 135 s crosses 119 by 16 s; with the mask 150 s crosses 119 by 31 s and ties 150; every op at `-k` 160 s crosses 119 / 150 by 41 / 10 s (175 s with every LOCAL read 1 s inside its bound: by 56 / 25 s); the other order at `-k` 174 s by 55 / 24 s, 189 s by 70 / 39 s; under the worst-case column's own mix every op at `-k` 181 s by 62 / 31 s and the other order up to 195 s by **76 / 45 s** |
 | **(1)** still-frozen restore over a corrupted slot — the monitor restarted 30 / 45 / 63 s after the last vote | grace 30: 75 / 90 / 108 s; grace 0: 45–60 / 60 / 78 s (45 only when the persisted stall stamp is ≥ 30 s old at the restore, else 60) | **CROSSING**: grace 30 — 75 s lands 2 s after the 73 s spare (4 s before the 79 s one), 90 and 108 s 11–35 s after the spare can take; grace 0 — 78 s lands 5 s after the 73 s spare | grace 30: 108 s lands **4 s after** the 104 s spare (crossing); the rest hold | holds (108 < 119) |
 | **the plain restart** — a canonical state file, the monitor restarted +30 / +45 / +63 during the stall (the startup blind window: restart + the tier tests + `STARTUP_GRACE`) | 60 / 75 / 93 s; with the startup tier tests at their `-m` bounds, over the collision check's phase, 80–97 / 95–97 / 113 s (at the read phases only 83–85 / 95 / 113) | **CROSSING**: 75 s by 2 s, 93 s by 20 / 14 s; with slow tier tests every row (by up to 40 / 34 s) | with slow tier tests 113 s crosses by 9 s; the rest hold | holds (113 < 119) |
 | **the un-armed unit's own crash** (`Restart=always`, `RestartSec=10`) 1 s before the fence would land | 70 / 30–72 / 30–74 s; with the tier tests at their bounds, over the collision check's phase, 90–100 / 30–102 / 30–104 s (at the read phases only 90 / 92 / 31–94) | **CROSSING**: 74 s by 1 s; with slow tier tests by up to 31 / 25 s | with slow tier tests 104 s TIES the 104 s spare (`CHECK_INTERVAL` 5) — not a margin | holds |
@@ -125,8 +130,9 @@ round 1's text said every crossing found was named: false — its wedged-demote 
 collision check's worst phase; the delta review measured both, and fix round 2 names them above. Fix round 2's text said its
 wedged-demote row stated every daemon term: false — the other wedge order with the stop and the mask at their `-k` bounds
 lands 14 s after the first order's latest: 106–110 s at prompt RPC I/O, crossing the 104 s spare; 130 s with the tiers at
-their bounds, crossing the 119 s mint and the 125 s spare; up to 174 s with slow LOCAL reads — the delta review of fix
-round 2 measured it, and fix round 3 names it in the row.)
+their bounds, crossing the 119 s mint and the 125 s spare; 174 s with every LOCAL read at 4 s (195 s under the worst-case
+column's own mix, the admin socket at 7 s too — the row states it) — the delta review of fix round 2 measured it, and fix
+round 3 names it in the row.)
 The floor rule behind (1) (`SELFFENCE_RESTORE_CONFIRM_SECS`) trades exactly this against never fencing a
 paused healthy holder ([the holder's residuals](#holder-self-fence-the-differential-bar-and-its-named-residuals-v07-block-63),
 (1)). No holder-side mechanism changed in fix rounds 1–2; the options the reviews found — one self-fence
@@ -876,8 +882,9 @@ piece is **veto-only** — it can turn a take into a hold, never the reverse.
   its three worlds); and a recovered `TIER2` answering without an advance no longer aborted as a flip —
   taken 21–29 s into the voting where the 6.3 build re-pins onto `TIER2` and its next verdict sees the vote
   (LB-2). On the restored re-check every one of those worlds is never taken (`test_own_view` (7f)); **what
-  comes back is the 6.3 build's own, named: residuals 6 (the mirror world) and 7 (the re-check's starvation)
-  below.** On a single-vantage configuration (`TIER2` = `TIER3`) nothing changed: 49 / 58 s, as on every
+  comes back, named below: residual 6 (the mirror world) — the 6.3 build's own, taken at the same second on
+  both builds — and residual 7 (the re-check's starvation) — the first 6.3.1 build's, an availability
+  regression against the 6.3 build, which has no own-view veto and takes those dead holders on time.** On a single-vantage configuration (`TIER2` = `TIER3`) nothing changed: 49 / 58 s, as on every
   build. Reported, not changed: per-provider ages are 6.4's.
 - **The spare's own head: advancing now, and at a rate (D4).** Own-head samples (`getSlot{confirmed}`
   + its pet) are taken once per cycle of an open episode, once at the head of each take function, and
@@ -898,24 +905,32 @@ piece is **veto-only** — it can turn a take into a hold, never the reverse.
   CKB-2: earlier texts said a tier read is 10 s and named only the advisory), every other tier read at 10 s,
   and the re-check, inside the span where no sample may sit, is one sampler call — `TIER2`'s read, then
   `TIER3`'s after a `TIER2` failure; the baseline is what that leaves. **Measured at the veto** (`test_own_view` (7c-age); fix round 3's
-  512-cell sweep — `TIER2` answering in 0–10 s, `TIER2` down with `TIER3` in 0–10 s, `TIER3` down with
-  `TIER2` in 0–9 s, over `MAX_DELINQUENT_SLOTS` 0 / 15 × `CHECK_INTERVAL` 5 / 3 × 2.5 / 3.7 slots/s ×
+  512-cell sweep — `TIER2` answering in 0–10 s, `TIER2` down with `TIER3` in 0–10 s, `TIER3` answering in 10 s
+  with `TIER2` in 0–9 s, over `MAX_DELINQUENT_SLOTS` 0 / 15 × `CHECK_INTERVAL` 5 / 3 × 2.5 / 3.7 slots/s ×
   `GOSSIP_VERIFY` off / on: every age identical across the first three, `GOSSIP_VERIFY` as noted): `TIER2`
   answering in x s → 16 s for x ≤ 5 (15 at 5 with `GOSSIP_VERIFY` on), 12 / 14 / 16 / 9 s at 6 / 7 / 8 / 9,
-  10 s at its bound; `TIER2` down, `TIER3` in y s → 10 / 12 / 14 / 16 / 14 / 15 / 16 s at y = 0 … 6, and
-  from y = 7 **no sample in the window at all** — every veto BLIND, a dead holder never taken (residual 7);
-  `TIER3` down, `TIER2` in x s → 16 s for x ≤ 4 (`GOSSIP_VERIFY` on: x ≤ 3, and **8 s** at 4), then 10 / 12
-  / 14 / 16 / 9 s at 5 / 6 / 7 / 8 / 9 — **8–16 s where a tier answers, not 14–16 s everywhere**; the cells
-  below 14 s are named in residual 5; both tiers failing leave no sample and no take (as ever). Below
+  10 s at its bound; `TIER2` down (every read timing out), `TIER3` in y s → 10 / 12 / 14 / 16 / 14 / 15 / 16 s
+  at y = 0 … 6, and from y = 7 **no sample in the window at all** (from y = 5 when every LOCAL read takes 1 s)
+  — every veto BLIND, a dead holder never taken (residual 7); `TIER3` answering in 10 s (its `-m 15` reads
+  answer, its `-m 10` reads time out), `TIER2` in x s → 16 s for x ≤ 4 (`GOSSIP_VERIFY` on: x ≤ 3, and **8 s**
+  at 4), then 10 / 12 / 14 / 16 / 9 s at 5 / 6 / 7 / 8 / 9 — **8–16 s where a tier answers, not 14–16 s
+  everywhere**; the cells below 14 s are named in residual 5. A `TIER3` whose reads all time out is residual 5
+  (a)'s class: `TIER2` at 0 / 1 / 2 / 3 / 4 s, `GOSSIP_VERIFY` on → 16 / 2 / 4 / 6 / 8 s (taken t140 / t144 /
+  t148 / t152 / t156); with `TIER2` at 5 s or more the external confirm holds — its `TIER2` read times out
+  under turbo's `-m 5` and `TIER3` is down — no take and no veto, the starvation page at t366–t370
+  (`GOSSIP_VERIFY` off alike), the same on the 6.3 build: pre-existing, not the own view's. Both tiers
+  failing leave no sample and no take (as ever). Below
   ~9 s a live bank inside its hold budget can read "not advancing" (a BLIND veto, availability — residual
   5). Red first, the review's worlds on the first 6.3.1 build (its baseline was
-  the pre-take sample alone, as old as the re-check): a healthy hold inside the budget, aligned with the
+  the pre-take sample alone, whose age at the veto is the re-check plus its own and the veto's LOCAL
+  reads): a healthy hold inside the budget, aligned with the
   veto, vetoed a dead holder's take for +85 to +93 s (TIER2 5 s and a 6 s hold: t145 → t230; the wizard
   preset t104 → t195; …), and `TIER2` down with `TIER3` ≥ 7 s late was never taken; fix round 1's build
   still never took a dead holder when the gossip advisory's `TIER2` read ran to its 15 s bound (every veto
   BLIND, the starvation page at t374; the wizard preset t330). Now the hold worlds and the advisory world
-  take on time (t142 / t98); `TIER2` down with `TIER3` ≥ 7 s late is NOT — the re-check's own starvation,
-  back since fix round 3 removed the two re-check changes that had closed it (residual 7). An opening-time
+  take on time (t142 / t98); `TIER2` down with `TIER3` ≥ 7 s late (≥ 5 s with every LOCAL read at 1 s) is
+  NOT — the first 6.3.1 build's starvation, back since fix round 3 removed the two re-check changes that had
+  closed it (residual 7). An opening-time
   baseline would not do: a spare cut off after the episode opened advanced from it up to the cut. (e)
   watchdog-elapsed's `[elapsed-rate]` layer (see *Slot time* — it bounds the own head's span average only).
 
@@ -925,14 +940,21 @@ t125 / t80 → unchanged; every LOCAL read taking 1 s with prompt tiers t131 →
 **t146** (`MAX_DELINQUENT_SLOTS` 15: t97 → t108 → t110 → t111 → **t111**; the wizard preset t95 → t105 →
 t108 → t104 → **t104**); with a slow tier as well the probe's own-head sample can move the first frozen
 verdict under the span floor and cost a whole take cycle (the delta review of fix round 2, AV2-7 —
-measured against the 6.3 build, every LOCAL read at 1 s, `GOSSIP_VERIFY` off: `TIER2` 9 s late t151 →
-t177 (+26), `TIER2` at its bound or down with `TIER3` prompt t154 → t184 (+30), `TIER3` down with `TIER2`
-prompt / 3 s t131 → t146 / t139 → t157 (+15 / +18); `GOSSIP_VERIFY` on +6 … +9 s; `TIER2` down with `TIER3`
-7 s or later: never — residual 7); a harness world with every read at its `curl -m` bound t215 → t233 →
+measured against the 6.3 build, every LOCAL read at 1 s, `MAX_DELINQUENT_SLOTS` 0, `CHECK_INTERVAL` 5,
+`GOSSIP_VERIFY` off: `TIER2` 9 s late t151 → t177 (+26), `TIER2` at its bound or down with `TIER3` prompt t154
+→ t184 (+30), `TIER3` answering in 10 s with `TIER2` prompt / 3 s t131 → t146 / t139 → t157 (+15 / +18);
+`GOSSIP_VERIFY` on +6 … +9 s; at `MAX_DELINQUENT_SLOTS` 15 more: `GOSSIP_VERIFY` off, `TIER3` answering in
+10 s with `TIER2` 5 / 7 / 9 s t107 → t141 / t113 → t149 / t119 → t157 (+34 / +36 / +38), on, `TIER2` 8 s
+t114 → t154 (**+40**) and `TIER3` in 10 s with `TIER2` 3 s t105 → t141 (+36), the wizard preset `TIER2` 5 s
+t105 → t139 (+34) — phase-dependent, the maximum of the measured cells, not a bound; and where the starvation
+holds, never: `TIER2` down (timing out) with `TIER3` 5 s or later, at every preset measured — residual 7); a harness world with every read at its `curl -m` bound t215 → t233 →
 t241 → t243 → **t243** (15: t240 → t262 → t270 → t272 → **t272**) — an idealization: a real LOCAL read AT
 its 2 s bound times out (below); pets at the house 7 s t504 → t581 → t609 → t616 → **t616** (a real pet
-is a datagram). With `TIER2` down and `TIER3` answering 0 / 4 / 6 / 7 / 9 s late a dead holder is taken at
-t150 / t162 / t168 / never / never — the first 6.3.1 build's outcome again (fix round 1: t140 / t152 / t158
+is a datagram). With `TIER2` down (timing out) and `TIER3` answering 0 / 4 / 6 / 7 / 9 s late a dead holder is
+taken at t150 / t162 / t168 / never / never — **the 6.3 build at t150 / t162 / t168 / t171 / t177**: the
+never-cells are residual 7, an availability regression against the 6.3 build (which takes `TIER3` 7 s at t193
+at the shipped defaults, t173 at 3.7 slots/s, t149 at the wizard preset, t126 at `MAX_DELINQUENT_SLOTS` 15 —
+each never here); the first 6.3.1 build's outcome again (fix round 1: t140 / t152 / t158
 / t161 / t167 — its re-check read the pinned `TIER3` alone; fix round 2: t150 / t158 / t162 / t164 / t168
 — both tiers at once; both removed in fix round 3); with `TIER3` down the re-check reads `TIER2` alone
 again, as on the first 6.3.1 build (fix round 2 waited out the dead tier's 10 s: +10 … +1 s). On the primary's recovery path (one chain model,
@@ -954,8 +976,12 @@ own worlds — and, in the ordinary failed-over state (the STANDBY holding and v
 the switch and every `ALERT_THROTTLE` after, forever (AV2-4, AV2-5, CKB-5), and fix round 3 removed it: the
 residual is stated instead. In that failed-over state a PRIMARY whose own bank sees the STANDBY voting the
 identity ends its pass there, before the fence (fix round 1's R1 pass stop), so the 6.3 build's one-shot
-"ACTIVELY VOTING elsewhere" page (t312 in that world) is not sent either — named, not changed. The default
-`RECOVERY_MODE=manual` is unaffected — it never re-takes on its own (`test_act_then_alert` (14), (14f)). A spare whose own node
+"ACTIVELY VOTING elsewhere" page (t312 in that world) is not sent either: after a failover an `rpc`-mode
+PRIMARY sends no page at all (to t2100 at 2.5 and 1.0 slots/s — `test_act_then_alert` (14f)) and the
+STANDBY's `TOOK STAKED ✅` is the signal; the one-shot page still fires when the PRIMARY's own view misses
+the advance (its own node frozen from t250: t312 — (14f)). Named, not changed (restoring the page on the
+pass stop is the reviewer's). The default `RECOVERY_MODE=manual` is unaffected — it never re-takes on its
+own: the main loop's recovery dispatch runs no pass under it (`test_act_then_alert` (14g)). A spare whose own node
 answers a loopback read in **2 s or more can never take**: the veto's read times out, every veto is BLIND
 (the 6.3 build t156 / t142 / t138 at `MAX_DELINQUENT_SLOTS` 0 / 15 / the wizard preset → never; the R7
 world t197 → never) — loud: the veto page, then the starvation page. **Each BLIND veto costs a full delay
@@ -964,10 +990,13 @@ blindness-is-life): 60 s on a STANDBY with prompt tiers, 120 s on the BACKUP pre
 wires the gate (the floor re-elapses); with slow tiers the slow take cycle runs again after it. Measured
 on fix round 3's build (one refused veto read at the first take attempt, a dead holder, `MAX_DELINQUENT_SLOTS`
 0, `CHECK_INTERVAL` 5): +60 s with prompt tiers; `GOSSIP_VERIFY` on (the default) `TIER2` answering in
-5 / 9 s or at its bound +85 / +107 / +106 s, `TIER3` down with `TIER2` 0 / 3 / 7 / 9 s +70 / +86 / +120 / +122 s,
-`TIER2` down with `TIER3` 0 / 4 / 6 s **+111 / +140 / +142 s** (the same at `CHECK_INTERVAL` 3 and at the
-wizard preset); off, +73 … +128 s with a slow tier; the advisory residual's world +85 s; `TIER2` down with `TIER3` 7 s or
-later is never taken at all (residual 7). (Fix round 2's text said +77 to +102 s on its build; the delta
+5 / 9 s or at its bound +85 / +107 / +106 s, `TIER3` answering in 10 s with `TIER2` 0 / 3 / 7 / 9 s +70 / +86 /
++120 / +122 s, `TIER2` down with `TIER3` 0 / 1 / 2 / 3 / 4 / 5 / 6 s +111 / +122 / +120 / +130 / +140 / **+150**
+/ +142 s — not monotonic in the latency (the overshoot to the next slow probe-cycle boundary is
+phase-dependent) and the same at `CHECK_INTERVAL` 3, at `MAX_DELINQUENT_SLOTS` 15, at the wizard preset and
+at 3.7 slots/s: **up to +150 s** measured; off, +73 … +128 s with a slow tier (that row +102 / +100 / +109 /
++118 / +112 / +120 / +128 s); the advisory residual's world +85 s; `TIER2` down with `TIER3` 7 s or later (5 s
+or later with every LOCAL read at 1 s) is never taken at all (residual 7). (Fix round 2's text said +77 to +102 s on its build; the delta
 review of fix round 2 measured up to +157 s there and +156 s on fix round 1's — AV2-2, CKB-3 — in cells
 the restored re-check no longer takes.) Whether a transient LOCAL hiccup should cost that much is the
 reviewer's policy question — the policy is unchanged. Every such hold is loud: the veto page, and the
@@ -982,7 +1011,8 @@ takeover starvation page covers the rest.
    longest healthy hold.
 2. **The spare's own replay lag.** The veto testifies about the chain as of the spare's own replay:
    a spare 40 s behind takes a holder that resumed within those 40 s (up to the node's own health-check
-   distance, which Tier-1 now enforces — 128 slots by default: ≈ 51 s at 2.5 slots/s, ≈ 35 s at 3.7).
+   distance, which Tier-1 now enforces — 128 slots by default: ≈ 51 s at 2.5 slots/s, ≈ 35 s at 3.7). A
+   lower `--health-check-slot-distance` lowers this bound — measured in residual 6's world.
 3. **The instant of the take.** A holder resuming inside the veto's confirmed lag (≈ 1 s) or, armed,
    inside the veto's own pet (up to 7 s at the house bound-counting; milliseconds on a real host) is
    taken: measured 0 s un-armed, 7 s armed.
@@ -1012,46 +1042,77 @@ takeover starvation page covers the rest.
    nothing, its verdict only picks a log line), skip it on a slow take cycle, or move it out of the take
    cycle; the confirm's `TIER3` read at the other tier reads' 10 s — are the reviewer's. (b) **The matrix's
    cells below 14 s** (the sweep above): 12 / 9 / 10 s with `TIER2` at 6 / 9 s or at its bound; 10 / 12 s
-   with `TIER2` down and `TIER3` at 0 / 1 s; 10 / 12 / 9 s with `TIER3` down and `TIER2` at 5 / 6 / 9 s; and
-   **8 s** with `TIER3` down and `TIER2` at 4 s under `GOSSIP_VERIFY` on. From 9 s a hold must reach 22.5 slots
+   with `TIER2` down and `TIER3` at 0 / 1 s; 10 / 12 / 9 s with `TIER3` answering in 10 s and `TIER2` at 5 / 6 /
+   9 s; and **8 s** with `TIER3` answering in 10 s and `TIER2` at 4 s under `GOSSIP_VERIFY` on. From 9 s a hold must reach 22.5 slots
    at 2.5 slots/s to veto — beyond the budget with prompt LOCAL reads (an 11 s hold with `TIER2` down or at
    its bound: BLIND at t150, taken t252), inside the derivation's 5 s allowance for LOCAL reads at their bound;
    the **8 s cell vetoes a hold inside the budget even with prompt LOCAL reads**: an 8 s hold (20 slots)
    aligned with the veto → BLIND at t151, taken t241 (+90 s; a 7 s hold is taken on time, t151; fix round 2's
    concurrent re-check made that cell 14 s). At 3.7 slots/s the 5.9 s budget fits inside every matrix cell,
    not inside (a)'s 2 and 4 s. **What fix round 3's restored re-check changed here**, against fix round 2:
-   younger — the `TIER3`-down row at `TIER2` 4 / 5 / 6 / 9 s under `GOSSIP_VERIFY` on (14 / 15 / 16 / 10 → 8 / 10 /
+   younger — the `TIER3`-at-10-s row at `TIER2` 4 / 5 / 6 / 9 s under `GOSSIP_VERIFY` on (14 / 15 / 16 / 10 → 8 / 10 /
    12 / 9 s) and at 5 / 6 / 9 s off (15 / 16 / 10 → 10 / 12 / 9 s), and the `TIER2`-down row from `TIER3` 7 s
    (10 s → none: residual 7); older — the `TIER2`-down row at `TIER3` 1–3 s (11 / 12 / 13 → 12 / 14 / 16 s),
-   the `TIER3`-down row at `TIER2` 0–3 s under `GOSSIP_VERIFY` on (10–13 → 16 s) and at 7 / 8 s (10 → 14 / 16 s),
+   the `TIER3`-at-10-s row at `TIER2` 0–3 s under `GOSSIP_VERIFY` on (10–13 → 16 s) and at 7 / 8 s (10 → 14 / 16 s),
    and at 4 s off (14 → 16 s). (Fix round 2's text listed four cells its concurrent re-check made younger than
-   fix round 1; the delta review of fix round 2 counted ten per corner, the `TIER3`-down side included —
+   fix round 1; the delta review of fix round 2 counted ten per corner, the `TIER3`-at-10-s side included —
    AV2-3, CKB-4. That read is gone; the matrix above is the one that stands.)
 
-6. **The mirror world (the re-check's one call — back since fix round 3).** With the fence's pair pinned on
-   `TIER2` while `TIER2` splices or lags (its answer shows the holder frozen) and an honest `TIER3` showing
-   the holder voting again, the re-check never reads `TIER3` — it reads `TIER3` only when `TIER2` yields
-   nothing — so the frozen same-vantage answer carries the take. Measured (`test_own_view` (7f)), the holder
-   resuming inside the episode: at the shipped defaults (`GOSSIP_VERIFY` on, `CHECK_INTERVAL` 5) taken 25 s
-   into its voting (resumed t140, taken t165), at 3.7 slots/s 15 s (t120 → t135); at the wizard preset 20 s
-   (t100 → t120), at 3.7 slots/s 15 s (t90 → t105); `GOSSIP_VERIFY` off the same; `TIER2` splicing or
-   lagging 40 s, alike. Each only while the spare's own replay lag also hides the resumption from the veto
-   (the spare 40 / 30 s behind in these worlds — residual 2's composition: with the spare current the veto
-   reads the holder VOTING and holds). One intermediary on `TIER2` is enough. Pre-existing on the 6.3 build
-   and the first 6.3.1 build; fix round 2's concurrent read closed it and took a voting holder in other
-   worlds (the delta reviews' LB-1 / LB-2), so fix round 3 removed that read and names this instead.
-7. **The re-check's starvation (the review's AV-6 — back since fix round 3).** No own-head sample may sit
-   inside the re-check (it is inside the acceptance→mutation span `PROOF_MAX_AGE` counts), so the veto's
-   youngest baseline is the pre-take sample, as old as the re-check: with `TIER2` timing out (10 s) and
-   `TIER3` answering 7 s or later, it is older than `OWN_HEAD_H` at the veto — every veto BLIND and a dead
-   holder is never taken over, loudly (the veto page, then the takeover starvation page). Measured at the
-   shipped defaults: `TIER3` 7 / 8 / 9 s late → first veto t193 / t197 / t201, starvation page t372 / t385 /
-   t368; `GOSSIP_VERIFY` off t171 / page t380; 3.7 slots/s t173 / t352; the wizard preset t149 / t328 (`TIER3`
-   9 s: t157 / t324); `TIER2` hanging to its bound instead of refusing, alike (t188 / t380); `TIER3` 6 s late
-   is taken (t189). Pre-existing on the first 6.3.1 build; fix round 1 closed it by reading the pinned
-   `TIER3` alone (t161 — the DL-1 regression) and fix round 2 by the concurrent read (t164 — LB-1), and both
-   are removed. Availability only — the failure is toward not taking — and one intermediary that controls
-   `TIER2`'s latency (a blackhole) with a slow `TIER3` is enough.
+6. **The mirror world (the re-check's one call — the 6.3 build's own, back since fix round 3).** With the
+   fence's pair pinned on `TIER2` while `TIER2` splices or lags (its answer shows the holder frozen) and an
+   honest `TIER3` showing the holder voting again, the re-check never reads `TIER3` — it reads `TIER3` only
+   when `TIER2` yields nothing — so the frozen same-vantage answer carries the take, whenever the spare's own
+   replay lag also hides the resumption from the veto (residual 2's composition: with the spare current the
+   veto reads the holder VOTING and holds). **The exposure is up to that lag**: the take lands at the
+   episode's timer delayed by the lag (to the next cycle), and a resumption inside the lag before it is
+   taken. Measured (`test_own_view` (7f), (7f-r6); the 6.3 build takes each of these at the same second), the
+   holder resuming at t140, at the shipped defaults (`GOSSIP_VERIFY` on, `CHECK_INTERVAL` 5): the
+   spare 40 s behind takes at t165, **25 s into the voting** (a resumption at t125: 40 s into it; the ones at
+   t118–t124 reach the lagging bank and read VOTING at the veto — the 6.3 build takes those too), 50 s behind
+   (125 slots) at t175, 35 s (t125: 50 s), 51 s behind (127.5 slots — the most agave's default
+   health-check distance of 128 slots admits at 2.5 slots/s) at t180, 40 s (t129: 51 s), 52 s behind reads
+   behind and never takes; at 3.7 slots/s 15 s (t120 → t135); at the wizard preset 20 s (t100 → t120), at
+   3.7 slots/s 15 s (t90 → t105); `GOSSIP_VERIFY` off the same; `TIER2` splicing or lagging 40 s, alike. One
+   intermediary on `TIER2` is enough. **The mitigation is the spare's own `--health-check-slot-distance`**:
+   Tier-1 is the node's health verdict since 6.3.1, so a spare lagging past that distance never takes (the
+   6.3 build's Tier-1 accepted a node reporting up to `LOCAL_HEALTH_MAX_BEHIND` = 100 slots behind, so a
+   lower distance does not bound it there: it takes at every lag measured, up to 30 s at 64, 38 and 30
+   slots) — measured at the defaults: at 64 slots the
+   resumption at t140 is taken at most 10 s into the voting (a 25 s lag, t150; 26 s and more never), any
+   resumption at most 25 s into it (t125 → t150); at 38 slots only at the resumption's own instant (a 15 s
+   lag, t140 — residual 3's class), any resumption at most 15 s into it (t125 → t140). A spare that lags
+   more than that distance cannot take at all, so the distance trades this exposure against availability.
+   Pre-existing on the 6.3 build and the first 6.3.1 build; fix round 2's concurrent read closed it and took
+   a voting holder in other worlds (the delta reviews' LB-1 / LB-2), so fix round 3 removed that read and
+   names this instead.
+7. **The re-check's starvation (the review's AV-6 — the first 6.3.1 build's, back since fix round 3; an
+   availability regression against the 6.3 build).** No own-head sample may sit inside the re-check (it is
+   inside the acceptance→mutation span `PROOF_MAX_AGE` counts), so the veto's youngest baseline is the
+   pre-take sample, and its age at the veto is a SUM: the sample's own LOCAL read, `TIER2`'s timeout (10 s),
+   `TIER3`'s answer, the veto's own LOCAL read and the glue between them. When the sum exceeds `OWN_HEAD_H`
+   (16 s) every veto is BLIND and a dead holder is never taken over, loudly (the veto page — "no own-head
+   sample within the last 16 s" — then the takeover starvation page): with prompt LOCAL reads from `TIER3`
+   7 s late, with every LOCAL read at 1 s from 5 s (4 s is taken, the baseline exactly 16 s old: t171,
+   `GOSSIP_VERIFY` on t193); on a real host the edge is phase-dependent near 6 s (real time, the real
+   `take_staked_identity`, `TIER2` hanging to its `-m 10`, prompt LOCAL reads: `TIER3` 5 s taken in 3 of 3
+   runs, 6 s held BLIND in 3 of 3 — the 6.3 build took every run). The 6.3 build has no own-view veto and
+   takes every one of these holders — the 6.3 build → this build: `TIER3` 7 / 8 / 9 s late at the shipped
+   defaults t193 / t197 / t201 → never (first BLIND veto t193 / t197 / t201, starvation page t372 / t385 /
+   t368); `GOSSIP_VERIFY` off t171 / t174 / t177 → never (pages t380 / t376 / t370); 3.7 slots/s t173 → never
+   (t352); the wizard preset t149 → never (t328; `TIER3` 9 s t157 → never, t324); `MAX_DELINQUENT_SLOTS` 15
+   t126 → never (t335); `TIER2` answering at its bound (its `-m 10` reads timing out) with `TIER3` 7 s,
+   alike (t188 → never, t380); every LOCAL read at 1 s, `TIER3` 5 / 6 s: t170 / t170 → never (BLIND t175 /
+   t179, pages t380 / t371; `GOSSIP_VERIFY` on t188 / t193 → never, t384 / t397). `TIER3` 6 s late with
+   prompt LOCAL reads is taken (t189 at the defaults). A `TIER2` that REFUSES at once does not starve the
+   take (`TIER3` 7 / 9 s at the defaults: t153 / t161). **What an operator can do:** repair a `TIER2` that
+   times out, or while it is broken leave `TIER2_RPC` empty — the confirm, the fence and the re-check then
+   read `TIER3` alone (`TIER3` 7 / 9 s taken t146 / t152; every LOCAL read at 1 s and `TIER3` 6 s t170) and
+   the witness fast path and G2's default vantage, which need two tiers, are off — or use a `TIER3` that
+   answers the full `getVoteAccounts` well under ~5 s. The first 6.3.1 build had it; fix round 1 closed it by
+   reading the pinned `TIER3` alone (t161 — the DL-1 regression) and fix round 2 by the concurrent read (t164
+   — LB-1), and both are removed. Availability only — the failure is toward not taking — and one
+   intermediary that controls `TIER2`'s latency (a blackhole) with a slow `TIER3` is enough. This build's cells
+   are pinned cell by cell: `test_own_view` (7c), (7c-age), (7c-r7).
 
 ### Holder self-fence: the differential bar and its named residuals (v0.7, Block 6.3)
 
@@ -1210,17 +1271,20 @@ suggest otherwise:
   reached through a symlink never prove (6.3 fix rounds 4–5), and since 6.3.1 `failover arm` refuses to
   store the token in such a directory (`REFUSE[STATE-dir-symlink]`, `REFUSE[STATE-dir-spelling]` for a
   spelling that is not the resolved path — a trailing `/`, `//`, `.`, `..`, a relative path — and
-  `REFUSE[STATE-dir-missing]` for one it cannot create or enter) — the daemon's rule mirrored before
-  anything is created (since its fix round 1: the spelling is checked first and the nearest existing
-  ancestor canonicalized; before, the arm created the missing directories — through a symlinked ancestor
-  too — and then refused). A path whose own `mkdir -p` fails PARTWAY (a component too long, a permission,
+  `REFUSE[STATE-dir-missing]` for one it cannot create or enter) — the daemon's rule mirrored, a refusal
+  by the spelling or by the nearest existing ancestor coming before anything is created (since its fix
+  round 1: the spelling is checked first and the nearest existing ancestor canonicalized; before, the arm
+  created the missing directories — through a symlinked ancestor too — and then refused). A path whose own `mkdir -p` fails PARTWAY (a component too long, a permission,
   a full disk) is refused `REFUSE[STATE-dir-missing]`, naming the path, and the part of it that mkdir
   created before failing **may remain on disk** — nothing is removed (the 6.3.1 delta review's CK-8: the
   text said "never left created"; fix round 2 then removed the created tail with `rmdir`, and the delta
   review of fix round 2 found that cleanup following a symlink raced onto an intermediate component —
   removing empty directories in the link's target, a pre-existing one included, in the very case this text
   said nothing was removed through (LB-3); fix round 3 removed the cleanup). What remains is a live swap
-  by a local root: not defended, named.
+  by a local root: a symlink raced onto an intermediate component between that ancestor check and `mkdir
+  -p` makes `mkdir -p` create the missing tail INSIDE the link's target before the whole-path check refuses
+  (`REFUSE[STATE-dir-symlink]`, whose FIX line then says: if you did not create that link, stop and
+  investigate) — not defended, named.
 - **A container's virtualized uptime** (lxcfs-style: `/proc/uptime` virtualized, `boot_id` not): a
   container restart makes the holder's persisted self-fence stamps "future" → restored as ANCIENT → a
   first-read blip fences with nothing corrupted (availability, the holder side — *Holder self-fence*,

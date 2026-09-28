@@ -22,13 +22,16 @@
 #            round 2, S4 — CK-3): every LOCAL read answers 1 s inside ITS OWN -m bound (the -m 10 reads at 9 s, the -m 5 at 4)
 #   SLOWADMIN <s>: the admin socket answers in <s> s (contact-info's own bound is 8)
 #   WEDGE=1  the demote's `authorized-voter remove-all` hangs to its SETIDENTITY_TIMEOUT (→ the hard stop); WEDGEK=1 it
-#            needs its -k 5 too; STOPHANG=1 the `systemctl stop` client times out (STOPK=1: at its bound + the -k 5) and
+#            needs its -k too (every *K knob: the call's bound + the daemon's OWN -k value, parsed from the call — fix round
+#            4, the delta panel 3's TS3-D6-KBOUND; a call with no -k never returns); STOPHANG=1 the `systemctl stop` client
+#            times out (STOPK=1: at its bound + its -k) and
 #            the validator ignores SIGTERM (the daemon's own SIGKILL stops it) unless TERMOK=1 (PID 1 slow, the validator
 #            honouring the daemon's SIGTERM); STOPSECS: how long a prompt `systemctl stop` takes. Fix round 2 (S4 — the
 #            delta panel's CK-1): MASKHANG=1 the `systemctl mask --runtime` the hard stop runs after a FAILED stop (and
-#            before the kill) times out at its 15 s bound (MASKK=1: + the -k 5), MASKSECS: how long a prompt one takes;
-#            the other wedge order — RASECS=<s> remove-all ANSWERS after <s> s, then SIWEDGE=1 the set-identity to
-#            unstaked hangs to its SETIDENTITY_TIMEOUT (SIWEDGEK=1: + the -k 5)
+#            before the kill) times out at its 15 s bound (MASKK=1: + its -k), MASKSECS: how long a prompt one takes;
+#            the other wedge order — RASECS=<s> remove-all ANSWERS after <s> s (RASECS=max: at SETIDENTITY_TIMEOUT − 1 from the
+#            seam, the admin latency SLOWADMIN included — fix round 4), then SIWEDGE=1 the set-identity to unstaked hangs to
+#            its SETIDENTITY_TIMEOUT (SIWEDGEK=1: + its -k)
 #   HEALTHBEHIND=1 (frozen): the holder's blockstore still sees the cluster via gossip — getHealth reports behind
 #   HORIZON  stop at this t
 # Rows (each pinned to its range over the read phase per cadence — and, for the PHASE-SWEPT rows, over the
@@ -42,7 +45,9 @@
 #       STARTUP_GRACE; its slow-tier-test form phase-swept), the un-armed unit's own crash (Restart=always,
 #       RestartSec 10; its slow form phase-swept), (1)'s restart member
 #   (c) the wedged demote → hard stop, EVERY daemon term (fix round 2, S4 — CK-1; fix round 3, U4 — CKB-1: the other
-#       wedge order with every op at its -k bound, the row's maximum): trigger + the demote (remove-all to
+#       wedge order with every op at its -k bound; fix round 4, G2 — CC3-2: both orders at -k composed with the worst-case
+#       column's own two I/O mixes and with the admin socket's latency alone — the latest over the MEASURED mixes, not a
+#       maximum over every mix): trigger + the demote (remove-all to
 #       SETIDENTITY_TIMEOUT (+ its -k 5), or remove-all answering and then the set-identity to unstaked to its bound
 #       (+ 5)) + the systemctl stop bound (+ 5) + after a failed stop the `systemctl mask --runtime` bound (+ 5) + 2 s,
 #       at SETIDENTITY_TIMEOUT = 15 (the default; the daemon only lower-bounds it, at 8); its slow-I/O forms phase-swept
@@ -54,14 +59,17 @@
 #     millisecond model of the same loop lands the frozen fence at 30.3–36.1 s (CI 3) / 32.0–37.0 s (CI 5) against
 #     this suite's 30–32 / 30–34 (the delta panel's executed model) — a margin under ~4 s below is not a margin;
 #   - (d) is ONE sample I/O mix, not the maximum over mixes: with every LOCAL read 1 s inside ITS OWN -m bound
-#     (SLOWLOCAL=b — the -m 10 reads at 9 s) the rows fence later (the (d′) rows below pin that second mix);
+#     (SLOWLOCAL=b — the -m 10 reads at 9 s) the rows fence later (the (d′) rows below pin that second mix); the
+#     wedged-demote row is composed with both mixes (c6 / c6′) and with their parts (c3i/c3j: the admin socket alone;
+#     c5b/c5bh: the second mix's LOCAL reads with a prompt admin socket) — sample mixes too, and a slower admin socket or
+#     LOCAL read is not monotonic here either (the (d′) forms fence EARLIER than the (d) forms);
 #   - N7 (the fresh-start silent gap: real-systemd container runs, docs/SAFETY.md) and the internet-lost demote (by
 #     reading — check_internet is stubbed) have no world here; every other row of the table is pinned here.
 # MECHANISMS: none changed in fix rounds 1–2 — the options each crossing's finding lists go to the reviewer.
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
-title_banner "D6 holder column: the holder's fence, from its last landed vote (v0.7 Block 6.3.1 fix rounds 1-3)"
+title_banner "D6 holder column: the holder's fence, from its last landed vote (v0.7 Block 6.3.1 fix rounds 1-4)"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/d6h.XXXXXX"); WORK=$(cd -P -- "$WORK" && pwd -P)
 T0=100000; HEAD0=900000
@@ -117,32 +125,45 @@ $region
         return 0
     }
     timeout() {
-        [[ "$1" == "-k" ]] && shift 2
-        local bound="$1"; shift
+        # fix round 4 (the delta panel 3's TS3-D6-KBOUND): the daemon's OWN -k value is parsed and used — a call that needs
+        # its kill (the *K knobs) takes bound + that value; with NO -k, timeout never kills a child that ignores SIGTERM, so the
+        # call never returns (the clock jumps past any horizon: the row goes red) — a changed or dropped -k in the daemon moves
+        # or reddens every row that needs the kill (red first on the panel's K1/K2/K3b).
+        local kk="" bound
+        [[ "$1" == "-k" ]] && { kk="$2"; shift 2; }
+        bound="$1"; shift
+        _tkill() {   # $1 = the event prefix + op — the kill path of a call that ignores SIGTERM
+            if [[ -n "$kk" ]]; then _adv $(( bound + kk )); echo "$1 SIGKILLed at bound+$kk t=$(_t)" >> "$EV"
+            else _adv 100000; echo "$1 NEVER killed (no -k) t=$(_t)" >> "$EV"; fi
+        }
         case "$*" in
             *"authorized-voter remove-all"*)
                 if [[ "${WEDGE:-0}" == "1" ]]; then
-                    if [[ "${WEDGEK:-0}" == "1" ]]; then _adv $(( bound + 5 )); echo "wedge t=$(_t) remove-all SIGKILLed at bound+5" >> "$EV"; return 137; fi
+                    if [[ "${WEDGEK:-0}" == "1" ]]; then _tkill "wedge remove-all"; return 137; fi
                     _adv "$bound"; echo "wedge t=$(_t) remove-all timed out" >> "$EV"; return 124
                 fi
-                [[ -n "${RASECS:-}" ]] && _adv "$RASECS"   # fix round 2 (S4 — CK-1): remove-all ANSWERS, slowly (the set-identity-hang wedge order below)
+                # fix round 2 (S4 — CK-1): remove-all ANSWERS, slowly (the set-identity-hang wedge order below). RASECS=max (fix round 4,
+                # TS3-D6-KBOUND): its LATEST whole-second answer inside its bound, derived from the seam's SETIDENTITY_TIMEOUT — the answer
+                # time, the admin socket's latency (SLOWADMIN, added below) included, is SETIDENTITY_TIMEOUT − 1 (14 s at the default)
+                if [[ "${RASECS:-}" == "max" ]]; then _adv $(( SETIDENTITY_TIMEOUT - 1 - ${SLOWADMIN:-0} ))
+                elif [[ -n "${RASECS:-}" ]]; then _adv "$RASECS"; fi
                 [[ -n "${SLOWADMIN:-}" ]] && _adv "$SLOWADMIN"
                 return 0 ;;
             *" set-identity $UNSTAKED_KEYPAIR"*)
                 if [[ "${SIWEDGE:-0}" == "1" ]]; then   # fix round 2 (S4 — CK-1): the demote's SECOND admin call hangs (the other wedge order)
-                    if [[ "${SIWEDGEK:-0}" == "1" ]]; then _adv $(( bound + 5 )); echo "wedge t=$(_t) set-identity SIGKILLed at bound+5" >> "$EV"; return 137; fi
+                    if [[ "${SIWEDGEK:-0}" == "1" ]]; then _tkill "wedge set-identity"; return 137; fi
                     _adv "$bound"; echo "wedge t=$(_t) set-identity timed out" >> "$EV"; return 124
                 fi
                 [[ -n "${SLOWADMIN:-}" ]] && _adv "$SLOWADMIN"; echo "FENCE t=$(_t) kind=demote" >> "$EV"; echo U1 > "$IDF"; return 0 ;;
             *"systemctl stop"*)
                 if [[ "${STOPHANG:-0}" == "1" ]]; then
-                    if [[ "${STOPK:-0}" == "1" ]]; then _adv $(( bound + 5 )); echo "stophang t=$(_t) systemctl stop client SIGKILLed at bound+5" >> "$EV"; return 137; fi
+                    if [[ "${STOPK:-0}" == "1" ]]; then _tkill "stophang systemctl stop client"; return 137; fi
                     _adv "$bound"; echo "stophang t=$(_t) systemctl stop client timed out" >> "$EV"; return 124
                 fi
                 _adv "${STOPSECS:-0}"; echo "FENCE t=$(_t) kind=hardstop" >> "$EV"; : > "$W/stopped"; return 0 ;;
             *"systemctl mask"*)   # fix round 2 (S4 — CK-1): the hard stop masks the unit after a failed stop, BEFORE the kill
                 if [[ "${MASKHANG:-0}" == "1" ]]; then
-                    if [[ "${MASKK:-0}" == "1" ]]; then _adv $(( bound + 5 )); echo "maskhang t=$(_t) systemctl mask SIGKILLed at bound+5" >> "$EV"; return 137; fi
+                    if [[ "${MASKK:-0}" == "1" ]]; then _tkill "maskhang systemctl mask"; return 137; fi
                     _adv "$bound"; echo "maskhang t=$(_t) systemctl mask timed out" >> "$EV"; return 124
                 fi
                 _adv "${MASKSECS:-0}"; return 0 ;;
@@ -373,11 +394,12 @@ for ci in 3 5; do
         hlaunch "wkhmk_${ci}_$k" MODE=frozen CI=$ci WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 INST=$st:-1 HORIZON=200
         hlaunch "wp_${ci}_$k"    MODE=frozen CI=$ci WEDGE=1 STOPHANG=1 MASKHANG=1 TERMOK=1 INST=$st:-1 HORIZON=200
         hlaunch "s7_${ci}_$k"    MODE=frozen CI=$ci RASECS=7 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
-        hlaunch "s14_${ci}_$k"   MODE=frozen CI=$ci RASECS=14 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
+        hlaunch "s14_${ci}_$k"   MODE=frozen CI=$ci RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
         hlaunch "s7m_${ci}_$k"   MODE=frozen CI=$ci RASECS=7 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 MASKHANG=1 INST=$st:-1 HORIZON=200
         # fix round 3 (U4 — the delta panel 2's CKB-1): the other order with the stop and the mask at their -k bounds too,
-        # remove-all answering after 14 s (SETIDENTITY_TIMEOUT − 1 — the latest answer on this integer clock)
-        hlaunch "s14k_${ci}_$k"  MODE=frozen CI=$ci RASECS=14 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 INST=$st:-1 HORIZON=200
+        # remove-all answering after 14 s (SETIDENTITY_TIMEOUT − 1 — the latest answer on this integer clock; RASECS=max since
+        # fix round 4 derives it from the seam's SETIDENTITY_TIMEOUT)
+        hlaunch "s14k_${ci}_$k"  MODE=frozen CI=$ci RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 INST=$st:-1 HORIZON=200
     done
 done
 # the phase-swept (c) rows (T1-D6 — the tiers at their bounds, then every LOCAL read at 4 s): worst / best offsets
@@ -391,8 +413,19 @@ for ci in 3 5; do
     phlaunch wkhmkTL $ci $wL $bL "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWLOCAL=4 HORIZON=300
     # fix round 3 (U4 — CKB-1): the other wedge order with every op at its -k bound, in the same two slow-I/O forms (its
     # worst / best offsets are c4mk's / c5mk's: every value is theirs + 14 s — D6_SWEEP=full, fix round 3)
-    phlaunch s14kT   $ci $wT $bT "@:-1" MODE=frozen RASECS=14 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang HORIZON=260
-    phlaunch s14kTL  $ci $wL $bL "@:-1" MODE=frozen RASECS=14 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWLOCAL=4 HORIZON=300
+    phlaunch s14kT   $ci $wT $bT "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang HORIZON=260
+    phlaunch s14kTL  $ci $wL $bL "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWLOCAL=4 HORIZON=300
+    # fix round 4 (G2 — the delta panel 3's CC3-2): both wedge orders with every op at its -k bound, composed with the worst-case
+    # column's OWN I/O mixes and with the admin socket's latency alone; worst / best offsets from D6_SWEEP=full (fix round 4)
+    case $ci in 3) wD=113; bD=112; wB=113; bB=112; wA=100; bA=102 ;; 5) wD=111; bD=110; wB=111; bB=135; wA=101; bA=100 ;; esac
+    phlaunch wkhmkA  $ci $wA $bA "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 SLOWADMIN=7 HORIZON=260
+    phlaunch s14kA   $ci $wA $bA "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 SLOWADMIN=7 HORIZON=260
+    phlaunch wkhmkTb $ci $wB $bB "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWLOCAL=b HORIZON=320
+    phlaunch s14kTb  $ci $wB $bB "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWLOCAL=b HORIZON=320
+    phlaunch wkhmkD  $ci $wD $bD "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=4 HORIZON=320
+    phlaunch s14kD   $ci $wD $bD "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=4 HORIZON=320
+    phlaunch wkhmkDb $ci $wD $bD "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=b HORIZON=320
+    phlaunch s14kDb  $ci $wD $bD "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=b HORIZON=320
 done
 # (d) — every row phase-swept (T1-D6; before fix round 2: 8 offsets 10 s apart, which missed the worst of four of the seven
 # rows — frozen, dead-refusing, dead-at-bound, tiers-only; garbage and both N6 rows already had theirs: the delta panel 2's CKB-7)
@@ -493,7 +526,17 @@ row c5 "c4 + every LOCAL read at 4 s (phase-swept — at the read phases only: 8
 row c5m "c5 + the mask at its bound" "95-121 / 99-150" "$(g35p wkhmTL)" 150
 row c5mk "c5 with every op at its -k bound" "105-131 / 109-160" "$(g35p wkhmkTL)" 160
 row c4h "c3h + the tiers at their -m bounds (phase-swept)" "106-128 / 106-130" "$(g35p s14kT)" 130
-row c5h "c3h + the tiers at their bounds + every LOCAL read at 4 s (phase-swept) — the row's latest fence" "119-145 / 123-174" "$(g35p s14kTL)" 174
+row c5h "c3h + the tiers at their bounds + every LOCAL read at 4 s (phase-swept)" "119-145 / 123-174" "$(g35p s14kTL)" 174
+# fix round 4 (G2 — the delta panel 3's CC3-2): the row composed with the admin socket at 7 s alone and with the worst-case column's own
+# I/O mixes, (d) and (d′) — both orders with every op at its -k bound, phase-swept; the latest over the measured mixes is c6h's 195 s:
+row c3i "c3c with ONLY the admin socket at 7 s (the tiers and every LOCAL read prompt)" "92-101 / 98-109" "$(g35p wkhmkA)" 109
+row c3j "c3h with ONLY the admin socket at 7 s (remove-all answering in 14 s, its 7 s latency included)" "106-115 / 112-123" "$(g35p s14kA)" 123
+row c5b "c4mk + every LOCAL read 1 s inside its own -m bound (a prompt admin socket)" "98-169 / 97-175" "$(g35p wkhmkTb)" 175
+row c5bh "c4h + every LOCAL read 1 s inside its own -m bound (a prompt admin socket)" "112-183 / 111-189" "$(g35p s14kTb)" 189
+row c6 "the (d) mix — the tiers at their bounds, the admin socket at 7 s, every LOCAL read at 4 s — with c3c's ops" "100-175 / 102-181" "$(g35p wkhmkD)" 181
+row c6h "the (d) mix with c3h's ops (remove-all answering in 14 s, its 7 s admin latency included) — the row's latest over the measured mixes" "114-189 / 116-195" "$(g35p s14kD)" 195
+row "c6′" "the (d′) mix — the tiers at their bounds, the admin socket at 7 s, every LOCAL read 1 s inside its own -m bound — with c3c's ops" "105-135 / 107-139" "$(g35p wkhmkDb)" 139
+row "c6′h" "the (d′) mix with c3h's ops" "119-149 / 121-153" "$(g35p s14kDb)" 153
 
 # ── (d) the worst-case I/O column (F4; fix round 2 S4 — T1-D6: every row phase-swept) ──────────────────
 echo ""; echo "─── (d) F4: the worst-case I/O column — CHECK_INTERVAL 3, the tiers at their bounds, the admin socket at 7 s, LOCAL reads at 4 s, over the collision check's 60 s phase ───"

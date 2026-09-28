@@ -1444,7 +1444,8 @@ world() {   # prints one k=v| summary line
 $region
 }"
         STAKED_PUBKEY=S1; UNSTAKED_PUBKEY=U1; VOTE_PUBKEY=V1; PRIMARY_UNSTAKED_PUBKEY=""
-        LOCAL_RPC="http://local.mock"; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"
+        # T2URL (fix round 4 — the delta panel 3's removals-lens knob): set and empty = TIER2_RPC blanked (a single external tier)
+        LOCAL_RPC="http://local.mock"; TIER2_RPC="${T2URL-http://t2.mock}"; TIER3_RPC="http://t3.mock"
         TAKEOVER_DELAY=60; TAKEOVER_COOLDOWN=${TCD:-120}; EXTERNAL_CONFIRM_THROTTLE=12
         MAX_DELINQUENT_SLOTS=${MDS:-0}; DRY_RUN=false; GOSSIP_VERIFY=${GV:-false}; WITNESS_FASTPATH=false
         if [[ "${FASTPATH:-0}" == "1" ]]; then   # the panel's L4 knob: a corroborated flip PRESENTED once the episode is open
