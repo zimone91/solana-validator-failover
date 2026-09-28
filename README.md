@@ -63,9 +63,10 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
   default, ≈ 51 s at 2.5 slots/s), so a lower distance on the spare's validator narrows it. **The
   starvation** (Block 6.3.1's own — an availability regression against Block 6.3, never a double-sign): a
   `TIER2` that times out while `TIER3` is slow (7 s or more; 5 s when local reads take 1 s) leaves the
-  veto no fresh own-head baseline, so a dead holder is never taken over, loudly — repair that `TIER2`, or
-  while it is broken leave `TIER2_RPC` empty, or use a `TIER3` that answers the full `getVoteAccounts` well
-  under ~5 s (a `TIER2` that refuses at once does not starve the take).
+  veto no fresh own-head baseline, so a dead holder is never taken over, loudly (on a real host one second
+  less is vetoed too, at some phases) — repair that `TIER2`, or while it is broken leave `TIER2_RPC` empty,
+  or use a `TIER3` that answers the full `getVoteAccounts` well under ~5 s (a `TIER2` that refuses at once
+  does not starve the take).
 - On a v0.7 **armed** spare, a relinquish-proof gate additionally decides *how* the old holder is known
   to be gone. Its strongest proof is **verified-demote (G2)**: the holder's *unstaked* identity observed
   in gossip at the staked identity's exact endpoint, and still there ≥60s later on two pinned RPC

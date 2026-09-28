@@ -1631,8 +1631,9 @@ _recheck_abort_alert() {
 # this span (PROOF_MAX_AGE's), so the veto's youngest baseline is the pre-take sample, and its age at the veto is a
 # SUM — that sample's own LOCAL read + TIER2's timeout + TIER3's answer + the veto's LOCAL read (+ glue); past
 # OWN_HEAD_H every veto is BLIND, a dead holder not taken over, the starvation page: TIER2 timing out and TIER3
-# answering 7 s or later with prompt LOCAL reads, 5 s or later with every LOCAL read at 1 s. The span: R_worst
-# 36 s, 49 s with the veto ([proof-gate]).
+# answering 7 s or later with prompt LOCAL reads, 5 s or later with every LOCAL read at 1 s (the stamps are
+# whole seconds: on a real host one second less is BLIND at some phases). The span: R_worst 36 s, 49 s with the
+# veto ([proof-gate]).
 _fresh_proof_recheck() {
     # Fence off (explicit operator override at startup) → nothing to re-check against.
     [[ "$VOTE_LIVENESS_VERIFY" == "true" ]] || return 0
@@ -2995,7 +2996,8 @@ require_relinquish_proof() {
 # holder voting — the one call never reads TIER3 while TIER2 answers) — and AV-6's starvation — the first 6.3.1
 # build's, an availability regression against the 6.3 build (the pre-take sample's LOCAL read + TIER2 at its
 # timeout + TIER3 + the veto's LOCAL read outlast OWN_HEAD_H: TIER3 7 s or slower with prompt LOCAL reads, 5 s
-# with every LOCAL read at 1 s — every veto BLIND, the starvation page).
+# with every LOCAL read at 1 s — every veto BLIND, the starvation page; on a real host one second less is BLIND
+# at some phases, the stamps being whole seconds).
 # HEALTHY PATH (typical one-curl success ~1 s + glue): verdict age at the edge ≈ 2–4 s — ≥ 12x
 # under the budget; the worst REACHABLE path of THIS span (39 s before 6.3.1 — 49 s with the veto read —
 # acceptance → recheck → veto → set-identity) clears it (by 11 s, now by 1 s): convergence proven WITH
