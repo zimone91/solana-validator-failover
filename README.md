@@ -51,10 +51,21 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
   spare also samples its own head through the episode and before each external read of the take cycle
   — five to twelve bounded local reads per take cycle at the defaults (one more on an armed unit, up to
   four more with the opt-in witness fast path), milliseconds on a healthy node (measured: +9 to
-  +15 s when every local read takes 1 s with prompt tiers, up to +30 s with a slow tier as well; as a local read nears its 2 s bound the take slides later, and at
-  2 s or more the spare never takes — loudly: the veto page, then the starvation page). How that ordering
-  holds up per failure class, measured, including where it does not:
+  +15 s when every local read takes 1 s with prompt tiers, up to +40 s in the measured cells with a slow
+  tier as well; as a local read nears its 2 s bound the take slides later, and at 2 s or more the spare
+  never takes — loudly: the veto page, then the starvation page). How that ordering holds up per failure
+  class, measured, including where it does not:
   [docs/SAFETY.md — the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
+- Two named residuals of that own view ([docs/SAFETY.md — the spare's own view](docs/SAFETY.md#the-spares-own-view-v07-block-631),
+  residuals 6 and 7). **The mirror world** (Block 6.3's too): with `TIER2` splicing or lagging (showing the
+  holder frozen) while the spare's own node lags as well, a holder that resumed within that lag is taken
+  while it votes — up to the lag the spare's own `--health-check-slot-distance` admits (128 slots by
+  default, ≈ 51 s at 2.5 slots/s), so a lower distance on the spare's validator narrows it. **The
+  starvation** (Block 6.3.1's own — an availability regression against Block 6.3, never a double-sign): a
+  `TIER2` that times out while `TIER3` is slow (7 s or more; 5 s when local reads take 1 s) leaves the
+  veto no fresh own-head baseline, so a dead holder is never taken over, loudly — repair that `TIER2`, or
+  while it is broken leave `TIER2_RPC` empty, or use a `TIER3` that answers the full `getVoteAccounts` well
+  under ~5 s (a `TIER2` that refuses at once does not starve the take).
 - On a v0.7 **armed** spare, a relinquish-proof gate additionally decides *how* the old holder is known
   to be gone. Its strongest proof is **verified-demote (G2)**: the holder's *unstaked* identity observed
   in gossip at the staked identity's exact endpoint, and still there ≥60s later on two pinned RPC
@@ -82,8 +93,9 @@ holds staked, steps down       takes staked              (120s, only if STANDBY 
 ```
 
 A spare's take also waits for its own-view reads (milliseconds on a healthy node; measured +9 to +15 s
-when every local read takes 1 s with prompt tiers, up to +30 s with a slow tier; a spare whose local reads take 2 s or more never takes, and pages) after
-the delays shown.
+when every local read takes 1 s with prompt tiers, up to +40 s in the measured cells with a slow tier as
+well; a spare whose local reads take 2 s or more never takes, and pages — so does one whose `TIER2` times
+out while `TIER3` is slow, the starvation above) after the delays shown.
 Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Requirements

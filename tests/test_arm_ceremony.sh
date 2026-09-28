@@ -211,16 +211,30 @@ cp "$STUB_DIR"/* "$STUB_NOFLOCK/"; rm -f "$STUB_NOFLOCK/flock"
 # and tr (solana-keygen stub). Everything else the arm executes is a bash builtin (printf,
 # command, exec, shopt, cd, pwd, [[ ]]), an absolute path ($BASH, $SOLANA_PATH/<keygen>), or an
 # actuator that lives ONLY in the stub dirs (systemctl, timeout, sleep, pgrep, socat, flock).
+# The REMOVAL tools (6.3.1 fix round 4 — the delta panel 3's TS3-16H-RMDIR): rm, rmdir and unlink are provisioned as
+# LOGGING WRAPPERS with the host's real binary behind each (every call appended to $MOCK_DIR/rm.calls, then exec'd), not
+# as bare symlinks — the arm uses only rm today; any removal it runs through PATH is REAL here as on a host (a re-added
+# rmdir cleanup succeeds here too, instead of failing as "command not found"), and (16h) asserts that none ran during a
+# P0 refusal.
 TOOLDIR="$STUB_PARENT/tools"
 mkdir -p "$TOOLDIR"
-ARM_REAL_TOOLS="awk basename cat chmod cksum cp cut date dirname grep head hostname mkdir mv readlink rm sed tail touch tr"
+ARM_REAL_TOOLS="awk basename cat chmod cksum cp cut date dirname grep head hostname mkdir mv readlink rm rmdir sed tail touch tr unlink"
 for _t in $ARM_REAL_TOOLS; do
     _tp=$(command -v "$_t" 2>/dev/null)
     if [[ -z "$_tp" || ! -x "$_tp" ]]; then
         echo "  ❌ FAIL: TOOLDIR provisioning: no real '$_t' on the host PATH — the suite cannot build its scenario PATH"
         exit 1
     fi
-    ln -s "$_tp" "$TOOLDIR/$_t"
+    case " rm rmdir unlink " in
+        *" $_t "*)
+            cat > "$TOOLDIR/$_t" <<EOS
+#!/bin/sh
+printf '%s %s\n' '$_t' "\$*" >> "\${MOCK_DIR:-/nonexistent}/rm.calls" 2>/dev/null
+exec '$_tp' "\$@"
+EOS
+            chmod +x "$TOOLDIR/$_t" ;;
+        *) ln -s "$_tp" "$TOOLDIR/$_t" ;;
+    esac
 done
 
 # ── scenario plumbing ───────────────────────────────────────────────────────────────────────────
@@ -1089,17 +1103,36 @@ if [[ "$sp_red" == "$sp_ct" ]]; then
 else
     bad "(16c) $((sp_ct - sp_red))/$sp_ct spellings not refused as STATE-dir-spelling:$sp_miss"
 fi
-# (16h) NOTHING IS CREATED by a refusal (6.3.1 fix round 1, R7 — the panel's CC-7: P0 ran mkdir -p BEFORE
-# canonicalizing, so every refused path below was left on disk — MEASURED red on the 6.3.1 build: new1/sub,
-# rel/state, s2, s3, s4 created under their refused spellings, and real/newsub and realanc/newsub created
-# THROUGH the links). Each case: the refusal code, and the refused directory (or its resolved target)
-# absent afterwards.
+# (16h) NOTHING IS CREATED by a refusal by spelling or by the existing ancestor (6.3.1 fix round 1, R7 — the panel's
+# CC-7: P0 ran mkdir -p BEFORE canonicalizing, so every refused path below was left on disk — MEASURED red on the 6.3.1
+# build: new1/sub, rel/state, s2, s3, s4 created under their refused spellings, and real/newsub and realanc/newsub
+# created THROUGH the links). Each case: the refusal code, the refused directory (or its resolved target) absent
+# afterwards, and NO removal command run (below).
+# P0 REMOVES NOTHING (6.3.1 fix round 4 — the delta panel 3's TS3-16H-RMDIR; red first on its mutants H1 a loop of plain
+# rmdir, H2 `\rmdir`, H3 `"rmdir"`, H4 an rmdir helper called from P0, H6 / H6b a cleanup of the raced tail). Three
+# halves, each able to go red:
+#   - DYNAMIC: rm / rmdir / unlink are logging wrappers in TOOLDIR with the REAL binary behind each ($MOCK_DIR/rm.calls);
+#     every P0 refusal below must leave that log empty, and the removal a re-added cleanup makes is real;
+#   - STATIC: _pre_state_dir_check and every function it calls (transitively; _arm_cleanup_probe excepted — reached only
+#     through _arm_refuse, and its first statement returns unless the probe was rendered, which happens after P0), comment-
+#     stripped, backslashes and quote characters deleted, may hold no rm / rmdir / unlink word in any spelling (plain,
+#     `\rmdir`, `"rmdir"`, split by quotes, or an absolute /bin/…, /usr/bin/… path);
+#   - the RACE (the delta panel 3's RM-3): a symlink raced onto an intermediate component between the ancestor check and
+#     mkdir -p makes mkdir -p create the tail INSIDE the link's target, and the post-mkdir check refuses
+#     REFUSE[STATE-dir-symlink] — nothing under the link's target may be removed (the created tail included: it stays,
+#     named in docs/SAFETY.md's local-host threat model), and the FIX line says to stop and investigate a link the operator
+#     did not create before adopting its target.
+# LIMIT, named: the static half reads the three words only — a removal through another tool (find -delete, mv away, an
+# interpreter's unlink) is not seen by it, and the dynamic half sees rm / rmdir / unlink run through PATH only (an
+# absolute-path call bypasses the wrappers; the static half reads that spelling).
 cr_ct=0; cr_ok=0; cr_miss=""
+p0_rmcalls() { [[ -s "$MOCK_DIR/rm.calls" ]] && { printf ' [removal ran: %s]' "$(tr '\n' ';' < "$MOCK_DIR/rm.calls" | cut -c1-160)"; return 0; }; return 1; }
 p0_nothing_created() {   # $1 = code, $2.. = paths that must NOT exist afterwards
     local _code="$1" _x; shift
     cr_ct=$((cr_ct + 1))
     if p0_refused "$_code"; then
         for _x in "$@"; do [[ -e "$_x" || -L "$_x" ]] && { cr_miss="$cr_miss [$_code: $_x CREATED]"; return 0; }; done
+        p0_rmcalls >/dev/null && { cr_miss="$cr_miss [$_code:$(p0_rmcalls)]"; return 0; }
         cr_ok=$((cr_ok + 1))
     else
         cr_miss="$cr_miss [$_code: rc=$RC $(grep -o 'REFUSE\[[^]]*\]' "$MOCK_DIR/out" | head -1)]"
@@ -1124,12 +1157,44 @@ run_arm ARM_STATE_DIR="$MOCK_DIR/dangling/state"; p0_nothing_created STATE-dir-s
 # intermediate component and removed empty directories in its target (a pre-existing one included), where SAFETY
 # said nothing is removed through a symlink — removed; what the failed mkdir created stays (newdir), as in fix round 1
 new_mock; _lp="$MOCK_DIR/newdir/$(printf 'x%.0s' {1..300})"; run_arm ARM_STATE_DIR="$_lp"
-p0_partial_ok=0; p0_refused STATE-dir-missing && [[ -d "$MOCK_DIR/newdir" ]] && grep -qF "ARM_STATE_DIR=$_lp cannot be created" "$MOCK_DIR/out" && grep -q 'may have left part of that path on disk' "$MOCK_DIR/out" && p0_partial_ok=1
-p0_norm=$(sed -n '/^_pre_state_dir_check() {/,/^}/p' "$ARM" | sed -e 's/^[[:space:]]*#.*$//' -e 's/"[^"]*"//g' | grep -cE '(^|[;&|[:space:]])(rm|rmdir|unlink)[[:space:]]')
-if [[ "$cr_ok" == "$cr_ct" && $p0_partial_ok -eq 1 && "$p0_norm" == "0" ]]; then
-    ok "(16h) a refusal creates NOTHING ($cr_ok/$cr_ct: trailing '/', '//', '/./', '/../' and a relative path under missing parents → STATE-dir-spelling; a symlinked ancestor with a missing leaf (one and two levels) and a DANGLING symlink ancestor → STATE-dir-symlink) — the nearest existing ancestor is checked before any mkdir; a mkdir failing PARTWAY (a 300-character component under a missing parent) → STATE-dir-missing naming the path and saying part of it may remain — what it created stays (newdir), and P0 removes nothing: no rm / rmdir in it (fix round 3, U3 — fix round 2's rmdir cleanup followed a raced symlink, the delta panel 2's LB-3)"
+p0_partial_ok=0; p0_refused STATE-dir-missing && [[ -d "$MOCK_DIR/newdir" ]] && grep -qF "ARM_STATE_DIR=$_lp cannot be created" "$MOCK_DIR/out" && grep -q 'may have left part of that path on disk' "$MOCK_DIR/out" && ! p0_rmcalls >/dev/null && p0_partial_ok=1
+p0_partial_why="rc=$RC newdir=$([[ -d "$MOCK_DIR/newdir" ]] && echo kept || echo REMOVED)$(p0_rmcalls)"
+# the RACE: a symlink appears on an intermediate component (anc/a → victim) just before P0's mkdir -p runs — a racing
+# mkdir fronting the real one (the (11d) wrapper idiom); victim/b, victim/keep and victim/file exist beforehand
+STUB_RACE="$STUB_PARENT/race"; mkdir -p "$STUB_RACE"; cp "$STUB_DIR"/* "$STUB_RACE/"
+_real_ln=$(command -v ln)
+cat > "$STUB_RACE/mkdir" <<STUB
+#!/bin/sh
+if [ "\$1" = "-p" ] && [ -n "\${RACE_LINK:-}" ] && [ ! -e "\$RACE_LINK" ] && [ ! -L "\$RACE_LINK" ]; then '$_real_ln' -s "\$RACE_TARGET" "\$RACE_LINK"; fi
+exec "$TOOLDIR/mkdir" "\$@"
+STUB
+chmod +x "$STUB_RACE/mkdir"
+new_mock; mkdir -p "$MOCK_DIR/anc" "$MOCK_DIR/victim/b" "$MOCK_DIR/victim/keep"; : > "$MOCK_DIR/victim/file"
+ARM_PATH="$STUB_RACE" run_arm ARM_STATE_DIR="$MOCK_DIR/anc/a/b/state" RACE_LINK="$MOCK_DIR/anc/a" RACE_TARGET="$MOCK_DIR/victim"
+p0_race_ok=0
+p0_refused STATE-dir-symlink && [[ -L "$MOCK_DIR/anc/a" ]] && grep -q "resolves to $MOCK_DIR/victim/b/state" "$MOCK_DIR/out" \
+  && grep -q "FIX: if you did not create that link, stop and investigate" "$MOCK_DIR/out" \
+  && [[ -d "$MOCK_DIR/victim/b/state" && -d "$MOCK_DIR/victim/b" && -d "$MOCK_DIR/victim/keep" && -f "$MOCK_DIR/victim/file" ]] \
+  && ! p0_rmcalls >/dev/null && p0_race_ok=1
+p0_race_why="rc=$RC link=$([[ -L "$MOCK_DIR/anc/a" ]] && echo yes || echo no) created-tail=$([[ -d "$MOCK_DIR/victim/b/state" ]] && echo kept || echo REMOVED) b=$([[ -d "$MOCK_DIR/victim/b" ]] && echo kept || echo REMOVED) keep=$([[ -d "$MOCK_DIR/victim/keep" ]] && echo kept || echo REMOVED)$(p0_rmcalls) :: $(grep -E 'REFUSE|FIX' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-300)"
+# the STATIC half: P0 and every function it calls, transitively (one-line functions end on their own line), except
+# _arm_cleanup_probe (see the header)
+p0_fn_body() { awk -v f="$2" '!p && $0 ~ "^"f"[[:space:]]*\\([[:space:]]*\\)" { p = 1; print; if ($0 ~ /\}[[:space:]]*$/ && $0 !~ /\{[[:space:]]*$/) exit; next } p { print } p && /^\}/ { exit }' "$1"; }
+p0_fns=" _pre_state_dir_check "; p0_todo="_pre_state_dir_check"
+p0_all=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*([[:space:]]*).*/\1/p' "$ARM" | sort -u)
+while [[ -n "$p0_todo" ]]; do
+    _f="${p0_todo%% *}"; p0_todo="${p0_todo#"$_f"}"; p0_todo="${p0_todo# }"
+    for _w in $(p0_fn_body "$ARM" "$_f" | sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#[[:space:]].*$//' | tr -c 'A-Za-z0-9_\n' ' '); do
+        [[ "$_w" == "$_f" || "$_w" == "_arm_cleanup_probe" || " $p0_fns " == *" $_w "* ]] && continue
+        printf '%s\n' "$p0_all" | grep -qx "$_w" || continue
+        p0_fns="$p0_fns$_w "; p0_todo="${p0_todo:+$p0_todo }$_w"
+    done
+done
+p0_norm=$(for _f in $p0_fns; do p0_fn_body "$ARM" "$_f"; done | sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#[[:space:]].*$//' | tr -d "\\\\\"'" | grep -cE '(^|[^A-Za-z0-9_])(rm|rmdir|unlink)([^A-Za-z0-9_]|$)')
+if [[ "$cr_ok" == "$cr_ct" && $p0_partial_ok -eq 1 && $p0_race_ok -eq 1 && "$p0_norm" == "0" && " $p0_fns " == *" _arm_refuse "* ]]; then
+    ok "(16h) a refusal by spelling or by the existing ancestor creates NOTHING ($cr_ok/$cr_ct: trailing '/', '//', '/./', '/../' and a relative path under missing parents → STATE-dir-spelling; a symlinked ancestor with a missing leaf (one and two levels) and a DANGLING symlink ancestor → STATE-dir-symlink) — the nearest existing ancestor is checked before any mkdir; a mkdir failing PARTWAY (a 300-character component under a missing parent) → STATE-dir-missing naming the path and saying part of it may remain — what it created stays (newdir); a symlink RACED onto an intermediate component before P0's mkdir -p (anc/a → victim) → mkdir -p creates the tail inside the link's target, the post-mkdir check refuses STATE-dir-symlink naming the resolved path, the FIX line says to stop and investigate a link the operator did not create, and nothing under the target is removed (the created tail, a pre-existing empty directory and a file all stay). P0 removes nothing: no rm / rmdir / unlink ran in any of these refusals (logging wrappers, the real binary behind each), and none is spelled in P0 or the functions it calls ($(printf '%s' "$p0_fns" | wc -w | tr -d ' '): P0,$(printf ' %s' $p0_fns | sed 's/ _pre_state_dir_check//')) in any quoting or path spelling (fix round 4 — the delta panel 3's TS3-16H-RMDIR and RM-3)"
 else
-    bad "(16h) $((cr_ct - cr_ok))/$cr_ct:$cr_miss :: partial-mkdir refused+named+kept=$p0_partial_ok :: P0 remove commands=$p0_norm"
+    bad "(16h) $((cr_ct - cr_ok))/$cr_ct:$cr_miss :: partial-mkdir refused+named+kept=$p0_partial_ok [$p0_partial_why] :: race=$p0_race_ok [$p0_race_why] :: P0 remove words=$p0_norm over [$p0_fns]"
 fi
 # (16d) a missing directory under a resolved parent is CREATED, then passes (the arm's mkdir -p, as before)
 new_mock

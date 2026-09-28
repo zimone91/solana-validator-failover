@@ -54,7 +54,7 @@ Also: `🛑` shutdown → Telegram only; `♥` heartbeat status → **log file o
 
 ### ⚠️ Warning (`alert_warn` → Telegram + ntfy)
 - `⚠️ PRIMARY local validator unreachable! Failover monitoring paused.` *(throttled)*
-- `⚠️ Recovery blocked: staked identity is ACTIVELY VOTING elsewhere (the STANDBY holds it). Manual switch-back needed.`
+- `⚠️ Recovery blocked: staked identity is ACTIVELY VOTING elsewhere (the STANDBY holds it). Manual switch-back needed.` *(`RECOVERY_MODE=rpc` only; since v0.7 Block 6.3.1 not sent while this node's own bank sees the STANDBY voting — the recovery pass ends there, before the fence — so after an ordinary failover an rpc-mode PRIMARY sends no page and the STANDBY's `TOOK STAKED ✅` is the signal; sent when this node's own view misses the advance)*
 - `⚠️ STANDBY has staked identity. Manual switch-back needed.`
 - `⚠️ TIER2_RPC == TIER3_RPC — single vantage point. …` *(v0.6.9 M8, at startup)*
 - `⚠️ Take VETOED by this spare's own view: …` / `… (it could not testify): …` *(v0.7 Block 6.3.1 — the RPC-recovery re-take withdrawn by the own-view veto; throttled)*
@@ -98,7 +98,8 @@ Also: `🛑` shutdown → Telegram only; `♥` heartbeat status → **log file o
 - `⚠️ GIVE_BACK_MODE=auto is not implemented — treated as manual.` *(v0.6.9 M6, at startup)*
 - `⚠️ TIER2_RPC == TIER3_RPC — single vantage point. …` *(v0.6.9 M8, at startup; also fail-closes the fast-path)*
 - `⚠️ UNSAFE cross-node timing ACCEPTED via ALLOW_UNSAFE_TIMING=true …` *(v0.6.9 M9, lab override)*
-- `⚠️ Take VETOED by this spare's own view: …` / `… (it could not testify): …` *(v0.7 Block 6.3.1 — the take withdrawn at its last step: the spare's own node showed the holder voting, could not answer its bounded read, or is not advancing; no action taken, the countdown restarts; throttled per `ALERT_THROTTLE`)*
+- `⚠️ Take VETOED by this spare's own view: …` / `… (it could not testify): …` *(v0.7 Block 6.3.1 — the take withdrawn at its last step: the spare's own node showed the holder voting, could not answer its bounded read, or is not advancing; no action taken, the countdown restarts; throttled per `ALERT_THROTTLE`. "no own-head sample within the last 16 s" on every take with `TIER2` timing out and a slow `TIER3` is the own view's residual 7, not the spare's node: see `docs/SAFETY.md`)*
+- `⚠️ TAKEOVER STARVATION: holder delinquent Ns and the takeover is still held. …` *(v0.7 Block 3 — the holder has been delinquent for `TAKEOVER_STARVATION_ALERT_SECS` (300 s) and the takeover is still held; the page counts the episode's blind cycles (a BLIND own-view veto is one), provider flips and span-floor holds; page-only; throttled per `ALERT_THROTTLE`)*
 
 ### ℹ️ Info (`alert_info` → Telegram only)
 - `🚀 STANDBY v0.6.8 started [DRY_RUN|LIVE]`

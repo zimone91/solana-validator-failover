@@ -1584,13 +1584,16 @@ _recheck_abort_alert() {
 # re-check's START and carried a take that landed up to one tier timeout later, 10 s — 17 s at the house
 # bound-counting — so a holder resuming in between was taken where this body reads TIER3 AFTER TIER2's timeout and
 # sees the vote — LB-1; and a recovered TIER2 answering without an advance no longer aborted as a flip — taken
-# 21-29 s into the voting — LB-2). Each regressed against this body; both are REMOVED. WHAT COMES BACK is this
-# body's own, named with the numbers in docs/SAFETY.md (the spare's own view, residuals 6 and 7): the MIRROR world
-# (the pair pinned on a TIER2 that splices or lags, an honest TIER3 showing the advance — TIER3 is not read while
-# TIER2 answers: taken) and AV-6's STARVATION (a TIER2 read timing out, then TIER3 answering 7 s or later, leaves
-# no own-head sample within OWN_HEAD_H of the veto — no sample may sit inside this span, PROOF_MAX_AGE's: every
-# veto BLIND, a dead holder not taken over, the starvation page). The span: R_worst 36 s, 49 s with the veto
-# ([proof-gate]).
+# 21-29 s into the voting — LB-2). Each regressed against this body; both are REMOVED. WHAT COMES BACK, named
+# with the numbers in docs/SAFETY.md (the spare's own view, residuals 6 and 7): the MIRROR world — this body's own,
+# the 6.3 build's too (the pair pinned on a TIER2 that splices or lags, an honest TIER3 showing the advance — TIER3
+# is not read while TIER2 answers: taken) — and AV-6's STARVATION — the first 6.3.1 build's, an availability
+# regression against the 6.3 build, which has no own-view veto and takes there: no own-head sample may sit inside
+# this span (PROOF_MAX_AGE's), so the veto's youngest baseline is the pre-take sample, and its age at the veto is a
+# SUM — that sample's own LOCAL read + TIER2's timeout + TIER3's answer + the veto's LOCAL read (+ glue); past
+# OWN_HEAD_H every veto is BLIND, a dead holder not taken over, the starvation page: TIER2 timing out and TIER3
+# answering 7 s or later with prompt LOCAL reads, 5 s or later with every LOCAL read at 1 s. The span: R_worst
+# 36 s, 49 s with the veto ([proof-gate]).
 _fresh_proof_recheck() {
     # Fence off (explicit operator override at startup) → nothing to re-check against.
     [[ "$VOTE_LIVENESS_VERIFY" == "true" ]] || return 0
@@ -1708,11 +1711,15 @@ _fresh_proof_recheck() {
 # within 16 s — MEASURED on the real loop (test_own_view (7c-age); fix round 3's 512-cell sweep: every age the
 # same at MAX_DELINQUENT_SLOTS 0 / 15, CHECK_INTERVAL 5 / 3, 2.5 / 3.7 slots/s; GOSSIP_VERIFY as noted): TIER2
 # answering in x s, TIER3 prompt → 16 s for x <= 5 (15 at x = 5 with GOSSIP_VERIFY on), 12 / 14 / 16 / 9 / 10 s
-# at x = 6 / 7 / 8 / 9 / its bound; TIER2 down, TIER3 in y s → 10 / 12 / 14 / 16 / 14 / 15 / 16 s at y = 0..6,
-# and from y = 7 NO sample in the window — every veto blind, a dead holder never taken (the re-check alone
-# outlasts OWN_HEAD_H: docs/SAFETY.md residual 7, AV-6's starvation, back with the restored re-check); TIER3
-# down, TIER2 in x s → 16 s for x <= 4 (GOSSIP_VERIFY on: x <= 3, and 8 s at x = 4), 10 / 12 / 14 / 16 / 9 s
-# at x = 5..9 — 8–16 s where a tier answers; both tiers failing: no sample, no take (as ever). NAMED RESIDUALS
+# at x = 6 / 7 / 8 / 9 / its bound; TIER2 down (timing out), TIER3 in y s → 10 / 12 / 14 / 16 / 14 / 15 / 16 s at
+# y = 0..6, and from y = 7 NO sample in the window (from y = 5 with every LOCAL read at 1 s: the pre-take sample's
+# age at the veto is its own LOCAL read + TIER2's timeout + TIER3's answer + the veto's LOCAL read) — every veto
+# blind, a dead holder never taken (docs/SAFETY.md residual 7, AV-6's starvation — the first 6.3.1 build's, back
+# with the restored re-check); TIER3 answering in 10 s (its -m 15 reads answer), TIER2 in x s → 16 s for x <= 4
+# (GOSSIP_VERIFY on: x <= 3, and 8 s at x = 4), 10 / 12 / 14 / 16 / 9 s at x = 5..9 — 8–16 s where a tier
+# answers (a TIER3 whose reads all time out: residual 5 (a)'s class, 16 / 2 / 4 / 6 / 8 s with TIER2 at 0..4 s
+# and GOSSIP_VERIFY on, and with TIER2 at 5 s or more the external confirm holds — its TIER2 read times out under
+# turbo's -m 5 — no take, the 6.3 build alike); both tiers failing: no sample, no take (as ever). NAMED RESIDUALS
 # (docs/SAFETY.md, residual 5): ONE long read followed by prompt fence and re-check reads leaves only the
 # samples after it — the gossip advisory's (2 / 4 / 6 s with TIER2 at 1 / 2 / 3 s, GOSSIP_VERIFY on, the
 # default), the confirm's TIER3 read (4–8 s at 12–14 s), the TIER2-unreachable page with both sends at their
@@ -1722,10 +1729,10 @@ _fresh_proof_recheck() {
 # derivation's LOCAL reads at their bound (that needs 14 s); its 8 s cell does not even with prompt reads (an
 # aligned 8 s hold, 20 slots: BLIND, +90 s); 3.7 slots/s: the 5.9 s budget fits inside every matrix cell, not
 # inside the long reads' 2 and 4 s (6.3.1 as first shipped: the pre-take sample alone — 5–10 s from TIER2 5 s
-# on with GOSSIP_VERIFY on, 2–9 s with TIER3 down, and with TIER2 down no sample in the window from y = 7; fix
-# round 1: 8 s at TIER2 down + TIER3 4 s, 6 / 8 s at TIER3 down + TIER2 3 / 4 s with GOSSIP_VERIFY on, and the
+# on with GOSSIP_VERIFY on, 2–9 s with TIER3 at 10 s, and with TIER2 down no sample in the window from y = 7; fix
+# round 1: 8 s at TIER2 down + TIER3 4 s, 6 / 8 s at TIER3 at 10 s + TIER2 3 / 4 s with GOSSIP_VERIFY on, and the
 # unbracketed advisory pair (TIER2's read at its 15 s bound) left NO sample — every veto blind, never taken;
-# fix round 2's concurrent re-check: the TIER3-down row 10–16 s, the TIER2-down row 10 s from y = 7 — removed,
+# fix round 2's concurrent re-check: the TIER3-at-10-s row 10–16 s, the TIER2-down row 10 s from y = 7 — removed,
 # as are its regressions). And the EXPOSURE below OWN_HEAD_H is a
 # NAMED RESIDUAL: a spare cut off (or frozen) within the baseline's age before the veto read (at most
 # OWN_HEAD_H; measured 15 s, test_own_view (4b-residual)) advanced from the baseline up to the cut and
@@ -2260,8 +2267,8 @@ attempt_takeover() {
     # so the samples must not be further apart than the baseline is meant to be old: one per cycle left a
     # slow-tier take cycle (TIER2 answering in >= 5 s) with only the pre-take sample in the window, 5-10 s
     # old, and a healthy confirmed-head hold that long vetoed a dead holder's take (+85..+93 s, MEASURED by
-    # the panel); with TIER2 down and TIER3 >= 7 s late no sample was in the window at all — every veto
-    # blind, the take never landed.
+    # the panel); with TIER2 down and TIER3 >= 7 s late (>= 5 s with every LOCAL read at 1 s) no sample was in
+    # the window at all — every veto blind, the take never landed.
     # S2 NOTE — v0.7 (Block 6.3.1 fix round 2, S2 — the delta panel's DAV-1/CK-2/DAV-2): round 1 left the
     # gossip advisory's two getClusterNodes reads (curl -m 15 each) unbracketed — one sample before the pair —
     # so with TIER2's advisory read at its bound every earlier sample left the window and every veto was
@@ -2291,7 +2298,8 @@ attempt_takeover() {
     # options: bound the advisory like the prefetch (-m 5; it gates nothing — its verdict only picks a log
     # line), skip it on a slow cycle, or move it out of the take cycle; the confirm's TIER3 read at 10 s like
     # every other tier read) — nor sit inside the re-check (the span): TIER2's timeout then TIER3 at 7 s or
-    # later starves every take (docs/SAFETY.md residual 7).
+    # later (5 s with every LOCAL read at 1 s — the pre-take sample's and the veto's LOCAL reads are inside the
+    # baseline's age too) starves every take (docs/SAFETY.md residual 7).
     _own_head_sample
     confirm_delinquency_external
     local confirm_result=$?
@@ -2826,9 +2834,10 @@ take_staked_identity() {
     # than OWN_HEAD_H at the veto read; the main loop samples once per cycle, and a take-path cycle whose tier
     # reads are slow (TIER2 timing out: ~35 s between the cycle's sample and the veto) left no cycle sample
     # that young — every veto blind, and a dead holder behind one dead tier never taken over (MEASURED:
-    # test_own_view (4b)). This sample is at most the re-check's duration old at the veto (its one sequential
-    # sampler call: TIER2's read, then TIER3's after a TIER2 failure — up to 10 + 10 s of curl -m, the named
-    # AV-6 starvation when that outlasts OWN_HEAD_H); the samples attempt_takeover takes
+    # test_own_view (4b)). This sample's age at the veto is its own LOCAL read + the re-check (its one
+    # sequential sampler call: TIER2's read, then TIER3's after a TIER2 failure — up to 10 + 10 s of curl -m) +
+    # the veto's LOCAL read; past OWN_HEAD_H every veto is BLIND — the named AV-6 starvation (docs/SAFETY.md
+    # residual 7: TIER2 timing out and TIER3 7 s or later, 5 s with every LOCAL read at 1 s); the samples attempt_takeover takes
     # before each external read of the cycle (fix rounds 1-2) are the older baselines. 6.4: its gate goes
     # AFTER this line (between it and the re-check) — placed before it, this read's worst (curl -m 2 + a 7 s
     # pet) joins the verdict→mutation span PROOF_MAX_AGE covers ([proof-gate] states both spans).
@@ -3775,9 +3784,11 @@ require_relinquish_proof() {
 # the probe, the prefetch, the confirm's reads, each gossip-advisory read and the fence's reads, and between the
 # watchdog-elapsed evaluation's tiers) all sit before the take function — outside this span; none sits inside
 # the re-check. What the removal brings back, named in docs/SAFETY.md ('The spare's own view'): the MIRROR
-# residual (the pair pinned on a splicing or lagging TIER2 while an honest TIER3 shows the holder voting — the
-# one call never reads TIER3 while TIER2 answers) and AV-6's starvation (TIER2 at its timeout + TIER3 7 s or
-# slower: the re-check alone outlasts OWN_HEAD_H — every veto BLIND, the starvation page).
+# residual — the 6.3 build's own (the pair pinned on a splicing or lagging TIER2 while an honest TIER3 shows the
+# holder voting — the one call never reads TIER3 while TIER2 answers) — and AV-6's starvation — the first 6.3.1
+# build's, an availability regression against the 6.3 build (the pre-take sample's LOCAL read + TIER2 at its
+# timeout + TIER3 + the veto's LOCAL read outlast OWN_HEAD_H: TIER3 7 s or slower with prompt LOCAL reads, 5 s
+# with every LOCAL read at 1 s — every veto BLIND, the starvation page).
 # HEALTHY PATH (typical one-curl success ~1 s + glue): verdict age at the edge ≈ 2–4 s — ≥ 12x
 # under the budget; the worst REACHABLE path of THIS span (39 s before 6.3.1 — 49 s with the veto read —
 # acceptance → recheck → veto → set-identity) clears it (by 11 s, now by 1 s): convergence proven WITH
