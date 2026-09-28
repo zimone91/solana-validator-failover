@@ -45,10 +45,12 @@
 #       DRY_RUN + all-frozen → WOULD TAKE fires, no MUTATE ever
 #   (6) PRIMARY TWIN: ORDER-PROCEED and FRESH-VOTING ABORT through the REAL attempt_safe_recovery
 #       → switch_to_staked (test_primary_recovery_liveness Part-1 idiom, RECOVERY_CHECKS=1)
-#   (7) BYTE-IDENTITY: _fresh_proof_recheck (and its _recheck_tier_read) identical across daemons; (7c) its
-#       DECISION per (pinned vantage, each tier's answer), all 50 cells on both daemons, against the rule (fix
-#       round 2, S1: both tiers read at once, a life sign in ANY answer aborts), with three controls — fix round
-#       1's schedule, the TIER2-first call of the builds before it, the other tier's life sign ignored
+#   (7) BYTE-IDENTITY: _fresh_proof_recheck identical across daemons AND to the 6.3 build's body (fix round 3,
+#       U1: restored exactly — cksum pinned); (7c) its DECISION per (pinned vantage, each tier's answer), all 50
+#       cells in BOTH arrival orders plus a time axis (TIER2 hanging while the holder resumes), on both daemons,
+#       against the 6.3 rule (one sampler call: TIER2, TIER3 only on its failure), with three controls — both
+#       tiers read at once (the serialized-vs-concurrent control), fix round 1's pinned-first order, and the first
+#       line to arrive deciding (an order-dependent parse)
 #   (8) PERMANENT REVERT-CONTROL: scenario 2 with _fresh_proof_recheck(){ return 0; } shadowed →
 #       MUTATE HAPPENS despite the fresh VOTING sample — documents the parent's behavior and
 #       proves case 2 bites
@@ -69,7 +71,8 @@
 #   (14) the primary's recovery path on ONE chain model (sim_chain): the RECOVERY_DELAY band, the named
 #       default-config cost, a VOTING/BLIND veto re-elapsing the full delay (the M12 / blind-anchor mutants);
 #       fix round 2: (14d)/(14e) the delta panel's T5-UNPINNED lines — the delay tail's samples, the R1 pass
-#       stop (tiers lagging: TLAG; each layer alone and both neutered) — and (14f) DAV-6's stuck page (red first)
+#       stop (tiers lagging: TLAG; each layer alone and both neutered); fix round 3 (U2): (14f) fix round 2's
+#       recovery-stuck page REMOVED — no page in a completing recovery, none in the failed-over state (CONTVOTE)
 #   (15) the DYNAMIC halves of the take-path and A8 censuses (fix round 1, the panel's T3/T4): every STAKED
 #       set-identity in this suite's sims followed the veto's read with nothing but log lines between (the
 #       agave-validator stub audits each), and a logging curl FIRST in PATH saw no curl-binary call; controls:
@@ -353,10 +356,12 @@ sim_pr() {
 # HONEST, the same chain (processed for the liveness sampler, finalized for the tier-2 check and the gossip
 # advisory's vote-account read; the staked identity S1 in gossip at OUR endpoint: nobody else holds it).
 # OVDOWN=1: the veto's batch read fails (rc 7). TLAG=<s> (fix round 2 — T5-UNPINNED): TIER2/TIER3 honest but <s> s
-# behind the chain (their every view at t − TLAG); LOCAL is never behind. The loop: attempt_safe_recovery every CI s (default 3);
+# behind the chain (their every view at t − TLAG); LOCAL is never behind. CONTVOTE=1 (fix round 3, U2): the staked
+# account is voted at every slot — the failed-over state, the STANDBY holding the identity. The loop: attempt_safe_recovery every CI s (default 3);
 # every sleep — the recovery ladder's, switch_to_staked's — advances the clock; LAST_SWITCH_TIME = T0.
 # Events: PASS-START t= (a recovery-eligible pass), TAKE-ENTER t=, VETO <kind> t=, CLEAR age= (the veto's
-# baseline age), MUTATE t=, STUCK-PAGE t= (fix round 2, DAV-6: RECOVERY_MODE=rpc not completing). WSCRIPT: a mutant primary.
+# baseline age), MUTATE t=, PAGE <kind> t= (every alert_warn — fix round 3, U2: veto | blocked (ACTIVELY VOTING
+# elsewhere) | standby (STANDBY has staked) | stuck (fix round 2's removed page, by its text) | other). WSCRIPT: a mutant primary.
 sim_chain() {
   (
   set +e
@@ -377,7 +382,7 @@ sim_chain() {
   log(){ :;}; log_error(){ :;}; log_warn(){ case "$*" in *"[own-view] VETO (holder voting)"*) printf 'VETO voting t=%s\n' $(( _SIM_NOW - T0 )) >> "$_EVT_FILE" ;; *"[own-view] VETO (blind)"*) printf 'VETO blind t=%s\n' $(( _SIM_NOW - T0 )) >> "$_EVT_FILE" ;; esac; }
   log_info(){ case "$*" in *"[own-view] veto read clear"*) local _a="${*##*baseline }"; _a="${_a#* (}"; _a="${_a%% s old*}"; printf 'CLEAR age=%s t=%s\n' "$_a" $(( _SIM_NOW - T0 )) >> "$_EVT_FILE" ;; esac; }
   alert(){ :;}; alert_info(){ :;}; send_telegram(){ return 0; }; send_webhook(){ :; }
-  alert_warn(){ case "$*" in *"RECOVERY_MODE=rpc: eligible for"*) printf 'STUCK-PAGE t=%s\n' $(( _SIM_NOW - T0 )) >> "$_EVT_FILE" ;; esac; }   # fix round 2 (S5 — DAV-6): the stuck page
+  alert_warn(){ local k=other; case "$*" in *"VETOED"*) k=veto ;; *"ACTIVELY VOTING"*) k=blocked ;; *"STANDBY has staked"*) k=standby ;; *"NOT completing"*) k=stuck ;; esac; printf 'PAGE %s t=%s\n' "$k" $(( _SIM_NOW - T0 )) >> "$_EVT_FILE"; }   # fix round 3 (U2): every page, by kind
   save_state(){ :;}
   sleep(){ local _s="${1%%.*}"; case "$_s" in ''|*[!0-9]*) _s=0 ;; esac; _SIM_NOW=$(( _SIM_NOW + _s )); export _SIM_NOW; }
   get_local_identity(){ echo "$STAKED_PUBKEY"; }
@@ -385,7 +390,7 @@ sim_chain() {
   _slot(){ echo $(( 900000 + $1 * ${RATE_N:-1} / ${RATE_D:-1} )); }
   _lv_in(){   # the staked account's lastVote as a bank at slot $1 shows it
       local b=$1 v s
-      s=$(_slot "${TV:-0}"); v=$(( s - 1 ))
+      s=$(_slot "${TV:-0}"); v=$(( s - 1 )); [[ "${CONTVOTE:-0}" == "1" ]] && v=$(( b - 1 ))   # CONTVOTE: voted at every slot (fix round 3, U2)
       if [[ -n "${VOTE1:-}" ]]; then s=$(_slot "$VOTE1"); [[ $s -le $b ]] && v=$(( s - 1 )); fi
       echo "$v"
   }
@@ -580,32 +585,46 @@ ev=$(evline "$out"); st=$(stline "$out")
     || bad "(6d) recovery mutated despite fresh VOTING (rc=$(field "$st" rc)): $ev"
 
 # ── (7) BYTE-IDENTITY across daemons ────────────────────────────────────────────────────────────
-echo ""; echo "─── (7) _fresh_proof_recheck byte-identical in both daemons ───"
+echo ""; echo "─── (7) _fresh_proof_recheck byte-identical in both daemons — and the 6.3 build's body, exactly ───"
 extract_twin '^_fresh_proof_recheck() {' '^}$'
 P_R=$TWIN_P; S_R=$TWIN_S
-extract_twin '^_recheck_tier_read() {' '^}$'   # fix round 2 (S1): the re-check's per-tier branch
-P_T=$TWIN_P; S_T=$TWIN_S
-[[ -n "$P_R" && "$P_R" == "$S_R" && -n "$P_T" && "$P_T" == "$S_T" ]] \
-    && ok "(7) _fresh_proof_recheck body BYTE-IDENTICAL in both daemons ($(printf '%s\n' "$P_R" | wc -l | tr -d ' ') lines), and its per-tier branch _recheck_tier_read ($(printf '%s\n' "$P_T" | wc -l | tr -d ' ') lines)" \
-    || bad "(7) _fresh_proof_recheck / _recheck_tier_read missing or DIVERGED between the daemons"
+# 6.3.1 fix round 3 (U1 — the delta panels' DL-1, LB-1, LB-2): the body is the 6.3 build's (and the first 6.3.1
+# build's), RESTORED EXACTLY — pinned by its cksum (of the function text as extracted here). Fix rounds 1 and 2 each
+# changed its read order (the pinned vantage first; both tiers at once) and each lost an abort this body has; a change
+# to it must re-derive the (7c) table below and the worlds that pinned the restoration (test_own_view (7f)).
+RC_REF_CKSUM="2009870427 4189"
+_rc_ck=$(printf '%s\n' "$S_R" | cksum | awk '{print $1" "$2}')
+_rc_tr=$(cat "$STANDBY" "$PRIMARY" | grep -c '^_recheck_tier_read() {')
+[[ -n "$P_R" && "$P_R" == "$S_R" && "$_rc_ck" == "$RC_REF_CKSUM" && "$_rc_tr" == "0" ]] \
+    && ok "(7) _fresh_proof_recheck body BYTE-IDENTICAL in both daemons ($(printf '%s\n' "$P_R" | wc -l | tr -d ' ') lines) and to the 6.3 build's body (cksum $_rc_ck — fix round 3 restored it exactly: ONE sampler call, TIER2 then TIER3 only on its failure); fix round 2's per-tier branch _recheck_tier_read is gone from both daemons" \
+    || bad "(7) _fresh_proof_recheck: twins equal=$([[ "$P_R" == "$S_R" ]] && echo yes || echo NO) cksum=$_rc_ck (want the 6.3 build's $RC_REF_CKSUM) _recheck_tier_read definitions=$_rc_tr"
 
-# ── (7c) the re-check's DECISION per (pinned vantage, what each tier answers) — fix round 2, S1 ──────────
-# The rule (fix round 2, S1 — the delta panel's DL-1): with two distinct tiers the re-check reads BOTH at once;
-# a life sign (lastVote past the pin) in ANY answer aborts as VOTING; with none, the take rests ONLY on the pinned
-# vantage's own answer (backwards / a stale reference abort, a frozen one proceeds); the pinned vantage silent,
-# the other tier's answer aborts (backwards, or a provider flip); nothing usable → the blind abort. The whole
-# table, cell by cell, on BOTH daemons' REAL _fresh_proof_recheck: each tier answers down / frozen (lastVote = the
-# pin, its reference advanced) / advanced (+10) / backwards (−10) / stale (frozen with the reference NOT advanced),
-# the expected outcome COMPUTED from the rule above — the sampler shadow answers per tier and honours the blanked
-# URL of each branch, as the real one does. Fix round 1's re-check (the pinned vantage first, the other only when
-# it failed) took in the cell "pinned on TIER3, TIER2 back and showing the holder VOTING" (DL-1, measured on the
-# real loop 21-34 s into the holder's voting); every build before it read TIER2 first and never read TIER3 while
-# TIER2 answered, so it proceeded in "pinned on TIER2, TIER2 frozen, TIER3 showing the holder VOTING". CONTROLS
-# (mutate(), loud on a no-op): the read schedule replaced by fix round 1's (m7c-r1: pinned first, the other tier
-# only on a failure) and by the builds' before it (m7c-t2: one two-tier call, TIER2 first) — each must break the
-# table in the cells named; the other tier's life sign ignored (m7c-obs) must break exactly fix round 1's six.
-echo ""; echo "─── (7c) the re-check's decision per (pinned vantage, each tier's answer): both daemons + three schedule/selection controls ───"
-dec_table() {   # $1 = daemon → one line per cell: "<pin> <T2 kind> <T3 kind> <rc> <outcome>" (the seam loaded ONCE)
+# ── (7c) the re-check's DECISION: every cell, both arrival orders, and a time axis — fix round 3, U1 ──────────
+# The rule is the 6.3 build's body ((7): restored exactly): ONE sampler call — TIER2, and TIER3 only when TIER2 yields
+# no usable answer — and the decision on that ONE answer: advanced past the pin → VOTING; backwards → abort; from a
+# tier other than the pin's → a provider flip; its reference not advanced → stale; frozen on the pinned tier →
+# proceed; no answer → blind. dec_rule computes every cell from that rule (and, for the controls, from the rule with
+# the other SELECTION — TIER3's answer first). The table runs BOTH daemons' real _fresh_proof_recheck over every (pin
+# T2/T3 × each tier down / frozen / advanced / backwards / stale) cell in BOTH ARRIVAL ORDERS (the delta panel 2's
+# T10-ORDER: fix round 2's table always saw TIER2's line first, so a parse that stops at the pinned answer passed
+# DL-1's own cell): the shadow sampler reads TIER2 then TIER3 inside ONE call when both URLs are set, as the real one
+# does, and when a caller reads ONE tier per call (a URL blanked — two concurrent branches, or one tier after the
+# other) it holds that call's answer until the other tier's read has ENDED (T2FIRST: TIER3's waits for TIER2; T3FIRST:
+# TIER2's waits for TIER3; bounded 5 s — a caller that never reads the other tier concurrently pays it once). And a
+# TIME AXIS (the delta panel 2's T6-SERIAL and LB-1): TIER2 HANGS (no answer; read alone, its read ends only after
+# TIER3's), TIER3 RESUMES (the holder's vote shows ADVANCED once TIER2's read has ended — the holder resumed during
+# TIER2's timeout): the 6.3 body reads TIER3 after TIER2's failure and aborts VOTING; a re-check that reads TIER3
+# before TIER2's read ends — at once, or pinned-first — decides on the frozen answer. Real waits are bounded polls of
+# /bin/sleep (never `command sleep`: bash 3.2 execs a `command <utility>` in an async subshell — the delta panel 2's
+# LB-4 / T10 note). CONTROLS (mutate(), loud on a no-op), each must break the table exactly where its rule differs:
+#   c7c-conc   both tiers read AT ONCE with the 6.3 body's selection (TIER2's answer when it has one) — the
+#              SERIALIZED-vs-CONCURRENT control: every static cell identical, exactly the time-axis RESUMES cells broken
+#   c7c-r1     fix round 1's pinned-first order — exactly the pinned-TIER3 cells where TIER3's answer decides otherwise
+#              (DL-1's and LB-2's among them) and the pinned-TIER3 RESUMES cell
+#   c7c-first  both at once, the FIRST line to arrive decides — nothing broken when TIER2 answers first, exactly the
+#              TIER3-selection cells when TIER3 answers first (a table that never varies the order passes it)
+echo ""; echo "─── (7c) the re-check's decision: every cell in both arrival orders + the time axis, both daemons = the 6.3 rule; three controls ───"
+dec_table() {   # $1 = daemon, $2 = the orders ("T2FIRST T3FIRST HANG") → one line per cell: "<order> <pin> <T2 kind> <T3 kind> <rc> <outcome>"
   (
     set +e
     load_seam "$1" >/dev/null 2>&1
@@ -613,21 +632,37 @@ dec_table() {   # $1 = daemon → one line per cell: "<pin> <T2 kind> <T3 kind> 
     log(){ :;}; log_info(){ :;}; log_error(){ :;}; _recheck_abort_alert(){ :;}; _note_blind_cycle(){ :;}
     log_warn(){ _DL="$*"; }
     VOTE_LIVENESS_VERIFY=true; VOTE_LIVENESS_EPSILON=0; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"
-    _dans() {   # $1 = kind, $2 = tier label → the sampler's line (or nothing: down)
+    _DM=$(mktemp -d "${TMPDIR:-/tmp}/ata-7c.XXXXXX")
+    _dwait() { local i=0; while [[ ! -e "$_DM/$1" && $i -lt 100 ]]; do /bin/sleep 0.05; i=$((i + 1)); done; }
+    _dans() {   # $1 = kind, $2 = tier label → the sampler's line for that tier (nothing: down / hang)
         case "$1" in
             frozen) echo "5000 900100 $2" ;; advanced) echo "5010 900100 $2" ;; backwards) echo "4990 900100 $2" ;;
-            stale) echo "5000 900000 $2" ;; *) return 1 ;;
+            stale) echo "5000 900000 $2" ;;
+            resumes) if [[ -e "$_DM/T2.done" ]]; then echo "5010 900100 $2"; else echo "5000 900100 $2"; fi ;;
+            *) return 1 ;;
         esac
     }
+    _dtier() {   # $1 = tier, $2 = kind, $3 = 1 when this call reads that tier ALONE (the other URL blanked)
+        local _o _r
+        if [[ "$3" == "1" ]]; then
+            case "$1:$_DO:$2" in T2:HANG:hang|T2:T3FIRST:*) _dwait T3.done ;; T3:T2FIRST:*) _dwait T2.done ;; esac
+        fi
+        _o=$(_dans "$2" "$1"); _r=$?
+        : > "$_DM/$1.done"
+        [[ $_r -eq 0 ]] && echo "$_o"
+        return $_r
+    }
     get_staked_liveness_sample(){
-        if [[ -n "$TIER2_RPC" ]] && _dans "$_DK2" T2; then return 0; fi
-        if [[ -n "$TIER3_RPC" ]] && _dans "$_DK3" T3; then return 0; fi
+        local _one=0; [[ -z "$TIER2_RPC" || -z "$TIER3_RPC" ]] && _one=1
+        if [[ -n "$TIER2_RPC" ]] && _dtier T2 "$_DK2" "$_one"; then return 0; fi
+        if [[ -n "$TIER3_RPC" ]] && _dtier T3 "$_DK3" "$_one"; then return 0; fi
         return 1
     }
-    local _pin _k2 _k3 _drc _dout
-    for _pin in T2 T3; do
-      for _k2 in down frozen advanced backwards stale; do
-        for _k3 in down frozen advanced backwards stale; do
+    local _pin _k2 _k3 _drc _dout _k2s _k3s
+    for _DO in $2; do
+      case "$_DO" in HANG) _k2s="hang"; _k3s="resumes frozen" ;; *) _k2s="down frozen advanced backwards stale"; _k3s="$_k2s" ;; esac
+      for _pin in T2 T3; do for _k2 in $_k2s; do for _k3 in $_k3s; do
+          rm -f "$_DM/T2.done" "$_DM/T3.done"
           _liveness_first_vote=5000; _liveness_first_tip=900000; _liveness_first_provider="$_pin"; _liveness_first_ts=$T0
           _DK2="$_k2"; _DK3="$_k3"; _DL=""
           _fresh_proof_recheck >/dev/null 2>&1; _drc=$?
@@ -635,61 +670,72 @@ dec_table() {   # $1 = daemon → one line per cell: "<pin> <T2 kind> <T3 kind> 
               *"staked vote ADVANCED"*) _dout=voting ;; *"provider flipped"*) _dout=flip ;; *"no usable sample"*) _dout=blind ;;
               *"did not advance"*) _dout=stale ;; *"went backwards"*) _dout=back ;; *) _dout=proceed ;;
           esac
-          echo "$_pin $_k2 $_k3 $_drc $_dout"
-        done
-      done
+          echo "$_DO $_pin $_k2 $_k3 $_drc $_dout"
+      done; done; done
     done
+    rm -rf "$_DM"
   )
 }
-dec_want() {   # the rule → "<rc> <outcome>" for pin $1, TIER2 kind $2, TIER3 kind $3
-    local pin="$1" k2="$2" k3="$3" kp ko
-    if [[ "$k2" == "advanced" || "$k3" == "advanced" ]]; then echo "1 voting"; return; fi
-    if [[ "$pin" == "T2" ]]; then kp="$k2"; ko="$k3"; else kp="$k3"; ko="$k2"; fi
-    case "$kp" in
-        frozen) echo "0 proceed"; return ;; backwards) echo "1 back"; return ;; stale) echo "1 stale"; return ;;
+dec_rule() {   # dec_rule <selection T2|T3> <pin> <T2 kind> <T3 kind> [<reader: SEQ|EARLY>] → "<rc> <outcome>"
+    local sel="$1" pin="$2" k2="$3" k3="$4" rdr="${5:-SEQ}" a="" at=""
+    [[ "$k2" == "hang" ]] && k2=down
+    if [[ "$k3" == "resumes" ]]; then if [[ "$rdr" == "SEQ" ]]; then k3=advanced; else k3=frozen; fi; fi   # read after TIER2's end (the 6.3 body), or before / at once
+    _duse() { case "$1" in frozen|advanced|backwards|stale) return 0 ;; *) return 1 ;; esac; }
+    if [[ "$sel" == "T2" ]]; then
+        if _duse "$k2"; then a=$k2; at=T2; elif _duse "$k3"; then a=$k3; at=T3; fi
+    else
+        if _duse "$k3"; then a=$k3; at=T3; elif _duse "$k2"; then a=$k2; at=T2; fi
+    fi
+    case "$a" in
+        "") echo "1 blind" ;; advanced) echo "1 voting" ;; backwards) echo "1 back" ;;
+        *) if [[ "$at" != "$pin" ]]; then echo "1 flip"; elif [[ "$a" == "stale" ]]; then echo "1 stale"; else echo "0 proceed"; fi ;;
     esac
-    case "$ko" in frozen|stale) echo "1 flip" ;; backwards) echo "1 back" ;; *) echo "1 blind" ;; esac
 }
-_d7c_r1=$(mktemp "${TMPDIR:-/tmp}/ata-7c-r1.XXXXXX"); _d7c_t2=$(mktemp "${TMPDIR:-/tmp}/ata-7c-t2.XXXXXX"); _d7c_ob=$(mktemp "${TMPDIR:-/tmp}/ata-7c-ob.XXXXXX")
-# round 1's order, spelled without the triple's name after a '$' in this file (run_all's stage (3): a suite never
-# dereferences the freshness triple — the name is spliced in by @LFP@, the mutant reads it as round 1 did)
+_d7c_conc=$(mktemp "${TMPDIR:-/tmp}/ata-7c-conc.XXXXXX"); _d7c_r1=$(mktemp "${TMPDIR:-/tmp}/ata-7c-r1.XXXXXX"); _d7c_first=$(mktemp "${TMPDIR:-/tmp}/ata-7c-first.XXXXXX")
+RC_LINE='/^_fresh_proof_recheck() {/,/^}/s/^    s=\$(get_staked_liveness_sample) || s=""$/'
+mutate "$STANDBY" "${RC_LINE}    s=\$( { TIER3_RPC=\"\" get_staked_liveness_sample \& TIER2_RPC=\"\" get_staked_liveness_sample \& wait; } | sort -k3,3 | head -1) || s=\"\"/" "$_d7c_conc"
+mutate "$STANDBY" "${RC_LINE}    s=\$( { TIER3_RPC=\"\" get_staked_liveness_sample \& TIER2_RPC=\"\" get_staked_liveness_sample \& wait; } | head -1) || s=\"\"/" "$_d7c_first"
+# fix round 1's order, the triple's name spliced in by @LFP@ (run_all's stage (3): no suite dereferences it in its text)
 _d7c_r1_sed=$(cat <<'EOS'
-/^_fresh_proof_recheck() {/,/^}/s/^        s=\$(_recheck_tier_read T2 & _recheck_tier_read T3 & wait)$/        if [[ "${@LFP@:-}" == "T3" ]]; then s=$(_recheck_tier_read T3) || s=$(_recheck_tier_read T2) || s=""; else s=$(_recheck_tier_read T2) || s=$(_recheck_tier_read T3) || s=""; fi/
+/^_fresh_proof_recheck() {/,/^}/s/^    s=\$(get_staked_liveness_sample) || s=""$/    if [[ "${@LFP@:-}" == "T3" \&\& -n "$TIER2_RPC" \&\& -n "$TIER3_RPC" \&\& "$TIER2_RPC" != "$TIER3_RPC" ]]; then s=$(TIER2_RPC="" get_staked_liveness_sample) || s=$(TIER3_RPC="" get_staked_liveness_sample) || s=""; else s=$(get_staked_liveness_sample) || s=""; fi/
 EOS
 )
 mutate "$STANDBY" "${_d7c_r1_sed//@LFP@/_liveness_first_provider}" "$_d7c_r1"
-mutate "$STANDBY" '/^_fresh_proof_recheck() {/,/^}/s/^        s=\$(_recheck_tier_read T2 & _recheck_tier_read T3 & wait)$/        s=$(get_staked_liveness_sample) || s=""/' "$_d7c_t2"
-mutate "$STANDBY" '/^_fresh_proof_recheck() {/,/^}/s/^    if \[\[ -z "\$cur" \&\& \$noa -eq 1 \]\]; then$/    if false; then/' "$_d7c_ob"
-dec_ok=1; dec_diff=""; dec_n=0; r1_cells=""; t2_cells=""; ob_cells=""
-_tp=$(dec_table "$PRIMARY"); _ts=$(dec_table "$STANDBY"); _tr1=$(dec_table "$_d7c_r1"); _tt2=$(dec_table "$_d7c_t2"); _tob=$(dec_table "$_d7c_ob")
-_dcell() { printf '%s\n' "$1" | awk -v p="$2" -v a="$3" -v b="$4" '$1==p && $2==a && $3==b { print $4 " " $5 }'; }
-for _pin in T2 T3; do
-  for _k2 in down frozen advanced backwards stale; do
-    for _k3 in down frozen advanced backwards stale; do
-      dec_n=$((dec_n + 1))
-      _w=$(dec_want "$_pin" "$_k2" "$_k3")
-      _dp=$(_dcell "$_tp" "$_pin" "$_k2" "$_k3"); _ds=$(_dcell "$_ts" "$_pin" "$_k2" "$_k3")
-      [[ "$_dp" == "$_w" && "$_ds" == "$_w" ]] || { dec_ok=0; dec_diff="$dec_diff [pin $_pin T2=$_k2 T3=$_k3: primary='$_dp' standby='$_ds' want='$_w']"; }
-      [[ "$(_dcell "$_tr1" "$_pin" "$_k2" "$_k3")" == "$_w" ]] || r1_cells="$r1_cells $_pin:$_k2/$_k3"
-      [[ "$(_dcell "$_tt2" "$_pin" "$_k2" "$_k3")" == "$_w" ]] || t2_cells="$t2_cells $_pin:$_k2/$_k3"
-      [[ "$(_dcell "$_tob" "$_pin" "$_k2" "$_k3")" == "$_w" ]] || ob_cells="$ob_cells $_pin:$_k2/$_k3"
-    done
-  done
-done
-rm -f "$_d7c_r1" "$_d7c_t2" "$_d7c_ob"
-# the controls' broken cells, named: fix round 1's schedule loses exactly the life signs of a tier read only on a
-# failure (pinned T3: TIER2 advanced with TIER3 answering; pinned T2: TIER3 advanced with TIER2 answering); the
-# TIER2-first call loses TIER3's life signs whenever TIER2 answers (and misreads the pinned-T3 cells TIER2 answers);
-# ignoring the other tier's life sign loses the same six cells (a silent pinned vantage still hands the other
-# tier's answer to the fallback, whose advance still aborts)
-_want_r1=" T2:frozen/advanced T2:backwards/advanced T2:stale/advanced T3:advanced/frozen T3:advanced/backwards T3:advanced/stale"
-_r1_ok=0; [[ "$r1_cells" == "$_want_r1" ]] && _r1_ok=1
-_t2_has=1; for _c in T2:frozen/advanced T2:backwards/advanced T2:stale/advanced T3:frozen/frozen T3:backwards/frozen; do [[ " $t2_cells " == *" $_c "* ]] || _t2_has=0; done
-_ob_has=0; [[ "$ob_cells" == "$_want_r1" ]] && _ob_has=1   # the same six: a pinned vantage that is silent hands the other answer to the fallback selection, which still reads its advance
-if [[ $dec_ok -eq 1 && $dec_n -eq 50 && $_r1_ok -eq 1 && $_t2_has -eq 1 && $_ob_has -eq 1 ]]; then
-    ok "(7c) the re-check's DECISION, all $dec_n cells (pin T2/T3 x each tier down / frozen / advanced / backwards / stale) on BOTH daemons' real _fresh_proof_recheck = the rule: a life sign in ANY answer → VOTING abort; else the pinned vantage's own answer (frozen → proceed; backwards / stale → abort); pinned vantage silent → the other tier's answer aborts (flip / backwards); nothing → blind. CONTROLS, each breaks the table where it must: fix round 1's schedule (pinned first, the other only on a failure) in exactly$r1_cells (the lost VOTING aborts — DL-1 and its pinned-T2 mirror); the builds' before it (one call, TIER2 first) in ${t2_cells# } (TIER3 unread while TIER2 answers: its life signs lost in the pinned-T2 cells — the cells every earlier build took — and each pinned-T3 cell TIER2 answers decided on TIER2's answer); the other tier's life sign ignored in the same six"
+_tp=$(dec_table "$PRIMARY" "T2FIRST T3FIRST HANG"); _ts=$(dec_table "$STANDBY" "T2FIRST T3FIRST HANG")
+_tc=$(dec_table "$_d7c_conc" "T3FIRST HANG"); _tr1=$(dec_table "$_d7c_r1" "T3FIRST HANG"); _tf=$(dec_table "$_d7c_first" "T2FIRST T3FIRST")
+rm -f "$_d7c_conc" "$_d7c_r1" "$_d7c_first"
+dec_ok=1; dec_diff=""; dec_n=0; conc_bad=""; r1_bad=""; first_bad=""; conc_want=""; r1_want=""; first_want=""
+while read -r _o _pin _k2 _k3 _rc _out; do
+    [[ -n "$_o" ]] || continue
+    dec_n=$((dec_n + 1))
+    _w=$(dec_rule T2 "$_pin" "$_k2" "$_k3" SEQ)
+    [[ "$_rc $_out" == "$_w" ]] || { dec_ok=0; dec_diff="$dec_diff [standby $_o pin $_pin T2=$_k2 T3=$_k3: '$_rc $_out' want '$_w']"; }
+done <<< "$_ts"
+[[ "$_tp" == "$_ts" ]] || { dec_ok=0; dec_diff="$dec_diff [primary's table differs from the standby's: $(diff <(printf '%s\n' "$_ts") <(printf '%s\n' "$_tp") | grep '^[<>]' | head -4 | tr '\n' ' ')]"; }
+# each control's broken cells, and the cells its rule says it must break
+while read -r _o _pin _k2 _k3 _rc _out; do
+    [[ -n "$_o" ]] || continue
+    [[ "$_rc $_out" == "$(dec_rule T2 "$_pin" "$_k2" "$_k3" SEQ)" ]] || conc_bad="$conc_bad $_o:$_pin:$_k2/$_k3"
+    [[ "$(dec_rule T2 "$_pin" "$_k2" "$_k3" EARLY)" == "$(dec_rule T2 "$_pin" "$_k2" "$_k3" SEQ)" ]] || conc_want="$conc_want $_o:$_pin:$_k2/$_k3"
+done <<< "$_tc"
+while read -r _o _pin _k2 _k3 _rc _out; do
+    [[ -n "$_o" ]] || continue
+    [[ "$_rc $_out" == "$(dec_rule T2 "$_pin" "$_k2" "$_k3" SEQ)" ]] || r1_bad="$r1_bad $_o:$_pin:$_k2/$_k3"
+    if [[ "$_pin" == "T3" ]]; then [[ "$(dec_rule T3 "$_pin" "$_k2" "$_k3" EARLY)" == "$(dec_rule T2 "$_pin" "$_k2" "$_k3" SEQ)" ]] || r1_want="$r1_want $_o:$_pin:$_k2/$_k3"; fi
+done <<< "$_tr1"
+while read -r _o _pin _k2 _k3 _rc _out; do
+    [[ -n "$_o" ]] || continue
+    [[ "$_rc $_out" == "$(dec_rule T2 "$_pin" "$_k2" "$_k3" SEQ)" ]] || first_bad="$first_bad $_o:$_pin:$_k2/$_k3"
+    _sel=T2; [[ "$_o" == "T3FIRST" ]] && _sel=T3
+    [[ "$(dec_rule "$_sel" "$_pin" "$_k2" "$_k3" EARLY)" == "$(dec_rule T2 "$_pin" "$_k2" "$_k3" SEQ)" ]] || first_want="$first_want $_o:$_pin:$_k2/$_k3"
+done <<< "$_tf"
+_nc=$(printf '%s' "$conc_bad" | wc -w | tr -d ' '); _nr=$(printf '%s' "$r1_bad" | wc -w | tr -d ' '); _nf=$(printf '%s' "$first_bad" | wc -w | tr -d ' ')
+if [[ $dec_ok -eq 1 && $dec_n -eq 104 && -n "$conc_bad" && "$conc_bad" == "$conc_want" && "$conc_bad" == " HANG:T2:hang/resumes HANG:T3:hang/resumes" \
+      && -n "$r1_bad" && "$r1_bad" == "$r1_want" && " $r1_bad " == *" T3FIRST:T3:advanced/frozen "* && " $r1_bad " == *" T3FIRST:T3:frozen/frozen "* && " $r1_bad " == *" HANG:T3:hang/resumes "* \
+      && -n "$first_bad" && "$first_bad" == "$first_want" && "$first_bad" != *"T2FIRST"* && " $first_bad " == *" T3FIRST:T3:advanced/frozen "* ]]; then
+    ok "(7c) the re-check's DECISION, all $dec_n cells on BOTH daemons' real _fresh_proof_recheck — the 50 (pin T2/T3 × each tier down / frozen / advanced / backwards / stale) in BOTH arrival orders and the 4 time-axis cells — = the 6.3 rule (TIER2's answer, TIER3 only when TIER2 has none; advanced → VOTING, backwards → abort, another tier than the pin's → a flip, a stale reference → abort, frozen on the pin → proceed, none → blind): a TIER2 that recovered and shows the vote ADVANCED aborts VOTING in every order (DL-1), a recovered TIER2 answering frozen / backwards / stale aborts (a flip / back / flip — LB-2), and TIER2 HANGING while the holder resumes → TIER3 read after the timeout → VOTING (LB-1). CONTROLS, each broken exactly where its own rule differs: both tiers read AT ONCE with the 6.3 selection ($_nc cells:$conc_bad — the serialized-vs-concurrent control, every static cell identical: T6-SERIAL's cell); fix round 1's pinned-first order ($_nr cells, all pinned on TIER3 — DL-1's T2=advanced/T3=frozen and LB-2's frozen/frozen among them); the FIRST line to arrive deciding ($_nf cells, every one in the TIER3-first order and none when TIER2 answers first — T10-ORDER: a table that never varies the order passes it)"
 else
-    bad "(7c) re-check decision table (cells=$dec_n):$dec_diff | controls: r1=[$r1_cells] (want [$_want_r1]) t2-first=[$t2_cells] (has-all=$_t2_has) obs-ignored=[$ob_cells] (has-all=$_ob_has)"
+    bad "(7c) re-check decision table (cells=$dec_n):$dec_diff | controls: conc=[$conc_bad] (want [$conc_want]) r1=[$r1_bad] (want [$r1_want]) first=[$first_bad] (want [$first_want])"
 fi
 
 # ── (8) PERMANENT REVERT-CONTROL ────────────────────────────────────────────────────────────────
@@ -811,13 +857,12 @@ echo ""; echo "─── (14) the recovery path's own-view veto on ONE chain mod
 W14=$(mktemp -d "${TMPDIR:-/tmp}/aa14.XXXXXX")
 mutate "$PRIMARY" '/^attempt_safe_recovery() {/,/^}/s/if \[\[ \${_own_bank_active_time:-0} -gt \$recovery_anchor \]\]; then/if false; then/' "$W14/p-m12.sh"   # the panel's M12: the own-bank anchor input dropped
 mutate "$PRIMARY" '/^attempt_safe_recovery() {/,/^}/s/if \[\[ [$]{_last_blind_end:-0} -gt \$recovery_anchor \]\]; then/if false; then/' "$W14/p-mblind.sh"   # the blind anchor input dropped
-# fix round 2 (T5-UNPINNED — lines that survived deletion in every suite; DAV-6 — the recovery that cannot complete):
+# fix round 2 (T5-UNPINNED — lines that survived deletion in every suite):
 mutate "$PRIMARY" 's/^\(        \[\[ \$(( RECOVERY_DELAY - elapsed )) -le \$OWN_HEAD_H \]\] && \)_own_head_sample$/\1: deleted/' "$W14/p-notail.sh"   # the delay tail's own-head sample
 mutate "$PRIMARY" 's/^        if \[\[ \$_ovv_ic -ge 1 \]\]; then$/        if false; then/' "$W14/p-nocur.sh"                                           # the veto's agave-current rule (R1)
 mutate "$PRIMARY" 's/^    if \[\[ \${_own_bank_advanced:-0} -eq 1 \]\]; then$/    if false; then/' "$W14/p-nostop.sh"                                 # the R1 pass stop
 mutate "$W14/p-nocur.sh" 's/^    if \[\[ \${_own_bank_advanced:-0} -eq 1 \]\]; then$/    if false; then/' "$W14/p-noboth.sh"                             # both (the all-neutered control)
-mutate "$PRIMARY" 's/^    _recovery_stuck_page "\$now"   # .*$/    : stuck page removed/' "$W14/p-nostuck.sh"                                       # DAV-6's page
-for _s in "$PRIMARY" "$W14/p-m12.sh" "$W14/p-mblind.sh" "$W14/p-notail.sh" "$W14/p-nocur.sh" "$W14/p-nostop.sh" "$W14/p-noboth.sh" "$W14/p-nostuck.sh"; do seam_cut "$_s" >/dev/null; done
+for _s in "$PRIMARY" "$W14/p-m12.sh" "$W14/p-mblind.sh" "$W14/p-notail.sh" "$W14/p-nocur.sh" "$W14/p-nostop.sh" "$W14/p-noboth.sh"; do seam_cut "$_s" >/dev/null; done
 c14() { local n="$1"; shift; ( for kv in "$@"; do export "$kv"; done; sim_chain 2>/dev/null | grep '^EVENTS=' | cut -c8- > "$W14/$n" ) & }
 c14 rd10 RD=10 HZ=250; c14 rd20 RD=20 HZ=250; c14 rd40 RD=40 HZ=250; c14 rd45 RD=45 HZ=250; c14 rd50 RD=50 HZ=250
 c14 def0 RATE_N=5 RATE_D=2 HZ=420; c14 sb280 RATE_N=5 RATE_D=2 TV=280 HZ=520; c14 sb280rc1 RATE_N=5 RATE_D=2 TV=280 RC=1 RI=0 HZ=520
@@ -826,7 +871,7 @@ c14 bl OVDOWN=1 RC=1 RI=0 RD=60 HZ=260; c14 blm WSCRIPT="$W14/p-mblind.sh" OVDOW
 c14 tail RATE_N=4 RATE_D=5 RC=1 RI=0 RD=60 HZ=320; c14 tailn WSCRIPT="$W14/p-notail.sh" RATE_N=4 RATE_D=5 RC=1 RI=0 RD=60 HZ=320
 c14 r1s RC=1 RI=0 RD=20 VOTE1=30 TLAG=45 HZ=200; c14 r1snc WSCRIPT="$W14/p-nocur.sh" RC=1 RI=0 RD=20 VOTE1=30 TLAG=45 HZ=200
 c14 r1sns WSCRIPT="$W14/p-nostop.sh" RC=1 RI=0 RD=20 VOTE1=30 TLAG=45 HZ=200; c14 r1snb WSCRIPT="$W14/p-noboth.sh" RC=1 RI=0 RD=20 VOTE1=30 TLAG=45 HZ=200
-c14 st10 TV=280 HZ=800; c14 st10n WSCRIPT="$W14/p-nostuck.sh" TV=280 HZ=800; c14 st0 RATE_N=5 RATE_D=2 HZ=800
+c14 st10 TV=280 HZ=800; c14 st0 RATE_N=5 RATE_D=2 HZ=800; c14 fo25 RATE_N=5 RATE_D=2 CONTVOTE=1 HZ=1500; c14 fo10 CONTVOTE=1 HZ=1500
 wait
 e14() { cat "$W14/$1" 2>/dev/null; }
 mut14() { local e; e=$(e14 "$1"); e="${e#*MUTATE t=}"; [[ "$e" == "$(e14 "$1")" ]] && { echo none; return 0; }; echo "${e%%;*}"; }
@@ -865,11 +910,22 @@ if [[ "$(mut14 r1s)" == "162" && "$(e14 r1s)" == *"VETO voting t=96"*"VETO votin
 else
     bad "(14e) R1 stop: shipped=$(e14 r1s | tr ';' '\n' | grep -v '^PASS-START' | tr '\n' ';') :: stop-neutered=$(mut14 r1sns) current-neutered=$(mut14 r1snc) both=$(mut14 r1snb)"
 fi
-if [[ "$(e14 st10)" == *"VETO voting t=408"*"STUCK-PAGE t=732"* && "$(mut14 st10)" == "none" && "$(e14 st10n)" != *"STUCK-PAGE"* && "$(e14 st0)" == *"STUCK-PAGE t=732"* && "$(mut14 st0)" == "none" \
-      && "$(e14 rd20)" != *"STUCK-PAGE"* && "$(e14 rd10)" == *"STUCK-PAGE t=180"* && "$(e14 t8)" == *"STUCK-PAGE t=162"* ]]; then
-    ok "(14f) RED FIRST (fix round 2, S5 — the delta panel's DAV-6: RECOVERY_MODE=rpc named but SILENT): a recovery that cannot complete now pages — 'eligible for Ns and NOT completing (last hold: …)' — once it is still unstaked a clean recovery's time plus one veto's delay after its first eligible pass (RECOVERY_DELAY + VOTE_LIVENESS_MIN_SPAN + RECOVERY_CHECKS × RECOVERY_CHECK_INTERVAL: 430 s at the defaults), throttled per ALERT_THROTTLE: the shipped defaults at 1.0 slots/s with the last vote at t280 (the panel's def10 — VOTING one tick before the band at t408, never recovered) → the page at t732 (the page neutered → silent, as fix round 1 was); the shipped defaults at 2.5 slots/s (tier1 reads the account delinquent from t300) → t732; RECOVERY_DELAY 10 / 60 (VOTING vetoes, never recovered) → t180 / t162; a recovery that completes (RECOVERY_DELAY 20, recovered t129) → no page. PAGE-ONLY: no decision changed"
+# (14f) fix round 3 (U2 — the delta panel 2's AV2-4 / AV2-5 / CKB-5): fix round 2's recovery-stuck page is REMOVED. It
+# paged recoveries that then complete — this section's own (14d) (paged t162, recovered t174) and (14e) (paged t81,
+# recovered t162) — and, every ALERT_THROTTLE forever, the ordinary failed-over state (the STANDBY holding and voting
+# the staked identity: t732, t1332, …). What stands is fix round 1's behavior, named in docs/SAFETY.md: an rpc recovery
+# the veto band keeps from completing is not paged beyond its veto's own throttled page, and in the failed-over state
+# the pass ends at the own bank's lastVote advance (R1) before the fence, so the 6.3 build's one-shot 'ACTIVELY VOTING
+# elsewhere' page (t312) is not sent either. RECOVERY_MODE=manual (the default) runs none of this.
+_nostuck=1; for _w in rd10 rd20 rd40 rd45 rd50 def0 sb280 sb280rc1 t8 bl tail r1s st10 st0 fo25 fo10; do [[ "$(e14 "$_w")" == *"PAGE stuck"* ]] && _nostuck=0; done
+_pg() { e14 "$1" | tr ';' '\n' | grep '^PAGE ' | tr '\n' ';'; }
+if [[ $_nostuck -eq 1 && "$(grep -c 'NOT completing\|_recovery_stuck_page' "$PRIMARY")" == "0" \
+      && "$(mut14 tail)" == "174" && "$(mut14 r1s)" == "162" && "$(_pg tail)" != *"PAGE stuck"* \
+      && "$(mut14 st10)" == "none" && "$(e14 st10)" == *"VETO voting t=408"* && "$(_pg st10)" == "PAGE veto t=408;" && "$(mut14 st0)" == "none" && -z "$(_pg st0)" \
+      && "$(mut14 fo25)" == "none" && -z "$(_pg fo25)" && "$(mut14 fo10)" == "none" && -z "$(_pg fo10)" ]]; then
+    ok "(14f) fix round 3 (U2 — the delta panel 2's AV2-4/AV2-5/CKB-5): fix round 2's recovery-stuck page is REMOVED (its text and function are gone from the primary) — it paged (14d)'s recovery at t162 before it completed at t174, (14e)'s at t81 before t162, and the failed-over state at t732 and every ALERT_THROTTLE after; now no world here pages 'NOT completing': (14d) recovered t174 and (14e) t162 with no such page; the RECOVERY_MODE=rpc residual stands as fix round 1 left it and is named in docs/SAFETY.md — the defaults at 1.0 slots/s with the last vote at t280 read VOTING at t408 (one tick before the band) and never recover by t800 (its one page: the veto's own at t408), and at 2.5 slots/s tier1 reads the account delinquent from t300 — never recovered, no page; the FAILED-OVER state (CONTVOTE — the STANDBY voting the identity) at 2.5 and 1.0 slots/s: never re-taken and NO page by t1500 (the 6.3 build's one-shot 'ACTIVELY VOTING elsewhere' page at t312 is not sent: the own bank's advance ends the pass first — fix round 1's R1, named). RECOVERY_MODE=manual, the default, runs none of this"
 else
-    bad "(14f) DAV-6: def10=$(e14 st10 | tr ';' '\n' | grep -v '^PASS-START' | tr '\n' ';') :: neutered=$(e14 st10n | tr ';' '\n' | grep -v '^PASS-START' | tr '\n' ';') :: 2.5=$(e14 st0 | tr ';' '\n' | grep -v '^PASS-START' | tr '\n' ';') :: rd20/rd10/t8 pages: $(e14 rd20 | grep -o 'STUCK-PAGE t=[0-9]*' | head -1)/$(e14 rd10 | grep -o 'STUCK-PAGE t=[0-9]*' | head -1)/$(e14 t8 | grep -o 'STUCK-PAGE t=[0-9]*' | head -1)"
+    bad "(14f) U2: stuck-page text/function sites=$(grep -c 'NOT completing\|_recovery_stuck_page' "$PRIMARY") no-stuck-page=$_nostuck :: tail=$(mut14 tail) $(_pg tail) :: r1s=$(mut14 r1s) :: def10=$(mut14 st10) [$(_pg st10)] :: 2.5=$(mut14 st0) [$(_pg st0)] :: failed-over 2.5=$(mut14 fo25) [$(_pg fo25)] 1.0=$(mut14 fo10) [$(_pg fo10)]"
 fi
 rm -rf "$W14"
 

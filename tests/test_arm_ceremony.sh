@@ -213,7 +213,7 @@ cp "$STUB_DIR"/* "$STUB_NOFLOCK/"; rm -f "$STUB_NOFLOCK/flock"
 # actuator that lives ONLY in the stub dirs (systemctl, timeout, sleep, pgrep, socat, flock).
 TOOLDIR="$STUB_PARENT/tools"
 mkdir -p "$TOOLDIR"
-ARM_REAL_TOOLS="awk basename cat chmod cksum cp cut date dirname grep head hostname mkdir mv readlink rm rmdir sed tail touch tr"   # rmdir: P0 (c) removes the tail a failed mkdir created (fix round 2, CK-8)
+ARM_REAL_TOOLS="awk basename cat chmod cksum cp cut date dirname grep head hostname mkdir mv readlink rm sed tail touch tr"
 for _t in $ARM_REAL_TOOLS; do
     _tp=$(command -v "$_t" 2>/dev/null)
     if [[ -z "$_tp" || ! -x "$_tp" ]]; then
@@ -1118,14 +1118,18 @@ new_mock; mkdir -p "$MOCK_DIR/realanc"; ln -s "$MOCK_DIR/realanc" "$MOCK_DIR/anc
 run_arm ARM_STATE_DIR="$MOCK_DIR/anc2/newsub/deeper"; p0_nothing_created STATE-dir-symlink "$MOCK_DIR/realanc/newsub"
 new_mock; ln -s "$MOCK_DIR/nowhere" "$MOCK_DIR/dangling"
 run_arm ARM_STATE_DIR="$MOCK_DIR/dangling/state"; p0_nothing_created STATE-dir-symlink "$MOCK_DIR/nowhere"
-# fix round 2 (S5 — the delta panel's CK-8): a mkdir -p that fails PARTWAY — a 300-character component (ENAMETOOLONG)
-# under a missing parent: RED on fix round 1 (REFUSE[STATE-dir-missing] with newdir LEFT on disk); now what the run
-# created is removed (rmdir, deepest first)
-new_mock; run_arm ARM_STATE_DIR="$MOCK_DIR/newdir/$(printf 'x%.0s' {1..300})"; p0_nothing_created STATE-dir-missing "$MOCK_DIR/newdir"
-if [[ "$cr_ok" == "$cr_ct" ]]; then
-    ok "(16h) a refusal creates NOTHING ($cr_ok/$cr_ct: trailing '/', '//', '/./', '/../' and a relative path under missing parents → STATE-dir-spelling; a symlinked ancestor with a missing leaf (one and two levels) and a DANGLING symlink ancestor → STATE-dir-symlink; a mkdir failing partway (a 300-character component under a missing parent) → STATE-dir-missing with the created parent removed — fix round 2, CK-8) — the nearest existing ancestor is checked before any mkdir"
+# fix round 3 (U3 — the delta panel 2's LB-3): a mkdir -p that fails PARTWAY — a 300-character component (ENAMETOOLONG)
+# under a missing parent — is refused STATE-dir-missing, the REFUSE line names the path and says that part of it may
+# remain, and NOTHING is removed: fix round 2's cleanup (rmdir of the created tail) followed a symlink raced onto an
+# intermediate component and removed empty directories in its target (a pre-existing one included), where SAFETY
+# said nothing is removed through a symlink — removed; what the failed mkdir created stays (newdir), as in fix round 1
+new_mock; _lp="$MOCK_DIR/newdir/$(printf 'x%.0s' {1..300})"; run_arm ARM_STATE_DIR="$_lp"
+p0_partial_ok=0; p0_refused STATE-dir-missing && [[ -d "$MOCK_DIR/newdir" ]] && grep -qF "ARM_STATE_DIR=$_lp cannot be created" "$MOCK_DIR/out" && grep -q 'may have left part of that path on disk' "$MOCK_DIR/out" && p0_partial_ok=1
+p0_norm=$(sed -n '/^_pre_state_dir_check() {/,/^}/p' "$ARM" | sed -e 's/^[[:space:]]*#.*$//' -e 's/"[^"]*"//g' | grep -cE '(^|[;&|[:space:]])(rm|rmdir|unlink)[[:space:]]')
+if [[ "$cr_ok" == "$cr_ct" && $p0_partial_ok -eq 1 && "$p0_norm" == "0" ]]; then
+    ok "(16h) a refusal creates NOTHING ($cr_ok/$cr_ct: trailing '/', '//', '/./', '/../' and a relative path under missing parents → STATE-dir-spelling; a symlinked ancestor with a missing leaf (one and two levels) and a DANGLING symlink ancestor → STATE-dir-symlink) — the nearest existing ancestor is checked before any mkdir; a mkdir failing PARTWAY (a 300-character component under a missing parent) → STATE-dir-missing naming the path and saying part of it may remain — what it created stays (newdir), and P0 removes nothing: no rm / rmdir in it (fix round 3, U3 — fix round 2's rmdir cleanup followed a raced symlink, the delta panel 2's LB-3)"
 else
-    bad "(16h) $((cr_ct - cr_ok))/$cr_ct:$cr_miss"
+    bad "(16h) $((cr_ct - cr_ok))/$cr_ct:$cr_miss :: partial-mkdir refused+named+kept=$p0_partial_ok :: P0 remove commands=$p0_norm"
 fi
 # (16d) a missing directory under a resolved parent is CREATED, then passes (the arm's mkdir -p, as before)
 new_mock
