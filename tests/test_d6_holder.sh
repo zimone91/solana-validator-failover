@@ -41,7 +41,8 @@
 #       the PLAIN restart with a canonical state file (F1: the startup blind window, restart + the tier tests +
 #       STARTUP_GRACE; its slow-tier-test form phase-swept), the un-armed unit's own crash (Restart=always,
 #       RestartSec 10; its slow form phase-swept), (1)'s restart member
-#   (c) the wedged demote → hard stop, EVERY daemon term (fix round 2, S4 — CK-1): trigger + the demote (remove-all to
+#   (c) the wedged demote → hard stop, EVERY daemon term (fix round 2, S4 — CK-1; fix round 3, U4 — CKB-1: the other
+#       wedge order with every op at its -k bound, the row's maximum): trigger + the demote (remove-all to
 #       SETIDENTITY_TIMEOUT (+ its -k 5), or remove-all answering and then the set-identity to unstaked to its bound
 #       (+ 5)) + the systemctl stop bound (+ 5) + after a failed stop the `systemctl mask --runtime` bound (+ 5) + 2 s,
 #       at SETIDENTITY_TIMEOUT = 15 (the default; the daemon only lower-bounds it, at 8); its slow-I/O forms phase-swept
@@ -60,7 +61,7 @@
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
-title_banner "D6 holder column: the holder's fence, from its last landed vote (v0.7 Block 6.3.1 fix rounds 1-2)"
+title_banner "D6 holder column: the holder's fence, from its last landed vote (v0.7 Block 6.3.1 fix rounds 1-3)"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/d6h.XXXXXX"); WORK=$(cd -P -- "$WORK" && pwd -P)
 T0=100000; HEAD0=900000
@@ -374,6 +375,9 @@ for ci in 3 5; do
         hlaunch "s7_${ci}_$k"    MODE=frozen CI=$ci RASECS=7 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
         hlaunch "s14_${ci}_$k"   MODE=frozen CI=$ci RASECS=14 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
         hlaunch "s7m_${ci}_$k"   MODE=frozen CI=$ci RASECS=7 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 MASKHANG=1 INST=$st:-1 HORIZON=200
+        # fix round 3 (U4 — the delta panel 2's CKB-1): the other order with the stop and the mask at their -k bounds too,
+        # remove-all answering after 14 s (SETIDENTITY_TIMEOUT − 1 — the latest answer on this integer clock)
+        hlaunch "s14k_${ci}_$k"  MODE=frozen CI=$ci RASECS=14 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 INST=$st:-1 HORIZON=200
     done
 done
 # the phase-swept (c) rows (T1-D6 — the tiers at their bounds, then every LOCAL read at 4 s): worst / best offsets
@@ -385,8 +389,13 @@ for ci in 3 5; do
     phlaunch wkhmTL  $ci $wL $bL "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 MASKHANG=1 TMODE=hang SLOWLOCAL=4 HORIZON=260
     phlaunch wkhmkT  $ci $wT $bT "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang HORIZON=260
     phlaunch wkhmkTL $ci $wL $bL "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWLOCAL=4 HORIZON=300
+    # fix round 3 (U4 — CKB-1): the other wedge order with every op at its -k bound, in the same two slow-I/O forms (its
+    # worst / best offsets are c4mk's / c5mk's: every value is theirs + 14 s — D6_SWEEP=full, fix round 3)
+    phlaunch s14kT   $ci $wT $bT "@:-1" MODE=frozen RASECS=14 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang HORIZON=260
+    phlaunch s14kTL  $ci $wL $bL "@:-1" MODE=frozen RASECS=14 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWLOCAL=4 HORIZON=300
 done
-# (d) — every row phase-swept (T1-D6; before fix round 2: 8 offsets 10 s apart, which missed every row's worst phase)
+# (d) — every row phase-swept (T1-D6; before fix round 2: 8 offsets 10 s apart, which missed the worst of four of the seven
+# rows — frozen, dead-refusing, dead-at-bound, tiers-only; garbage and both N6 rows already had theirs: the delta panel 2's CKB-7)
 phlaunch iofz  3 113 112 "@:-1" MODE=frozen TMODE=hang SLOWADMIN=7 SLOWLOCAL=4 HORIZON=200
 phlaunch iodr  3 112 102 "@:-1" MODE=deadrefuse TMODE=hang SLOWADMIN=7 SLOWLOCAL=4 HORIZON=200
 phlaunch iodh  3 112 102 "@:-1" MODE=deadhang TMODE=hang SLOWADMIN=7 HORIZON=200
@@ -460,7 +469,10 @@ echo ""; echo "─── (c) F3/CK-1: the wedged demote → the hard stop, every
 # The stop lands at: trigger + the demote (remove-all to SETIDENTITY_TIMEOUT, + its -k 5; or remove-all ANSWERING after
 # r s and then the set-identity to unstaked to SETIDENTITY_TIMEOUT, + 5) + `systemctl stop` (15 s, + 5) + — only after a
 # FAILED stop — `systemctl mask --runtime` (15 s, + 5) + SIGTERM, 2 s, SIGKILL. SETIDENTITY_TIMEOUT = 15 (the default;
-# the daemon lower-bounds it at 8 and sets no upper bound — a larger value moves every row below by the difference).
+# the daemon lower-bounds it at 8 and sets no upper bound — a larger value moves every fixed-r cell below by the
+# difference, and the other order's LATEST (r up to SETIDENTITY_TIMEOUT − 1) by TWICE the difference: the timeout
+# bounds both r and the set-identity after it — the delta panel 2's CKB-1). Its maximum at the default, every op at
+# its -k bound: trigger + 14 + 20 + 20 + 20 + 2 = 76 s after the trigger (c3h), 14 s later than the first order's (c3c).
 g35() { printf '%s / %s' "$(span "${1}_3_" 3)" "$(span "${1}_5_" 5)"; }
 g35p() { printf '%s / %s' "$(spanp "$1" 3)" "$(spanp "$1" 5)"; }   # a phase-swept row
 row c1 "remove-all at its 15 s bound, a prompt systemctl stop" "45-47 / 45-49" "$(g35 w)" 49
@@ -473,12 +485,15 @@ row c3d "PID 1 slow: the stop and the mask each at their 15 s bounds, the valida
 row c3e "the OTHER wedge order: remove-all ANSWERS in 7 s (the worst-case column's admin latency), then the set-identity to unstaked hangs to its bound + 5; the stop client times out, SIGTERM ignored, a prompt mask" "74-76 / 74-78" "$(g35 s7)" 78
 row c3f "… remove-all answering in 14 s" "81-83 / 81-85" "$(g35 s14)" 85
 row c3g "… remove-all in 7 s and the mask at its 15 s bound" "89-91 / 89-93" "$(g35 s7m)" 93
+row c3h "the other wedge order with EVERY op at its -k bound: remove-all answering in 14 s (SETIDENTITY_TIMEOUT − 1), the set-identity, the stop and the mask each at 15 + 5 s, SIGTERM ignored — the row's latest at prompt RPC I/O (fix round 3, the delta panel 2's CKB-1)" "106-108 / 106-110" "$(g35 s14k)" 110
 row c4 "c3 + the tiers at their -m bounds (the collision check's reads; phase-swept — at the read phases only: 70-72 / 68-72)" "67-89 / 67-91" "$(g35p wkhT)" 91
 row c4m "c4 + the mask at its bound" "82-104 / 82-106" "$(g35p wkhmT)" 106
 row c4mk "c4 with every op at its -k bound" "92-114 / 92-116" "$(g35p wkhmkT)" 116
 row c5 "c4 + every LOCAL read at 4 s (phase-swept — at the read phases only: 85-87 / 87-91)" "80-106 / 84-135" "$(g35p wkhTL)" 135
 row c5m "c5 + the mask at its bound" "95-121 / 99-150" "$(g35p wkhmTL)" 150
-row c5mk "c5 with every op at its -k bound — the row's latest fence" "105-131 / 109-160" "$(g35p wkhmkTL)" 160
+row c5mk "c5 with every op at its -k bound" "105-131 / 109-160" "$(g35p wkhmkTL)" 160
+row c4h "c3h + the tiers at their -m bounds (phase-swept)" "106-128 / 106-130" "$(g35p s14kT)" 130
+row c5h "c3h + the tiers at their bounds + every LOCAL read at 4 s (phase-swept) — the row's latest fence" "119-145 / 123-174" "$(g35p s14kTL)" 174
 
 # ── (d) the worst-case I/O column (F4; fix round 2 S4 — T1-D6: every row phase-swept) ──────────────────
 echo ""; echo "─── (d) F4: the worst-case I/O column — CHECK_INTERVAL 3, the tiers at their bounds, the admin socket at 7 s, LOCAL reads at 4 s, over the collision check's 60 s phase ───"

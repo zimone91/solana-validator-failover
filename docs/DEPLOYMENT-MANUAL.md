@@ -266,7 +266,8 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   6.3.1, tightened in its fix round 1) Tier-1 is ready iff `getHealth` answers ok and treats **every**
   "behind" report as not ready, whatever this knob says. A value above that distance (read from the
   validator's command line, else agave's 128) is **clamped** at start with a loud WARN — it could never
-  take effect; a value at or below it has **no effect** (an info line says so): it cannot tighten Tier-1.
+  take effect; a value at or below it has **no effect** (below it an info line says so; at it — the default
+  128 at agave's default distance — the daemon is silent): it cannot tighten Tier-1.
   To bound how far behind a spare may be when it takes (the own view's residual 2 in
   `docs/SAFETY.md`), lower the validator's own `--health-check-slot-distance`. The default is 128.
 
@@ -303,11 +304,12 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   remains recommended because automatic re-take is inherently riskier than a human deciding. The
   daemon logs a startup notice when `rpc` is selected. `auto` is reserved/disabled. Since v0.7 the
   `rpc` re-take passes only inside a band of the staked account's age (128–158 slots after its last
-  vote), so at the shipped defaults on a fast cluster it may never complete (`docs/SAFETY.md`, *What it
-  costs, measured*); a recovery still unstaked `RECOVERY_DELAY` + `VOTE_LIVENESS_MIN_SPAN` +
-  `RECOVERY_CHECKS` × `RECOVERY_CHECK_INTERVAL` after its first eligible pass (430 s at the defaults)
-  pages "eligible for Ns and NOT completing" with the last hold, throttled per `ALERT_THROTTLE` — switch
-  back manually when the account is safe.
+  vote), so at the shipped defaults on a fast cluster **the veto band can keep an `rpc` recovery from
+  ever completing, and nothing pages but the veto's own throttled page** (`docs/SAFETY.md`, *What it
+  costs, measured*): the daemon logs the held pass at INFO ("Still delinquent (Tier 1)") and stays
+  unstaked — watch for it and switch back manually when the account is safe. (An earlier v0.7 build paged such a
+  recovery; that page misfired — in recoveries that complete, and forever in the ordinary failed-over
+  state — and was removed.) The default `RECOVERY_MODE=manual` is unaffected.
 
 - **PRIMARY self-fence / "vote lease" (`PRIMARY_SELF_FENCE`, v0.6.3):** mitigates the residual
   partition case — a PRIMARY that is alive but **isolated from the supermajority** (partition /

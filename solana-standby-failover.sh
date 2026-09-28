@@ -312,7 +312,8 @@ PREWARM_VOTER_ADD=false
 # distance)" was the post-clamp VARIABLE, which no decision reads; below the distance the real threshold is the
 # distance, not the smaller value). What the knob still does: a value ABOVE the distance (read from the
 # validator's command line, else agave's 128) is clamped to it with a loud startup WARN — it could never take
-# effect; a value at or below it gets one info line saying it has no effect. It can neither widen Tier-1 (6.3.1
+# effect; a value below it gets one info line saying it has no effect, and one AT it is silent (the shipped 128 at
+# agave's default distance — fix round 3, the delta panel 2's CKB-6). It can neither widen Tier-1 (6.3.1
 # as first shipped capped it at 128, which still admitted "behind by N <= 128" from a node run at a SMALLER
 # non-default distance: a spare 110 slots behind a distance-64 node took over 40 s into the holder's voting) nor
 # tighten it — to narrow the lagging-spare exposure (docs/SAFETY.md, the own view's residual 2), lower the
@@ -1574,80 +1575,34 @@ _recheck_abort_alert() {
     _recheck_abort_alert_ts=$(mono_now)
     alert_warn "$1"
 }
-# _recheck_tier_read <T2|T3> — the ONE liveness sampler on ONE tier (the other tier's URL blanked for this call
-# only): each branch of the re-check's concurrent read (fix round 2, S1 — below). The same reads, the same labels
-# and the same per-op pet as the sampler's own loop; it prints the sampler's line or nothing.
-_recheck_tier_read() {
-    if [[ "$1" == "T2" ]]; then TIER3_RPC="" get_staked_liveness_sample; else TIER2_RPC="" get_staked_liveness_sample; fi
-}
+# v0.7 (Block 6.3.1 fix round 3, U1 — the delta panels' DL-1, LB-1, LB-2): THE 6.3 BUILD'S RE-CHECK, RESTORED EXACTLY.
+# The body below is byte-identical to the 6.3 build's (and the first 6.3.1 build's — test_act_then_alert (7) pins
+# its cksum): ONE sampler call — TIER2, and TIER3 only when TIER2 yields nothing — and the decision on that ONE
+# answer (VOTING, backwards, a provider flip or a stale reference abort; a frozen same-vantage answer proceeds).
+# Fix round 1 asked the pinned vantage first (a recovered TIER2 showing the holder VOTING was never read: taken
+# 21-34 s into its voting — DL-1) and fix round 2 read both tiers at once (the pinned answer was read at the
+# re-check's START and carried a take that landed up to one tier timeout later, 10 s — 17 s at the house
+# bound-counting — so a holder resuming in between was taken where this body reads TIER3 AFTER TIER2's timeout and
+# sees the vote — LB-1; and a recovered TIER2 answering without an advance no longer aborted as a flip — taken
+# 21-29 s into the voting — LB-2). Each regressed against this body; both are REMOVED. WHAT COMES BACK is this
+# body's own, named with the numbers in docs/SAFETY.md (the spare's own view, residuals 6 and 7): the MIRROR world
+# (the pair pinned on a TIER2 that splices or lags, an honest TIER3 showing the advance — TIER3 is not read while
+# TIER2 answers: taken) and AV-6's STARVATION (a TIER2 read timing out, then TIER3 answering 7 s or later, leaves
+# no own-head sample within OWN_HEAD_H of the veto — no sample may sit inside this span, PROOF_MAX_AGE's: every
+# veto BLIND, a dead holder not taken over, the starvation page). The span: R_worst 36 s, 49 s with the veto
+# ([proof-gate]).
 _fresh_proof_recheck() {
     # Fence off (explicit operator override at startup) → nothing to re-check against.
     [[ "$VOTE_LIVENESS_VERIFY" == "true" ]] || return 0
     # No pinned baseline: a real FROZEN verdict structurally implies the pin (same carve-out and
     # justification as _liveness_span_short) — only harnesses that mock the fence reach here bare.
     [[ -n "$_liveness_first_vote" ]] || return 0
-    local s rest cur tip prov now_r delta old_prov _rq _rl pc="" pt="" pp="" oc="" ot="" op="" npa=0 noa=0
-    # v0.7 (Block 6.3.1 fix round 2, S1 — the delta panel's DL-1): EVERY tier that answers is read, and a life
-    # sign in ANY answer aborts. With two DISTINCT tiers the re-check asks BOTH AT ONCE — _recheck_tier_read in
-    # two background branches of one command substitution, each printing the sampler's one line (a single
-    # short write — atomic on a pipe), so the wall time is the SLOWER answer, not the sum. The decision reads
-    # the answers in this order: (1) an answer whose lastVote is past the pin by > EPSILON — the pinned
-    # vantage's first, then the other tier's — aborts as VOTING (an advance cannot be invented by a stale or
-    # lagging view: lastVote is monotonic on-chain); (2) with no life sign anywhere the take rests ONLY on the
-    # pinned vantage's OWN answer — backwards / stale abort on it as before, a frozen one proceeds; (3) the
-    # pinned vantage silent, the other tier's answer aborts (backwards, or a provider flip) as before; (4) no
-    # usable answer → the blind abort. The other tier's NON-advancing answer is an observation only: it
-    # neither carries the take nor aborts it (the fence's verdict rested on the pinned vantage).
-    # WHY — MEASURED on the real main loop: fix round 1 asked the pinned vantage first and read the other tier
-    # only when the pinned one failed, so pinned on TIER3 with TIER2 back and showing the holder VOTING it took
-    # (the panel's worlds: t168 / t111 / t169 / t174, 21-34 s into the holder's voting) where every build
-    # before it aborted as VOTING; and the TIER2-first order of those builds never read TIER3 while TIER2
-    # answered, so pinned on TIER2 with TIER2 splicing or lagging they took a holder TIER3 showed voting (t165,
-    # 25 s into its voting; t105 at 3.7 slots/s, 15 s) — both now abort. Reading the two tiers one AFTER the
-    # other (TIER2 first, or pinned first then the other) puts two tier reads between the pre-take sample and
-    # the own-view veto: a TIER2 timeout (10 s) + TIER3 >= 7 s left no own-head sample within OWN_HEAD_H —
-    # every veto blind, a dead holder never taken over (MEASURED, the panel's AV-6 world: never, the starvation
-    # page at t370-t380) — and it is the 36 s R_worst of a 49 s PROOF_MAX_AGE span. At once, the edge-reaching
-    # worst is still ONE tier's read (R_worst 19 s, [proof-gate]: the span stays 32 s) and the AV-6 world is
-    # taken (t164 / t166 / t168 at TIER3 7 / 8 / 9 s). COST, named: the re-check waits for the slower tier —
-    # its 10 s bound when one tier times out (fix round 1 read the pinned tier alone there: +3..+10 s), never
-    # later than the builds before fix round 1 when TIER2 is the one timing out, and +(10 − TIER2's answer
-    # time) s where TIER3 is (those builds never read TIER3 there). PETS: each branch pets after its OWN read
-    # completes (the per-op pet, as in every $() sampler call); one branch can pet while the other's read is
-    # still in flight — a wedged branch then stops the pet stream after the other branch's pet (both reads are
-    # curl -m 10 bounded). TIER2_RPC == TIER3_RPC (the warned single-vantage config) or one tier unset: the
-    # one sampler call, as before.
-    if [[ -n "$TIER2_RPC" && -n "$TIER3_RPC" && "$TIER2_RPC" != "$TIER3_RPC" ]]; then
-        s=$(_recheck_tier_read T2 & _recheck_tier_read T3 & wait)
-    else
-        s=$(get_staked_liveness_sample) || s=""
-    fi
+    local s rest cur tip prov now_r delta old_prov
+    s=$(get_staked_liveness_sample) || s=""
     now_r=$(mono_now)   # POST-read (the M2 discipline this helper already followed: every stamp below is taken after the answer)
-    # every answer line "<lastVote> <ref> <tier>" through the ONE validator (M4); the pinned vantage's answer
-    # (pc/pt/pp) and the other tier's (oc/ot/op) kept apart
-    _rq="$s"
-    while [[ -n "$_rq" ]]; do
-        _rl="${_rq%%$'\n'*}"
-        if [[ "$_rq" == *$'\n'* ]]; then _rq="${_rq#*$'\n'}"; else _rq=""; fi
-        cur="${_rl%% *}"; rest="${_rl#* }"; tip="${rest%% *}"
-        prov=""; [[ "$rest" == *" "* ]] && prov="${rest##* }"
-        _canon_uint "$cur" && _canon_uint "$tip" || continue
-        if [[ $npa -eq 0 && "$prov" == "$_liveness_first_provider" ]]; then pc="$cur"; pt="$tip"; pp="$prov"; npa=1
-        elif [[ $noa -eq 0 ]]; then oc="$cur"; ot="$tip"; op="$prov"; noa=1; fi
-    done
-    # the ONE answer the branches below decide on: a life sign first (the pinned vantage's, then the other
-    # tier's), else the pinned vantage's own answer, else the other tier's
-    cur=""; tip=""; prov=""
-    if [[ $npa -eq 1 ]]; then
-        if [[ $(( pc - _liveness_first_vote )) -gt ${VOTE_LIVENESS_EPSILON:-0} ]]; then cur="$pc"; tip="$pt"; prov="$pp"; fi
-    fi
-    if [[ -z "$cur" && $noa -eq 1 ]]; then
-        if [[ $(( oc - _liveness_first_vote )) -gt ${VOTE_LIVENESS_EPSILON:-0} ]]; then cur="$oc"; tip="$ot"; prov="$op"; fi
-    fi
-    if [[ -z "$cur" ]]; then
-        if [[ $npa -eq 1 ]]; then cur="$pc"; tip="$pt"; prov="$pp"; elif [[ $noa -eq 1 ]]; then cur="$oc"; tip="$ot"; prov="$op"; fi
-    fi
-    if [[ -z "$cur" ]]; then   # no usable answer from any tier (each line already passed the ONE validator, M4)
+    cur="${s%% *}"; rest="${s#* }"; tip="${rest%% *}"
+    prov=""; [[ "$rest" == *" "* ]] && prov="${rest##* }"
+    if [[ -z "$s" ]] || ! _canon_uint "$cur" || ! _canon_uint "$tip"; then   # M4: the ONE validator, re-asserted at the arithmetic site
         _note_blind_cycle "$now_r"
         log_warn "[act-then-alert] fresh re-check: no usable sample — cannot determine → ABORT (the blind stamp above re-anchors the countdown)"
         _recheck_abort_alert "⚠️ Take ABORTED at the final re-check: externals gave no usable sample (cannot determine). No action taken; the countdown re-anchored."
@@ -1656,11 +1611,10 @@ _fresh_proof_recheck() {
     _note_observation "$now_r"
     delta=$(( cur - _liveness_first_vote ))
     if [[ $delta -gt ${VOTE_LIVENESS_EPSILON:-0} ]]; then
-        old_prov="$_liveness_first_provider"   # captured BEFORE the re-pin below overwrites it (the log names both vantages)
         LAST_LIVENESS_ACTIVE_TIME=$now_r   # STANDBY: N3 re-anchor input. PRIMARY: a DEAD STORE — its recovery anchor never reads this (kept for helper byte-identity; do NOT believe the primary re-anchors here — pacing there is the obs-floor + recovery ladder)
         _liveness_first_vote="$cur"; _liveness_first_tip="$tip"; _liveness_first_ts="$now_r"; _liveness_first_provider="$prov"
         _liveness_obs_since="$now_r"
-        log_warn "[act-then-alert] fresh re-check: staked vote ADVANCED ${delta} slots since the pin (seen on ${prov:-an unlabelled vantage}; the pin was on ${old_prov:-an unlabelled vantage}) — holder is VOTING → ABORT"
+        log_warn "[act-then-alert] fresh re-check: staked vote ADVANCED ${delta} slots since the pin — holder is VOTING → ABORT"
         _recheck_abort_alert "⚠️ Take ABORTED at the final re-check: the holder VOTED (+${delta} slots) between the verdict and the action. No action taken; the take must re-qualify from this observation (STANDBY: the full delay re-elapses; PRIMARY: the observed-span floor + recovery ladder)."
         return 1
     fi
@@ -1747,25 +1701,32 @@ _fresh_proof_recheck() {
 # is a gap with no sample inside it. Every external read of the take cycle before the fence's verdict is
 # bracketed (fix rounds 1-2, R3 and S2 — N-is-all, attempt_takeover's S2 note: a sample before each read,
 # between a TIER2 failure and TIER3, and between the confirm's own reads), so no gap holds more than ONE
-# external read — but one read can be long: the gossip advisory's getClusterNodes is bounded at 15 s, a tier
-# read at 10 s, and the re-check (inside the span: no sample there) waits for the SLOWER tier. The baseline
-# is the oldest sample that chain leaves within 16 s — MEASURED on the real loop (test_own_view (7c-age); the
-# same at MAX_DELINQUENT_SLOTS 0 / 15, CHECK_INTERVAL 5 / 3, 2.5 / 3.7 slots/s, GOSSIP_VERIFY off / on unless
-# noted): TIER2 answering in x s, TIER3 prompt → 16 s for x <= 5 (15 at x = 5 with GOSSIP_VERIFY on), 12 / 14
-# / 16 / 9 s at x = 6 / 7 / 8 / 9; TIER2 down (or at its bound), TIER3 in y s → 10 + y s for y <= 6, 10 s for
-# y = 7..9; TIER3 down, TIER2 in x s → 16 s for x <= 3 (GOSSIP_VERIFY on: 10 + x), 14 / 15 / 16 s at x = 4 / 5 /
-# 6, 10 s for x = 7..9: 9–16 s over that matrix; both tiers failing: no sample, no take (as ever). NAMED
-# RESIDUAL (fix round 2 — the gossip advisory): ONE advisory read of ~15 s followed by prompt fence and re-check
-# reads leaves only the samples after it — 2 / 4 / 6 s with TIER2 at 1 / 2 / 3 s, GOSSIP_VERIFY on (the
-# default) — and a healthy confirmed-head hold of that length aligned with the veto (inside the 22-slot budget)
-# vetoes BLIND: +77..+90 s (docs/SAFETY.md, residual 5). A baseline of A s withdraws a take (BLIND) only on a
-# hold of A s: the matrix's 9–13 s cells still cover the 22-slot budget at 2.5 slots/s with PROMPT LOCAL reads
-# (>= 22.5 slots), NOT the derivation's LOCAL reads at their bound (that needs 14 s); 3.7 slots/s: the 5.9 s
-# budget fits inside every matrix cell, not inside the advisory residual's 2 and 4 s (6.3.1 as first shipped:
-# the pre-take sample alone, 5–10 s old from TIER2 5 s on, and with TIER2 down no sample in the window from
-# y = 7 — every veto blind, a dead holder never taken; fix round 1: 8 s at TIER2 down + TIER3 4 s, 6 / 8 s
-# at TIER3 down + TIER2 3 / 4 s with GOSSIP_VERIFY on, and the unbracketed advisory pair (TIER2's read at its
-# 15 s bound) left NO sample — every veto blind, never taken). And the EXPOSURE below OWN_HEAD_H is a
+# external read — but one read can be long: the gossip advisory's getClusterNodes and the external confirm's
+# TIER3 read are bounded at 15 s (fix round 3 — the delta panel 2's CKB-2: this text said a tier read is 10 s),
+# every other tier read at 10 s, and the re-check (inside the span: no sample may sit there) is ONE sampler
+# call — TIER2's read, then TIER3's after a TIER2 failure. The baseline is the oldest sample that chain leaves
+# within 16 s — MEASURED on the real loop (test_own_view (7c-age); fix round 3's 512-cell sweep: every age the
+# same at MAX_DELINQUENT_SLOTS 0 / 15, CHECK_INTERVAL 5 / 3, 2.5 / 3.7 slots/s; GOSSIP_VERIFY as noted): TIER2
+# answering in x s, TIER3 prompt → 16 s for x <= 5 (15 at x = 5 with GOSSIP_VERIFY on), 12 / 14 / 16 / 9 / 10 s
+# at x = 6 / 7 / 8 / 9 / its bound; TIER2 down, TIER3 in y s → 10 / 12 / 14 / 16 / 14 / 15 / 16 s at y = 0..6,
+# and from y = 7 NO sample in the window — every veto blind, a dead holder never taken (the re-check alone
+# outlasts OWN_HEAD_H: docs/SAFETY.md residual 7, AV-6's starvation, back with the restored re-check); TIER3
+# down, TIER2 in x s → 16 s for x <= 4 (GOSSIP_VERIFY on: x <= 3, and 8 s at x = 4), 10 / 12 / 14 / 16 / 9 s
+# at x = 5..9 — 8–16 s where a tier answers; both tiers failing: no sample, no take (as ever). NAMED RESIDUALS
+# (docs/SAFETY.md, residual 5): ONE long read followed by prompt fence and re-check reads leaves only the
+# samples after it — the gossip advisory's (2 / 4 / 6 s with TIER2 at 1 / 2 / 3 s, GOSSIP_VERIFY on, the
+# default), the confirm's TIER3 read (4–8 s at 12–14 s), the TIER2-unreachable page with both sends at their
+# bounds — and a healthy confirmed-head hold of that length aligned with the veto (inside the 22-slot budget)
+# vetoes BLIND: +60..+91 s. A baseline of A s withdraws a take (BLIND) only on a hold of A s: the matrix's
+# 9–13 s cells cover the 22-slot budget at 2.5 slots/s with PROMPT LOCAL reads (>= 22.5 slots), NOT the
+# derivation's LOCAL reads at their bound (that needs 14 s); its 8 s cell does not even with prompt reads (an
+# aligned 8 s hold, 20 slots: BLIND, +90 s); 3.7 slots/s: the 5.9 s budget fits inside every matrix cell, not
+# inside the long reads' 2 and 4 s (6.3.1 as first shipped: the pre-take sample alone — 5–10 s from TIER2 5 s
+# on with GOSSIP_VERIFY on, 2–9 s with TIER3 down, and with TIER2 down no sample in the window from y = 7; fix
+# round 1: 8 s at TIER2 down + TIER3 4 s, 6 / 8 s at TIER3 down + TIER2 3 / 4 s with GOSSIP_VERIFY on, and the
+# unbracketed advisory pair (TIER2's read at its 15 s bound) left NO sample — every veto blind, never taken;
+# fix round 2's concurrent re-check: the TIER3-down row 10–16 s, the TIER2-down row 10 s from y = 7 — removed,
+# as are its regressions). And the EXPOSURE below OWN_HEAD_H is a
 # NAMED RESIDUAL: a spare cut off (or frozen) within the baseline's age before the veto read (at most
 # OWN_HEAD_H; measured 15 s, test_own_view (4b-residual)) advanced from the baseline up to the cut and
 # passes (b) — docs/SAFETY.md ('The spare's own view').
@@ -2318,15 +2279,19 @@ attempt_takeover() {
     #   the gossip advisory: check_primary_dropped_identity (a sample before EACH tier's read);
     #   the fence: a sample before it, staked_is_actively_voting split (a sample between a TIER2 failure and
     #     TIER3);
-    #   take_staked_identity: the pre-take sample, then the fresh re-check (INSIDE the span: both tiers read
-    #     at once, fix round 2 S1 — no sample in it), then the veto.
+    #   take_staked_identity: the pre-take sample, then the fresh re-check (INSIDE the span: the one sequential
+    #     sampler call — TIER2, TIER3 only on its failure; no sample in it, fix round 3), then the veto.
     # Every sample precedes the fence's verdict or is the pre-take sample, so none joins the acceptance →
     # mutation span PROOF_MAX_AGE counts ([proof-gate]). Each is one LOCAL getSlot{confirmed} (curl -m 2) +
     # its pet. VETO-ONLY: a sample can only give the veto a baseline, never a take. What samples cannot do:
     # split ONE long read — an advisory read of ~15 s followed by prompt fence and re-check reads still
-    # leaves a 2–6 s baseline (the NAMED residual — the [own-view] derivation above has the measured ages;
-    # the reviewer's options: bound the advisory like the prefetch (-m 5; it gates nothing — its verdict
-    # only picks a log line), skip it on a slow cycle, or move it out of the take cycle).
+    # leaves a 2–6 s baseline, and so does the confirm's TIER3 read, bounded at 15 s too (4–8 s at 12–14 s —
+    # fix round 3, the delta panel 2's CKB-2), and the TIER2-unreachable page when both its sends run to their
+    # -m 10 bounds (the NAMED residuals — the [own-view] derivation above has the measured ages; the reviewer's
+    # options: bound the advisory like the prefetch (-m 5; it gates nothing — its verdict only picks a log
+    # line), skip it on a slow cycle, or move it out of the take cycle; the confirm's TIER3 read at 10 s like
+    # every other tier read) — nor sit inside the re-check (the span): TIER2's timeout then TIER3 at 7 s or
+    # later starves every take (docs/SAFETY.md residual 7).
     _own_head_sample
     confirm_delinquency_external
     local confirm_result=$?
@@ -2861,8 +2826,9 @@ take_staked_identity() {
     # than OWN_HEAD_H at the veto read; the main loop samples once per cycle, and a take-path cycle whose tier
     # reads are slow (TIER2 timing out: ~35 s between the cycle's sample and the veto) left no cycle sample
     # that young — every veto blind, and a dead holder behind one dead tier never taken over (MEASURED:
-    # test_own_view (4b)). This sample is at most the re-check's duration old at the veto (the SLOWER of the two
-    # tiers' reads since fix round 2, S1: the re-check reads both at once); the samples attempt_takeover takes
+    # test_own_view (4b)). This sample is at most the re-check's duration old at the veto (its one sequential
+    # sampler call: TIER2's read, then TIER3's after a TIER2 failure — up to 10 + 10 s of curl -m, the named
+    # AV-6 starvation when that outlasts OWN_HEAD_H); the samples attempt_takeover takes
     # before each external read of the cycle (fix rounds 1-2) are the older baselines. 6.4: its gate goes
     # AFTER this line (between it and the re-check) — placed before it, this read's worst (curl -m 2 + a 7 s
     # pet) joins the verdict→mutation span PROOF_MAX_AGE covers ([proof-gate] states both spans).
@@ -3797,35 +3763,24 @@ require_relinquish_proof() {
 # 74 s at the edge before this read — gains the same 10 s). PLACEMENT, for 6.4: each take function reads a
 # PRE-TAKE own-head sample (curl -m 2 + its pet: 9 s worst) BEFORE the recheck; 6.4's gate must sit AFTER
 # that sample — placed before it, the span is 3 + 9 + 46 = 58 s > 50 and does not converge.
-# RE-DERIVED at 6.3.1 fix round 1 (R3 — PROOF_MAX_AGE NOT changed; the span SHRINKS): the recheck now asks
-# the PINNED vantage first when the two tiers are distinct (_fresh_proof_recheck), and an answer from the
-# other tier can only ABORT (a provider flip, or VOTING / backwards), so a recheck that can REACH the edge
-# reads ONE tier: 1 x curl -m 10 + 1 x pet 7 s + glue 2 s = R_worst 19 s (it was 36: pinned on TIER3, a TIER2
-# timeout came first). The span: 3 + 19 + 10 = 32 s <= 50 (margin 18 s); with 6.4's gate placed before the
-# pre-take sample, 3 + 9 + 19 + 10 = 41 s <= 50 — both placements converge. The own-head samples fix round 1
-# added on the take path (before the confirm, the gossip advisory and the fence, and inside the fence's
-# sampler call) all precede the fence's verdict — outside this span. On the warned single-vantage config
-# (TIER2_RPC == TIER3_RPC — one URL, both attempts labelled TIER2) the sampler's second attempt re-reads the
-# same URL under the same label, so the old two-read worst stands there: 49 s (58 s gate-first).
-# RE-DERIVED at 6.3.1 fix round 2 (S1 — PROOF_MAX_AGE NOT changed; the span UNCHANGED): the pinned-first recheck
-# read the other tier only when the pinned one FAILED, and so lost the VOTING abort on a tier that recovered and
-# shows the holder voting (the delta panel's DL-1, measured: a voting holder taken 21-34 s into its voting). The
-# recheck now reads BOTH distinct tiers AT ONCE (two background branches of one $(), _recheck_tier_read) and waits
-# for the SLOWER one, never the sum: each branch is 1 x curl -m 10 + its 1 x pet 7 s = 17 s, side by side, + glue
-# 2 s (the fork/wait and the per-line parse; each branch's 3 jq run in its own time) = R_worst 19 s, as before.
-# The span: 3 + 19 + 10 = 32 s <= 50 (margin 18 s); gate-first 41 s. MEASURED gate-accepted → mutation (armed,
-# the gate-first emulation, 3.7 slots/s): TIER2 timing out with TIER3 3 s late → 10 s (fix round 1: 3 s, it read
-# TIER3 alone; the builds before it: 13 s, TIER2's timeout THEN TIER3); TIER2 5 s late with TIER3 timing out →
-# 10 s (every earlier build: 5 s — none read TIER3 while TIER2 answered). Reading the tiers one AFTER the other
-# (either order) restores the 36 s R_worst: 49 s, a margin of 1 s — and the panel's AV-6 starvation (the re-check
-# alone outlasting OWN_HEAD_H). The single-vantage config keeps its one sampler call: 49 / 58 s, as before. The
-# own-head samples fix round 2 added (S2: before EVERY external read of the take cycle — the probe, the prefetch,
-# the confirm's reads, each advisory read, the watchdog-elapsed evaluation's second tier) all precede the fence's
-# verdict too — outside this span; none sits inside the re-check.
+# FIX ROUNDS 1-3 (PROOF_MAX_AGE NEVER changed): fix round 1 (R3) had the recheck ask the PINNED vantage first
+# (R_worst 19 s: the span 3 + 19 + 10 = 32 s, gate-first 41 s) and so skipped a recovered TIER2 showing the holder
+# voting (the delta panel's DL-1: a voting holder taken 21-34 s into its voting); fix round 2 (S1) read both
+# distinct tiers AT ONCE (the same 19 s) and took a voting holder in other worlds (the delta panel 2's LB-1: with
+# TIER2 hanging, the pinned TIER3 answer was TIER2's timeout old at the take — a holder resuming inside that wait
+# was taken; LB-2: a recovered TIER2's non-advancing answer no longer aborted as a flip — the reference's flip
+# abort re-pins onto it, and the next verdict sees the vote). Fix round 3 REMOVED both: the recheck is the 6.3
+# build's ONE sequential sampler call again — the arithmetic above stands (R_worst 36 + 10 = 46 s; the span 49 s
+# <= 50, margin 1 s; 58 s gate-first, which does NOT converge). The own-head samples fix rounds 1-2 added (before
+# the probe, the prefetch, the confirm's reads, each gossip-advisory read and the fence's reads, and between the
+# watchdog-elapsed evaluation's tiers) all sit before the take function — outside this span; none sits inside
+# the re-check. What the removal brings back, named in docs/SAFETY.md ('The spare's own view'): the MIRROR
+# residual (the pair pinned on a splicing or lagging TIER2 while an honest TIER3 shows the holder voting — the
+# one call never reads TIER3 while TIER2 answers) and AV-6's starvation (TIER2 at its timeout + TIER3 7 s or
+# slower: the re-check alone outlasts OWN_HEAD_H — every veto BLIND, the starvation page).
 # HEALTHY PATH (typical one-curl success ~1 s + glue): verdict age at the edge ≈ 2–4 s — ≥ 12x
-# under the budget; the worst REACHABLE path of THIS span (39 s before 6.3.1 — 49 s with the veto read, 32 s
-# since fix round 1 on distinct tiers — acceptance → recheck → veto → set-identity) clears it (by 11 s, then
-# by 1 s, now by 18 s): convergence proven WITH
+# under the budget; the worst REACHABLE path of THIS span (39 s before 6.3.1 — 49 s with the veto read —
+# acceptance → recheck → veto → set-identity) clears it (by 11 s, now by 1 s): convergence proven WITH
 # margin FOR THAT SPAN — i.e. for a verdict that is fresh
 # when the gate accepts it (the slice-4 floor lesson — a bound right in meaning that never converges
 # is a broken gate). SCOPE, named (6.3 fix round 2, R10): the census covers the acceptance→mutation

@@ -32,7 +32,8 @@ All notable changes are documented here. Versions follow the project's internal 
     samples a take cycle makes five to twelve bounded LOCAL reads at the defaults (each `curl -m 2` + a
     pet; one more on an armed unit, up to four more with the opt-in witness fast path) —
     milliseconds on a healthy loopback; measured against the 6.3 build +15 / +14 s at
-    `MAX_DELINQUENT_SLOTS` 0 / 15 and +9 s at the wizard preset when every LOCAL read takes 1 s; as a
+    `MAX_DELINQUENT_SLOTS` 0 / 15 and +9 s at the wizard preset when every LOCAL read takes 1 s with prompt
+    tiers (up to +30 s with a slow tier as well — measured in fix round 3); as a
     LOCAL read nears its 2 s bound the take slides later, and at 2 s or more the spare never takes, loudly
     (an earlier text of this entry gave "+26 to +30 s with every read at its bound" — a harness
     idealization in which LOCAL reads answer at their bound).
@@ -52,8 +53,10 @@ All notable changes are documented here. Versions follow the project's internal 
     reads its payload first (a stall now demotes sooner, never later; not part of the cross-node
     invariant); `failover arm` refuses a symlinked or non-canonical state directory
     (`REFUSE[STATE-dir-symlink]`, `REFUSE[STATE-dir-spelling]`, `REFUSE[STATE-dir-missing]`) before
-    creating anything, and a `REFUSE[STATE-dir-missing]` after a `mkdir -p` that failed partway removes
-    what it created (fix round 2; an earlier text said nothing was ever created). No change, documented: no lazy provider registration; the lxcfs
+    creating anything, and a `REFUSE[STATE-dir-missing]` after a `mkdir -p` that failed partway names the
+    path, and what that mkdir created may remain on disk (fix round 3 removed fix round 2's cleanup, which
+    could `rmdir` through a symlink raced onto the path; earlier texts of this entry said nothing was ever
+    created, then that the refusal removed what it created). No change, documented: no lazy provider registration; the lxcfs
     "future" stamps and the state-directory rename swap by a local root (SAFETY's local-host threat
     model); the "(v0.7)" markers stay.
   - **The invariant, measured (D6):** holder fence vs the spare's earliest take / mint per failure
@@ -72,7 +75,8 @@ All notable changes are documented here. Versions follow the project's internal 
     15–39 s); a baseline for the veto on slow take cycles — an own-head sample before each external read
     of the take cycle, the fence's tiers read apart, the re-check asking the pinned vantage first (a
     regression — fix round 2 below) (a healthy confirmed-head hold had vetoed a dead holder's take for +85
-    to +93 s, and one dead tier with the other ≥ 7 s late starved it; `PROOF_MAX_AGE`'s span 49 → 32 s); the primary's recovery path
+    to +93 s, and one dead tier with the other ≥ 7 s late starved it; `PROOF_MAX_AGE`'s span 49 → 32 s — both
+    the pinned-first order and the starvation fix are gone again since fix round 3, the span back at 49 s); the primary's recovery path
     sampled the same way (the first build's recovery veto read BLIND at every take in the measured
     worlds); the fast path keeps D2's timer; the censuses read structure instead of spelling (the
     take-path census, the commitment census by jq, the A8 census over the whole take segment and its
@@ -87,25 +91,70 @@ All notable changes are documented here. Versions follow the project's internal 
     any answer showing an advance aborts, and only the pinned vantage's own frozen answer carries the take —
     which also closes the mirror world the sequential call had always taken (pinned on a splicing or
     lagging `TIER2`, `TIER3` honest: taken 15–25 s into the voting); its cost, named: with one tier down every
-    take attempt waits out its 10 s timeout (+10 … +1 s). **An own-head sample before EVERY external read of
+    take attempt waits out its 10 s timeout (+10 … +1 s). **Removed in fix round 3** (below): the concurrent
+    read took a voting holder in worlds the 6.3 build never takes. **An own-head sample before EVERY external read of
     the take cycle** (S2): the gossip advisory's two `-m 15` reads had one sample before the pair, so a slow
     `TIER2` advisory read left no baseline and a dead holder was never taken (starvation page at t374);
     now N-is-all over the cycle's reads (a structural census: `test_own_view` (7g)), the baseline measured
-    over a 256-cell matrix (9–16 s wherever a tier answers), and the one class samples cannot split — ONE long advisory read, 2–6 s
+    over a 256-cell matrix (9–16 s wherever a tier answers — with fix round 3's restored re-check 8–16 s over
+    512 cells, and none at all with `TIER2` down and `TIER3` 7 s or later), and the one class samples cannot split — ONE long advisory read, 2–6 s
     baselines, +77 … +90 s on an aligned in-budget hold — named with the reviewer's options. **R1's cost
     with honest tiers named** (S3: a holder that voted into the episode costs one more `TAKEOVER_DELAY`,
-    +27 … +51 s at `MAX_DELINQUENT_SLOTS` 15, none at 0; the vote-time-estimate option written beside it,
+    +27 … +51 s at `MAX_DELINQUENT_SLOTS` 15 with prompt tiers — +48 … +77 s with a slow tier, and the armed
+    3.7 slots/s world pages starvation, fix round 3 found — none at 0; the vote-time-estimate option written beside it,
     the anchor unchanged). **The D6 holder table with every daemon term** (S4: the hard stop's
     `systemctl mask --runtime` bound and the set-identity-hang wedge order — the SIGKILL path crosses the
     73 / 79 s spares even at prompt RPC I/O, by up to 23 / 17 s; every slow-I/O row swept over the collision
-    check's 60 s phase — the wedged demote with slow LOCAL reads up to 160 s, the frozen worst case 127 s;
+    check's 60 s phase — the wedged demote with slow LOCAL reads up to 160 s, the frozen worst case 127 s
+    (both maxima false — fix round 3: 37 / 31 s and 174 s, the other wedge order with the stop and the mask
+    at their `-k` bounds);
     a second I/O mix; the model's integer-clock limits stated). The notes (S5): `LOCAL_HEALTH_MAX_BEHIND`'s
     texts; the local-read cost summaries (2 s never takes); the per-BLIND-veto cost (a full delay plus a
-    take cycle: +77 … +102 s with slow tiers); **`RECOVERY_MODE=rpc` that cannot complete now pages**
-    (it was silent forever: `RECOVERY_DELAY` + the span floor + the ladder after its first eligible pass,
-    throttled); the slow-cluster threshold per cadence; the arm's partial `mkdir`; a structural census of
+    take cycle: +77 … +102 s with slow tiers — too low, fix round 3 re-measured it); **`RECOVERY_MODE=rpc`
+    that cannot complete now pages** (it was silent forever: `RECOVERY_DELAY` + the span floor + the ladder
+    after its first eligible pass, throttled — removed in fix round 3: it misfired); the slow-cluster threshold per cadence; the arm's partial `mkdir` (its cleanup removed in
+    fix round 3); a structural census of
     the take cycle's samples in both daemons, and the fix-round lines that survived deletion (the
     primary's delay-tail sample and R1 pass stop, now with worlds that need them).
+  - **Fix round 3 (the delta review on fix round 2): where a mechanism this slice added regressed, it is
+    REMOVED and the reference behavior restored; what comes back is named with its numbers.**
+    **The fresh re-check is the 6.3 build's again** (the delta review's LB-1 / LB-2 / AV2-1, BLOCKERS): fix
+    round 2's concurrent read took a voting holder where the 6.3 build never does — with `TIER2` hanging the
+    pinned `TIER3` answer was one timeout old at the take (a holder resuming inside it: taken 9 s into its
+    voting), and a recovered `TIER2` answering without an advance no longer aborted as a flip (taken 21–29 s
+    in); it also cut an aligned in-budget hold's baseline to 2–9 s. Removed with fix round 1's pinned-first
+    order: the body is byte-identical to the 6.3 build's (a checksum pin, and a decision table over every
+    answer pair in both arrival orders plus a hanging-`TIER2` time axis, with a serialized-vs-concurrent
+    control — `test_act_then_alert` (7)/(7c)); DL-1's, LB-1's and LB-2's worlds are never taken, as on the
+    6.3 build (`test_own_view` (7f)); the world driver's per-branch clock goes with it. `PROOF_MAX_AGE`'s
+    span is 49 s again (margin 1 s; 58 s gate-first, which does not converge). **What comes back, named
+    (SAFETY, the own view's residuals 6 and 7):** the MIRROR world — the pair pinned on a splicing or
+    lagging `TIER2` while an honest `TIER3` shows the holder voting — taken 25 s into the voting at the
+    defaults (15 s at 3.7 slots/s, 20 s at the wizard preset), only while the spare's own replay lag also
+    hides the resumption; and the re-check's STARVATION (the review's AV-6) — `TIER2` timing out with `TIER3`
+    7 s or later leaves no own-head sample in the window: every veto BLIND, a dead holder never taken, the
+    starvation page (at the defaults the first veto t193, the page t372). The baseline matrix re-measured
+    (512 cells, identical across `MAX_DELINQUENT_SLOTS`, `CHECK_INTERVAL` and rate): 8–16 s where a tier
+    answers — its one 8 s cell (`TIER3` down, `TIER2` 4 s, `GOSSIP_VERIFY` on) vetoes an aligned 8 s hold
+    inside the budget, +90 s. **The `RECOVERY_MODE=rpc` "not completing" page is removed** (AV2-4 / AV2-5 /
+    CKB-5: it paged recoveries that then complete, and the ordinary failed-over state every
+    `ALERT_THROTTLE`, forever); the residual it covered is stated instead — the veto band can keep an `rpc`
+    recovery from ever completing, quietly (one veto page at most); `RECOVERY_MODE=manual`, the default, is
+    unaffected. **The arm's partial-`mkdir` cleanup is removed** (LB-3: it could `rmdir` through a symlink
+    raced onto the path, and removed an empty directory it had not created): a refused path whose creation
+    failed partway may remain on disk; the arm refuses and names the path. **The D6 wedged-demote row**
+    gains the other wedge order with the stop and the mask at their `-k` bounds (CKB-1): 106–110 s at prompt
+    RPC I/O (the 104 s spare crossed), 130 s with the tiers at their bounds (the 119 s mint and the 125 s
+    spare crossed), up to 174 s with slow LOCAL reads. Texts, re-measured after the removal (CKB-2 / CKB-3 /
+    CKB-6 / CKB-7 / CKB-8, AV2-2 / AV2-3 / AV2-7 / AV2-8, T9): the external confirm's `TIER3` read is bounded at
+    15 s, a second single long read (4–8 s baselines, +81 … +91 s on an aligned hold); a BLIND veto costs
+    +60 s with prompt tiers and up to +142 s with slow ones; slow LOCAL reads with a slow tier cost up to
+    +30 s; R1's cost with a slow tier +48 … +77 s and one starvation page; `LOCAL_HEALTH_MAX_BEHIND` is silent
+    AT the distance; the recovery pass's first own-head sample is pinned by no world. The two census notes
+    are hardened, each red first on the review's evasions: the redefinition census (T7-REDEF2) reads every
+    `NAME ()` token in any spelling, `eval`, the one `source` and the post-marker shape whole; the external-read
+    census (T8-S2SPELL) reads quoted command substitutions, walks the call graph of every function, and
+    checks the LOCAL-set bodies.
   - Tests: `test_own_view` (new — the take-path census, the commitment census, the veto's predicate
     table, the A8 census by structure, each mechanism red on the 6.3 build, the controls — the veto
     neutered alone, each guard alone, all neutered — and each census red on the review's own evasions);
@@ -113,7 +162,9 @@ All notable changes are documented here. Versions follow the project's internal 
     and main loop); `test_elapsed_provider` (the new layers in the layer census, the D0 residuals
     re-asserted as flipped, the shipped provider pinned at a certified rate beside every neutered row);
     `test_act_then_alert` (fix round 2: the re-check's decision table with the advance answers, the stuck
-    page, the T5 worlds), `test_config_drift`, `test_arm_ceremony`, `test_proof_gate`,
+    page, the T5 worlds; fix round 3: the restored re-check pinned by checksum and a decision table in both
+    arrival orders, the stuck page's removal), `test_arm_ceremony` (fix round 3: the partial `mkdir` refusal
+    removes nothing), `test_config_drift`, `test_proof_gate`,
     `test_primary_demote_timeout`, `test_primary_self_fence`. This round adds no commit hashes to
     public files (the history is being rewritten): rounds and sections are cited instead.
 
