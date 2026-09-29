@@ -67,8 +67,9 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
   is slow (`TIER2`'s time to failure + `TIER3`'s answer + both local reads past 16 s: after a timeout,
   `TIER3` 7 s or more, 5 s when local reads take 1 s) leaves the veto no fresh own-head baseline, so a dead
   holder is never taken over, loudly (on a real host one second less is vetoed too, at some phases) —
-  repair that `TIER2`, or while it is broken leave `TIER2_RPC` empty (an armed spare then pages
-  "G2 VANTAGES NOT DISTINCT" at every start unless `G2_VANTAGE_A` names another provider), or use a `TIER3`
+  repair that `TIER2`, or while it is broken leave `TIER2_RPC` empty (an armed spare with
+  `PRIMARY_UNSTAKED_PUBKEY` set then pages "G2 VANTAGES NOT DISTINCT" at every start — verified-demote off for
+  the run; a paired spare keeps watchdog-elapsed — unless `G2_VANTAGE_A` names another provider), or use a `TIER3`
   that answers the full `getVoteAccounts` well under ~5 s (about 3 s when local reads take 1 s); a `TIER2`
   that refuses at once does not starve the take.
 - On a v0.7 **armed** spare, a relinquish-proof gate additionally decides *how* the old holder is known

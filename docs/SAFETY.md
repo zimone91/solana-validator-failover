@@ -712,8 +712,8 @@ and neither does Tier-1 (its `getSlot` is logged, never compared). Measured:
   replay — including the veto's. 40 s (100 slots) behind: a holder resumed at t95 is held by the
   finalized own bank; t115 (the 6.3 build: taken at t165 after 50 s of voting) and t124 are vetoed
   VOTING at t165; **t125 is taken at t165 after 40 s** — the veto testifies about the chain as of the
-  spare's own replay lag, up to the 128 slots `getHealth` admits (≈ 51 s at 2.5 slots/s, ≈ 35 s at
-  3.7) — a named residual of the veto. Armed, watchdog-elapsed refuses such a spare (stale reference):
+  spare's own replay lag, up to the 128 slots `getHealth` admits at the take cycle's Tier-1 check (≈ 51 s
+  at 2.5 slots/s, ≈ 35 s at 3.7) — a named residual of the veto. Armed, watchdog-elapsed refuses such a spare (stale reference):
   it cannot prove by time while its own bank lags a live view by more than `N_HEAD`.
   **Tier-1 is the node's own health verdict (6.3.1, tightened in its fix round 1).** Agave's `getHealth`
   reports "behind" only when the node is MORE than its own `--health-check-slot-distance` behind
@@ -725,7 +725,9 @@ and neither does Tier-1 (its `getSlot` is logged, never compared). Measured:
   agave's 128) is clamped at startup with a loud WARN; one at or below it has no effect (an info line below
   it; silence at it — the default 128 at agave's default distance) — it
   cannot tighten Tier-1, because `getHealth` reports no lag inside the distance. The lagging-spare exposure
-  (the own view's residual 2) is bounded only by the validator's own `--health-check-slot-distance`. Measured: unclamped, 200 widened Tier-1
+  (the own view's residual 2) is bounded only by the validator's own `--health-check-slot-distance`, at the
+  take cycle's Tier-1 check (a lag that grows during a slow take cycle is not bounded by it). Measured:
+  unclamped, 200 widened Tier-1
   (a spare 150 slots behind took over at t185, 35 s into the holder's renewed voting — now not ready from
   t0, no take); the first 6.3.1 build's clamp to 128 still let a node run at distance 64 through — a
   spare 44 s (110 slots) behind took a holder resuming at t130 at t170, 40 s into its voting (t140: 30 s)
@@ -1015,8 +1017,9 @@ takeover starvation page covers the rest.
    longest healthy hold.
 2. **The spare's own replay lag.** The veto testifies about the chain as of the spare's own replay:
    a spare 40 s behind takes a holder that resumed within those 40 s (up to the node's own health-check
-   distance, which Tier-1 now enforces — 128 slots by default: ≈ 51 s at 2.5 slots/s, ≈ 35 s at 3.7). A
-   lower `--health-check-slot-distance` lowers this bound — measured in residual 6's world.
+   distance at the take cycle's Tier-1 check, which Tier-1 now enforces — 128 slots by default: ≈ 51 s at
+   2.5 slots/s, ≈ 35 s at 3.7; a lag that grows during a slow take cycle is not bounded by it). A lower
+   `--health-check-slot-distance` lowers this bound — measured in residual 6's world.
 3. **The instant of the take.** A holder resuming inside the veto's confirmed lag (≈ 1 s) or, armed,
    inside the veto's own pet (up to 7 s at the house bound-counting; milliseconds on a real host) is
    taken: measured 0 s un-armed, 7 s armed.
@@ -1078,7 +1081,8 @@ takeover starvation page covers the rest.
    behind and never takes; at 3.7 slots/s 15 s (t120 → t135); at the wizard preset 20 s (t100 → t120), at
    3.7 slots/s 15 s (t90 → t105); `GOSSIP_VERIFY` off the same; `TIER2` splicing or lagging 40 s, alike. One
    intermediary on `TIER2` is enough. **The mitigation is the spare's own `--health-check-slot-distance`**:
-   Tier-1 is the node's health verdict since 6.3.1, so a spare lagging past that distance never takes (the
+   Tier-1 is the node's health verdict since 6.3.1, so a spare lagging past that distance at the take cycle's
+   Tier-1 check never takes (the
    6.3 build's Tier-1 accepted a node reporting up to `LOCAL_HEALTH_MAX_BEHIND` = 100 slots behind, so a
    lower distance does not bound it there: it takes at every lag measured, up to 30 s at 64, 38 and 30
    slots) — measured at the defaults, 2.5 slots/s and a constant lag (in time the bound is the distance ÷
@@ -1121,8 +1125,9 @@ takeover starvation page covers the rest.
    on an 18-core host at load average 5–7: prompt LOCAL reads — `TIER3` 5 s taken at 10 of 10, 6 s held
    BLIND at 2 of 10 (phases 0.8 and 0.9), 7 s held at 10 of 10; every LOCAL read at 1 s — 3 s taken at 10
    of 10, 4 s held at 2 of 10 (0.8, 0.9), 5 s held at 10 of 10; at load average 13–17, 6 s and, at 1 s
-   LOCAL reads, 4 s each held at 4 of 10 (0.6–0.9); `TIER2` REFUSING after x s, one run each: 8 + 9, 9 + 8
-   and 8 + 8 held BLIND, 8 + 7 and 9 + 6 taken; the 6.3 build took every run). A BLIND veto re-anchors the countdown, so such a take waits a
+   LOCAL reads, 4 s each held at 4 of 10 (0.6–0.9); `TIER2` REFUSING after x s, one run each: 8 + 9 and 9 + 8
+   held BLIND, 8 + 7 and 9 + 6 taken; 8 + 8, the sum-16 edge, at ten phases: held BLIND at 5 of 10 (0.5–0.9)
+   and taken at the other five, at load average 81–155; the 6.3 build took every run). A BLIND veto re-anchors the countdown, so such a take waits a
    full countdown more (the per-BLIND-veto cost above). The 6.3 build has no own-view veto and
    takes every one of these holders — the 6.3 build → this build: `TIER3` 7 / 8 / 9 s late at the shipped
    defaults t193 / t197 / t201 → never (first BLIND veto t193 / t197 / t201, starvation page t372 / t385 /
@@ -1136,12 +1141,14 @@ takeover starvation page covers the rest.
    fails slowly (times out, or answers an error late), or while it is broken leave `TIER2_RPC` empty — the
    confirm, the fence and the re-check then read `TIER3` alone (at the shipped defaults `TIER3` 7 / 9 s taken
    t153 / t161, every LOCAL read at 1 s and `TIER3` 6 s t159; `GOSSIP_VERIFY` off t146 / t152 / t170) and the
-   witness fast path, which needs two tiers, is off; on an armed spare G2's vantage A defaults to
-   `TIER2_RPC`, so G2 is left one vantage — the daemon pages CRITICAL "G2 VANTAGES NOT DISTINCT" at every
-   start (verified-demote cannot-determine for the run) and `failover arm`'s P6 warns that the spare arms
-   with no proof provider, unless `G2_VANTAGE_A` names another provider — or use a `TIER3` that answers the
-   full `getVoteAccounts` well under ~5 s (about 3 s when every LOCAL read takes 1 s; `TIER2`'s time to
-   failure is at most its 10 s bound, so that holds whatever the failure). The first 6.3.1 build had it; fix round 1 closed it by
+   witness fast path, which needs two tiers, is off; on an armed spare with `PRIMARY_UNSTAKED_PUBKEY` set,
+   G2's vantage A defaults to `TIER2_RPC`, so G2 is left one vantage — the daemon pages CRITICAL "G2
+   VANTAGES NOT DISTINCT" at every start (verified-demote cannot-determine for the run; a paired spare keeps
+   watchdog-elapsed) and `failover arm`'s P6 warns that the spare arms without verified-demote, unless
+   `G2_VANTAGE_A` names another provider (with `PRIMARY_UNSTAKED_PUBKEY` empty no G2 is registered: no page,
+   no P6 warning) — or use a `TIER3` that answers the full `getVoteAccounts` well under ~5 s (about 3 s when
+   every LOCAL read takes 1 s; `TIER2`'s time to failure is at most its 10 s bound, so that holds whatever the
+   failure). The first 6.3.1 build had it; fix round 1 closed it by
    reading the pinned `TIER3` alone (t161 — the DL-1 regression) and fix round 2 by the concurrent read (t164
    — LB-1), and both are removed. Availability only — the failure is toward not taking — and one
    intermediary that makes `TIER2`'s read fail late (a blackhole, or an error answer after a delay) with a slow

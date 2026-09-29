@@ -5,7 +5,9 @@
 #      test_*.sh glob and would otherwise ship unparsed on 3.2). A `case … )` inside a $( ) command
 #      substitution (etc.) parses on bash 4+ but FAILS on bash 3.2; without this gate such a break
 #      silently skipped a whole suite there (v0.6.9 B3: test_collision_detector.sh, 34/35 as 35/35).
-#   2. RUN gate — execute every suite; a non-zero exit fails the gate.
+#   2. RUN gate — execute every suite; a non-zero exit fails the gate. Each suite runs behind the NET GUARD's failing,
+#      logging network-client stand-ins, first in PATH; stage (4) fails the gate when any suite reached one (named with
+#      its calls).
 # Also `bash -n` the eight shipped scripts (v0.7 Block 5.1 promotes the two fence scripts into
 # this explicit list — shippable artifacts, installed only by the `failover arm` ceremony;
 # install.sh joined at the Block-5.1 panel fix round — a pre-existing gap: it was in SHA256SUMS
@@ -38,6 +40,27 @@ echo "═══ (2) RUN gate: execute every suite ═══"
 EXPECTED_SUITES=54
 run_pass=0; run_fail=0; failed=""
 _suite_out=$(mktemp)
+# The NET GUARD's gate (6.3.1 fix round 6 — the delta panel 5's CLM5-3: a suite ran the host's ping 126–135 times a run
+# while the texts said no suite reaches the network). Every suite runs with a directory of FAILING, LOGGING stand-ins FIRST in
+# PATH — curl and every client of tests/lib/harness.sh's HARNESS_NET_CLIENTS (one list, read from there) — and its own
+# log in HARNESS_NETGUARD_LOG, which the harness's stand-ins write too (in a suite that sources the harness they come
+# first; its curl answers rc 7 and is only counted in the suite's banner). A suite whose log is not empty FAILS stage
+# (4), named with its calls. LIMIT: PATH-based, as the harness's guard (its header names what it does not see).
+_ra_net=$(mktemp -d)
+_ra_clients=$(sed -n 's/^HARNESS_NET_CLIENTS="\(.*\)"$/\1/p' lib/harness.sh)
+net_fail=0; netfailed=""
+mkdir -p "$_ra_net/bin"
+for _c in curl $_ra_clients; do
+    cat > "$_ra_net/bin/$_c" <<EOS
+#!/bin/sh
+printf '%s\t%s\n' '$_c' "\$*" >> "\${HARNESS_NETGUARD_LOG:-$_ra_net/stray.log}"
+exit 2
+EOS
+    chmod +x "$_ra_net/bin/$_c"
+done
+if [[ -z "$_ra_clients" ]]; then
+    echo "  NET-GUARD SETUP: no HARNESS_NET_CLIENTS list in lib/harness.sh — the guard would hold curl alone"; net_fail=1
+fi
 # Every diagnostic line carries the NAME of the suite that produced it (reviewer, 6.2 GO nit): an
 # untagged "tail: …" line is unattached in a log of 51 suites — a grep by suite name misses it and
 # reads as "the diagnostics did not fire" (the reviewer nearly reported exactly that). printf, not
@@ -52,7 +75,8 @@ for t in test_*.sh; do
     # v0.7 (4.3): the grep is BARE ❌ — the contract is "❌ is reserved for failures in suite
     # output"; a suite reporting non-failures must use a different marker (the v058 🐞 precedent).
     # Named so after the reviewer found the old "❌ FAIL" literal made v058 an exception-by-phrasing.
-    if "${BASH:-bash}" "$t" > "$_suite_out" 2>&1; then
+    _ra_log="$_ra_net/$t.log"; : > "$_ra_log"; : > "$_ra_net/stray.log"
+    if HARNESS_NETGUARD_LOG="$_ra_log" PATH="$_ra_net/bin:$PATH" "${BASH:-bash}" "$t" > "$_suite_out" 2>&1; then
         if grep -q "❌" "$_suite_out"; then
             run_fail=$((run_fail+1)); failed="$failed $t(printed-FAIL-but-exit-0)"
             # v0.7 (4.4, reviewer): print the offending line(s) — diagnosis, not just detection.
@@ -77,6 +101,12 @@ for t in test_*.sh; do
         echo "      exit rc=$_suite_rc [$t]"
         grep "❌" "$_suite_out" 2>/dev/null | head -3 | _diag_tag "offending" "$t"
         tail -5 "$_suite_out" 2>/dev/null | _diag_tag "tail" "$t"
+    fi
+    cat "$_ra_net/stray.log" >> "$_ra_log" 2>/dev/null   # a child that lost HARNESS_NETGUARD_LOG (env -i) logs there
+    if [[ -s "$_ra_log" ]]; then
+        net_fail=$((net_fail+1)); netfailed="$netfailed $t"
+        echo "      NET-GUARD [$t]: $(grep -c . "$_ra_log") network-client call(s), each failed by the guard (none sent):"
+        tr '\t' ' ' < "$_ra_log" | sort | uniq -c | sort -rn | head -5 | _diag_tag "net" "$t"
     fi
 done
 rm -f "$_suite_out"
@@ -105,11 +135,20 @@ else
 fi
 
 echo ""
-total=$(( parse_fail + run_fail + count_fail + solereader_fail ))
+echo "═══ (4) net-guard gate: no suite reached a network client through PATH ═══"
+if [[ $net_fail -eq 0 ]]; then
+    echo "  clean: every suite's guard log is empty (curl + $(printf '%s' "$_ra_clients" | wc -w | tr -d ' ') clients failing and logged, first in PATH)"
+else
+    echo "  NET-GUARD VIOLATION:$netfailed — each reached a network client (the calls are listed under the suite above); stub it in the suite's world"
+fi
+rm -rf "$_ra_net"
+
+echo ""
+total=$(( parse_fail + run_fail + count_fail + solereader_fail + net_fail ))
 if [[ $total -eq 0 ]]; then
-    echo "═══ GREEN — $run_pass/$run_pass suites, parse-clean on $("${BASH:-bash}" --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1) ═══"
+    echo "═══ GREEN — $run_pass/$run_pass suites, parse-clean on $("${BASH:-bash}" --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1), no network client reached ═══"
     exit 0
 else
-    echo "═══ NOT GREEN — $parse_fail parse fail(s), $run_fail run fail(s), $solereader_fail sole-reader fail(s) ═══"
+    echo "═══ NOT GREEN — $parse_fail parse fail(s), $run_fail run fail(s), $solereader_fail sole-reader fail(s), $net_fail net-guard fail(s) ═══"
     exit 1
 fi

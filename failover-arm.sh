@@ -728,7 +728,7 @@ _pre_g2_vantage_probe() {
     _p6_va="${G2_VANTAGE_A:-${TIER2_RPC:-}}"
     _p6_vb="${G2_VANTAGE_B:-${TIER3_RPC:-}}"
     if [[ -z "$_p6_va" || -z "$_p6_vb" ]]; then
-        _arm_warn "precondition P6: fewer than two G2 vantages configured (A='${_p6_va:-}' B='${_p6_vb:-}') — the ARMED daemon's startup tripwire will DISABLE verified-demote for the whole run and page CRITICAL, so this spare arms with NO proof provider and only the un-armed timer path. Set G2_VANTAGE_A/G2_VANTAGE_B (or TIER2_RPC/TIER3_RPC) to two bank-bearing RPC providers in DISTINCT failure domains in $ARM_ENV_FILE and re-run 'failover arm'."
+        _arm_warn "precondition P6: fewer than two G2 vantages configured (A='${_p6_va:-}' B='${_p6_vb:-}') — the ARMED daemon's startup tripwire will DISABLE verified-demote for the whole run and page CRITICAL (G2 VANTAGES NOT DISTINCT) at every start, so this spare arms without verified-demote: PAIRED, watchdog-elapsed is its only proof provider; UNPAIRED, no provider can prove and only the un-armed timer path remains. Set G2_VANTAGE_A/G2_VANTAGE_B (or TIER2_RPC/TIER3_RPC) to two bank-bearing RPC providers in DISTINCT failure domains in $ARM_ENV_FILE and re-run 'failover arm'."
         return 0
     fi
     command -v curl >/dev/null 2>&1 || _arm_refuse "P6-batch" "cannot verify G2 vantage batch capability: curl is not installed (the probe is one bounded JSON-RPC read per vantage; cannot-verify at CEREMONY time fails toward refusing)" "install curl, then re-run 'failover arm'"

@@ -86,6 +86,7 @@ Also: `🛑` shutdown → Telegram only; `♥` heartbeat status → **log file o
 | `STANDBY UNREACHABLE WHILE STAKED 🚨` | v0.6.9 (H1/H3): promoted holder + local validator unreachable (main loop, throttled; and once at monitor startup when the persisted role was STAKED) — cannot self-fence; a spare may take over; intervene |
 | `STAKED IDENTITY SEEN ELSEWHERE (possible collision) 🚨` | v0.6.9 (M5): same detection-only collision page as the PRIMARY (while STAKED, 2 consecutive non-self gossip endpoints, throttled) |
 | `UNSAFE CROSS-NODE TIMING — REFUSING TO START 🚨` | v0.6.9 (M9): `TAKEOVER_DELAY < EXPECTED + MARGIN` at startup → fatal (override: `ALLOW_UNSAFE_TIMING=true`, lab only) |
+| `G2 VANTAGES NOT DISTINCT 🚨` | v0.7 (Block 6.2): an **armed** spare with `PRIMARY_UNSTAKED_PUBKEY` set whose two G2 vantages are not distinct — fewer than two configured (vantage A defaults to `TIER2_RPC`, so an empty `TIER2_RPC` leaves one), the same URL twice, or one host — pages at every daemon start; verified-demote answers cannot-determine for the whole run (fail toward not taking); a paired spare keeps watchdog-elapsed. Fix: point `G2_VANTAGE_A`/`G2_VANTAGE_B` (or `TIER2_RPC`/`TIER3_RPC`) at two bank-bearing RPC providers in distinct failure domains |
 
 ### ⚠️ Warning (`alert_warn` → Telegram + ntfy)
 - `⚠️ STANDBY local validator unreachable! Cannot monitor or take over.` *(throttled)*

@@ -445,7 +445,7 @@ ask_numeric "Takeover delay (seconds of sustained delinquency)" "${TAKEOVER_DELA
 CFG_TAKEOVER_DELAY="$REPLY"
 warn_if_below_rec_takeover_delay "$CFG_TAKEOVER_DELAY" "$REC_TAKEOVER_DELAY" || true   # nudge only (N1 clamp below enforces the floor)
 
-echo -e "  ${DIM}This value enters no decision: Tier-1 is ready iff getHealth answers ok — within the validator's own --health-check-slot-distance (agave's default 128); every 'behind' report fails Tier-1. Above that distance it is clamped at start (loud WARN); at or below it, it has no effect. To bound how far behind this spare may be when it takes, lower the validator's own --health-check-slot-distance.${NC}"
+echo -e "  ${DIM}This value enters no decision: Tier-1 is ready iff getHealth answers ok — within the validator's own --health-check-slot-distance (agave's default 128); every 'behind' report fails Tier-1. Above that distance it is clamped at start (loud WARN); at or below it, it has no effect. To bound how far behind this spare may be at the take cycle's Tier-1 check (a lag that grows during a slow take cycle is not bounded by it), lower the validator's own --health-check-slot-distance.${NC}"
 ask_numeric "Local health max behind (slots; no effect at or below the node's health-check distance, default 128 — clamped above it)" "${LOCAL_HEALTH_MAX_BEHIND:-128}" 0
 CFG_MAX_BEHIND="$REPLY"
 

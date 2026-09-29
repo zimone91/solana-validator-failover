@@ -1896,7 +1896,7 @@ if [[ "$(field "$rh1" E)" == "105" && "$(field "$rh1" mutation)" == "none" && "$
    && [[ "$(field "$rh2b" ov_veto)" == "165:voting" && "$(field "$rh2c" mutation)" == "165" && "$(field "$rh2c" holder_voting_at_mut)" == "40" ]] \
    && [[ "$(field "$rh3" t1_behind_from)" == "0" && "$(field "$rh3" E)" == "none" && "$(field "$rh3" mutation)" == "none" && "$(field "$rh3" lhmb)" == "128" ]] \
    && [[ "$(field "$rh4" mutation)" == "none" && "$(field "$rh4" emint)" == "none" && "$(field "$rh4" estale_from)" == "211" && "$(field "$rh4" estale_cycles)" -gt 0 && "$(field "$rh4" estale_cycles)" == "$(field "$rh4" cycles_from_stale)" ]]; then
-    ok "(11h) MEASURED — a spare replaying 40 s (100 slots) behind passes Tier-1 (agave reads ok up to 128) and every own-view read lags with it: a holder resumed at t95 is held by the finalized own bank; t115 (the 6.3 build: taken at t165 after 50 s) and t124 are vetoed VOTING at t165 — the veto's confirmed view, 40 s behind, shows them; t125 is TAKEN at t165 after 40 s of voting — RESIDUAL (6.3.1, named in docs/SAFETY.md): the veto testifies about the chain as of this spare's own replay lag, up to the 128 slots getHealth admits (≈ 51 s at 2.5 slots/s, ≈ 35 s at 3.7); 60 s (150 slots) behind → Tier-1 BEHIND from t0, no episode (LOCAL_HEALTH_MAX_BEHIND=$(field "$rh3" lhmb): since 6.3.1 the default is agave's 128 and larger values are clamped to it — (11m)); ARMED at 40 s behind with a genuinely silent holder, watchdog-elapsed refuses STALE REFERENCE from its first evaluation (t211) on every cycle to the horizon — no take (availability: a spare more than N_HEAD behind cannot prove by time)"
+    ok "(11h) MEASURED — a spare replaying 40 s (100 slots) behind passes Tier-1 (agave reads ok up to 128) and every own-view read lags with it: a holder resumed at t95 is held by the finalized own bank; t115 (the 6.3 build: taken at t165 after 50 s) and t124 are vetoed VOTING at t165 — the veto's confirmed view, 40 s behind, shows them; t125 is TAKEN at t165 after 40 s of voting — RESIDUAL (6.3.1, named in docs/SAFETY.md): the veto testifies about the chain as of this spare's own replay lag, up to the 128 slots getHealth admits at the take cycle's Tier-1 check (≈ 51 s at 2.5 slots/s, ≈ 35 s at 3.7); 60 s (150 slots) behind → Tier-1 BEHIND from t0, no episode (LOCAL_HEALTH_MAX_BEHIND=$(field "$rh3" lhmb): since 6.3.1 the default is agave's 128 and larger values are clamped to it — (11m)); ARMED at 40 s behind with a genuinely silent holder, watchdog-elapsed refuses STALE REFERENCE from its first evaluation (t211) on every cycle to the horizon — no take (availability: a spare more than N_HEAD behind cannot prove by time)"
 else
     bad "(11h) lag40-resume95=$rh1 :: resume115=$rh2 :: resume124=$rh2b :: resume125=$rh2c :: lag60=$rh3 :: armed-lag40=$rh4"
 fi
@@ -2248,6 +2248,12 @@ alert() { :; }; alert_warn() { :; }; alert_info() { :; }; send_telegram() { :; }
 rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _fence_rot_check() { :; }
 flush_pending_alerts() { :; }; save_state() { :; }; _sd_notify() { :; }
 get_local_identity() { echo U1; }
+# ping answers (rc 0): the connected world. The primary's REAL check_internet (its parallel pings and wait loop) and the
+# heartbeat's ping summary run; only the network under them is stubbed (6.3.1 fix round 6 — the delta panel 5's CLM5-3:
+# unstubbed, each run of this suite ran the host's ping at 8.8.8.8 / 1.1.1.1 / 9.9.9.9 — 126 times when every ping
+# fails, 135 when every one answers — and the path the loop took, connected or NO INET, depended on the host's
+# network). A function, so the pings' ( … ) & subshells inherit it.
+ping() { return 0; }
 STAKED_PUBKEY=S1; UNSTAKED_PUBKEY=U1; VOTE_PUBKEY=V1; PRIMARY_UNSTAKED_PUBKEY=""
 LOCAL_RPC="http://local.mock"; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"
 TAKEOVER_DELAY=60; TAKEOVER_COOLDOWN=120; MAX_DELINQUENT_SLOTS=0; DRY_RUN=false; GOSSIP_VERIFY=false
