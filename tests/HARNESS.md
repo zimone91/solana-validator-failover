@@ -52,6 +52,14 @@ offending lines are printed for diagnosis. Two consequences:
 - `load_seam <script>` — the MAIN-LOOP cut (cached per basename+mtime+size) + source + automatic
   re-application of every registered shim (`harness_shim`); a re-sourced seam gets its fake clock
   back without the suite remembering to.
+- `bp_parse <file> <dir>` / `bp_exec` / `bp_xcheck` / `bp_bodies` (v0.7 Block 6.3.1 fix round 5) — **bash's own
+  parse** for the structural censuses (`test_own_view` (0a) (0d) (1a) (7g), `test_arm_ceremony` (16h)): the file
+  wrapped as two functions at the MAIN LOOP marker, sourced in `env -i bash` (definitions only — nothing in it
+  runs), printed back with `declare -f` (comments gone, one-liners expanded, the `function` keyword normalized),
+  and lexed into definition / command / line records whose command words carry their quotes and backslashes
+  removed; `bp_xcheck` compares the parse with what sourcing the file's executable head leaves defined. LIMIT,
+  named in its header: a command word assembled at run time, code inside a string handed to eval / trap /
+  `bash -c` / `mapfile -C`, a backtick nested in backticks, aliases.
 - `dump_freshness` — **the sole reader of the freshness triple**
   (`_liveness_first_provider` / `_liveness_obs_since` / `_last_blind_end`) in suites; run_all
   stage (3) enforces this mechanically (a `$`-dereference in any suite = red). Priming WRITES in
