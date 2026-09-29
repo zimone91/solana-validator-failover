@@ -270,9 +270,12 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   128 at agave's default distance — the daemon is silent): it cannot tighten Tier-1.
   To bound how far behind a spare may be when it takes (the own view's residuals 2 and 6 in
   `docs/SAFETY.md`: a spare lagging L seconds can take a holder that resumed within those L seconds), lower
-  the validator's own `--health-check-slot-distance`. The default is 128 (≈ 51 s at 2.5 slots/s); measured
-  at the shipped defaults, at 64 slots a holder resuming inside the episode is taken at most 25 s into its
-  voting, at 38 slots at most 15 s — and a spare that lags past its distance cannot take at all.
+  the validator's own `--health-check-slot-distance`. The default is 128 (≈ 51 s at 2.5 slots/s — in time the
+  bound is the distance ÷ the cluster's slot rate: 64 slots are 25.6 s at 2.5 slots/s, 32 s at 2.0); measured
+  at the shipped defaults, 2.5 slots/s and a constant lag, at 64 slots a holder resuming inside the episode is
+  taken at most 25 s into its voting, at 38 slots at most 15 s. The distance bounds the lag at the take
+  cycle's Tier-1 check (the cycle's start) — a lag that grows during a slow take cycle is not bounded by it —
+  and a spare that lags past its distance there cannot take at all.
 
 ### Compatibility & tuning notes
 
@@ -700,11 +703,15 @@ timeline is identical to v0.6.6 (~70s).
 > tiers (+9 s at the wizard's preset), up to +40 s in the measured cells with a slow tier as well; as a
 > local read nears its 2 s bound the take slides later, and at 2 s or more the spare never takes (loudly:
 > the veto page, then the starvation page) (`docs/SAFETY.md`, *What it costs, measured*). Nor does a spare
-> whose `TIER2` times out while `TIER3` answers 7 s or later (5 s when every local read takes 1 s; on a
-> real host one second less is vetoed too, at some phases): the own view's residual 7 — repair that
-> `TIER2`, or while it is broken leave `TIER2_RPC` empty (the witness fast path and G2's default vantage,
-> which need two tiers, are then off), or use a `TIER3` that answers the full `getVoteAccounts` well under
-> ~5 s; a `TIER2` that refuses at once does not starve the take. The per-class measurement of the whole
+> whose `TIER2` fails slowly — times out, or answers an error or garbage late — while `TIER3` is slow:
+> `TIER2`'s time to failure + `TIER3`'s answer + both local reads past 16 s (after a timeout, `TIER3` 7 s or
+> later; 5 s when every local read takes 1 s; on a real host one second less is vetoed too, at some
+> phases): the own view's residual 7 — repair that `TIER2`, or while it is broken leave `TIER2_RPC` empty
+> (the witness fast path, which needs two tiers, is then off; on an armed spare G2's vantage A defaults to
+> `TIER2_RPC`, so the daemon pages CRITICAL "G2 VANTAGES NOT DISTINCT" at every start and `failover arm`'s
+> P6 warns, unless `G2_VANTAGE_A` names another provider), or use a `TIER3` that answers the full
+> `getVoteAccounts` well under ~5 s (about 3 s when every local read takes 1 s); a `TIER2` that refuses at
+> once does not starve the take. The per-class measurement of the whole
 > ordering — holder fence vs the spare's earliest take, including the rows where it does not hold — is in
 > `docs/SAFETY.md`, *The cross-node invariant*.
 

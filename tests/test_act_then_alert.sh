@@ -36,7 +36,8 @@
 #       cur, _liveness_obs_since == re-check instant, abort alert AFTER the state writes, and NO
 #       cooldown (LAST_TAKEOVER_TIME unchanged — abort is a withdrawn verdict, not a failed take); (2i) fix round 4:
 #       at VOTE_LIVENESS_EPSILON 2 a +2 advance proceeds and a +3 advance aborts VOTING; (2j) an advance whose
-#       reference did not advance aborts VOTING, not stale (life signs before the tip guard)
+#       reference did not advance aborts VOTING, not stale (life signs before the tip guard); (2k) fix round 5: at
+#       EPSILON 2 a stale reference, a -1 and a -2 answer and +2 on a stale reference each abort (stale / backwards)
 #   (3) FRESH-BLIND ABORT: sampler empty at the re-check → NO MUTATE, _last_blind_end == re-check
 #       instant (countdown re-anchored), abort alert
 #   (4) FRESH-FLIP ABORT: re-check answered by the other tier → NO MUTATE, min-rule re-pin, abort
@@ -49,8 +50,8 @@
 #       → switch_to_staked (test_primary_recovery_liveness Part-1 idiom, RECOVERY_CHECKS=1)
 #   (7) BYTE-IDENTITY: _fresh_proof_recheck identical across daemons AND to the 6.3 build's body (fix round 3,
 #       U1: restored exactly — cksum pinned); (7c) its DECISION per (pinned vantage, each tier's answer), all 72
-#       cells in BOTH arrival orders plus a time axis (TIER2 hanging while the holder resumes) and 64 cells at
-#       VOTE_LIVENESS_EPSILON 2 (fix round 4: +2 / +3 advances; an advance with a stale reference), on both daemons,
+#       cells in BOTH arrival orders plus a time axis (TIER2 hanging while the holder resumes) and 256 cells at
+#       VOTE_LIVENESS_EPSILON 2 (+2 / +3 advances, a stale reference, -1 / -2, +2 on a stale reference), on both daemons,
 #       against the 6.3 rule (one sampler call: TIER2, TIER3 only on its failure), with three controls — both
 #       tiers read at once (the serialized-vs-concurrent control), fix round 1's pinned-first order, and the first
 #       line to arrive deciding (an order-dependent parse)
@@ -76,7 +77,8 @@
 #       fix round 2: (14d)/(14e) the delta panel's T5-UNPINNED lines — the delay tail's samples, the R1 pass
 #       stop (tiers lagging: TLAG; each layer alone and both neutered); fix round 3 (U2): (14f) fix round 2's
 #       recovery-stuck page REMOVED — no page in a completing recovery, none in the failed-over state (CONTVOTE);
-#       fix round 4: every sender recorded (alert_warn, alert, alert_info), the failed-over worlds run one ALERT_THROTTLE
+#       fix round 4: every sender recorded (alert_warn, alert, alert_info, and — fix round 5 — the transport, send_telegram
+#       and send_webhook), the failed-over worlds run one ALERT_THROTTLE
 #       further (t2100), the one-shot 'ACTIVELY VOTING elsewhere' page when this node's own view misses the advance
 #       (LFREEZE), and (14g) RECOVERY_MODE=manual through the main loop's real dispatch — no pass, no take
 #   (15) the DYNAMIC halves of the take-path and A8 censuses (fix round 1, the panel's T3/T4): every STAKED
@@ -232,6 +234,8 @@ sim_sb() {
               advance2)  printf '5002 %s T2\n' $(( 900000 + off )); return 0 ;;   # fix round 4 (TS3-RC-MUTANTS): +2 / +3 at SIM_EPS 2
               advance3)  printf '5003 %s T2\n' $(( 900000 + off )); return 0 ;;
               advstale)  printf '5001 900000 T2\n'; return 0 ;;                  # fix round 4: the vote advanced, the reference did NOT
+              adv2stale) printf '5002 900000 T2\n'; return 0 ;;                  # fix round 5 (T4-EPS2-BRANCHES): +2 at SIM_EPS 2 with a stale reference
+              backwards2) printf '4998 %s T2\n' $(( 900000 + off )); return 0 ;;  # fix round 5: -2 (within epsilon 2, still backwards)
               flip)      printf '5000 %s T3\n' $(( 900000 + off )); return 0 ;;
               backwards) printf '4999 %s T2\n' $(( 900000 + off )); return 0 ;;
               stale)     printf '5000 900000 T2\n'; return 0 ;;   # tip == the pinned tip (t0) → view stale
@@ -371,7 +375,7 @@ sim_pr() {
 # with that mode instead of attempt_safe_recovery. The loop: attempt_safe_recovery every CI s (default 3);
 # every sleep — the recovery ladder's, switch_to_staked's — advances the clock; LAST_SWITCH_TIME = T0.
 # Events: PASS-START t= (a recovery-eligible pass), TAKE-ENTER t=, VETO <kind> t=, CLEAR age= (the veto's
-# baseline age), MUTATE t=, PAGE <kind> t= (every alert_warn — fix round 3, U2: veto | blocked (ACTIVELY VOTING
+# baseline age), MUTATE t=, PAGE <kind> t= (every page, through any sender — fix round 3, U2: veto | blocked (ACTIVELY VOTING
 # elsewhere) | standby (STANDBY has staked) | stuck (fix round 2's removed page, by its text) | other). WSCRIPT: a mutant primary.
 sim_chain() {
   (
@@ -392,11 +396,12 @@ sim_chain() {
   export _SIM_NOW
   log(){ :;}; log_error(){ :;}; log_warn(){ case "$*" in *"[own-view] VETO (holder voting)"*) printf 'VETO voting t=%s\n' $(( _SIM_NOW - T0 )) >> "$_EVT_FILE" ;; *"[own-view] VETO (blind)"*) printf 'VETO blind t=%s\n' $(( _SIM_NOW - T0 )) >> "$_EVT_FILE" ;; esac; }
   log_info(){ case "$*" in *"[own-view] veto read clear"*) local _a="${*##*baseline }"; _a="${_a#* (}"; _a="${_a%% s old*}"; printf 'CLEAR age=%s t=%s\n' "$_a" $(( _SIM_NOW - T0 )) >> "$_EVT_FILE" ;; esac; }
-  send_telegram(){ return 0; }; send_webhook(){ :; }
   # every page, by kind (fix round 3, U2) — through ANY sender (fix round 4, the delta panel 3's TS3-14F-SENDER: red first on the
-  # removed stuck page re-added through alert and through alert_info): alert_warn, alert and alert_info each record
+  # removed stuck page re-added through alert and through alert_info; fix round 5, the delta panel 4's T4-14F-TRANSPORT: through
+  # send_telegram directly, the way the primary's signal handler and flush_pending_alerts send): alert_warn, alert, alert_info,
+  # send_telegram and send_webhook each record
   _page(){ local k=other; case "$*" in *"VETOED"*) k=veto ;; *"ACTIVELY VOTING"*) k=blocked ;; *"STANDBY has staked"*) k=standby ;; *"NOT completing"*) k=stuck ;; *"RECOVERED TO STAKED"*) k=recovered ;; esac; printf 'PAGE %s t=%s\n' "$k" $(( _SIM_NOW - T0 )) >> "$_EVT_FILE"; }
-  alert_warn(){ _page "$@"; }; alert(){ _page "$@"; }; alert_info(){ _page "$@"; }
+  alert_warn(){ _page "$@"; }; alert(){ _page "$@"; }; alert_info(){ _page "$@"; }; send_telegram(){ _page "$@"; return 0; }; send_webhook(){ _page "$@"; }
   save_state(){ :;}
   sleep(){ local _s="${1%%.*}"; case "$_s" in ''|*[!0-9]*) _s=0 ;; esac; _SIM_NOW=$(( _SIM_NOW + _s )); export _SIM_NOW; }
   get_local_identity(){ echo "$STAKED_PUBKEY"; }
@@ -536,6 +541,21 @@ if [[ "$ev" != *MUTATE* && "$(field "$st" rc)" == "1" && "$(field "$st" lla)" ==
 else
     bad "(2j) advstale: rc=$(field "$st" rc) lla=$(field "$st" lla) lfv=$(field "$st" lfv) mutate=$([[ "$ev" == *MUTATE* ]] && echo yes || echo no): $(printf '%s' "$ev" | tr ';' '\n' | grep -m2 'ABORTED' | tr '\n' ' ' | cut -c1-200)"
 fi
+# (2k) fix round 5 (the delta panel 4's T4-EPS2-BRANCHES — every EPSILON-2 cell before this decided only down / frozen / +2 / +3):
+# at VOTE_LIVENESS_EPSILON 2 a stale reference (lastVote unchanged), a -1 and a -2 answer and +2 on a stale reference each ABORT —
+# stale, backwards, backwards, stale — never within epsilon (red first on its RS1: the tip guard skipped for an advance within
+# epsilon — the +2 stale answer proceeds; RB1: backwards tolerated within epsilon — -1 / -2 proceed)
+k2_ok=1; k2_rows=""
+for _k in "stale|external view is stale" "backwards|went backwards" "backwards2|went backwards" "adv2stale|external view is stale"; do
+    out=$(SIM_EPS=2 sim_sb "${_k%%|*}" false 0); ev=$(evline "$out"); st=$(stline "$out")
+    if [[ "$ev" != *MUTATE* && "$(field "$st" rc)" == "1" && "$ev" == *"${_k#*|}"* && "$(field "$st" ltt)" == "0" ]]; then k2_rows="$k2_rows ${_k%%|*}:abort"
+    else k2_ok=0; k2_rows="$k2_rows ${_k%%|*}:rc=$(field "$st" rc),mutate=$([[ "$ev" == *MUTATE* ]] && echo yes || echo no)[$(printf '%s' "$ev" | tr ';' '\n' | grep -m1 'ABORTED' | cut -c1-120)]"; fi
+done
+if [[ $k2_ok -eq 1 ]]; then
+    ok "(2k) VOTE_LIVENESS_EPSILON 2: a stale reference, a -1 and a -2 answer and +2 on a stale reference at the re-check each ABORT (stale / backwards / backwards / stale — no MUTATE, rc 1, no cooldown):$k2_rows — within epsilon is never a pass when the reference is stale or the vote went backwards"
+else
+    bad "(2k) EPSILON 2 abort kinds:$k2_rows"
+fi
 
 # ── (3) FRESH-BLIND ABORT ───────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (3) FRESH-BLIND ABORT: sampler empty at the re-check ───"
@@ -665,6 +685,9 @@ _rc_tr=$(cat "$STANDBY" "$PRIMARY" | grep -c '^_recheck_tier_read() {')
 # NOT (VOTING must win: the body tests life signs BEFORE the tip guard, deliberately) — and an EPSILON-2 sub-table runs the same
 # body at VOTE_LIVENESS_EPSILON 2 (what the ≤ v0.6.10 installers wrote) over advances of +2 (within epsilon: not VOTING) and +3
 # (VOTING); every other cell runs at EPSILON 0 with a +10 advance and a fresh reference, where both mutants decide alike.
+# FIX ROUND 5 (the delta panel 4's T4-EPS2-BRANCHES — red first on its RS1, the tip guard skipped for an advance within epsilon, and
+# RB1, backwards tolerated within epsilon: both passed every cell here and failed only (7)'s cksum): the EPSILON-2 sub-table also
+# decides a stale reference, -1, -2 and +2 on a stale reference — each an abort at epsilon 2 (stale / back / back / stale).
 echo ""; echo "─── (7c) the re-check's decision: every cell in both arrival orders + the time axis, both daemons = the 6.3 rule; three controls; EPSILON 2 ───"
 dec_table() {   # $1 = daemon, $2 = the orders ("T2FIRST T3FIRST HANG"), [$3 = the static kinds, $4 = VOTE_LIVENESS_EPSILON] → one line per cell: "<order> <pin> <T2 kind> <T3 kind> <rc> <outcome>"
   (
@@ -681,6 +704,7 @@ dec_table() {   # $1 = daemon, $2 = the orders ("T2FIRST T3FIRST HANG"), [$3 = t
             frozen) echo "5000 900100 $2" ;; advanced) echo "5010 900100 $2" ;; backwards) echo "4990 900100 $2" ;;
             stale) echo "5000 900000 $2" ;; advstale) echo "5010 900000 $2" ;;   # fix round 4: the vote advanced, the reference did not
             adv2) echo "5002 900100 $2" ;; adv3) echo "5003 900100 $2" ;;       # fix round 4: the EPSILON-2 sub-table's +2 / +3
+            back1) echo "4999 900100 $2" ;; back2) echo "4998 900100 $2" ;; adv2stale) echo "5002 900000 $2" ;;   # fix round 5: -1 / -2 / +2 on a stale reference
             resumes) if [[ -e "$_DM/T2.done" ]]; then echo "5010 900100 $2"; else echo "5000 900100 $2"; fi ;;
             *) return 1 ;;
         esac
@@ -723,14 +747,14 @@ dec_rule() {   # dec_rule <selection T2|T3> <pin> <T2 kind> <T3 kind> [<reader: 
     local sel="$1" pin="$2" k2="$3" k3="$4" rdr="${5:-SEQ}" eps="${6:-0}" a="" at="" d=0 tipadv=1
     [[ "$k2" == "hang" ]] && k2=down
     if [[ "$k3" == "resumes" ]]; then if [[ "$rdr" == "SEQ" ]]; then k3=advanced; else k3=frozen; fi; fi   # read after TIER2's end (the 6.3 body), or before / at once
-    _duse() { case "$1" in frozen|advanced|advstale|adv2|adv3|backwards|stale) return 0 ;; *) return 1 ;; esac; }
+    _duse() { case "$1" in frozen|advanced|advstale|adv2|adv3|adv2stale|backwards|back1|back2|stale) return 0 ;; *) return 1 ;; esac; }
     if [[ "$sel" == "T2" ]]; then
         if _duse "$k2"; then a=$k2; at=T2; elif _duse "$k3"; then a=$k3; at=T3; fi
     else
         if _duse "$k3"; then a=$k3; at=T3; elif _duse "$k2"; then a=$k2; at=T2; fi
     fi
-    case "$a" in advanced|advstale) d=10 ;; adv2) d=2 ;; adv3) d=3 ;; backwards) d=-10 ;; esac   # the answer's vote against the pin (5000)
-    case "$a" in stale|advstale) tipadv=0 ;; esac                                               # its reference not advanced since the pin
+    case "$a" in advanced|advstale) d=10 ;; adv2|adv2stale) d=2 ;; adv3) d=3 ;; backwards) d=-10 ;; back1) d=-1 ;; back2) d=-2 ;; esac   # the answer's vote against the pin (5000)
+    case "$a" in stale|advstale|adv2stale) tipadv=0 ;; esac                                     # its reference not advanced since the pin
     if [[ -z "$a" ]]; then echo "1 blind"
     elif [[ $d -gt $eps ]]; then echo "1 voting"                  # life signs first — before the tip guard (the body's order)
     elif [[ $d -lt 0 ]]; then echo "1 back"
@@ -749,7 +773,7 @@ EOS
 )
 mutate "$STANDBY" "${_d7c_r1_sed//@LFP@/_liveness_first_provider}" "$_d7c_r1"
 _tp=$(dec_table "$PRIMARY" "T2FIRST T3FIRST HANG"); _ts=$(dec_table "$STANDBY" "T2FIRST T3FIRST HANG")
-_te2p=$(dec_table "$PRIMARY" "T2FIRST T3FIRST" "down frozen adv2 adv3" 2); _te2s=$(dec_table "$STANDBY" "T2FIRST T3FIRST" "down frozen adv2 adv3" 2)   # fix round 4: EPSILON 2
+_te2p=$(dec_table "$PRIMARY" "T2FIRST T3FIRST" "down frozen adv2 adv3 stale back1 back2 adv2stale" 2); _te2s=$(dec_table "$STANDBY" "T2FIRST T3FIRST" "down frozen adv2 adv3 stale back1 back2 adv2stale" 2)   # fix round 4: EPSILON 2 (fix round 5: + stale, -1, -2, +2 stale)
 _tc=$(dec_table "$_d7c_conc" "T3FIRST HANG"); _tr1=$(dec_table "$_d7c_r1" "T3FIRST HANG"); _tf=$(dec_table "$_d7c_first" "T2FIRST T3FIRST")
 rm -f "$_d7c_conc" "$_d7c_r1" "$_d7c_first"
 dec_ok=1; dec_diff=""; dec_n=0; conc_bad=""; r1_bad=""; first_bad=""; conc_want=""; r1_want=""; first_want=""
@@ -789,14 +813,15 @@ while read -r _o _pin _k2 _k3 _rc _out; do
     [[ "$_rc $_out" == "$_w" ]] || { e2_ok=0; e2_diff="$e2_diff [standby EPSILON 2 $_o pin $_pin T2=$_k2 T3=$_k3: '$_rc $_out' want '$_w']"; }
 done <<< "$_te2s"
 [[ "$_te2p" == "$_te2s" ]] || { e2_ok=0; e2_diff="$e2_diff [primary's EPSILON-2 table differs from the standby's: $(diff <(printf '%s\n' "$_te2s") <(printf '%s\n' "$_te2p") | grep '^[<>]' | head -4 | tr '\n' ' ')]"; }
-_bite=$(printf '%s\n' "$_ts" | grep -c '^T2FIRST T2 advstale down 1 voting$'; printf '%s\n' "$_te2s" | grep -c '^T2FIRST T2 adv2 down 0 proceed$'; printf '%s\n' "$_te2s" | grep -c '^T2FIRST T2 adv3 down 1 voting$'; printf '%s\n' "$_te2s" | grep -c '^T3FIRST T3 down adv3 1 voting$')
+_bite=$(printf '%s\n' "$_ts" | grep -c '^T2FIRST T2 advstale down 1 voting$'; printf '%s\n' "$_te2s" | grep -c '^T2FIRST T2 adv2 down 0 proceed$'; printf '%s\n' "$_te2s" | grep -c '^T2FIRST T2 adv3 down 1 voting$'; printf '%s\n' "$_te2s" | grep -c '^T3FIRST T3 down adv3 1 voting$'
+       printf '%s\n' "$_te2s" | grep -c '^T2FIRST T2 stale down 1 stale$'; printf '%s\n' "$_te2s" | grep -c '^T2FIRST T2 back1 down 1 back$'; printf '%s\n' "$_te2s" | grep -c '^T2FIRST T2 back2 down 1 back$'; printf '%s\n' "$_te2s" | grep -c '^T2FIRST T2 adv2stale down 1 stale$')
 _bite=$(printf '%s' "$_bite" | tr -d '\n')
-if [[ $dec_ok -eq 1 && $dec_n -eq 148 && $e2_ok -eq 1 && $e2_n -eq 64 && "$_bite" == "1111" && -n "$conc_bad" && "$conc_bad" == "$conc_want" && "$conc_bad" == " HANG:T2:hang/resumes HANG:T3:hang/resumes" \
+if [[ $dec_ok -eq 1 && $dec_n -eq 148 && $e2_ok -eq 1 && $e2_n -eq 256 && "$_bite" == "11111111" && -n "$conc_bad" && "$conc_bad" == "$conc_want" && "$conc_bad" == " HANG:T2:hang/resumes HANG:T3:hang/resumes" \
       && -n "$r1_bad" && "$r1_bad" == "$r1_want" && " $r1_bad " == *" T3FIRST:T3:advanced/frozen "* && " $r1_bad " == *" T3FIRST:T3:frozen/frozen "* && " $r1_bad " == *" HANG:T3:hang/resumes "* \
       && -n "$first_bad" && "$first_bad" == "$first_want" && "$first_bad" != *"T2FIRST"* && " $first_bad " == *" T3FIRST:T3:advanced/frozen "* ]]; then
-    ok "(7c) the re-check's DECISION, all $dec_n cells on BOTH daemons' real _fresh_proof_recheck — the 72 (pin T2/T3 × each tier down / frozen / advanced / advanced with a stale reference / backwards / stale) in BOTH arrival orders and the 4 time-axis cells — = the 6.3 rule (TIER2's answer, TIER3 only when TIER2 has none; advanced → VOTING, before the tip guard, so an advance with a stale reference is VOTING too; backwards → abort, another tier than the pin's → a flip, a stale reference → abort, frozen on the pin → proceed, none → blind), and at VOTE_LIVENESS_EPSILON 2 (the ≤ v0.6.10 installers' value) the $e2_n cells over down / frozen / +2 / +3 = the same rule at epsilon 2 (+2 within it: proceeds on the pin; +3 → VOTING) — fix round 4 (the delta panel 3's TS3-RC-MUTANTS: every earlier cell ran at epsilon 0 with a fresh reference, so a doubled epsilon and a VOTING that needs a fresh reference both passed): a TIER2 that recovered and shows the vote ADVANCED aborts VOTING in every order (DL-1), a recovered TIER2 answering frozen / backwards / stale aborts (a flip / back / flip — LB-2), and TIER2 HANGING while the holder resumes → TIER3 read after the timeout → VOTING (LB-1). CONTROLS, each broken exactly where its own rule differs: both tiers read AT ONCE with the 6.3 selection ($_nc cells:$conc_bad — the serialized-vs-concurrent control, every static cell identical: T6-SERIAL's cell); fix round 1's pinned-first order ($_nr cells, all pinned on TIER3 — DL-1's T2=advanced/T3=frozen and LB-2's frozen/frozen among them); the FIRST line to arrive deciding ($_nf cells, every one in the TIER3-first order and none when TIER2 answers first — T10-ORDER: a table that never varies the order passes it)"
+    ok "(7c) the re-check's DECISION, all $dec_n cells on BOTH daemons' real _fresh_proof_recheck — the 72 (pin T2/T3 × each tier down / frozen / advanced / advanced with a stale reference / backwards / stale) in BOTH arrival orders and the 4 time-axis cells — = the 6.3 rule (TIER2's answer, TIER3 only when TIER2 has none; advanced → VOTING, before the tip guard, so an advance with a stale reference is VOTING too; backwards → abort, another tier than the pin's → a flip, a stale reference → abort, frozen on the pin → proceed, none → blind), and at VOTE_LIVENESS_EPSILON 2 (the ≤ v0.6.10 installers' value) the $e2_n cells over down / frozen / +2 / +3 / stale / −1 / −2 / +2 on a stale reference = the same rule at epsilon 2 (+2 within it: proceeds on the pin; +3 → VOTING; a stale reference → stale, −1 / −2 → backwards, +2 on a stale reference → stale — fix round 5, the delta panel 4's T4-EPS2-BRANCHES) — fix round 4 (the delta panel 3's TS3-RC-MUTANTS: every earlier cell ran at epsilon 0 with a fresh reference, so a doubled epsilon and a VOTING that needs a fresh reference both passed): a TIER2 that recovered and shows the vote ADVANCED aborts VOTING in every order (DL-1), a recovered TIER2 answering frozen / backwards / stale aborts (a flip / back / flip — LB-2), and TIER2 HANGING while the holder resumes → TIER3 read after the timeout → VOTING (LB-1). CONTROLS, each broken exactly where its own rule differs: both tiers read AT ONCE with the 6.3 selection ($_nc cells:$conc_bad — the serialized-vs-concurrent control, every static cell identical: T6-SERIAL's cell); fix round 1's pinned-first order ($_nr cells, all pinned on TIER3 — DL-1's T2=advanced/T3=frozen and LB-2's frozen/frozen among them); the FIRST line to arrive deciding ($_nf cells, every one in the TIER3-first order and none when TIER2 answers first — T10-ORDER: a table that never varies the order passes it)"
 else
-    bad "(7c) re-check decision table (cells=$dec_n; EPSILON 2 cells=$e2_n, the bite cells advstale/+2/+3/+3=$_bite want 1111):$dec_diff$e2_diff | controls: conc=[$conc_bad] (want [$conc_want]) r1=[$r1_bad] (want [$r1_want]) first=[$first_bad] (want [$first_want])"
+    bad "(7c) re-check decision table (cells=$dec_n; EPSILON 2 cells=$e2_n, the bite cells advstale/+2/+3/+3/stale/-1/-2/+2stale=$_bite want 11111111):$dec_diff$e2_diff | controls: conc=[$conc_bad] (want [$conc_want]) r1=[$r1_bad] (want [$r1_want]) first=[$first_bad] (want [$first_want])"
 fi
 
 # ── (8) PERMANENT REVERT-CONTROL ────────────────────────────────────────────────────────────────
@@ -990,7 +1015,7 @@ if [[ $_nostuck -eq 1 && "$(grep -c 'NOT completing\|_recovery_stuck_page' "$PRI
       && "$(mut14 st10)" == "none" && "$(e14 st10)" == *"VETO voting t=408"* && "$(_pg st10)" == "PAGE veto t=408;" && "$(mut14 st0)" == "none" && -z "$(_pg st0)" \
       && "$(mut14 fo25)" == "none" && -z "$(_pg fo25)" && "$(mut14 fo10)" == "none" && -z "$(_pg fo10)" \
       && "$(mut14 fofz)" == "none" && "$(_pg fofz)" == "PAGE blocked t=312;" ]]; then
-    ok "(14f) fix round 3 (U2 — the delta panel 2's AV2-4/AV2-5/CKB-5): fix round 2's recovery-stuck page is REMOVED (its text and function are gone from the primary) — it paged (14d)'s recovery at t162 before it completed at t174, (14e)'s at t81 before t162, and the failed-over state at t732 and every ALERT_THROTTLE after; now no world here pages 'NOT completing': (14d) recovered t174 and (14e) t162 with no such page; the RECOVERY_MODE=rpc residual stands as fix round 1 left it and is named in docs/SAFETY.md — the defaults at 1.0 slots/s with the last vote at t280 read VOTING at t408 (one tick before the band) and never recover by t800 (its one page: the veto's own at t408), and at 2.5 slots/s tier1 reads the account delinquent from t300 — never recovered, no page; the FAILED-OVER state (CONTVOTE — the STANDBY voting the identity) at 2.5 and 1.0 slots/s: never re-taken and NO page by t2100 — one ALERT_THROTTLE past the removed page's second firing, every sender recorded (alert_warn, alert, alert_info: fix round 4, the delta panel 3's TS3-14F-SENDER) — the 6.3 build's one-shot 'ACTIVELY VOTING elsewhere' page (t312) is not sent while this node's own bank sees the STANDBY voting: the own bank's advance ends the pass first (fix round 1's R1, named); with this node's own view frozen at t250 (it misses the advance) the pass reaches the fence and that page fires once, at t312. RECOVERY_MODE=manual, the default, runs none of this ((14g))"
+    ok "(14f) fix round 3 (U2 — the delta panel 2's AV2-4/AV2-5/CKB-5): fix round 2's recovery-stuck page is REMOVED (its text and function are gone from the primary) — it paged (14d)'s recovery at t162 before it completed at t174, (14e)'s at t81 before t162, and the failed-over state at t732 and every ALERT_THROTTLE after; now no world here pages 'NOT completing': (14d) recovered t174 and (14e) t162 with no such page; the RECOVERY_MODE=rpc residual stands as fix round 1 left it and is named in docs/SAFETY.md — the defaults at 1.0 slots/s with the last vote at t280 read VOTING at t408 (one tick before the band) and never recover by t800 (its one page: the veto's own at t408), and at 2.5 slots/s tier1 reads the account delinquent from t300 — never recovered, no page; the FAILED-OVER state (CONTVOTE — the STANDBY voting the identity) at 2.5 and 1.0 slots/s: never re-taken and NO page by t2100 — one ALERT_THROTTLE past the removed page's second firing, every sender recorded (alert_warn, alert, alert_info — fix round 4, the delta panel 3's TS3-14F-SENDER — and the transport, send_telegram and send_webhook — fix round 5, the delta panel 4's T4-14F-TRANSPORT) — the 6.3 build's one-shot 'ACTIVELY VOTING elsewhere' page (t312) is not sent while this node's own bank sees the STANDBY voting: the own bank's advance ends the pass first (fix round 1's R1, named); with this node's own view frozen at t250 (it misses the advance) the pass reaches the fence and that page fires once, at t312. RECOVERY_MODE=manual, the default, runs none of this ((14g))"
 else
     bad "(14f) U2: stuck-page text/function sites=$(grep -c 'NOT completing\|_recovery_stuck_page' "$PRIMARY") no-stuck-page=$_nostuck :: tail=$(mut14 tail) $(_pg tail) :: r1s=$(mut14 r1s) :: def10=$(mut14 st10) [$(_pg st10)] :: 2.5=$(mut14 st0) [$(_pg st0)] :: failed-over 2.5=$(mut14 fo25) [$(_pg fo25)] 1.0=$(mut14 fo10) [$(_pg fo10)] :: own view frozen=$(mut14 fofz) [$(_pg fofz)]"
 fi

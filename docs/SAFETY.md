@@ -33,12 +33,14 @@ Two independent mechanisms enforce this:
    **+15 s** (`MAX_DELINQUENT_SLOTS`=0) / **+14 s** (=15; +9 s at the wizard preset) when every LOCAL read
    takes 1 s with prompt tiers; with a slow tier as well, where the take lands, up to **+40 s** in the
    measured cells (the probe's sample can push the first frozen verdict under the span floor — a whole take
-   cycle; phase-dependent: a measured maximum, not a bound). **With `TIER2` timing out and a slow `TIER3` the
-   spare never takes a dead holder** (residual 7 — the first 6.3.1 build's, an availability regression
-   against the 6.3 build, which takes there): the veto's own-head baseline must span `TIER2`'s timeout,
-   `TIER3`'s answer and two LOCAL reads within 16 s — `TIER3` 7 s late or more with prompt LOCAL reads, 5 s
-   or more when every LOCAL read takes 1 s (the tests' whole-second clock; a real host stamps whole seconds
-   too, and there one second less is vetoed BLIND at some sub-second phases). **As a LOCAL read approaches its 2 s bound the take slides later, and at 2 s or more the
+   cycle; phase-dependent: a measured maximum, not a bound). **With `TIER2` failing late and a slow `TIER3`
+   the spare never takes a dead holder** (residual 7 — the first 6.3.1 build's, an availability regression
+   against the 6.3 build, which takes there): the veto's own-head baseline must span `TIER2`'s time to
+   failure (a timeout at its 10 s bound, or any unusable answer — an error body, garbage, a refusal — that
+   arrives late), `TIER3`'s answer and two LOCAL reads within 16 s — after `TIER2`'s timeout, `TIER3` 7 s
+   late or more with prompt LOCAL reads, 5 s or more when every LOCAL read takes 1 s; a `TIER2` error after
+   8 s with `TIER3` at 9 s alike (the tests' whole-second clock; a real host stamps whole seconds too, and
+   there one second less is vetoed BLIND at some sub-second phases). **As a LOCAL read approaches its 2 s bound the take slides later, and at 2 s or more the
    spare never takes** — the veto's own read times out, every veto is BLIND; loudly: the veto page, then
    the takeover starvation page. (A harness world with EVERY read at its bound, +28 / +32 s, is an
    idealization — it lets LOCAL reads answer at their bound; it is not a real world.)
@@ -1079,29 +1081,48 @@ takeover starvation page covers the rest.
    Tier-1 is the node's health verdict since 6.3.1, so a spare lagging past that distance never takes (the
    6.3 build's Tier-1 accepted a node reporting up to `LOCAL_HEALTH_MAX_BEHIND` = 100 slots behind, so a
    lower distance does not bound it there: it takes at every lag measured, up to 30 s at 64, 38 and 30
-   slots) — measured at the defaults: at 64 slots the
+   slots) — measured at the defaults, 2.5 slots/s and a constant lag (in time the bound is the distance ÷
+   the cluster's slot rate — 64 slots are 25.6 s at 2.5 slots/s, 32 s at 2.0 — and it bounds the lag at the
+   take cycle's Tier-1 check, the cycle's start; a lag that grows during a slow take cycle is not bounded by
+   it): at 64 slots the
    resumption at t140 is taken at most 10 s into the voting (a 25 s lag, t150; 26 s and more never), any
    resumption at most 25 s into it (t125 → t150); at 38 slots only at the resumption's own instant (a 15 s
    lag, t140 — residual 3's class), any resumption at most 15 s into it (t125 → t140). A spare that lags
-   more than that distance cannot take at all, so the distance trades this exposure against availability.
+   more than that distance at the Tier-1 check cannot take at all, so the distance trades this exposure
+   against availability.
    Pre-existing on the 6.3 build and the first 6.3.1 build; fix round 2's concurrent read closed it and took
    a voting holder in other worlds (the delta reviews' LB-1 / LB-2), so fix round 3 removed that read and
    names this instead.
 7. **The re-check's starvation (the review's AV-6 — the first 6.3.1 build's, back since fix round 3; an
    availability regression against the 6.3 build).** No own-head sample may sit inside the re-check (it is
    inside the acceptance→mutation span `PROOF_MAX_AGE` counts), so the veto's youngest baseline is the
-   pre-take sample, and its age at the veto is a SUM: the sample's own LOCAL read, `TIER2`'s timeout (10 s),
-   `TIER3`'s answer, the veto's own LOCAL read and the glue between them. When the sum exceeds `OWN_HEAD_H`
-   (16 s) every veto is BLIND and a dead holder is never taken over, loudly (the veto page — "no own-head
-   sample within the last 16 s" — then the takeover starvation page): with prompt LOCAL reads from `TIER3`
-   7 s late, with every LOCAL read at 1 s from 5 s (4 s is taken, the baseline exactly 16 s old: t171,
-   `GOSSIP_VERIFY` on t193) — on the tests' whole-second clock. A real host's stamps are whole seconds of
+   pre-take sample, and its age at the veto is a SUM: the sample's own LOCAL read, `TIER2`'s time to FAILURE
+   (x), `TIER3`'s answer (y), the veto's own LOCAL read and the glue between them. `TIER2`'s term is whatever
+   makes its re-check read unusable, whenever that arrives — the re-check's one sampler call falls to
+   `TIER3` on a timeout at the read's 10 s bound (x = 10, the most it can be) and on a JSON-RPC error body,
+   an HTTP 5xx page, garbage or a non-canonical lastVote, a refusal or a reset after x s. When the sum
+   exceeds `OWN_HEAD_H` (16 s) every veto is BLIND and a
+   dead holder is never taken over, loudly (the veto page — "no own-head sample within the last 16 s" —
+   then the takeover starvation page). After `TIER2`'s timeout: with prompt LOCAL reads from `TIER3` 7 s
+   late, with every LOCAL read at 1 s from 5 s (4 s is taken, the baseline exactly 16 s old: t171,
+   `GOSSIP_VERIFY` on t193). `TIER2` answering a non-canonical lastVote after x s, `TIER3` honest after y s,
+   prompt LOCAL reads, at the shipped defaults: x + y = 8 + 9 is never taken (first BLIND veto t190, the
+   starvation page t366) and 8 + 8 is, with the baseline exactly 16 s old (t186); with every LOCAL read at
+   1 s, 8 + 7 is never taken (BLIND t196, page t378) — these three pinned; measured with the same world
+   driver and not pinned: 9 + 8 never (t189 / t382; the wizard preset 8 + 9 / 9 + 8 t146 / t145, pages t322 /
+   t338; `GOSSIP_VERIFY` off t173 / t172, pages t366 / t382), 7 + 9 and 9 + 7 taken at 16 s (t187 / t185; the
+   wizard preset 7 + 9 / 8 + 8 t143 / t142, `GOSSIP_VERIFY` off t171 / t170), 8 + 6 at 1 s LOCAL reads taken
+   (t191, 16 s). The 6.3 build takes every one of these holders (8 + 9 / 9 + 8 t190 / t189, the wizard preset
+   t146 / t145, `GOSSIP_VERIFY` off t173 / t172, 8 + 7 at 1 s t185) — on the tests' whole-second clock. A real host's stamps are whole seconds of
    uptime too, so there the edge is phase-dependent: one second less is vetoed BLIND when the pre-take
-   sample falls late in its second (real time, the real `take_staked_identity` against a fake `curl`
-   binary, `TIER2` hanging to its `-m 10`, the take started at ten sub-second phases: prompt LOCAL reads —
-   `TIER3` 5 s taken at 10 of 10, 6 s held BLIND at 2 of 10 (phases 0.8 and 0.9), 7 s held at 10 of 10;
-   every LOCAL read at 1 s — 3 s taken at 10 of 10, 4 s held at 2 of 10 (0.8, 0.9), 5 s held at 10 of 10;
-   the 6.3 build took every run, 3 per cell). A BLIND veto re-anchors the countdown, so such a take waits a
+   sample falls late in its second, and the held share is the fraction of a second the glue between the
+   stamps takes — it grows with the host's load (real time, bash 3.2, the real `take_staked_identity`
+   against a fake `curl` binary, `TIER2` hanging to its `-m 10`, the take started at ten sub-second phases,
+   on an 18-core host at load average 5–7: prompt LOCAL reads — `TIER3` 5 s taken at 10 of 10, 6 s held
+   BLIND at 2 of 10 (phases 0.8 and 0.9), 7 s held at 10 of 10; every LOCAL read at 1 s — 3 s taken at 10
+   of 10, 4 s held at 2 of 10 (0.8, 0.9), 5 s held at 10 of 10; at load average 13–17, 6 s and, at 1 s
+   LOCAL reads, 4 s each held at 4 of 10 (0.6–0.9); `TIER2` REFUSING after x s, one run each: 8 + 9, 9 + 8
+   and 8 + 8 held BLIND, 8 + 7 and 9 + 6 taken; the 6.3 build took every run). A BLIND veto re-anchors the countdown, so such a take waits a
    full countdown more (the per-BLIND-veto cost above). The 6.3 build has no own-view veto and
    takes every one of these holders — the 6.3 build → this build: `TIER3` 7 / 8 / 9 s late at the shipped
    defaults t193 / t197 / t201 → never (first BLIND veto t193 / t197 / t201, starvation page t372 / t385 /
@@ -1110,16 +1131,22 @@ takeover starvation page covers the rest.
    t126 → never (t335); `TIER2` answering at its bound (its `-m 10` reads timing out) with `TIER3` 7 s,
    alike (t188 → never, t380); every LOCAL read at 1 s, `TIER3` 5 / 6 s: t170 / t170 → never (BLIND t175 /
    t179, pages t380 / t371; `GOSSIP_VERIFY` on t188 / t193 → never, t384 / t397). On the test clock `TIER3`
-   6 s late with prompt LOCAL reads is taken (t189 at the defaults). A `TIER2` that REFUSES at once does not starve the
-   take (`TIER3` 7 / 9 s at the defaults: t153 / t161). **What an operator can do:** repair a `TIER2` that
-   times out, or while it is broken leave `TIER2_RPC` empty — the confirm, the fence and the re-check then
-   read `TIER3` alone (`TIER3` 7 / 9 s taken t146 / t152; every LOCAL read at 1 s and `TIER3` 6 s t170) and
-   the witness fast path and G2's default vantage, which need two tiers, are off — or use a `TIER3` that
-   answers the full `getVoteAccounts` well under ~5 s. The first 6.3.1 build had it; fix round 1 closed it by
+   6 s late with prompt LOCAL reads is taken (t189 at the defaults). A `TIER2` that REFUSES at once — the x ≈ 0
+   end — does not starve the take (`TIER3` 7 / 9 s at the defaults: t153 / t161). **What an operator can do:** repair a `TIER2` that
+   fails slowly (times out, or answers an error late), or while it is broken leave `TIER2_RPC` empty — the
+   confirm, the fence and the re-check then read `TIER3` alone (at the shipped defaults `TIER3` 7 / 9 s taken
+   t153 / t161, every LOCAL read at 1 s and `TIER3` 6 s t159; `GOSSIP_VERIFY` off t146 / t152 / t170) and the
+   witness fast path, which needs two tiers, is off; on an armed spare G2's vantage A defaults to
+   `TIER2_RPC`, so G2 is left one vantage — the daemon pages CRITICAL "G2 VANTAGES NOT DISTINCT" at every
+   start (verified-demote cannot-determine for the run) and `failover arm`'s P6 warns that the spare arms
+   with no proof provider, unless `G2_VANTAGE_A` names another provider — or use a `TIER3` that answers the
+   full `getVoteAccounts` well under ~5 s (about 3 s when every LOCAL read takes 1 s; `TIER2`'s time to
+   failure is at most its 10 s bound, so that holds whatever the failure). The first 6.3.1 build had it; fix round 1 closed it by
    reading the pinned `TIER3` alone (t161 — the DL-1 regression) and fix round 2 by the concurrent read (t164
    — LB-1), and both are removed. Availability only — the failure is toward not taking — and one
-   intermediary that controls `TIER2`'s latency (a blackhole) with a slow `TIER3` is enough. This build's cells
-   are pinned cell by cell: `test_own_view` (7c), (7c-age), (7c-r7).
+   intermediary that makes `TIER2`'s read fail late (a blackhole, or an error answer after a delay) with a slow
+   `TIER3` is enough. This build's world cells are pinned cell by cell — all of them above but the late-error
+   cells named as not pinned: `test_own_view` (7c), (7c-age), (7c-r7).
 
 ### Holder self-fence: the differential bar and its named residuals (v0.7, Block 6.3)
 

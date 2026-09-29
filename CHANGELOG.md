@@ -11,8 +11,8 @@ All notable changes are documented here. Versions follow the project's internal 
   Every residual and every number lives in `docs/SAFETY.md`, linked here.
   - **Explicit commitments:** every `getVoteAccounts`/`getSlot` body in both daemons names its commitment
     (detection reads `finalized`, agave's default — behavior-neutral); a census parses every body with jq.
-  - **The own bank restarts the countdown:** a `lastVote` advance of the staked account in the spare's own bank
-    during an episode is holder voting — a fourth takeover-anchor input; watchdog-elapsed's silence restarts
+  - **The own bank restarts the countdown:** the own bank's holder-voting evidence (a not-delinquent read in the
+    episode, or a `lastVote` advance) is a fourth takeover-anchor input; watchdog-elapsed's silence restarts
     with it (`[elapsed-own]`); reset at every episode close; the witness fast path never skips it.
   - **One bounded local veto read before the switch**, on every take path (the standby's `take_staked_identity`,
     the primary's `switch_to_staked`): one `LOCAL_RPC` batch (`curl -m 2`) after the fresh re-check and before
@@ -28,13 +28,13 @@ All notable changes are documented here. Versions follow the project's internal 
     creating anything, unless a symlink is raced onto the path mid-arm (a local root's race, named in SAFETY).
   - **The fresh re-check is the 6.3 build's, unchanged;** two changes tried during review opened take-while-voting
     paths and were reverted. Two residuals come with it, named in SAFETY: the mirror world (residual 6), the 6.3
-    build's own; and the re-check's starvation (residual 7) — a `TIER2` that times out while `TIER3` is slow
-    leaves the veto no fresh baseline, so a dead holder is never taken over, loudly — this block's own
-    availability regression against Block 6.3, never a double-sign.
+    build's own; and the re-check's starvation (residual 7) — a `TIER2` that fails slowly (a timeout, or an error
+    answered late) while `TIER3` is slow leaves the veto no fresh baseline, so a dead holder is never taken over,
+    loudly — this block's own availability regression against Block 6.3, never a double-sign.
   - The mechanism, its costs and its residuals (the `RECOVERY_MODE=rpc` one included): [the spare's own view](docs/SAFETY.md#the-spares-own-view-v07-block-631);
     the holder's fence against the spare's earliest take and mint, every crossing named: [the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
-  - Tests: `test_own_view` and `test_d6_holder` (new). Every suite now runs behind a failing, logging `curl` first
-    in `PATH`, so no suite reaches a real endpoint (the earlier suites made read-only calls to `127.0.0.1:8899`).
+  - Tests: `test_own_view` and `test_d6_holder` (new). Every suite runs hermetic (the harness's failing, logging `curl`
+    first in `PATH`, or `test_v058_regression`'s own `curl` function); earlier suites read `127.0.0.1:8899`.
 
 - **Block 6.3 — the watchdog-elapsed proof provider (attested time), the spare's observation surface
   as a standing property, and the holder-side hardening of five review rounds.** Every residual and
