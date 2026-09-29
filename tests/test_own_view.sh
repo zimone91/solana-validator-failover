@@ -1442,7 +1442,7 @@ wlaunch hd4_7     T2DOWN=1 T3LAT_ALL=4 HOLDFROM=145 HOLDTO=153 HORIZON=320
 # at once does not starve) — each pinned to the exact value measured on this build (the 6.3 build takes every starvation cell).
 # Fix round 5 (the delta panel 4's CC4-1: TIER2's term is its time to FAILURE, not only a timeout): TIER2 answering an unusable
 # (non-canonical) lastVote after 8 s, TIER3 honest after 9 s — never; 8 + 8 — taken, the baseline exactly 16 s old; every LOCAL
-# read at 1 s, 8 + 7 — never (red first on 8088d4e, the 6.3 build: t190 / t186 / t185, every one taken); and (the delta panel 4's
+# read at 1 s, 8 + 7 — never (red first on the 6.3 build: t190 / t186 / t185, every one taken); and (the delta panel 4's
 # CC4-3) the blanked-TIER2 mitigation at the shipped defaults (GOSSIP_VERIFY on), beside its GOSSIP_VERIFY-off rows
 R7_CELLS='d6gv|mutation=189,ov_veto=none|GV=true CI=5 T2DOWN=1 T3LAT_ALL=6 STARVE=300 HORIZON=420
 d8gv|mutation=none,ov_veto=197:blind,starve=385|GV=true CI=5 T2DOWN=1 T3LAT_ALL=8 STARVE=300 HORIZON=420
