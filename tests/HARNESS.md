@@ -53,17 +53,46 @@ offending lines are printed for diagnosis. Two consequences:
   re-application of every registered shim (`harness_shim`); a re-sourced seam gets its fake clock
   back without the suite remembering to.
 - `bp_parse <file> <dir>` / `bp_exec` / `bp_xcheck` / `bp_bodies` (v0.7 Block 6.3.1 fix round 5) — **bash's own
-  parse** for the structural censuses (`test_own_view` (0a) (0d) (1a) (7g), `test_arm_ceremony` (16h)): the file
-  wrapped as two functions at the MAIN LOOP marker, sourced in `env -i bash` (definitions only — nothing in it
-  runs), printed back with `declare -f` (comments gone, one-liners expanded, the `function` keyword normalized),
-  and lexed into definition / command / line records whose command words carry their quotes and backslashes
-  removed; `bp_xcheck` compares the parse with what sourcing the file's executable head leaves defined. LIMIT,
-  named in its header: a command word assembled at run time, code inside a string handed to eval / trap /
-  `bash -c` / `mapfile -C`, a backtick nested in backticks, aliases.
+  parse** for the structural censuses (`test_own_view` (0a) (0b) (0d) (1a) (7g) (7g-local), `test_arm_ceremony`
+  (16h)): the file wrapped as two functions at the MAIN LOOP marker, sourced in `env -i bash` (definitions only —
+  nothing in it runs), printed back with `declare -f` (comments gone, one-liners expanded, the `function` keyword
+  normalized — outside a `$( )`, which bash 3.2 prints verbatim), and lexed as bash reads that print — a `$((cmd) )` as the command substitution it is, an unquoted
+  here-document body's `$( )` and backticks as code (fix round 6) — into definition / command / structure / line /
+  here-document / redirection records whose command words carry their quotes and backslashes removed; `bp_xcheck`
+  compares the parse with what sourcing the file's executable head leaves defined. LIMIT, named in its header: a
+  command word assembled at run time; code inside a string a command runs — eval / trap / `mapfile -C` (the (0d)
+  census flags or pins them) and a shell's `-c` string or stdin ((1a) and (7g) flag a shell run as a command, directly
+  or behind timeout / env / command / nohup / nice / setsid / xargs / exec — not behind another wrapper, nor code an
+  interpreter runs from a string, such as awk's `system()`); a here-document opened inside a here-document body's
+  `$( )`; a backtick nested in backticks; aliases.
 - `dump_freshness` — **the sole reader of the freshness triple**
   (`_liveness_first_provider` / `_liveness_obs_since` / `_last_blind_end`) in suites; run_all
   stage (3) enforces this mechanically (a `$`-dereference in any suite = red). Priming WRITES in
   fixtures are fine. Read fields via `field "$(dump_freshness)" <vantage|observed_since|blind_until>`.
+
+## The net guard (no suite reaches a network client through `PATH`)
+
+`tests/lib/harness.sh` puts a directory of logging stand-ins FIRST in `PATH` for every suite that sources it:
+
+- `curl` answers rc 7 (a refused connection — what an unanswered local read returns) and logs the call; the suite's
+  RESULTS banner counts the calls. The suites shadow the daemons' reads as shell functions; only an unshadowed
+  caller (or `command curl`) reaches the binary.
+- every client in its `HARNESS_NET_CLIENTS` list (`ping`, `ping6`, `nc`, `ncat`, `netcat`, `wget`, `dig`, `host`,
+  `nslookup`, `drill`, `getent`, `ssh`, `scp`, `sftp`, `telnet`, `traceroute`, `tftp`, `ftp`, `whois`, `nmap`,
+  `openssl`, `rsync`, `git`) fails (rc 2) and logs the call, and the suite FAILS.
+
+`run_all.sh` runs every suite — `test_v058_regression` included, which does not source the harness — with the same
+failing clients, `curl` failing too, first in `PATH`, and the suite's own log in `HARNESS_NETGUARD_LOG` (the harness's
+stand-ins write there too); stage (4) FAILS when any suite's log is not empty, naming the suite and its calls. A suite
+whose world runs a daemon path that reaches a client stubs the client in that world (the precedent:
+`test_elapsed_provider`'s m5 world stubs `ping`; before fix round 6 that world — the primary's real `check_internet`
+and heartbeat summary — ran the host's `ping` 126–135 times a run).
+
+LIMIT: the guard is PATH-based. It does not see an absolute path (`/usr/bin/curl`, `/sbin/ping`), a `PATH` a suite
+builds without it (the arm suites' `env -i PATH="$STUB_DIR:$TOOLDIR"` scenarios), a client outside the list, or an
+interpreter's own socket. `socat` and the interpreters are left out of the list on purpose (the notify socket is a
+UNIX socket; `test_primary_self_fence` reads a clock through perl; `test_arm_ceremony` finds python3 and perl
+through `PATH` and provisions them to its scenarios as removal tools).
 
 ## Deliberately NOT migrated (and why — decided, not deferred)
 

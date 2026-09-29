@@ -11,9 +11,9 @@ All notable changes are documented here. Versions follow the project's internal 
   Every residual and every number lives in `docs/SAFETY.md`, linked here.
   - **Explicit commitments:** every `getVoteAccounts`/`getSlot` body in both daemons names its commitment
     (detection reads `finalized`, agave's default — behavior-neutral); a census parses every body with jq.
-  - **The own bank restarts the countdown:** the own bank's holder-voting evidence (a not-delinquent read in the
-    episode, or a `lastVote` advance) is a fourth takeover-anchor input; watchdog-elapsed's silence restarts
-    with it (`[elapsed-own]`); reset at every episode close; the witness fast path never skips it.
+  - **The own bank restarts the countdown:** the own bank's holder-voting evidence (a not-delinquent own-bank read with
+    a positive basis, a `lastVote` advance, or a VOTING veto) is a fourth takeover-anchor input; watchdog-elapsed's
+    silence restarts with it (`[elapsed-own]`); reset at every episode close; the witness fast path never skips it.
   - **One bounded local veto read before the switch**, on every take path (the standby's `take_staked_identity`,
     the primary's `switch_to_staked`): one `LOCAL_RPC` batch (`curl -m 2`) after the fresh re-check and before
     the `DRY_RUN` branch. A failed read vetoes, a voting holder re-anchors, and the spare's own confirmed head
@@ -33,8 +33,8 @@ All notable changes are documented here. Versions follow the project's internal 
     loudly — this block's own availability regression against Block 6.3, never a double-sign.
   - The mechanism, its costs and its residuals (the `RECOVERY_MODE=rpc` one included): [the spare's own view](docs/SAFETY.md#the-spares-own-view-v07-block-631);
     the holder's fence against the spare's earliest take and mint, every crossing named: [the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
-  - Tests: `test_own_view` and `test_d6_holder` (new). Every suite runs hermetic (the harness's failing, logging `curl`
-    first in `PATH`, or `test_v058_regression`'s own `curl` function); earlier suites read `127.0.0.1:8899`.
+  - Tests: `test_own_view` and `test_d6_holder` (new). `run_all.sh` runs every suite behind failing, logging stand-ins for
+    `curl` and the listed network clients, first in `PATH` (contract and limits: `tests/HARNESS.md`); earlier suites read `127.0.0.1:8899`.
 
 - **Block 6.3 — the watchdog-elapsed proof provider (attested time), the spare's observation surface
   as a standing property, and the holder-side hardening of five review rounds.** Every residual and

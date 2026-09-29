@@ -707,9 +707,10 @@ timeline is identical to v0.6.6 (~70s).
 > `TIER2`'s time to failure + `TIER3`'s answer + both local reads past 16 s (after a timeout, `TIER3` 7 s or
 > later; 5 s when every local read takes 1 s; on a real host one second less is vetoed too, at some
 > phases): the own view's residual 7 — repair that `TIER2`, or while it is broken leave `TIER2_RPC` empty
-> (the witness fast path, which needs two tiers, is then off; on an armed spare G2's vantage A defaults to
-> `TIER2_RPC`, so the daemon pages CRITICAL "G2 VANTAGES NOT DISTINCT" at every start and `failover arm`'s
-> P6 warns, unless `G2_VANTAGE_A` names another provider), or use a `TIER3` that answers the full
+> (the witness fast path, which needs two tiers, is then off; on an armed spare with `PRIMARY_UNSTAKED_PUBKEY`
+> set G2's vantage A defaults to `TIER2_RPC`, so the daemon pages CRITICAL "G2 VANTAGES NOT DISTINCT" at every
+> start — verified-demote off for the run; a paired spare keeps watchdog-elapsed — and `failover arm`'s P6 warns, unless
+> `G2_VANTAGE_A` names another provider), or use a `TIER3` that answers the full
 > `getVoteAccounts` well under ~5 s (about 3 s when every local read takes 1 s); a `TIER2` that refuses at
 > once does not starve the take. The per-class measurement of the whole
 > ordering — holder fence vs the spare's earliest take, including the rows where it does not hold — is in

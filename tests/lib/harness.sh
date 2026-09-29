@@ -34,6 +34,9 @@ results_banner() {   # prints the RESULTS banner, cleans the seam-cut cache, exi
     if [[ -s "${_HARNESS_NETLOG:-}" ]]; then   # the net guard (below): named, never silent
         echo "  net-guard: $(grep -c . "$_HARNESS_NETLOG") curl-binary call(s) intercepted — answered rc 7, none sent (first: $(head -1 "$_HARNESS_NETLOG" | cut -c1-100))"
     fi
+    if [[ -s "${_HARNESS_NETCLIENT_LOG:-}" ]]; then   # a network client other than curl was reached: a FAIL, never a note
+        bad "net-guard: $(grep -c . "$_HARNESS_NETCLIENT_LOG") network-client call(s) reached the guard — failed, none sent (first: $(head -3 "$_HARNESS_NETCLIENT_LOG" | tr '\t\n' ' ;' | cut -c1-160))"
+    fi
     echo "============================================="
     echo "  RESULTS: $PASS passed, $FAIL failed"
     echo "============================================="
@@ -61,25 +64,45 @@ STANDBY="$HARNESS_DIR/solana-standby-failover.sh"
 _HARNESS_TMP=$(mktemp -d)
 
 # ── the net guard (v0.7 Block 6.3.1 fix round 1 — the panel's T10, N-is-all over the suites) ───────────
-# A failing, logging `curl` FIRST in PATH for every suite that sources this harness. The suites shadow the
-# daemons' reads as shell FUNCTIONS, so only an unshadowed caller (or `command curl`) reaches a curl BINARY —
-# and on a host with a validator RPC on 127.0.0.1:8899 it would query that live node (with the port
-# filtered, each call would wait out its -m bound). The guard answers rc 7 (connection refused — what an
-# unanswered LOCAL read returns), so a suite behaves as it did where nothing listens, and no suite reaches
-# the network anywhere; results_banner names what it intercepted. Enumerated with a logging curl first in
-# PATH over every suite: 12 suites' own-head samples (the [own-view] sampler, unshadowed there) reached
-# 127.0.0.1:8899 this way; test_act_then_alert (15) holds its own sims to zero with a sim-level logger.
-# LIMIT (6.3.1 fix round 2 — the delta panel's T3-SPELL, stated): the guard is PATH-based — `curl` and `command
-# curl` reach it, an absolute /usr/bin/curl does not (the real binary runs); and its banner line names what it
-# intercepted but never fails a suite.
+# A directory FIRST in PATH for every suite that sources this harness, holding a stand-in for every network client a
+# suite could reach through PATH:
+#   - curl ANSWERS rc 7 (connection refused — what an unanswered LOCAL read returns) and logs the call. The suites shadow
+#     the daemons' reads as shell FUNCTIONS, so only an unshadowed caller (or `command curl`) reaches a curl BINARY — and on
+#     a host with a validator RPC on 127.0.0.1:8899 it would query that live node (with the port filtered, each call would
+#     wait out its -m bound). Answered, a suite behaves as it did where nothing listens; results_banner names the count.
+#     Enumerated with a logging curl first in PATH over every suite: 12 suites' own-head samples (the [own-view] sampler,
+#     unshadowed there) reached 127.0.0.1:8899 this way; test_act_then_alert (15) holds its own sims to zero with a
+#     sim-level logger.
+#   - every other client, HARNESS_NET_CLIENTS below, FAILS (rc 2) and logs the call to the client log — a suite that
+#     reaches one FAILS (results_banner), and tests/run_all.sh FAILS the gate naming the suite and the call (run_all
+#     passes each suite its own log as HARNESS_NETGUARD_LOG, and puts the same failing clients — curl failing too — first
+#     in PATH for every suite, test_v058_regression included, which does not source this harness). Each stand-in has
+#     its log path written into it, so a child started with `env -i` still logs.
+# Left out, on purpose: socat (the daemons' sd_notify datagrams go to a UNIX socket, and the fence and arm suites run it
+# so) and the interpreters (perl, python3, python, ruby, node: test_primary_self_fence reads a millisecond clock through
+# perl, test_arm_ceremony finds python3 and perl through PATH and provisions them to its scenarios as removal tools — an
+# interpreter's socket cannot be told apart from its local use by a wrapper).
+# LIMIT (named): the guard is PATH-based — `curl`, `command curl`, `ping` reach it; an absolute path (/usr/bin/curl,
+# /sbin/ping), a PATH a suite builds without this directory (the arm suites' `env -i PATH="$STUB_DIR:$TOOLDIR"`
+# scenarios), a client outside the list and an interpreter's socket do not.
+HARNESS_NET_CLIENTS="ping ping6 nc ncat netcat wget dig host nslookup drill getent ssh scp sftp telnet traceroute tftp ftp whois nmap openssl rsync git"
 mkdir -p "$_HARNESS_TMP/netguard"
-cat > "$_HARNESS_TMP/netguard/curl" <<'EOS'
+_HARNESS_NETLOG="$_HARNESS_TMP/netguard/log"; export _HARNESS_NETLOG
+_HARNESS_NETCLIENT_LOG="${HARNESS_NETGUARD_LOG:-$_HARNESS_TMP/netguard/clients.log}"
+case "$_HARNESS_NETLOG$_HARNESS_NETCLIENT_LOG" in *"'"*) echo "  ❌ FAIL: net guard: a log path holds a quote: $_HARNESS_NETCLIENT_LOG"; exit 1 ;; esac
+cat > "$_HARNESS_TMP/netguard/curl" <<EOS
 #!/bin/sh
-printf '%s\n' "$*" >> "${_HARNESS_NETLOG:-/dev/null}"
+printf '%s\n' "\$*" >> '$_HARNESS_NETLOG'
 exit 7
 EOS
-chmod +x "$_HARNESS_TMP/netguard/curl"
-_HARNESS_NETLOG="$_HARNESS_TMP/netguard/log"; export _HARNESS_NETLOG
+for _hc in $HARNESS_NET_CLIENTS; do
+    cat > "$_HARNESS_TMP/netguard/$_hc" <<EOS
+#!/bin/sh
+printf '%s\t%s\n' '$_hc' "\$*" >> '$_HARNESS_NETCLIENT_LOG'
+exit 2
+EOS
+done
+chmod +x "$_HARNESS_TMP/netguard/"*
 PATH="$_HARNESS_TMP/netguard:$PATH"; export PATH
 seam_cut() {
     local script="$1" mt sz cache
@@ -247,34 +270,59 @@ dump_freshness() {
 }
 
 # ── bash's OWN parse — bp_parse / bp_exec / bp_bodies (v0.7 Block 6.3.1 fix round 5) ──────────────────────────────
-# The structural censuses (test_own_view (0a) (0d) (1a) (7g), test_arm_ceremony (16h)) read bash's normalized print of a
-# file instead of its source lines: bp_parse wraps the file in two functions — everything before the MAIN LOOP marker
-# line, and everything after it (a file without the marker: all of it, and an empty second one) — sources that copy in
-# `env -i bash` (definitions only: nothing in the file runs; no harness shim exists there) and takes `declare -f` of both.
+# The structural censuses (test_own_view (0a) (0b) (0d) (1a) (7g) (7g-local), test_arm_ceremony (16h)) read bash's
+# normalized print of a file instead of its source lines: bp_parse wraps the file in two functions — everything before
+# the MAIN LOOP marker line, and everything after it (a file without the marker: all of it, and an empty second one) —
+# sources that copy in `env -i bash` (definitions only: nothing in the file runs; no harness shim exists there) and
+# takes `declare -f` of both.
 # That print is bash's own parse: comments gone, one command per line, every nested definition printed on its own lines
-# as `function NAME () `, a one-line body expanded, the `function` keyword and `NAME ( )` normalized. BP_LEX_AWK reads THAT
-# text (quoting, $( ), ${ }, $(( )), here-documents, case patterns, [[ ]]) into TAB-separated records:
+# as `function NAME () `, a one-line body expanded, the `function` keyword and `NAME ( )` normalized — outside a command
+# substitution: bash 3.2 prints a $( ) VERBATIM (its comments and a `function`-keyword definition inside it survive; the
+# lexer drops such a comment itself), bash 5.2 re-prints it. BP_LEX_AWK reads THAT text (quoting, $( ), ${ }, $(( )),
+# here-documents, case patterns, [[ ]]) as bash runs it: a $(( whose inner ( closes on ") )" — not "))" — is a command
+# substitution holding a subshell, as bash reads it, and the body of an UNQUOTED here-document is lexed for the $( ),
+# backticks, ${ } and $(( )) bash expands in it (a quoted delimiter's body stays text). Its TAB-separated records:
 #   D <name> <depth> <sub> <line> <fn>   a function definition; depth 1 = the file level, 2+ = nested; sub=1 inside a
 #                                        ( ) subshell or a substitution; <fn> = where it sits
 #   E <name> <depth> <line>              that definition's closing brace
-#   C <fn> <depth> <line> <n> <words>    a simple command: n words joined by \034, each "<L|X><quote-removed>\035<raw>" —
+#   C <fn> <depth> <line> <n> <words> <ctx>  a simple command: n words joined by \034, each "<L|X><quote-removed>\035<raw>" —
 #                                        L: no expansion in it; quote-removed: its quotes and backslashes deleted, so
-#                                        'eval' ev''al \source "curl" cu''rl c\url read as eval source curl
+#                                        'eval' ev''al \source "curl" cu''rl c\url read as eval source curl; <ctx> =
+#                                        "<level>:<subshell>:<pre>:<post>" — level 1 = not inside a substitution (a
+#                                        here-document body's $( ) is one), subshell = the ( ) depth there, pre = the
+#                                        operator before it (&& || | |&, or empty at a statement's start), post = the one
+#                                        after it (&& || | |& & ; ;; nl ) or empty)
+#   K <fn> <depth> <line> <level> <subshell> <event> <id> <ctx>  the structure, in order: if then else fi, loop (while
+#                                        until for select) do done, case arm arm-end esac, grp grp-end ({ }) — <id> the
+#                                        compound command's number; <ctx> = the operator before an opening (a compound
+#                                        that is the operand of && || | |&), an arm's pattern words (|-joined), an
+#                                        arm-end's terminator
+#   A <id>                               that compound command is followed by | |& or & — a pipeline element or a
+#                                        background job (it runs in a subshell)
 #   L <fn> <depth> <line> <code> <raw>   a logical line: <code> = quoted content blanked, a literal name-shaped word written
 #                                        quote-removed, a $( ) / backticks inside a quoted span or a ${ } lifted out and
 #                                        appended as " ; <its code view>", comments and case patterns dropped; <raw> = as
-#                                        printed (TABs and newlines as blanks)
-#   H <fn> <depth> <line> <raw>          a here-document body line
+#                                        printed (TABs and newlines as blanks); an unquoted here-document body line with
+#                                        a lifted $( ) gets an L of its own (<raw> empty: its H record holds the text)
+#   H <fn> <depth> <line> <raw> <q>      a here-document body line; q = 1 behind a quoted delimiter (text), 0 unquoted
+#   R <fn> <depth> <line> <kind> <raw>   kind "redir": a redirection target or a here-string; "pat": a case-pattern word
 # <fn> is the innermost enclosing function: "(top)" = the file level before the marker, "(post)" = after it. The lexer
 # still reads bash syntax — but bash's print of it, not an author's spelling. LIMIT, named: a command word assembled at
-# run time ($x, "$cmd", $(…) as the command), code inside a string handed to eval / trap / bash -c / mapfile -C (the
-# censuses flag those builtins by name instead), a nested backtick inside backticks, and aliases (expand_aliases is off
-# in a script; the (0d) census flags alias and shopt by name).
+# run time ($x, "$cmd", $(…) as the command); code inside a STRING a command runs — eval, trap, mapfile -C, a shell's
+# -c — which the lexer cannot read as code: the (0d) census flags eval anywhere and pins every trap / mapfile /
+# readarray, and (7g) and (1a) flag a shell (bash / sh / dash / zsh / ksh) run as a command, directly or behind timeout /
+# env / command / nohup / nice / setsid / xargs / exec (bpshell below) — no census flags a shell behind another wrapper
+# (find -exec, sudo, flock -c) or code an interpreter runs from a string (awk's system(), perl -e, python3 -c); a
+# here-document opened inside a here-document body's $( ) (read as that body's text); a nested backtick inside
+# backticks; and aliases (expand_aliases is off in a script; the (0d) census flags alias and shopt by name).
 BP_LEX_AWK='
 function fnname(   n) { if (fsp == 0) return ""; n = fname[fsp]; if (wrap && fsp == 1) { if (n == "__bp_top__") return "(top)"; if (n == "__bp_post__") return "(post)" } return n }
 function fndep() { return (wrap && fsp > 0) ? fsp - 1 : fsp }
 function cstop(l) { return substr(cs[l], length(cs[l]), 1) }
-function wstart(l) { if (!win[l]) { win[l] = 1; wst[l] = POS; wqr[l] = ""; wlit[l] = 1; wq[l] = 0; wcv[l] = ""; if (cmdn[l] == 0) { cln[l] = NR; cvm[l] = length(cv[l]) } } }
+function wstart(l) { if (!win[l]) { win[l] = 1; wst[l] = POS; wqr[l] = ""; wlit[l] = 1; wq[l] = 0; wcv[l] = ""; if (cmdn[l] == 0) { cln[l] = LNR; cvm[l] = length(cv[l]); cpre[l] = lop[l] } } }
+function kev(l, ev, id, cx) { printf "K\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\n", fnname(), fndep(), LNR, l, pd[l], ev, id, cx }
+function fopen(l, ev) { fid++; fk++; fsk[fk] = fid; kev(l, ev, fid, lop[l]); lop[l] = "" }
+function fclose(l, ev,   id) { id = (fk > 0) ? fsk[fk] : 0; if (fk > 0) fk--; kev(l, ev, id, ""); pclose[l] = id }
 function endword(l,   raw, disp, q) {
     if (!win[l]) return
     win[l] = 0
@@ -282,52 +330,66 @@ function endword(l,   raw, disp, q) {
     q = wqr[l]; gsub(/[\t\n]/, " ", q)
     disp = (wlit[l] && wq[l] && q ~ "^[A-Za-z0-9_./@%+,:=-]+$") ? q : wcv[l]
     cv[l] = cv[l] disp
-    if (cmdn[l] == 0 && wlit[l] && !wq[l] && q == "esac" && cstop(l) == "p") { cs[l] = substr(cs[l], 1, length(cs[l]) - 1); return }
-    if (cstop(l) == "p") return                                                              # a case pattern word
-    if (redir[l]) { redir[l] = 0; return }                                                   # the target of a redirection
-    if (cmdn[l] == 0 && wlit[l] && !wq[l] && q ~ /^(if|then|else|elif|fi|do|done|while|until|!|time)$/) return
+    if (cmdn[l] == 0 && wlit[l] && !wq[l] && q == "esac" && cstop(l) == "p") { cs[l] = substr(cs[l], 1, length(cs[l]) - 1); fclose(l, "esac"); return }
+    if (cstop(l) == "p") { patraw[l] = patraw[l] (patraw[l] == "" ? "" : "|") raw; printf "R\t%s\t%d\t%d\tpat\t%s\n", fnname(), fndep(), LNR, raw; return }   # a case pattern word
+    if (redir[l]) { redir[l] = 0; printf "R\t%s\t%d\t%d\tredir\t%s\n", fnname(), fndep(), LNR, raw; return }                      # the target of a redirection, a here-string
+    if (cmdn[l] == 0 && wlit[l] && !wq[l] && q ~ /^(if|then|else|elif|fi|do|done|while|until|!|time)$/) {
+        if (q == "if") fopen(l, "if"); else if (q == "while" || q == "until") fopen(l, "loop"); else if (q == "fi" || q == "done") fclose(l, q)
+        else if (q != "!" && q != "time") kev(l, q, fsk[fk], "")
+        return
+    }
+    if (cmdn[l] == 0 && wlit[l] && !wq[l] && (q == "for" || q == "select")) fopen(l, "loop")
+    if (cmdn[l] == 0 && wlit[l] && !wq[l] && q == "case") fopen(l, "case")
     if (wlit[l] && !wq[l] && q == "[[") cond[l] = 1
     if (wlit[l] && !wq[l] && q == "]]") cond[l] = 0
     cmdw[l] = cmdw[l] (cmdn[l] ? "\034" : "") (wlit[l] ? "L" : "X") q "\035" raw
     cmdn[l]++
 }
-function endcmd(l,   first) {
+function endcmd(l, op,   first) {
     endword(l)
     if (cmdn[l] > 0) {
-        printf "C\t%s\t%d\t%d\t%d\t%s\n", fnname(), fndep(), cln[l], cmdn[l], cmdw[l]
+        printf "C\t%s\t%d\t%d\t%d\t%s\t%d:%d:%s:%s\n", fnname(), fndep(), cln[l], cmdn[l], cmdw[l], l, pd[l], cpre[l], op
         first = cmdw[l]; sub(/\035.*/, "", first)
         if (first == "Lcase") cs[l] = cs[l] "p"
-    }
+        lop[l] = (op == "&&" || op == "||" || op == "|" || op == "|&") ? op : ""
+    } else if (op == "&&" || op == "||" || op == "|" || op == "|&") lop[l] = op
+    else if (op == ";" || op == "&" || op == ";;" || op == ";&" || op == ";;&") lop[l] = ""
+    if (pclose[l] != "" && op != "") { if (op == "|" || op == "|&" || op == "&") printf "A\t%s\n", pclose[l]; pclose[l] = "" }
     cmdw[l] = ""; cmdn[l] = 0; cond[l] = 0; redir[l] = 0
 }
 function push(t, o) { sp++; ty[sp] = t; own[sp] = o; pb[sp] = 0; ap[sp] = 0 }
 function pushc(closer, lf) {                                                                # a nested code level: $( ) ` ` <( )
     sp++; ty[sp] = "C"; cl[sp] = closer; lift[sp] = lf; pd[sp] = 0; cv[sp] = ""; cmdw[sp] = ""; cmdn[sp] = 0; win[sp] = 0
-    cond[sp] = 0; redir[sp] = 0; cs[sp] = ""; defpend[sp] = ""
+    cond[sp] = 0; redir[sp] = 0; cs[sp] = ""; defpend[sp] = ""; lop[sp] = ""; pclose[sp] = ""; patraw[sp] = ""
 }
 function popc(   l, inner, p) {
-    l = sp; endcmd(l); inner = cv[l]; sp--; p = sp
+    l = sp; endcmd(l, ")"); inner = cv[l]; sp--; p = sp
     if (lift[l]) LIFTS = LIFTS " ; " inner
     else if (cl[l] == "`") wcv[p] = wcv[p] "`" inner "`"
     else wcv[p] = wcv[p] "$(" inner ")"
 }
-function inq(   k) { for (k = sp; k >= 1 && ty[k] != "C"; k--) if (ty[k] == "D") return 1; return 0 }
+function inq(   k) { for (k = sp; k >= 1 && ty[k] != "C"; k--) if (ty[k] == "D" || ty[k] == "Q") return 1; return 0 }
 function emitline(   raw, code) {
     raw = LB; gsub(/[\t\n]/, " ", raw); code = cv[1] LIFTS; gsub(/[\t\n]/, " ", code)
     printf "L\t%s\t%d\t%d\t%s\t%s\n", lfn, ldep, LN, code, raw
     LB = ""; LIFTS = ""; cv[1] = ""; started = 0
 }
-BEGIN { sp = 1; ty[1] = "C"; cl[1] = ""; lift[1] = 0; pd[1] = 0; cv[1] = ""; cmdw[1] = ""; cmdn[1] = 0; win[1] = 0; cs[1] = ""; defpend[1] = ""
-        fsp = 0; bsp = 0; HD = 0; nhd = 0; started = 0; cont = 0 }
-{
-    line = $0
-    if (HD) {                                                                                 # a here-document body line
-        t = line; if (hdash[1]) sub(/^\t+/, "", t)
-        if (t == hdelim[1]) { for (k = 1; k < nhd; k++) { hdelim[k] = hdelim[k + 1]; hdash[k] = hdash[k + 1] } nhd--; if (nhd == 0) HD = 0; next }
-        r = line; gsub(/\t/, " ", r); printf "H\t%s\t%d\t%d\t%s\n", fnname(), fndep(), NR, r; next
+function isarith(p,   r, s, q, ch, dep, qs) {   # "$((" at column p of the current line: arithmetic when the ) that closes its inner ( is followed by ) (the rule of bash); else a command substitution holding a subshell
+    r = LNR; s = LINES[r]; q = p + 3; dep = 0; qs = 0
+    while (1) {
+        if (q > length(s)) { r++; if (r > NLINES) return 1; s = LINES[r]; q = 1; continue }
+        ch = substr(s, q, 1)
+        if (qs == 1) { if (ch == "\047") qs = 0; q++; continue }
+        if (qs == 2) { if (ch == "\\") { q += 2; continue } if (ch == "\"") qs = 0; q++; continue }
+        if (ch == "\\") { q += 2; continue }
+        if (ch == "\047") { qs = 1; q++; continue }
+        if (ch == "\"") { qs = 2; q++; continue }
+        if (ch == "(") { dep++; q++; continue }
+        if (ch == ")") { if (dep > 0) { dep--; q++; continue } return (substr(s, q + 1, 1) == ")") }
+        q++
     }
-    if (!started) { started = 1; LN = NR; LB = ""; LIFTS = ""; lfn = fnname(); ldep = fndep() }
-    if (LB == "") { off = 1; LB = line } else { off = length(LB) + 2; LB = LB "\n" line }
+}
+function scan(line) {
     n = length(line); i = 1
     while (i <= n + 1) {
         POS = off + i - 1
@@ -346,19 +408,20 @@ BEGIN { sp = 1; ty[1] = "C"; cl[1] = ""; lift[1] = 0; pd[1] = 0; cv[1] = ""; cmd
             if (c == "\047") { sp--; i++; if (ty[sp] == "C") wcv[o] = wcv[o] "\047"; continue }
             wqr[o] = wqr[o] (c == "\n" ? " " : c); i++; continue
         }
-        if (t == "D" || t == "P" || t == "A" || t == "R") {                                   # a double-quoted span, ${ }, $(( )), an array literal
+        if (t == "D" || t == "P" || t == "A" || t == "R" || t == "Q") {                        # "…", ${ }, $(( )), an array literal, an unquoted here-document body
             o = own[sp]
             if (t == "D" && match(substr(line, i), /^[^"\\$`]+/)) { wqr[o] = wqr[o] substr(line, i, RLENGTH); i += RLENGTH; continue }
+            if (t == "Q" && match(substr(line, i), /^[^\\$`]+/)) { wqr[o] = wqr[o] substr(line, i, RLENGTH); i += RLENGTH; continue }
             if (c == "\n") { wqr[o] = wqr[o] " "; i++; continue }
             if (c == "\\") {
                 d = substr(line, i + 1, 1); if (d == "") { i += 2; continue }
-                if (t == "D" && d !~ /["\\$`]/) wqr[o] = wqr[o] "\\"
-                wqr[o] = wqr[o] d; if (t != "D") wlit[o] = 0; i += 2; continue
+                if ((t == "D" && d !~ /["\\$`]/) || (t == "Q" && d !~ /[\\$`]/)) wqr[o] = wqr[o] "\\"
+                wqr[o] = wqr[o] d; if (t != "D" && t != "Q") wlit[o] = 0; i += 2; continue
             }
             if (c == "\"" && t == "D") { sp--; i++; if (ty[sp] == "C") wcv[o] = wcv[o] "\""; continue }
-            if (c == "\"") { push("D", o); i++; continue }
-            if (c == "\047" && t != "D" && !(t == "P" && inq())) { push("S", o); wlit[o] = 0; i++; continue }
-            if (c == "$" && substr(line, i + 1, 2) == "((") { push("A", o); wlit[o] = 0; wqr[o] = wqr[o] "$(())"; i += 3; continue }
+            if (c == "\"" && t != "Q") { push("D", o); i++; continue }
+            if (c == "\047" && t != "D" && t != "Q" && !(t == "P" && inq())) { push("S", o); wlit[o] = 0; i++; continue }
+            if (c == "$" && substr(line, i + 1, 2) == "((" && isarith(i)) { push("A", o); wlit[o] = 0; wqr[o] = wqr[o] "$(())"; i += 3; continue }
             if (c == "$" && substr(line, i + 1, 1) == "(") { wlit[o] = 0; wqr[o] = wqr[o] "$()"; pushc(")", 1); i += 2; continue }
             if (c == "$" && substr(line, i + 1, 1) == "{") { push("P", o); wlit[o] = 0; wqr[o] = wqr[o] "${"; i += 2; continue }
             if (c == "`") { wlit[o] = 0; wqr[o] = wqr[o] "$()"; pushc("`", 1); i++; continue }
@@ -368,14 +431,14 @@ BEGIN { sp = 1; ty[1] = "C"; cl[1] = ""; lift[1] = 0; pd[1] = 0; cv[1] = ""; cmd
             else if (t == "A" && c == "(") ap[sp]++
             else if (t == "A" && c == ")") { if (ap[sp] > 0) ap[sp]--; else { sp--; i += (substr(line, i + 1, 1) == ")") ? 2 : 1; continue } }
             else if (t == "R" && c == ")") { sp--; i++; continue }
-            if (t != "D") wlit[o] = 0
+            if (t != "D" && t != "Q") wlit[o] = 0
             wqr[o] = wqr[o] c; i++; continue
         }
         # ── code ──
         l = sp
         if (cont && c == "\n") { cont = 0; i++; continue }
         if (c == "\n") {
-            endword(l); endcmd(l)
+            endword(l); endcmd(l, "nl")
             if (l == 1) { emitline(); if (nhd > 0) HD = 1; i++; continue }
             cv[l] = cv[l] " ; "; if (nhd > 0) HD = 1; i++; continue
         }
@@ -398,7 +461,7 @@ BEGIN { sp = 1; ty[1] = "C"; cl[1] = ""; lift[1] = 0; pd[1] = 0; cv[1] = ""; cmd
         if (c == "\"") { wstart(l); wq[l] = 1; wcv[l] = wcv[l] "\""; push("D", l); i++; continue }
         if (c == "$") {
             wstart(l); d = substr(line, i + 1, 1)
-            if (d == "(" && substr(line, i + 2, 1) == "(") { wlit[l] = 0; wqr[l] = wqr[l] "$(())"; wcv[l] = wcv[l] "$(())"; push("A", l); i += 3; continue }
+            if (d == "(" && substr(line, i + 2, 1) == "(" && isarith(i)) { wlit[l] = 0; wqr[l] = wqr[l] "$(())"; wcv[l] = wcv[l] "$(())"; push("A", l); i += 3; continue }
             if (d == "(") { wlit[l] = 0; wqr[l] = wqr[l] "$()"; pushc(")", 0); i += 2; continue }
             if (d == "{") { wlit[l] = 0; wqr[l] = wqr[l] "${"; wcv[l] = wcv[l] "${}"; push("P", l); i += 2; continue }
             if (d == "\047") { wq[l] = 1; wcv[l] = wcv[l] "$\047"; push("E", l); i += 2; continue }
@@ -414,11 +477,18 @@ BEGIN { sp = 1; ty[1] = "C"; cl[1] = ""; lift[1] = 0; pd[1] = 0; cv[1] = ""; cmd
             if (win[l] && wlit[l] && !wq[l] && wqr[l] ~ /^[0-9]+$/) { win[l] = 0; cv[l] = cv[l] wqr[l] }   # an fd number
             else endword(l)
             if (substr(line, i, 3) == "<<<") { cv[l] = cv[l] " <<< "; redir[l] = 1; i += 3; continue }
-            if (substr(line, i, 2) == "<<") {                                                 # a here-document: read its delimiter
+            if (substr(line, i, 2) == "<<") {                                                 # a here-document: read its delimiter (quoted: a literal body)
                 i += 2; dash = 0; if (substr(line, i, 1) == "-") { dash = 1; i++ }
                 while (substr(line, i, 1) == " ") i++
-                dl = ""; while (i <= n && substr(line, i, 1) !~ /[ ;&|<>)]/) { ch = substr(line, i, 1); if (ch != "\047" && ch != "\"" && ch != "\\") dl = dl ch; i++ }
-                nhd++; hdelim[nhd] = dl; hdash[nhd] = dash; cv[l] = cv[l] " <<" dl " "; continue
+                dl = ""; dq = 0
+                while (i <= n && substr(line, i, 1) !~ /[ ;&|<>)]/) {
+                    ch = substr(line, i, 1)
+                    if ((ch == "\047" || ch == "\"") && (k = index(substr(line, i + 1), ch))) { dq = 1; dl = dl substr(line, i + 1, k - 1); i += k + 1; continue }   # a quoted part, blanks included
+                    if (ch == "\\") { dq = 1; dl = dl substr(line, i + 1, 1); i += 2; continue }
+                    dl = dl ch; i++
+                }
+                if (!hqopen) { nhd++; hdelim[nhd] = dl; hdash[nhd] = dash; hdq[nhd] = dq }
+                cv[l] = cv[l] " <<" dl " "; continue
             }
             op = c; i++; while (length(op) < 2 && substr(line, i, 1) ~ /[<>&|]/) { op = op substr(line, i, 1); i++ }
             cv[l] = cv[l] " " op " "
@@ -429,21 +499,19 @@ BEGIN { sp = 1; ty[1] = "C"; cl[1] = ""; lift[1] = 0; pd[1] = 0; cv[1] = ""; cmd
         if (c == "&") {
             endword(l)
             if (substr(line, i + 1, 1) == ">") { i += 2; op = "&>"; if (substr(line, i, 1) == ">") { op = "&>>"; i++ } cv[l] = cv[l] " " op " "; redir[l] = 1; continue }
-            endcmd(l)
-            if (substr(line, i + 1, 1) == "&") { cv[l] = cv[l] " && "; i += 2; continue }
-            cv[l] = cv[l] " & "; i++; continue
+            if (substr(line, i + 1, 1) == "&") { endcmd(l, "&&"); cv[l] = cv[l] " && "; i += 2; continue }
+            endcmd(l, "&"); cv[l] = cv[l] " & "; i++; continue
         }
         if (c == "|") {
-            endcmd(l)
-            if (substr(line, i + 1, 1) == "|") { cv[l] = cv[l] " || "; i += 2; continue }
-            if (substr(line, i + 1, 1) == "&") { cv[l] = cv[l] " |& "; i += 2; continue }
-            cv[l] = cv[l] " | "; i++; continue
+            if (substr(line, i + 1, 1) == "|") { endcmd(l, "||"); cv[l] = cv[l] " || "; i += 2; continue }
+            if (substr(line, i + 1, 1) == "&") { endcmd(l, "|&"); cv[l] = cv[l] " |& "; i += 2; continue }
+            endcmd(l, "|"); cv[l] = cv[l] " | "; i++; continue
         }
         if (c == ";") {
-            endcmd(l)
             if (substr(line, i, 3) == ";;&") op = ";;&"; else if (substr(line, i, 2) == ";;" || substr(line, i, 2) == ";&") op = substr(line, i, 2); else op = ";"
+            endcmd(l, op)
             i += length(op); cv[l] = cv[l] " " op " "
-            if (op != ";" && cs[l] != "") cs[l] = substr(cs[l], 1, length(cs[l]) - 1) "p"
+            if (op != ";" && cs[l] != "") { cs[l] = substr(cs[l], 1, length(cs[l]) - 1) "p"; kev(l, "arm-end", fsk[fk], op) }
             continue
         }
         if (c == "(") {
@@ -454,52 +522,109 @@ BEGIN { sp = 1; ty[1] = "C"; cl[1] = ""; lift[1] = 0; pd[1] = 0; cv[1] = ""; cmd
                 if (cmdn[l] == 1) { nm = w; sub(/\035.*/, "", nm); nm = substr(nm, 2) }
                 else if (cmdn[l] == 2 && w ~ /^Lfunction\035/) { nm = w; sub(/^[^\034]*\034/, "", nm); sub(/\035.*/, "", nm); nm = substr(nm, 2) }
                 if (nm != "") {
-                    printf "D\t%s\t%d\t%d\t%d\t%s\n", nm, fsp + 1 - (wrap ? 1 : 0), (pd[l] > 0 || l > 1) ? 1 : 0, NR, fnname()
+                    printf "D\t%s\t%d\t%d\t%d\t%s\n", nm, fsp + 1 - (wrap ? 1 : 0), (pd[l] > 0 || l > 1) ? 1 : 0, LNR, fnname()
                     defpend[l] = nm; cmdw[l] = ""; cmdn[l] = 0; cv[l] = substr(cv[l], 1, cvm[l]) "function " nm " () "; i += 2; continue
                 }
             }
             if (substr(line, i + 1, 1) == "(" && (cmdn[l] == 0 || cmdw[l] ~ /^Lfor\035/)) { wstart(l); wlit[l] = 0; wcv[l] = wcv[l] "(())"; push("A", l); i += 2; continue }
-            endcmd(l); pd[l]++; cv[l] = cv[l] "( "; i++; continue
+            endcmd(l, ""); pd[l]++; lop[l] = ""; cv[l] = cv[l] "( "; i++; continue
         }
         if (c == ")") {
-            if (pd[l] > 0) { endcmd(l); pd[l]--; cv[l] = cv[l] " )"; i++; continue }
+            if (pd[l] > 0) { endcmd(l, ")"); pd[l]--; cv[l] = cv[l] " )"; i++; continue }
             if (cl[l] == ")") { popc(); i++; continue }
             if (cstop(l) == "p") {                                                             # the end of a case pattern: blanked
-                endword(l); cv[l] = ""; cmdw[l] = ""; cmdn[l] = 0; cs[l] = substr(cs[l], 1, length(cs[l]) - 1) "b"; i++; continue
+                endword(l); cv[l] = ""; cmdw[l] = ""; cmdn[l] = 0; cs[l] = substr(cs[l], 1, length(cs[l]) - 1) "b"
+                kev(l, "arm", fsk[fk], patraw[l]); patraw[l] = ""; lop[l] = ""; i++; continue
             }
-            endcmd(l); cv[l] = cv[l] " )"; i++; continue
+            endcmd(l, ")"); cv[l] = cv[l] " )"; i++; continue
         }
         if (c == "{" && !win[l] && (i == n || substr(line, i + 1, 1) == " ")) {                          # { — a group or a function body
-            endcmd(l); bsp++
+            if (defpend[l] == "" && cmdn[l] == 2 && cmdw[l] ~ /^Lfunction\035/) {                    # function NAME { — the keyword form bash 3.2 keeps inside a verbatim $( )
+                nm = cmdw[l]; sub(/^[^\034]*\034/, "", nm); sub(/\035.*/, "", nm); nm = substr(nm, 2)
+                printf "D\t%s\t%d\t%d\t%d\t%s\n", nm, fsp + 1 - (wrap ? 1 : 0), (pd[l] > 0 || l > 1) ? 1 : 0, LNR, fnname()
+                defpend[l] = nm; cmdw[l] = ""; cmdn[l] = 0; cv[l] = substr(cv[l], 1, cvm[l]) "function " nm " () "
+            }
+            endcmd(l, ""); bsp++
             if (defpend[l] != "") { fsp++; fname[fsp] = defpend[l]; fbs[fsp] = bsp; defpend[l] = ""; lfn = fnname(); ldep = fndep() }
+            else { fopen(l, "grp"); grp[bsp] = 1 }
             cv[l] = cv[l] "{ "; i++; continue
         }
         if (c == "}" && !win[l] && (i == n || substr(line, i + 1, 1) ~ /[ ;)&|<>]/)) {                  # } — the end of a group or a body
-            endcmd(l)
-            if (fsp > 0 && fbs[fsp] == bsp) { printf "E\t%s\t%d\t%d\n", fname[fsp], fsp - (wrap ? 1 : 0), NR; fsp-- }
+            endcmd(l, "")
+            if (fsp > 0 && fbs[fsp] == bsp) { printf "E\t%s\t%d\t%d\n", fname[fsp], fsp - (wrap ? 1 : 0), LNR; fsp-- }
+            else if (grp[bsp]) { grp[bsp] = 0; fclose(l, "grp-end") }
             if (bsp > 0) bsp--
             cv[l] = cv[l] "}"; i++; continue
         }
         wstart(l); wqr[l] = wqr[l] c; wcv[l] = wcv[l] c; i++
     }
 }
-END { if (started) { endcmd(1); emitline() } }
+function lexline(line,   hl, hr) {
+    if (HD) {                                                                                 # a here-document body line
+        hl = line; if (hdash[1]) sub(/^\t+/, "", hl)
+        if (hl == hdelim[1]) {
+            if (hqopen) { sp = hqsp; hqopen = 0; LIFTS = hqlifts }                              # the body ends: back to the level of its command
+            for (k = 1; k < nhd; k++) { hdelim[k] = hdelim[k + 1]; hdash[k] = hdash[k + 1]; hdq[k] = hdq[k + 1] }
+            nhd--; if (nhd == 0) HD = 0; return
+        }
+        hr = line; gsub(/\t/, " ", hr); printf "H\t%s\t%d\t%d\t%s\t%d\n", fnname(), fndep(), LNR, hr, hdq[1]
+        if (!hdq[1]) {                                                                        # UNQUOTED: bash expands its $( ), ` `, ${ } and $(( ))
+            if (!hqopen) { hqsp = sp; hqlifts = LIFTS; LIFTS = ""; push("Q", sp); hqopen = 1 }
+            hl = LB; LB = line; off = 1; scan(line); LB = hl
+            if (ty[sp] == "Q" && LIFTS != "") { hl = LIFTS; gsub(/[\t\n]/, " ", hl); printf "L\t%s\t%d\t%d\t%s\t\n", fnname(), fndep(), LNR, hl; LIFTS = "" }
+        }
+        return
+    }
+    if (!started) { started = 1; LN = LNR; LB = ""; LIFTS = ""; lfn = fnname(); ldep = fndep() }
+    if (LB == "") { off = 1; LB = line } else { off = length(LB) + 2; LB = LB "\n" line }
+    scan(line)
+}
+BEGIN { sp = 1; ty[1] = "C"; cl[1] = ""; lift[1] = 0; pd[1] = 0; cv[1] = ""; cmdw[1] = ""; cmdn[1] = 0; win[1] = 0; cs[1] = ""; defpend[1] = ""
+        lop[1] = ""; pclose[1] = ""; patraw[1] = ""; fsp = 0; bsp = 0; HD = 0; nhd = 0; started = 0; cont = 0; fid = 0; fk = 0; hqopen = 0 }
+{ LINES[NR] = $0 }
+END { NLINES = NR; for (LNR = 1; LNR <= NLINES; LNR++) lexline(LINES[LNR])
+      if (started) { endcmd(1, "nl"); emitline() } }
 '
 # BP_AWK_LIB — functions every census prepends to its awk program over bp_parse's lex (fields TAB-separated):
 #   bpq(w) / bpr(w) — a C-record word, quote-removed / raw; bplit(w) — 1 when it holds no expansion
-#   bpcmd(n, W)     — the index of a command's effective word: past its assignments and a builtin / command -p prefix
-#                     (0 for `command -v|-V …`, a lookup, and for a command of assignments only)
+#   bpcmd(n, W)     — the index of a command's effective word: past its assignments, a `time` keyword's -p / -- (the lexer
+#                     drops the keyword itself, as it drops `!`), a builtin [--] and a command [-p] [--] prefix (0 for
+#                     `command -v|-V …`, a lookup, and for a command of assignments only)
+#   bpshell(n, W)   — the index of a SHELL the command runs (bash sh dash zsh ksh, any path prefix) as its effective word
+#                     or behind timeout / env / nohup / nice / setsid / xargs / exec / command / builtin; 0 when none
 BP_AWK_LIB='
 function bpq(w) { sub(/\035.*/, "", w); return substr(w, 2) }
 function bpr(w) { sub(/^[^\035]*\035/, "", w); return w }
 function bplit(w) { return substr(w, 1, 1) == "L" }
-function bpcmd(n, W,   k, q) {
+function bpcmd(n, W,   k, q, lead) {
+    lead = 1
     for (k = 1; k <= n; k++) {
         q = bpq(W[k])
+        if (lead && (q == "-p" || q == "--")) continue
+        lead = 0
         if (q ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=/) continue
-        if (q == "builtin") continue
-        if (q == "command") { if (k < n && bpq(W[k + 1]) ~ /^-[vV]$/) return 0; if (k < n && bpq(W[k + 1]) == "-p") k++; continue }
+        if (q == "builtin") { if (k < n && bpq(W[k + 1]) == "--") k++; continue }
+        if (q == "command") {
+            while (k < n && bpq(W[k + 1]) ~ /^-[pvV]+$/) { if (bpq(W[k + 1]) ~ /[vV]/) return 0; k++ }
+            if (k < n && bpq(W[k + 1]) == "--") k++
+            continue
+        }
         return k
+    }
+    return 0
+}
+function bpshell(n, W,   k, q, b) {
+    k = bpcmd(n, W)
+    while (k > 0 && k <= n) {
+        if (!bplit(W[k])) return 0
+        q = bpq(W[k]); b = q; sub(/.*\//, "", b)
+        if (b ~ /^(bash|sh|dash|zsh|ksh)$/) return k
+        if (b == "timeout") { k++; while (k <= n && bpq(W[k]) ~ /^-/) { if (bpq(W[k]) ~ /^(-k|-s|--kill-after|--signal)$/) k++; k++ } k++; continue }
+        if (b == "env") { k++; while (k <= n && (bpq(W[k]) ~ /^-/ || bpq(W[k]) ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) { if (bpq(W[k]) ~ /^(-u|-C|-S|--unset|--chdir|--split-string)$/) k++; k++ } continue }
+        if (b == "nice") { k++; while (k <= n && bpq(W[k]) ~ /^-/) { if (bpq(W[k]) == "-n") k++; k++ } continue }
+        if (b == "xargs") { k++; while (k <= n && bpq(W[k]) ~ /^-/) { if (bpq(W[k]) ~ /^-[ILnPsdEa]$/) k++; k++ } continue }
+        if (b == "nohup" || b == "setsid" || b == "exec" || b == "command" || b == "builtin") { k++; while (k <= n && bpq(W[k]) ~ /^-/) { if (b == "exec" && bpq(W[k]) == "-a") k++; k++ } continue }
+        return 0
     }
     return 0
 }
