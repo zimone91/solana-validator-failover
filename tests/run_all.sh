@@ -1,13 +1,18 @@
 #!/bin/bash
 # v0.6.9: full test-suite gate. Runs on bash 3.2 (macOS test box) AND bash 4+/5 (Linux deploy target).
 # Two stages:
-#   1. PARSE gate — `bash -n` on every suite AND tests/lib/*.sh (the harness library is outside the
-#      test_*.sh glob and would otherwise ship unparsed on 3.2). A `case … )` inside a $( ) command
-#      substitution (etc.) parses on bash 4+ but FAILS on bash 3.2; without this gate such a break
-#      silently skipped a whole suite there (v0.6.9 B3: test_collision_detector.sh, 34/35 as 35/35).
+#   1. PARSE gate — `bash -n` on every suite AND tests/lib/*.sh and tests/strace-hermetic.sh (the harness
+#      library and the CI strace job's script are outside the test_*.sh glob and would otherwise ship
+#      unparsed on 3.2). A `case … )` inside a $( ) command substitution (etc.) parses on bash 4+ but
+#      FAILS on bash 3.2; without this gate such a break silently skipped a whole suite there (v0.6.9
+#      B3: test_collision_detector.sh, 34/35 as 35/35).
 #   2. RUN gate — execute every suite; a non-zero exit fails the gate. Each suite runs behind the NET GUARD's failing,
-#      logging network-client stand-ins, first in PATH; stage (4) fails the gate when any suite reached one (named with
-#      its calls).
+#      logging network-client stand-ins, first in PATH; stage (4) fails the gate when any suite reached one of them
+#      through PATH (named with its calls; the harness's own curl stand-in — the suites' RPC mock — logs only to its
+#      suite's banner, never here). Network clients reached through PATH are caught by this stage (4) on every leg; at
+#      the syscall level, the CI strace job (ubuntu-24.04, tests/strace-hermetic.sh) sees no inet socket in the whole
+#      run. What stage (4) cannot see is listed at the stage (the LIMIT); the strace job sees any of those that
+#      opens an inet socket.
 # Also `bash -n` the eight shipped scripts (v0.7 Block 5.1 promotes the two fence scripts into
 # this explicit list — shippable artifacts, installed only by the `failover arm` ceremony;
 # install.sh joined at the Block-5.1 panel fix round — a pre-existing gap: it was in SHA256SUMS
@@ -29,7 +34,7 @@ for s in "$PKG"/install.sh "$PKG"/solana-primary-failover.sh "$PKG"/solana-stand
          "$PKG"/systemd/failover-fence.sh "$PKG"/systemd/failover-fence-page-only.sh; do
     if "${BASH:-bash}" -n "$s" 2>/dev/null; then echo "  ok    $(basename "$s")"; else echo "  PARSE-FAIL $(basename "$s")"; parse_fail=$((parse_fail+1)); fi
 done
-for t in lib/*.sh test_*.sh; do
+for t in lib/*.sh strace-hermetic.sh test_*.sh; do
     if "${BASH:-bash}" -n "$t" 2>/dev/null; then :; else echo "  PARSE-FAIL $t"; parse_fail=$((parse_fail+1)); fi
 done
 [[ $parse_fail -eq 0 ]] && echo "  all suites parse-clean" || echo "  $parse_fail parse failure(s)"
@@ -41,26 +46,37 @@ EXPECTED_SUITES=54
 run_pass=0; run_fail=0; failed=""
 _suite_out=$(mktemp)
 # The NET GUARD's gate (6.3.1 fix round 6 — the delta panel 5's CLM5-3: a suite ran the host's ping 126–135 times a run
-# while the texts said no suite reaches the network). Every suite runs with a directory of FAILING, LOGGING stand-ins FIRST in
-# PATH — curl and every client of tests/lib/harness.sh's HARNESS_NET_CLIENTS (one list, read from there) — and its own
-# log in HARNESS_NETGUARD_LOG, which the harness's stand-ins write too (in a suite that sources the harness they come
-# first; its curl answers rc 7 and is only counted in the suite's banner). A suite whose log is not empty FAILS stage
-# (4), named with its calls. LIMIT: PATH-based, as the harness's guard (its header names what it does not see).
+# while the texts said no suite reaches the network). Every suite runs with a directory of FAILING (rc 2), LOGGING
+# stand-ins FIRST in PATH — curl and every client of tests/lib/harness.sh's HARNESS_NET_CLIENTS (one list, read from
+# there) — made for that suite alone, its log's path written into each stand-in; HARNESS_NETGUARD_LOG names the same log
+# for the harness, whose own client stand-ins (first in a suite that sources it) write there too — its curl stand-in does
+# not: it answers rc 7 and is counted only in the suite's RESULTS banner (the suites' RPC mock, by design). So a child
+# that keeps a guard directory on its PATH — `env -i PATH="$PATH" …` included — still logs, to its own suite's log. Each
+# log is read right after its suite and AGAIN after the last suite (a child that outlived its suite and called later is
+# named with that suite); the stand-ins are removed only after that final read. A suite whose log is not empty FAILS
+# stage (4), named with its calls; a setup failure (no client list, a stand-in not written) fails it with its own reason.
+# LIMIT, named — stage (4) does not see: bash's /dev/tcp and /dev/udp redirections; `command -p <client>` (the default
+# PATH); a plain `env -i` child (the libc or bash default PATH — only `env -i PATH=…` keeps the guard); an absolute path;
+# a PATH a suite builds without the guard; a call made after the final read; an interpreter's own socket; socat (left out
+# on purpose — the notify socket is a UNIX socket); a client not on the list. CI's strace job (tests/strace-hermetic.sh,
+# ubuntu-24.04) sees each of them: it fails on ANY inet socket of the run, whatever opened it.
 _ra_net=$(mktemp -d)
 _ra_clients=$(sed -n 's/^HARNESS_NET_CLIENTS="\(.*\)"$/\1/p' lib/harness.sh)
-net_fail=0; netfailed=""
-mkdir -p "$_ra_net/bin"
-for _c in curl $_ra_clients; do
-    cat > "$_ra_net/bin/$_c" <<EOS
+net_fail=0; netfailed=""; net_setup=""
+[[ -n "$_ra_clients" ]] || net_setup="$net_setup [no HARNESS_NET_CLIENTS list readable in lib/harness.sh — the guard would hold curl alone]"
+case "$_ra_net" in *"'"*|"") net_setup="$net_setup [the guard directory's path is empty or holds a quote: '$_ra_net']" ;; esac
+_ra_guard() {   # _ra_guard <suite> — its stand-in directory, $_ra_net/<suite>.bin: every client failing, logging to <suite>'s log
+    local _c _d="$_ra_net/$1.bin"
+    mkdir -p "$_d" || return 1
+    for _c in curl $_ra_clients; do
+        cat > "$_d/$_c" <<EOS || return 1
 #!/bin/sh
-printf '%s\t%s\n' '$_c' "\$*" >> "\${HARNESS_NETGUARD_LOG:-$_ra_net/stray.log}"
+printf '%s\t%s\n' '$_c' "\$*" >> '$_ra_net/$1.log'
 exit 2
 EOS
-    chmod +x "$_ra_net/bin/$_c"
-done
-if [[ -z "$_ra_clients" ]]; then
-    echo "  NET-GUARD SETUP: no HARNESS_NET_CLIENTS list in lib/harness.sh — the guard would hold curl alone"; net_fail=1
-fi
+        chmod +x "$_d/$_c" || return 1
+    done
+}
 # Every diagnostic line carries the NAME of the suite that produced it (reviewer, 6.2 GO nit): an
 # untagged "tail: …" line is unattached in a log of 51 suites — a grep by suite name misses it and
 # reads as "the diagnostics did not fire" (the reviewer nearly reported exactly that). printf, not
@@ -75,8 +91,9 @@ for t in test_*.sh; do
     # v0.7 (4.3): the grep is BARE ❌ — the contract is "❌ is reserved for failures in suite
     # output"; a suite reporting non-failures must use a different marker (the v058 🐞 precedent).
     # Named so after the reviewer found the old "❌ FAIL" literal made v058 an exception-by-phrasing.
-    _ra_log="$_ra_net/$t.log"; : > "$_ra_log"; : > "$_ra_net/stray.log"
-    if HARNESS_NETGUARD_LOG="$_ra_log" PATH="$_ra_net/bin:$PATH" "${BASH:-bash}" "$t" > "$_suite_out" 2>&1; then
+    _ra_log="$_ra_net/$t.log"
+    { : > "$_ra_log" && _ra_guard "$t"; } || net_setup="$net_setup [$t: its stand-ins or its log could not be written]"
+    if HARNESS_NETGUARD_LOG="$_ra_log" PATH="$_ra_net/$t.bin:$PATH" "${BASH:-bash}" "$t" > "$_suite_out" 2>&1; then
         if grep -q "❌" "$_suite_out"; then
             run_fail=$((run_fail+1)); failed="$failed $t(printed-FAIL-but-exit-0)"
             # v0.7 (4.4, reviewer): print the offending line(s) — diagnosis, not just detection.
@@ -102,10 +119,10 @@ for t in test_*.sh; do
         grep "❌" "$_suite_out" 2>/dev/null | head -3 | _diag_tag "offending" "$t"
         tail -5 "$_suite_out" 2>/dev/null | _diag_tag "tail" "$t"
     fi
-    cat "$_ra_net/stray.log" >> "$_ra_log" 2>/dev/null   # a child that lost HARNESS_NETGUARD_LOG (env -i) logs there
-    if [[ -s "$_ra_log" ]]; then
+    _ra_n=$(grep -c . "$_ra_log" 2>/dev/null); echo "${_ra_n:-0}" > "$_ra_net/$t.seen"
+    if [[ ${_ra_n:-0} -gt 0 ]]; then
         net_fail=$((net_fail+1)); netfailed="$netfailed $t"
-        echo "      NET-GUARD [$t]: $(grep -c . "$_ra_log") network-client call(s), each failed by the guard (none sent):"
+        echo "      NET-GUARD [$t]: $_ra_n network-client call(s), each failed by the guard (none sent):"
         tr '\t' ' ' < "$_ra_log" | sort | uniq -c | sort -rn | head -5 | _diag_tag "net" "$t"
     fi
 done
@@ -136,19 +153,33 @@ fi
 
 echo ""
 echo "═══ (4) net-guard gate: no suite reached a network client through PATH ═══"
-if [[ $net_fail -eq 0 ]]; then
-    echo "  clean: every suite's guard log is empty (curl + $(printf '%s' "$_ra_clients" | wc -w | tr -d ' ') clients failing and logged, first in PATH)"
-else
-    echo "  NET-GUARD VIOLATION:$netfailed — each reached a network client (the calls are listed under the suite above); stub it in the suite's world"
-fi
+# the FINAL READ, after the last suite: every suite's log again — a call a child made after its suite's own check (it
+# outlived the suite) is named with that suite; only then are the stand-ins removed
+for t in test_*.sh; do
+    _ra_n=$(grep -c . "$_ra_net/$t.log" 2>/dev/null); _ra_s=$(cat "$_ra_net/$t.seen" 2>/dev/null)
+    [[ ${_ra_n:-0} -gt ${_ra_s:-0} ]] || continue
+    [[ " $netfailed " == *" $t "* ]] || { net_fail=$((net_fail+1)); netfailed="$netfailed $t"; }
+    echo "      NET-GUARD [$t]: $(( _ra_n - ${_ra_s:-0} )) network-client call(s) logged after the suite's own check — a child that outlived it:"
+    tail -n $(( _ra_n - ${_ra_s:-0} )) "$_ra_net/$t.log" | tr '\t' ' ' | sort | uniq -c | sort -rn | head -5 | _diag_tag "late" "$t"
+done
 rm -rf "$_ra_net"
+net_setup_fail=0
+if [[ -n "$net_setup" ]]; then
+    net_setup_fail=1
+    echo "  NET-GUARD SETUP FAILED:$net_setup — this stage cannot vouch for the run"
+fi
+if [[ $net_fail -eq 0 && $net_setup_fail -eq 0 ]]; then
+    echo "  clean: every suite's guard log is empty — read after each suite and again after the last (curl + $(printf '%s' "$_ra_clients" | wc -w | tr -d ' ') clients failing and logged, first in PATH)"
+elif [[ $net_fail -gt 0 ]]; then
+    echo "  NET-GUARD VIOLATION:$netfailed — each reached a network client through PATH (the calls are listed under the suite above); stub it in the suite's world"
+fi
 
 echo ""
-total=$(( parse_fail + run_fail + count_fail + solereader_fail + net_fail ))
+total=$(( parse_fail + run_fail + count_fail + solereader_fail + net_fail + net_setup_fail ))
 if [[ $total -eq 0 ]]; then
-    echo "═══ GREEN — $run_pass/$run_pass suites, parse-clean on $("${BASH:-bash}" --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1), no network client reached ═══"
+    echo "═══ GREEN — $run_pass/$run_pass suites, parse-clean on $("${BASH:-bash}" --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1), no network client reached through PATH ═══"
     exit 0
 else
-    echo "═══ NOT GREEN — $parse_fail parse fail(s), $run_fail run fail(s), $solereader_fail sole-reader fail(s), $net_fail net-guard fail(s) ═══"
+    echo "═══ NOT GREEN — $parse_fail parse fail(s), $run_fail run fail(s), $solereader_fail sole-reader fail(s), $net_fail net-guard fail(s)$([[ $net_setup_fail -eq 0 ]] || echo ", net-guard setup FAILED") ═══"
     exit 1
 fi

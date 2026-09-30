@@ -61,38 +61,65 @@ offending lines are printed for diagnosis. Two consequences:
   here-document / redirection records whose command words carry their quotes and backslashes removed; `bp_xcheck`
   compares the parse with what sourcing the file's executable head leaves defined. LIMIT, named in its header: a
   command word assembled at run time; code inside a string a command runs — eval / trap / `mapfile -C` (the (0d)
-  census flags or pins them) and a shell's `-c` string or stdin ((1a) and (7g) flag a shell run as a command, directly
-  or behind timeout / env / command / nohup / nice / setsid / xargs / exec — not behind another wrapper, nor code an
-  interpreter runs from a string, such as awk's `system()`); a here-document opened inside a here-document body's
-  `$( )`; a backtick nested in backticks; aliases.
+  census flags or pins them) and a shell's `-c` string, script or stdin ((1a) and (7g) flag a shell run as a command by
+  its word, whatever wraps it: a literal `bash` / `sh` / `dash` / `zsh` / `ksh` word, or busybox's shell applet,
+  followed by nothing, by an option carrying `c` or by a script — not a shell whose word is assembled at run time, a
+  tool running its argument through a shell it names itself (`flock -c`), nor code an interpreter runs from a string,
+  such as awk's `system()`); a here-document opened inside a here-document body's `$( )`; a backtick nested in
+  backticks; aliases. bash 5.2 prints an if-condition's here-document after the then-branch's first statement, which
+  the lexer would read as body text: `bp_parse` refuses such a print (every parse census red; the daemons use none).
 - `dump_freshness` — **the sole reader of the freshness triple**
   (`_liveness_first_provider` / `_liveness_obs_since` / `_last_blind_end`) in suites; run_all
   stage (3) enforces this mechanically (a `$`-dereference in any suite = red). Priming WRITES in
   fixtures are fine. Read fields via `field "$(dump_freshness)" <vantage|observed_since|blind_until>`.
 
-## The net guard (no suite reaches a network client through `PATH`)
+## The net guard (network clients reached through `PATH`)
 
-`tests/lib/harness.sh` puts a directory of logging stand-ins FIRST in `PATH` for every suite that sources it:
+Network clients reached through `PATH` are caught by run_all's stage (4) on every leg; at the syscall level, the CI
+strace job (ubuntu-24.04) sees no inet socket in the whole run. This section is the `PATH` half; the strace job is
+`tests/strace-hermetic.sh` (its header holds the rules; CI's `strace-hermetic` job runs it).
 
-- `curl` answers rc 7 (a refused connection — what an unanswered local read returns) and logs the call; the suite's
-  RESULTS banner counts the calls. The suites shadow the daemons' reads as shell functions; only an unshadowed
-  caller (or `command curl`) reaches the binary.
-- every client in its `HARNESS_NET_CLIENTS` list (`ping`, `ping6`, `nc`, `ncat`, `netcat`, `wget`, `dig`, `host`,
-  `nslookup`, `drill`, `getent`, `ssh`, `scp`, `sftp`, `telnet`, `traceroute`, `tftp`, `ftp`, `whois`, `nmap`,
-  `openssl`, `rsync`, `git`) fails (rc 2) and logs the call, and the suite FAILS.
+`tests/lib/harness.sh` puts a directory of logging stand-ins FIRST in `PATH` for every suite that sources it — for
+`curl` and for each client on its `HARNESS_NET_CLIENTS` list, the clients this guard stands in for:
 
-`run_all.sh` runs every suite — `test_v058_regression` included, which does not source the harness — with the same
-failing clients, `curl` failing too, first in `PATH`, and the suite's own log in `HARNESS_NETGUARD_LOG` (the harness's
-stand-ins write there too); stage (4) FAILS when any suite's log is not empty, naming the suite and its calls. A suite
-whose world runs a daemon path that reaches a client stubs the client in that world (the precedent:
+- `curl` answers rc 7 (a refused connection — what an unanswered local read returns) and logs the call. It logs only
+  to its own suite's RESULTS banner (a count), never to run_all's stage (4): it is the suites' RPC mock, by design.
+  The suites shadow the daemons' reads as shell functions; only an unshadowed caller (or `command curl`) reaches the
+  binary.
+- every client in `HARNESS_NET_CLIENTS` (`ping`, `ping6`, `nc`, `ncat`, `netcat`, `wget`, `dig`, `host`, `nslookup`,
+  `drill`, `getent`, `ssh`, `scp`, `sftp`, `telnet`, `traceroute`, `tftp`, `ftp`, `whois`, `nmap`, `openssl`,
+  `rsync`, `git`) fails (rc 2) and logs the call, and the suite FAILS (its `results_banner`; every suite that sources
+  the harness ends with it).
+
+`run_all.sh` runs every suite — `test_v058_regression` included, which does not source the harness — with its own
+directory of failing stand-ins (`curl` failing too) in `PATH`, made for that suite alone, and the suite's own log in
+`HARNESS_NETGUARD_LOG` (the harness's client stand-ins write there too; in a suite that sources the harness, the
+harness's directory comes first, so `curl` there is the mock above). Each stand-in has its log path written into it,
+so a child that keeps a guard directory on its `PATH` still logs, even with its environment cleared
+(`env -i PATH="$PATH" …`). A plain `env -i` child does not: it gets the libc or bash default `PATH` and runs the
+host's client. Stage (4) reads each suite's log right after the suite and again after the last suite — a call a child
+made after its suite's own check is then named with that suite — and removes the stand-ins only after that final
+read. A suite whose log is not empty FAILS stage (4), named with its calls; a setup failure (no client list readable,
+a stand-in or log not written) FAILS it with its own reason. The GREEN line says "no network client reached through
+PATH". A suite whose world runs a daemon path that reaches a client stubs the client in that world (the precedent:
 `test_elapsed_provider`'s m5 world stubs `ping`; before fix round 6 that world — the primary's real `check_internet`
 and heartbeat summary — ran the host's `ping` 126–135 times a run).
 
-LIMIT: the guard is PATH-based. It does not see an absolute path (`/usr/bin/curl`, `/sbin/ping`), a `PATH` a suite
-builds without it (the arm suites' `env -i PATH="$STUB_DIR:$TOOLDIR"` scenarios), a client outside the list, or an
-interpreter's own socket. `socat` and the interpreters are left out of the list on purpose (the notify socket is a
-UNIX socket; `test_primary_self_fence` reads a clock through perl; `test_arm_ceremony` finds python3 and perl
-through `PATH` and provisions them to its scenarios as removal tools).
+LIMIT: the guard is PATH-based. Stage (4) does not see the items below; the CI strace job sees each of them that opens
+an inet socket (it fails on any AF_INET/AF_INET6 syscall from any process of the run, loopback included):
+
+- bash's `/dev/tcp` and `/dev/udp` redirections (no binary runs; CI's facts job also permits them in one test fixture
+  only — text a mutant inserts and never runs);
+- `command -p <client>`, which searches the default `PATH`;
+- a plain `env -i` child (the libc or bash default `PATH`; only `env -i PATH=…` keeps the guard);
+- an absolute path (`/usr/bin/curl`, `/sbin/ping`);
+- a `PATH` a suite builds without the guard (the arm suites' `env -i PATH="$STUB_DIR:$TOOLDIR"` scenarios);
+- a call made after stage (4)'s final read of the logs (a child outliving the last suite);
+- an interpreter's own socket;
+- `socat` — left out of the list on purpose, with the interpreters (the notify socket is a UNIX socket;
+  `test_primary_self_fence` reads a clock through perl; `test_arm_ceremony` finds python3 and perl through `PATH` and
+  provisions them to its scenarios as removal tools);
+- a client not on the list.
 
 ## Deliberately NOT migrated (and why — decided, not deferred)
 
@@ -101,8 +128,8 @@ through `PATH` and provisions them to its scenarios as removal tools).
   `results_banner` would flip its meaning. Its success marker is `🐞`, invisible to the ❌
   cross-check on purpose.
 - `test_unknown_identity_alert.sh` — sources main-loop regions repeatedly in the top-level shell
-  (no function boundary); re-anchoring it means rewriting it, not migrating it. Only ok/bad+paths
-  come from the lib.
+  (no function boundary); re-anchoring it means rewriting it, not migrating it. Only ok/bad, paths
+  and the closing `results_banner` come from the lib.
 - `test_required_fence.sh` — keeps its awk extraction: the region must EXCLUDE its end line (a
   sed range would source-execute `load_state`); it gained the loud-empty check instead.
 - `test_alpenglow_tripwire.sh` case (8) parity — keeps its own `-n` guard (already loud).

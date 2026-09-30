@@ -64,27 +64,42 @@ STANDBY="$HARNESS_DIR/solana-standby-failover.sh"
 _HARNESS_TMP=$(mktemp -d)
 
 # ── the net guard (v0.7 Block 6.3.1 fix round 1 — the panel's T10, N-is-all over the suites) ───────────
-# A directory FIRST in PATH for every suite that sources this harness, holding a stand-in for every network client a
-# suite could reach through PATH:
+# Network clients reached through PATH are caught by run_all's stage (4) on every leg; at the syscall level, the CI
+# strace job (ubuntu-24.04) sees no inet socket in the whole run. This is the PATH half: a directory FIRST in PATH for
+# every suite that sources this harness, holding a stand-in for curl and for each client on HARNESS_NET_CLIENTS below
+# (ping ping6 nc ncat netcat wget dig host nslookup drill getent ssh scp sftp telnet traceroute tftp ftp whois nmap
+# openssl rsync git) — the clients this guard stands in for, not every client a host could have:
 #   - curl ANSWERS rc 7 (connection refused — what an unanswered LOCAL read returns) and logs the call. The suites shadow
 #     the daemons' reads as shell FUNCTIONS, so only an unshadowed caller (or `command curl`) reaches a curl BINARY — and on
 #     a host with a validator RPC on 127.0.0.1:8899 it would query that live node (with the port filtered, each call would
-#     wait out its -m bound). Answered, a suite behaves as it did where nothing listens; results_banner names the count.
-#     Enumerated with a logging curl first in PATH over every suite: 12 suites' own-head samples (the [own-view] sampler,
-#     unshadowed there) reached 127.0.0.1:8899 this way; test_act_then_alert (15) holds its own sims to zero with a
-#     sim-level logger.
-#   - every other client, HARNESS_NET_CLIENTS below, FAILS (rc 2) and logs the call to the client log — a suite that
-#     reaches one FAILS (results_banner), and tests/run_all.sh FAILS the gate naming the suite and the call (run_all
-#     passes each suite its own log as HARNESS_NETGUARD_LOG, and puts the same failing clients — curl failing too — first
-#     in PATH for every suite, test_v058_regression included, which does not source this harness). Each stand-in has
-#     its log path written into it, so a child started with `env -i` still logs.
+#     wait out its -m bound). Answered, a suite behaves as it did where nothing listens. This curl stand-in logs ONLY to
+#     its own suite's banner (results_banner names the count), never to run_all's stage (4): it is the suites' RPC mock,
+#     by design. Enumerated with a logging curl first in PATH over every suite: 12 suites' own-head samples (the
+#     [own-view] sampler, unshadowed there) reached 127.0.0.1:8899 this way; test_act_then_alert (15) holds its own sims
+#     to zero with a sim-level logger.
+#   - every other client on the list FAILS (rc 2) and logs the call to the client log — a suite that reaches one FAILS
+#     (results_banner), and tests/run_all.sh FAILS the gate naming the suite and the call (run_all passes each suite its
+#     own log as HARNESS_NETGUARD_LOG, and puts its own failing stand-ins — curl failing too — in PATH for every suite,
+#     test_v058_regression included, which does not source this harness; in a suite that does, this directory comes
+#     first, so `curl` there is the mock above). Each stand-in has its log path written into it, so a child that keeps
+#     this directory on its PATH still logs, even with its environment cleared (`env -i PATH="$PATH" …`, as bp_parse and
+#     bp_exec run). A plain `env -i` child does not: it gets the libc or bash default PATH and runs the host's client.
 # Left out, on purpose: socat (the daemons' sd_notify datagrams go to a UNIX socket, and the fence and arm suites run it
 # so) and the interpreters (perl, python3, python, ruby, node: test_primary_self_fence reads a millisecond clock through
 # perl, test_arm_ceremony finds python3 and perl through PATH and provisions them to its scenarios as removal tools — an
 # interpreter's socket cannot be told apart from its local use by a wrapper).
-# LIMIT (named): the guard is PATH-based — `curl`, `command curl`, `ping` reach it; an absolute path (/usr/bin/curl,
-# /sbin/ping), a PATH a suite builds without this directory (the arm suites' `env -i PATH="$STUB_DIR:$TOOLDIR"`
-# scenarios), a client outside the list and an interpreter's socket do not.
+# LIMIT (named): this guard and run_all's stage (4) see a client reached through a PATH that holds a stand-in, nothing
+# else. They do not see, and the CI strace job does see (any inet socket, from any process of the run):
+#   - bash's /dev/tcp and /dev/udp redirections (no binary runs; CI's facts job also permits them in one test fixture
+#     only, text a mutant inserts and never runs);
+#   - `command -p <client>`, which searches the default PATH, not this one;
+#   - a plain `env -i` child (the libc or bash default PATH; only `env -i PATH=…` keeps the guard);
+#   - an absolute path (/usr/bin/curl, /sbin/ping);
+#   - a PATH a suite builds without this directory (the arm suites' `env -i PATH="$STUB_DIR:$TOOLDIR"` scenarios);
+#   - a call made after run_all's final read of the logs (a child outliving the last suite);
+#   - an interpreter's own socket;
+#   - socat, left out on purpose (above);
+#   - a client not on the list.
 HARNESS_NET_CLIENTS="ping ping6 nc ncat netcat wget dig host nslookup drill getent ssh scp sftp telnet traceroute tftp ftp whois nmap openssl rsync git"
 mkdir -p "$_HARNESS_TMP/netguard"
 _HARNESS_NETLOG="$_HARNESS_TMP/netguard/log"; export _HARNESS_NETLOG
@@ -310,9 +325,10 @@ dump_freshness() {
 # still reads bash syntax — but bash's print of it, not an author's spelling. LIMIT, named: a command word assembled at
 # run time ($x, "$cmd", $(…) as the command); code inside a STRING a command runs — eval, trap, mapfile -C, a shell's
 # -c — which the lexer cannot read as code: the (0d) census flags eval anywhere and pins every trap / mapfile /
-# readarray, and (7g) and (1a) flag a shell (bash / sh / dash / zsh / ksh) run as a command, directly or behind timeout /
-# env / command / nohup / nice / setsid / xargs / exec (bpshell below) — no census flags a shell behind another wrapper
-# (find -exec, sudo, flock -c) or code an interpreter runs from a string (awk's system(), perl -e, python3 -c); a
+# readarray, and (7g) and (1a) flag a shell run as a command by its word, whatever wraps it (bpshell below: a literal
+# shell word followed by nothing, an option carrying c, or a script) — no census flags a shell whose word is assembled at
+# run time, a tool running its argument through a shell it names itself (flock -c), or code an interpreter runs from a
+# string (awk's system(), perl -e, python3 -c); a
 # here-document opened inside a here-document body's $( ) (read as that body's text); a nested backtick inside
 # backticks; and aliases (expand_aliases is off in a script; the (0d) census flags alias and shopt by name).
 BP_LEX_AWK='
@@ -589,22 +605,29 @@ END { NLINES = NR; for (LNR = 1; LNR <= NLINES; LNR++) lexline(LINES[LNR])
 #   bpq(w) / bpr(w) — a C-record word, quote-removed / raw; bplit(w) — 1 when it holds no expansion
 #   bpcmd(n, W)     — the index of a command's effective word: past its assignments, a `time` keyword's -p / -- (the lexer
 #                     drops the keyword itself, as it drops `!`), a builtin [--] and a command [-p] [--] prefix (0 for
-#                     `command -v|-V …`, a lookup, and for a command of assignments only)
-#   bpshell(n, W)   — the index of a SHELL the command runs (bash sh dash zsh ksh, any path prefix) as its effective word
-#                     or behind timeout / env / nohup / nice / setsid / xargs / exec / command / builtin; 0 when none
+#                     `command -v|-V …`, a lookup, and for a command of assignments only); it sets BPPRE to the builtin /
+#                     command prefix it skipped ("" when none) — a FUNCTION behind either never runs (command skips the
+#                     function lookup, builtin refuses a non-builtin)
+#   bpshell(n, W)   — the index of a SHELL the command runs, found by the word, not by its wrappers: the first literal word
+#                     naming a shell — bash / sh / dash / zsh / ksh, by any path, or busybox's sh / ash / hush / bash applet —
+#                     that is followed by nothing (a shell reading its stdin), by an option word carrying c (-c, -ec, -lc …)
+#                     or by a word that is not an option (a script file), whatever wrappers and options precede it (timeout,
+#                     env, nice --adjustment N, xargs --max-args N, stdbuf, sudo, find -exec …); 0 when none, and for a
+#                     lookup (`command -v bash`). A shell word followed only by options without c (`bash --version`) is not one
 BP_AWK_LIB='
 function bpq(w) { sub(/\035.*/, "", w); return substr(w, 2) }
 function bpr(w) { sub(/^[^\035]*\035/, "", w); return w }
 function bplit(w) { return substr(w, 1, 1) == "L" }
 function bpcmd(n, W,   k, q, lead) {
-    lead = 1
+    lead = 1; BPPRE = ""
     for (k = 1; k <= n; k++) {
         q = bpq(W[k])
         if (lead && (q == "-p" || q == "--")) continue
         lead = 0
         if (q ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=/) continue
-        if (q == "builtin") { if (k < n && bpq(W[k + 1]) == "--") k++; continue }
+        if (q == "builtin") { BPPRE = q; if (k < n && bpq(W[k + 1]) == "--") k++; continue }
         if (q == "command") {
+            BPPRE = q
             while (k < n && bpq(W[k + 1]) ~ /^-[pvV]+$/) { if (bpq(W[k + 1]) ~ /[vV]/) return 0; k++ }
             if (k < n && bpq(W[k + 1]) == "--") k++
             continue
@@ -613,31 +636,38 @@ function bpcmd(n, W,   k, q, lead) {
     }
     return 0
 }
-function bpshell(n, W,   k, q, b) {
-    k = bpcmd(n, W)
-    while (k > 0 && k <= n) {
-        if (!bplit(W[k])) return 0
-        q = bpq(W[k]); b = q; sub(/.*\//, "", b)
-        if (b ~ /^(bash|sh|dash|zsh|ksh)$/) return k
-        if (b == "timeout") { k++; while (k <= n && bpq(W[k]) ~ /^-/) { if (bpq(W[k]) ~ /^(-k|-s|--kill-after|--signal)$/) k++; k++ } k++; continue }
-        if (b == "env") { k++; while (k <= n && (bpq(W[k]) ~ /^-/ || bpq(W[k]) ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) { if (bpq(W[k]) ~ /^(-u|-C|-S|--unset|--chdir|--split-string)$/) k++; k++ } continue }
-        if (b == "nice") { k++; while (k <= n && bpq(W[k]) ~ /^-/) { if (bpq(W[k]) == "-n") k++; k++ } continue }
-        if (b == "xargs") { k++; while (k <= n && bpq(W[k]) ~ /^-/) { if (bpq(W[k]) ~ /^-[ILnPsdEa]$/) k++; k++ } continue }
-        if (b == "nohup" || b == "setsid" || b == "exec" || b == "command" || b == "builtin") { k++; while (k <= n && bpq(W[k]) ~ /^-/) { if (b == "exec" && bpq(W[k]) == "-a") k++; k++ } continue }
-        return 0
+function bpshell(n, W,   k, j, a, b) {
+    if (bpcmd(n, W) == 0) return 0
+    for (k = 1; k <= n; k++) {
+        if (!bplit(W[k])) continue
+        b = bpq(W[k]); sub(/.*\//, "", b)
+        if (b == "busybox" && k < n && bplit(W[k + 1]) && bpq(W[k + 1]) ~ /^(sh|ash|hush|bash)$/) k++
+        else if (b !~ /^(bash|sh|dash|zsh|ksh)$/) continue
+        if (k == n) return k
+        for (j = k + 1; j <= n; j++) { a = bpq(W[j]); if (a ~ /^-[A-Za-z]*c[A-Za-z]*$/ || a !~ /^-/) return k }
     }
     return 0
 }
 '
 bp_parse() {   # bp_parse <file> <outdir> → <outdir>/print (bash's print of the wrapped copy), <outdir>/lex (BP_LEX_AWK over
                # it), <outdir>/names (the file-level definitions before the marker, print order); rc 1 (no lex) when bash
-               # cannot parse it
-    local _f="$1" _o="$2"
+               # cannot parse it, and when the print holds an if-condition's here-document printed by bash 5.2 (below)
+    local _f="$1" _o="$2" _h
     mkdir -p "$_o" || return 1
     awk 'BEGIN { print "__bp_top__() {" } /^# =* MAIN LOOP =*$/ && !m { m = 1; print ":"; print "}"; print "__bp_post__() {"; next }
          { print } END { print ":"; print "}"; if (!m) { print "__bp_post__() {"; print ":"; print "}" } }' "$_f" > "$_o/wrap.sh" || return 1
     env -i PATH="$PATH" "${BASH:-bash}" -c 'source "$1" && declare -f __bp_top__ __bp_post__' _ "$_o/wrap.sh" > "$_o/print" 2> "$_o/print.err" || { : > "$_o/lex"; : > "$_o/names"; return 1; }
     [[ -s "$_o/print" ]] || { : > "$_o/lex"; : > "$_o/names"; return 1; }
+    # bash 5.2 prints an if (or elif) condition's here-document AFTER the then-branch's first statement — `if cmd <<EOS; then`,
+    # the statement, then the body and EOS — so the lexer would read that statement as body text (a read, a sample, a
+    # LOCAL_RPC write, a definition hidden from every census). A print line ending in a here-document operator (not a
+    # here-string) and `; then` is refused: rc 1, every parse census red. The daemons use no such here-document; bash 3.2
+    # prints it in order (the body, then ` then`) and its leg reads it.
+    _h=$(grep -nE '(^|[^<])<<-?[[:space:]]*[^[:space:]<(][^()]*;[[:space:]]*then$' "$_o/print" | head -3)
+    if [[ -n "$_h" ]]; then
+        printf 'bp_parse: an if-condition here-document as bash %s prints it — its then-branch statement would read as body text: %s\n' "$("${BASH:-bash}" -c 'echo "${BASH_VERSION%%(*}"')" "$(printf '%s' "$_h" | tr '\n' ' ')" >> "$_o/print.err"
+        : > "$_o/lex"; : > "$_o/names"; return 1
+    fi
     awk -v wrap=1 "$BP_LEX_AWK" "$_o/print" > "$_o/lex"
     awk -F'\t' '$1 == "D" && $3 == 1 && $6 == "(top)" { print $2 }' "$_o/lex" > "$_o/names"
 }

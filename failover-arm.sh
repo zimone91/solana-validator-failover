@@ -463,7 +463,7 @@ _pre_pairing_intake() {
     fi
     if [[ -z "$tok" ]]; then
         _ARM_PAIR_SUMMARY="unpaired"
-        _arm_log "precondition P5: NO pairing token (ARM_PAIRING_TOKEN unset; nothing stored at $tokf) — the arm PROCEEDS; the ARMED daemon runs the §2.7 UNPAIRED posture (proof providers: verified-demote ONLY where G2 is configured — PRIMARY_UNSTAKED_PUBKEY set — else NONE, the page prints the measured registry; silence-based take disabled; CRITICAL page at every daemon start). See the end-of-summary warning."
+        _arm_log "precondition P5: NO pairing token (ARM_PAIRING_TOKEN unset; nothing stored at $tokf) — the arm PROCEEDS; the ARMED daemon runs the §2.7 UNPAIRED posture: holder not attested, a CRITICAL page at every daemon start. This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not — the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold; from the release that wires the gate, an unpaired spare's silence-based take is disabled. See the end-of-summary warning."
         _pre_zero_stake_verify
         return 0
     fi
@@ -567,7 +567,7 @@ _pre_pairing_intake() {
     fi
     if [[ "$fence" == "page-only" ]]; then
         _ARM_PAIR_SUMMARY="page-only gen=$gen watchdog=${w}s relinquish_bound=${b}s holder=$thost"
-        _arm_log "precondition P5: pairing token VERIFIED and stored (gen=$gen, watchdog=${w}s, relinquish_bound=${b}s, fence=page-only, holder=$thost; source: $src) — but fence=page-only RELINQUISHES NOTHING (it pages): elapsed (silence-based) attestation is REFUSED, and the ARMED daemon runs the §2.7 posture (proof providers: verified-demote ONLY where G2 is configured, else NONE) until the holder is re-armed with the REAL fence and re-paired."
+        _arm_log "precondition P5: pairing token VERIFIED and stored (gen=$gen, watchdog=${w}s, relinquish_bound=${b}s, fence=page-only, holder=$thost; source: $src) — but fence=page-only RELINQUISHES NOTHING (it pages): elapsed (silence-based) attestation is REFUSED, and the ARMED daemon runs the §2.7 posture (holder not attested, a CRITICAL page at every start) until the holder is re-armed with the REAL fence and re-paired. This release has no relinquish-proof gate: the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold; from the release that wires the gate, its silence-based take is disabled."
     else
         _ARM_PAIR_SUMMARY="paired gen=$gen watchdog=${w}s relinquish_bound=${b}s holder=$thost"
         _arm_log "precondition P5: pairing token VERIFIED and stored (gen=$gen, watchdog=${w}s, relinquish_bound=${b}s, fence=real, holder=$thost; source: $src) — the ARMED daemon derives its watchdog-elapsed floor from these bounds at its ONE derivation site (W+B+MARGIN_ELAPSED). A re-armed holder prints a NEW token: re-pair this spare on every holder arm (ceremony, not advice)."
@@ -861,10 +861,10 @@ _arm_pairing_summary() {
             _arm_log "pairing summary: PAIRED (${_ARM_PAIR_SUMMARY}) — re-pair on EVERY holder re-arm: a re-armed holder prints a NEW token and this spare's stored bounds go stale (the stale-bound residual, docs/SAFETY.md); the holder's arm refuses to complete without printing it."
         ;;
         page-only*)
-            _arm_warn "pairing summary: token stored but fence=page-only (${_ARM_PAIR_SUMMARY}) — page-only relinquishes NOTHING: elapsed (silence-based) attestation REFUSED; the ARMED daemon runs the §2.7 posture (proof providers: verified-demote ONLY where G2 is configured, else NONE — holder not attested) and pages it at every start. Re-arm the holder with DRY_RUN=false (the REAL fence), then re-pair this spare with the new token."
+            _arm_warn "pairing summary: token stored but fence=page-only (${_ARM_PAIR_SUMMARY}) — page-only relinquishes NOTHING: elapsed (silence-based) attestation REFUSED; the ARMED daemon runs the §2.7 posture (holder not attested) and pages it at every start. This release has no relinquish-proof gate: no provider's verdict conditions any take — the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold; from the release that wires the gate, its silence-based take is disabled. Re-arm the holder with DRY_RUN=false (the REAL fence), then re-pair this spare with the new token."
         ;;
         *)
-            _arm_warn "pairing summary: UNPAIRED SPARE — no valid pairing token stored: the ARMED daemon runs proof providers verified-demote ONLY where G2 is configured (PRIMARY_UNSTAKED_PUBKEY set), else NONE (holder not attested; silence-based take disabled) and pages CRITICAL at every start until paired. Pair: run 'failover arm' on the HOLDER first (upgrade order: holder first), copy the token line it prints, then re-run this arm with ARM_PAIRING_TOKEN='<that line>'."
+            _arm_warn "pairing summary: UNPAIRED SPARE — no valid pairing token stored: holder not attested, and the ARMED daemon pages CRITICAL at every start until paired. This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not — the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold; from the release that wires the gate, an unpaired spare's silence-based take is disabled. Pair: run 'failover arm' on the HOLDER first (upgrade order: holder first), copy the token line it prints, then re-run this arm with ARM_PAIRING_TOKEN='<that line>'."
         ;;
     esac
     return 0

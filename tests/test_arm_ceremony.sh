@@ -1077,25 +1077,39 @@ p0_refused() {   # $1 = gate id; the refusal happened before ANY install step an
 }
 # Every P0 refusal below (16a)–(16e), (16g)'s refusals and (16h)'s own) also asserts that it CHANGED NOTHING the scenario
 # made (6.3.1 fix round 5 — the delta panel 4's T4-16H-CLOSURE; fix round 6 — the delta panel 5's TS5-16H-DYN-TOOLS: a
-# truncation kept the type and passed): p0_snap records every path under the scenario's directory right before the run
-# (find, not following links) with its type — a link with its target, a file with its size and content (cksum), a
-# directory — and p0_lost names every one missing, of another type, re-pointed or with other content afterwards (the
-# harness's own logs, events and rm.calls, by type only: the stubs write them); p0_rmcalls names any rm / rmdir / unlink
-# the arm ran through PATH (TOOLDIR's logging wrappers). The fixture files carry content, so a truncation shows.
-p0_state() {   # p0_state <out> — "PATH<TAB>L <target>|D|F <crc> <size>" for every path under MOCK_DIR, sorted (a sentinel first)
+# truncation kept the type and passed; fix round 7 — the delta panel 6's CEN6-16H-CHANGED: a chmod through the link, or a
+# new file behind it, passed): p0_snap lists every path under the scenario's directory right before the run (find, not
+# following links) with its type — a link with its target, a file with its size and content (cksum), a directory — and
+# its mode, uid and gid (`ls -ldn`: the mode string, the numeric owner and group — BSD, GNU and busybox print them alike);
+# p0_lost names every path missing, NEW (the run's own output file excepted, and P0_NEW_OK's: the two (16h) cases that leave
+# a path by design — the partial mkdir's newdir, and the race's link with the tail mkdir -p created inside its target), of
+# another type, re-pointed, with other
+# content, or with another mode or owner afterwards (the harness's own logs, events and rm.calls, by type, mode and owner
+# only: the stubs write them). NOT compared: mtime and atime — a `touch` of an existing path is not seen. p0_rmcalls names
+# any rm / rmdir / unlink the arm ran through PATH (TOOLDIR's logging wrappers). The fixture files carry content, so a
+# truncation shows.
+p0_state() {   # p0_state <out> — "PATH<TAB>L <target>|D|F <crc> <size><TAB><mode> <uid>:<gid>" for every path under MOCK_DIR, sorted (a sentinel first)
     { printf '0 0 #\n'; find "$MOCK_DIR" -type f ! -path "$MOCK_DIR/events" ! -path "$MOCK_DIR/rm.calls" -exec cksum {} + 2>/dev/null; } > "$1.sums"
+    find "$MOCK_DIR" -exec ls -ldn {} + > "$1.modes" 2>/dev/null
     { printf '#\t#\n'; find "$MOCK_DIR" -print 2>/dev/null | while IFS= read -r _p; do
         if [[ -L "$_p" ]]; then printf '%s\tL %s\n' "$_p" "$(readlink "$_p")"; elif [[ -d "$_p" ]]; then printf '%s\tD\n' "$_p"; else printf '%s\tF\n' "$_p"; fi
-      done; } | awk -F'\t' 'NR == FNR { c = $0; sub(/ .*/, "", c); r = $0; sub(/^[^ ]* /, "", r); z = r; sub(/ .*/, "", z); q = r; sub(/^[^ ]* /, "", q); S[q] = c " " z; next }
-                          $2 == "F" { print $1 "\tF " (($1 in S) ? S[$1] : "-"); next } { print }' "$1.sums" - | sort > "$1"
+      done; } | awk -F'\t' -v m="$MOCK_DIR" 'FNR == 1 { fi++ }
+                          fi == 1 { c = $0; sub(/ .*/, "", c); r = $0; sub(/^[^ ]* /, "", r); z = r; sub(/ .*/, "", z); q = r; sub(/^[^ ]* /, "", q); S[q] = c " " z; next }
+                          fi == 2 { i = index($0, m); if (!i) next; p = substr($0, i); sub(/ -> .*/, "", p); split($0, f, " "); M[p] = substr(f[1], 1, 10) " " f[3] ":" f[4]; next }
+                          $1 == "#" { print; next }
+                          { md = ($1 in M) ? M[$1] : "?" }
+                          $2 == "F" { print $1 "\tF " (($1 in S) ? S[$1] : "-") "\t" md; next } { print $0 "\t" md }' "$1.sums" "$1.modes" - | sort > "$1"
 }
 p0_snap() { : > "$MOCK_DIR/rm.calls"; p0_state "$MOCK_PARENT/p0.snap"; }
-p0_lost() {   # every path of the snapshot missing, of another type, re-pointed, or with other content
+p0_lost() {   # every path of the snapshot missing, of another type, re-pointed, with other content or another mode / owner; every path new
     p0_state "$MOCK_PARENT/p0.now"
-    awk -F'\t' -v m="$MOCK_DIR/" 'NR == FNR { N[$1] = $2; next } $1 == "#" { next }
+    awk -F'\t' -v m="$MOCK_DIR/" -v nok=" ${P0_NEW_OK:-} " 'FNR == 1 { fi++ }
+        fi == 1 { N[$1] = $2; T[$1] = $3; next } $1 == "#" { next }
+        { W[$1] = 1 }
         !($1 in N) { o = o " " substr($1, length(m) + 1); next }
-        N[$1] != $2 { o = o " " substr($1, length(m) + 1) (substr(N[$1], 1, 1) == substr($2, 1, 1) ? (substr($2, 1, 1) == "L" ? "(re-pointed)" : "(content)") : "(type)") }
-        END { printf "%s", o }' "$MOCK_PARENT/p0.now" "$MOCK_PARENT/p0.snap"
+        N[$1] != $2 { o = o " " substr($1, length(m) + 1) (substr(N[$1], 1, 1) == substr($2, 1, 1) ? (substr($2, 1, 1) == "L" ? "(re-pointed)" : "(content)") : "(type)"); next }
+        T[$1] != $3 { o = o " " substr($1, length(m) + 1) "(mode/owner " $3 " -> " T[$1] ")" }
+        END { for (p in N) if (p != "#" && !(p in W) && p != m "out" && !index(nok, " " substr(p, length(m) + 1) " ")) o = o " " substr(p, length(m) + 1) "(new)"; printf "%s", o }' "$MOCK_PARENT/p0.now" "$MOCK_PARENT/p0.snap"
 }
 p0_rmcalls() { [[ -s "$MOCK_DIR/rm.calls" ]] && { printf ' [removal ran: %s]' "$(tr '\n' ';' < "$MOCK_DIR/rm.calls" | cut -c1-160)"; return 0; }; return 1; }
 p0_kept() { [[ -z "$(p0_lost)" ]] && ! p0_rmcalls >/dev/null; }   # nothing the scenario made is gone, no removal ran
@@ -1106,7 +1120,7 @@ mkdir -p "$MOCK_DIR/real-state"; rm -rf "$MOCK_DIR/state"; ln -s "$MOCK_DIR/real
 p0_snap; run_arm
 if p0_refused STATE-dir-symlink && grep -q "resolves to $MOCK_DIR/real-state" "$MOCK_DIR/out" && grep -q "FIX: point ARM_STATE_DIR at the resolved path — ARM_STATE_DIR=$MOCK_DIR/real-state" "$MOCK_DIR/out" \
       && [[ ! -e "$MOCK_DIR/real-state/arm-generation" ]] && p0_kept; then
-    ok "(16a) ARM_STATE_DIR is a symlink → REFUSE[STATE-dir-symlink] naming the resolved path and the exact fix (ARM_STATE_DIR=<resolved> + the spare's PROOF_STATE_DIR), exit 1 before ANY install step; nothing written through the link, nothing removed or changed (the link, its target and what is behind it stay as they were)"
+    ok "(16a) ARM_STATE_DIR is a symlink → REFUSE[STATE-dir-symlink] naming the resolved path and the exact fix (ARM_STATE_DIR=<resolved> + the spare's PROOF_STATE_DIR), exit 1 before ANY install step; no arm-generation written through the link, and every path under the scenario's directory — the link, its target, what is behind it — is still there, none is new, each with its type, link target, size, content, mode, uid and gid (not compared: mtime, atime), and no rm / rmdir / unlink ran"
 else
     bad "(16a) rc=$RC gen=$(ls "$MOCK_DIR/real-state" 2>/dev/null | tr '\n' ' ') $(p0_why) out: $(grep -E 'REFUSE|FIX' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-400)"
 fi
@@ -1115,7 +1129,7 @@ new_mock
 mkdir -p "$MOCK_DIR/real-anc/state"; ln -s "$MOCK_DIR/real-anc" "$MOCK_DIR/anc"
 p0_snap; run_arm ARM_STATE_DIR="$MOCK_DIR/anc/state"
 if p0_refused STATE-dir-symlink && grep -q "resolves to $MOCK_DIR/real-anc/state" "$MOCK_DIR/out" && p0_kept; then
-    ok "(16b) a symlinked ANCESTOR (ARM_STATE_DIR=…/anc/state, anc → real-anc) → REFUSE[STATE-dir-symlink] — the whole path must resolve to itself, as in the daemon; nothing removed or changed"
+    ok "(16b) a symlinked ANCESTOR (ARM_STATE_DIR=…/anc/state, anc → real-anc) → REFUSE[STATE-dir-symlink] — the whole path must resolve to itself, as in the daemon; no path under the scenario's directory missing, new, or changed in type, target, size, content, mode or owner"
 else
     bad "(16b) rc=$RC $(p0_why) out: $(grep -E 'REFUSE|precondition 0' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-300)"
 fi
@@ -1133,7 +1147,7 @@ new_mock; p0_snap
 ( cd "$MOCK_DIR" && env -i PATH="$STUB_DIR:$TOOLDIR" EVENTS="$EVENTS" MOCK_DIR="$MOCK_DIR" ARM_SYSTEMD_DIR="$MOCK_DIR/etc-systemd" ARM_RUNTIME_DIR="$MOCK_DIR/run-systemd" ARM_INSTALL_DIR="$MOCK_DIR/opt" FENCE_MARKER_DIR="$MOCK_DIR/markers" ARM_STATE_DIR="state" "$BASH_BIN" "$ARM" > "$MOCK_DIR/out" 2>&1 ); RC=$?
 sp_ct=$((sp_ct + 1)); if p0_refused STATE-dir-spelling && p0_kept; then sp_red=$((sp_red + 1)); else sp_miss="$sp_miss [relative rc=$RC $(grep -o 'REFUSE\[[^]]*\]' "$MOCK_DIR/out" | head -1) $(p0_why)]"; fi
 if [[ "$sp_red" == "$sp_ct" ]]; then
-    ok "(16c) every non-resolved spelling REFUSED[STATE-dir-spelling] ($sp_ct/$sp_ct: trailing '/', internal '//', '/./', '/../', a relative path) — the daemon's exact rule, its own code (nothing on the filesystem is wrong, the value is), before any install; nothing removed or changed"
+    ok "(16c) every non-resolved spelling REFUSED[STATE-dir-spelling] ($sp_ct/$sp_ct: trailing '/', internal '//', '/./', '/../', a relative path) — the daemon's exact rule, its own code (nothing on the filesystem is wrong, the value is), before any install; no path under the scenario's directory missing, new, or changed in type, target, size, content, mode or owner"
 else
     bad "(16c) $((sp_ct - sp_red))/$sp_ct spellings not refused as STATE-dir-spelling:$sp_miss"
 fi
@@ -1142,15 +1156,19 @@ fi
 # build: new1/sub, rel/state, s2, s3, s4 created under their refused spellings, and real/newsub and realanc/newsub
 # created THROUGH the links). Each case: the refusal code, the refused directory (or its resolved target) absent
 # afterwards, and NO removal command run (below).
-# P0 CHANGES NOTHING — three halves, each able to go red (red first: the delta panel 3's TS3-16H-RMDIR mutants H1–H4,
-# H6, H6b, the delta panel 4's T4-16H-CLOSURE mutants A1–A3, and the delta panel 5's TS5-16H-DYN-TOOLS F1, F2, T1, T4):
+# P0 CHANGES NOTHING it compares — three halves, each able to go red (red first: the delta panel 3's TS3-16H-RMDIR mutants
+# H1–H4, H6, H6b, the delta panel 4's T4-16H-CLOSURE mutants A1–A3, the delta panel 5's TS5-16H-DYN-TOOLS F1, F2, T1, T4,
+# and the delta panel 6's CEN6-16H-CHANGED AR1 (chmod 700 through the link), AR7 (chmod 600 of the operator's file at
+# ARM_STATE_DIR) and AR9 (a new file written behind the link)):
 #   - DYNAMIC: every P0 refusal ((16a)–(16e), (16g)'s refusals, each case here) leaves every path its scenario made as it
-#     was (p0_snap / p0_lost — each path's existence and type, a link's target, a file's size and content: the link, the
-#     dangling link, the file at ARM_STATE_DIR, the victim tree; the harness's two logs by type only) and ran no rm / rmdir /
-#     unlink through PATH (logging wrappers, the real binary behind each). What the arm can run to change them is REAL on
-#     its scenario PATH: rm / rmdir / unlink (logged), mv, cp, ln, find, python3 and perl where the host has them, any
-#     absolute-path tool, and the shell's own redirections — a removal, a move, a re-pointed link or a truncation through
-#     any of those, on the exercised paths, is red;
+#     was and adds none (p0_snap / p0_lost — each path's existence and type, a link's target, a file's size and content,
+#     every path's mode, uid and gid: the link, the dangling link, the file at ARM_STATE_DIR, the victim tree; the harness's
+#     two logs by type, mode and owner only; a path that appears under the scenario's directory, the run's output file
+#     excepted) and ran no rm / rmdir / unlink through PATH (logging wrappers, the real binary behind each). What the arm
+#     can run to change them is REAL on its scenario PATH: rm / rmdir / unlink (logged), mv, cp, ln, find, chmod, touch,
+#     python3 and perl where the host has them, any absolute-path tool, and the shell's own redirections — a removal, a
+#     move, a re-pointed link, a truncation, a mode change or a new file through any of those, on the exercised paths, is
+#     red; an mtime or atime change alone (a `touch` of an existing path) is not compared;
 #   - STATIC: reads bash's own parse of the arm (bp_parse — a `function`-keyword or one-line helper printed like any other)
 #     and checks that P0 and every function it calls, transitively (_arm_cleanup_probe excepted — reached only through
 #     _arm_refuse, and its first statement returns unless the probe was rendered, which happens after P0), with quotes and
@@ -1165,7 +1183,8 @@ fi
 # interpreter's unlink — or through a command word assembled at run time is the dynamic half's, on the exercised paths); a
 # change through a tool the scenario PATH does not provision (truncate, dd, shred, rsync, python3 / perl on a host without
 # them, …) fails there as "command not found" and is not seen; a change on a P0 path no case here takes, spelled past the
-# three words, is not seen.
+# three words, is not seen; an mtime or atime change alone is not compared (a `touch` of an existing path, or a file rewritten
+# with the same bytes, mode and owner, is not seen).
 cr_ct=0; cr_ok=0; cr_miss=""
 p0_nothing_created() {   # $1 = code, $2.. = paths that must NOT exist afterwards
     local _code="$1" _x; shift
@@ -1197,8 +1216,9 @@ p0_snap; run_arm ARM_STATE_DIR="$MOCK_DIR/dangling/state"; p0_nothing_created ST
 # intermediate component and removed empty directories in its target (a pre-existing one included), where SAFETY
 # said nothing is removed through a symlink — removed; what the failed mkdir created stays (newdir), as in fix round 1
 new_mock; _lp="$MOCK_DIR/newdir/$(printf 'x%.0s' {1..300})"; p0_snap; run_arm ARM_STATE_DIR="$_lp"
-p0_partial_ok=0; p0_refused STATE-dir-missing && [[ -d "$MOCK_DIR/newdir" ]] && grep -qF "ARM_STATE_DIR=$_lp cannot be created" "$MOCK_DIR/out" && grep -q 'may have left part of that path on disk' "$MOCK_DIR/out" && p0_kept && p0_partial_ok=1
-p0_partial_why="rc=$RC newdir=$([[ -d "$MOCK_DIR/newdir" ]] && echo kept || echo REMOVED) $(p0_why)"
+p0_partial_ok=0; P0_NEW_OK="newdir"
+p0_refused STATE-dir-missing && [[ -d "$MOCK_DIR/newdir" ]] && grep -qF "ARM_STATE_DIR=$_lp cannot be created" "$MOCK_DIR/out" && grep -q 'may have left part of that path on disk' "$MOCK_DIR/out" && p0_kept && p0_partial_ok=1
+p0_partial_why="rc=$RC newdir=$([[ -d "$MOCK_DIR/newdir" ]] && echo kept || echo REMOVED) $(p0_why)"; P0_NEW_OK=""
 # the RACE: a symlink appears on an intermediate component (anc/a → victim) just before P0's mkdir -p runs — a racing
 # mkdir fronting the real one (the (11d) wrapper idiom); victim/b, victim/keep and victim/file exist beforehand
 STUB_RACE="$STUB_PARENT/race"; mkdir -p "$STUB_RACE"; cp "$STUB_DIR"/* "$STUB_RACE/"
@@ -1211,12 +1231,12 @@ STUB
 chmod +x "$STUB_RACE/mkdir"
 new_mock; mkdir -p "$MOCK_DIR/anc" "$MOCK_DIR/victim/b" "$MOCK_DIR/victim/keep"; printf 'a file in the link target\n' > "$MOCK_DIR/victim/file"; p0_snap
 ARM_PATH="$STUB_RACE" run_arm ARM_STATE_DIR="$MOCK_DIR/anc/a/b/state" RACE_LINK="$MOCK_DIR/anc/a" RACE_TARGET="$MOCK_DIR/victim"
-p0_race_ok=0
+p0_race_ok=0; P0_NEW_OK="anc/a victim/b/state"
 p0_refused STATE-dir-symlink && [[ -L "$MOCK_DIR/anc/a" ]] && grep -q "resolves to $MOCK_DIR/victim/b/state" "$MOCK_DIR/out" \
   && grep -q "FIX: if you did not create that link, stop and investigate" "$MOCK_DIR/out" \
   && [[ -d "$MOCK_DIR/victim/b/state" && -d "$MOCK_DIR/victim/b" && -d "$MOCK_DIR/victim/keep" && -f "$MOCK_DIR/victim/file" ]] \
   && p0_kept && p0_race_ok=1
-p0_race_why="rc=$RC link=$([[ -L "$MOCK_DIR/anc/a" ]] && echo yes || echo no) created-tail=$([[ -d "$MOCK_DIR/victim/b/state" ]] && echo kept || echo REMOVED) b=$([[ -d "$MOCK_DIR/victim/b" ]] && echo kept || echo REMOVED) keep=$([[ -d "$MOCK_DIR/victim/keep" ]] && echo kept || echo REMOVED) $(p0_why) :: $(grep -E 'REFUSE|FIX' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-300)"
+p0_race_why="rc=$RC link=$([[ -L "$MOCK_DIR/anc/a" ]] && echo yes || echo no) created-tail=$([[ -d "$MOCK_DIR/victim/b/state" ]] && echo kept || echo REMOVED) b=$([[ -d "$MOCK_DIR/victim/b" ]] && echo kept || echo REMOVED) keep=$([[ -d "$MOCK_DIR/victim/keep" ]] && echo kept || echo REMOVED) $(p0_why) :: $(grep -E 'REFUSE|FIX' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-300)"; P0_NEW_OK=""
 # the STATIC half, on bash's own parse of the arm: P0 and every function it calls, transitively — a call = a word of a body's
 # code view naming a function the parse defines (a nested one too) — except _arm_cleanup_probe (see the header)
 P0_BP="$MOCK_PARENT/bp-arm"; bp_parse "$ARM" "$P0_BP" || : > "$P0_BP/FAIL"
@@ -1233,7 +1253,7 @@ done
 p0_norm=$(awk -F'\t' -v fs="$p0_fns" 'BEGIN { n = split(fs, a, " "); for (i = 1; i <= n; i++) F[a[i]] } $1 == "L" && ($2 in F) { print $6 } $1 == "H" && ($2 in F) { print $5 }' "$P0_BP/lex" | tr -d "\\\\\"'" | grep -cE '(^|[^A-Za-z0-9_])(rm|rmdir|unlink)([^A-Za-z0-9_]|$)')
 p0_xc=$([[ -f "$P0_BP/FAIL" ]] && echo PARSE-FAIL; bp_xcheck "$ARM" "$P0_BP" | tr '\n' ';')
 if [[ "$cr_ok" == "$cr_ct" && $p0_partial_ok -eq 1 && $p0_race_ok -eq 1 && "$p0_norm" == "0" && " $p0_fns " == *" _arm_refuse "* && -z "$p0_xc" ]]; then
-    ok "(16h) a refusal by spelling or by the existing ancestor creates NOTHING ($cr_ok/$cr_ct: trailing '/', '//', '/./', '/../' and a relative path under missing parents → STATE-dir-spelling; a symlinked ancestor with a missing leaf (one and two levels) and a DANGLING symlink ancestor → STATE-dir-symlink) — the nearest existing ancestor is checked before any mkdir; a mkdir failing PARTWAY (a 300-character component under a missing parent) → STATE-dir-missing naming the path and saying part of it may remain — what it created stays (newdir); a symlink RACED onto an intermediate component before P0's mkdir -p (anc/a → victim) → mkdir -p creates the tail inside the link's target, the post-mkdir check refuses STATE-dir-symlink naming the resolved path, the FIX line says to stop and investigate a link the operator did not create, and nothing under the target is removed. P0 CHANGES NOTHING: in every one of these refusals every path the scenario made is still there with its type, its link target, its size and content, and no rm / rmdir / unlink ran — through the tools the scenario PATH provisions (rm / rmdir / unlink logged, mv, cp, ln, find,$arm_opt_have), an absolute path or a redirection; on bash's own parse, P0 and the functions it calls ($(printf '%s' "$p0_fns" | wc -w | tr -d ' '): P0,$(printf ' %s' $p0_fns | sed 's/ _pre_state_dir_check//')) hold no rm / rmdir / unlink word (quotes and backslashes deleted, any path prefix), and bash sourcing the arm defines exactly the parse's $(grep -c . "$P0_BP/names") functions"
+    ok "(16h) a refusal by spelling or by the existing ancestor creates NOTHING ($cr_ok/$cr_ct: trailing '/', '//', '/./', '/../' and a relative path under missing parents → STATE-dir-spelling; a symlinked ancestor with a missing leaf (one and two levels) and a DANGLING symlink ancestor → STATE-dir-symlink) — the nearest existing ancestor is checked before any mkdir; a mkdir failing PARTWAY (a 300-character component under a missing parent) → STATE-dir-missing naming the path and saying part of it may remain — what it created stays (newdir); a symlink RACED onto an intermediate component before P0's mkdir -p (anc/a → victim) → mkdir -p creates the tail inside the link's target, the post-mkdir check refuses STATE-dir-symlink naming the resolved path, the FIX line says to stop and investigate a link the operator did not create, and nothing under the target is removed. P0 CHANGES NOTHING it compares: in every one of these refusals every path the scenario made is still there with its type, its link target, its size and content, its mode, uid and gid, no new path appeared (not compared: mtime, atime), and no rm / rmdir / unlink ran — through the tools the scenario PATH provisions (rm / rmdir / unlink logged, mv, cp, ln, find,$arm_opt_have), an absolute path or a redirection; on bash's own parse, P0 and the functions it calls ($(printf '%s' "$p0_fns" | wc -w | tr -d ' '): P0,$(printf ' %s' $p0_fns | sed 's/ _pre_state_dir_check//')) hold no rm / rmdir / unlink word (quotes and backslashes deleted, any path prefix), and bash sourcing the arm defines exactly the parse's $(grep -c . "$P0_BP/names") functions"
 else
     bad "(16h) $((cr_ct - cr_ok))/$cr_ct:$cr_miss :: partial-mkdir refused+named+kept=$p0_partial_ok [$p0_partial_why] :: race=$p0_race_ok [$p0_race_why] :: P0 remove words=$p0_norm over [$p0_fns] :: parse-vs-exec [$p0_xc]"
 fi
@@ -1252,7 +1272,7 @@ new_mock
 rm -rf "$MOCK_DIR/state"; printf 'the operator file at ARM_STATE_DIR\n' > "$MOCK_DIR/state"
 p0_snap; run_arm
 if p0_refused STATE-dir-missing && grep -q "remove whatever non-directory sits at that path BY HAND" "$MOCK_DIR/out" && p0_kept; then
-    ok "(16e) a FILE at ARM_STATE_DIR → REFUSE[STATE-dir-missing] with the by-hand fix, BEFORE any unit is rendered (was: units installed, then REFUSE[TOKEN-persist]); the file stays, its content unchanged — the arm changes nothing"
+    ok "(16e) a FILE at ARM_STATE_DIR → REFUSE[STATE-dir-missing] with the by-hand fix, BEFORE any unit is rendered (was: units installed, then REFUSE[TOKEN-persist]); the file stays with its type, size, content, mode, uid and gid, and no path under the scenario's directory is missing, new or changed in those (not compared: mtime, atime)"
 else
     bad "(16e) rc=$RC $(p0_why) out: $(grep -E 'REFUSE|FIX' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-300)"
 fi
@@ -1288,7 +1308,7 @@ else
     agree=0; disagree="the canonicalization lines differ or the daemon's reason-printer was not found (arm='$arm_can' daemon='$dmn_can')"
 fi
 if [[ $agree -eq 1 ]]; then
-    ok "(16g) the arm's test IS the daemon's R-SYM test (same cd -P/pwd -P line) and they AGREE on all 7 spellings (resolved, symlink, trailing '/', '//', '/./', '/../', leading '//'); every refusal among them removed or changed nothing"
+    ok "(16g) the arm's test IS the daemon's R-SYM test (same cd -P/pwd -P line) and they AGREE on all 7 spellings (resolved, symlink, trailing '/', '//', '/./', '/../', leading '//'); every refusal among them left every path of its scenario in place, added none, and changed none in type, target, size, content, mode or owner"
 else
     bad "(16g) arm and daemon disagree:$disagree"
 fi
