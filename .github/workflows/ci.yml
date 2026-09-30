@@ -98,7 +98,7 @@ jobs:
   strace-hermetic:
     name: no network at the syscall level · ubuntu 24.04 · bash 5.2 · run_all under strace
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180   # the whole run_all under strace -f runs several times slower than the plain suite
     steps:
       - uses: actions/checkout@v5
       - name: interpreter fingerprint
