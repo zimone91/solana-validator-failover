@@ -15,21 +15,35 @@
 #   caught the bash-5.2 alert-death bug BEFORE v0.6.9 shipped it to every Ubuntu 24.04 /
 #   Debian 12 install. That is the badge's meaning.
 #
-# Job summary:
-#   linux-bash52  — the deploy target (Ubuntu 24.04, /bin/bash 5.2): full suite.
-#   macos-bash32  — the compatibility floor (macOS, pinned /bin/bash 3.2.57): full suite.
+# Job summary (each job's interpreter and awk):
+#   linux-bash52  — the deploy target (Ubuntu 24.04, /bin/bash 5.2; awk: mawk, pinned — the stock Ubuntu
+#                   24.04 awk a deploy host runs, fingerprinted and selected by the "awk fingerprint" step,
+#                   which fails loudly if awk still resolves to anything else): full suite.
+#   macos-bash32  — the compatibility floor (macOS, pinned /bin/bash 3.2.57; awk: the macOS system awk, the
+#                   BWK "one true awk" — printed, not pinned): full suite.
 #                   Pinning /bin/bash matters: bare `bash` on a macOS runner may resolve to a newer
 #                   Homebrew bash, which would silently re-open the class where a bash-4-only
 #                   construct parses "green" while the 3.2 interpreter never runs the suite.
-#   shellcheck    — `-S error` on the seven shipped scripts (the same bar every change has met).
-#   facts         — claims-vs-reality: the suite count stated in README and pinned in run_all.sh
+#   strace-hermetic — no network at the syscall level (Ubuntu 24.04, /bin/bash 5.2; awk: mawk, pinned the
+#                   same way): the WHOLE tests/run_all.sh under `strace -f` (tests/strace-hermetic.sh, its
+#                   filter tests/lib/strace-net.awk) — red on any AF_INET/AF_INET6 syscall from any process
+#                   (loopback included), on any exec of a real network client from the net guard's list, and
+#                   on a failing run_all. run_all's own stage (4) catches the network clients a suite reaches
+#                   through PATH on every leg; this job sees what that stage cannot (its LIMIT, tests/HARNESS.md).
+#   shellcheck    — `-S error` on the shipped scripts, the test harness lib and the strace job's script (the
+#                   same bar every change has met; runs no interpreter).
+#   facts         — (Ubuntu 24.04, the runner's bash and default awk, not pinned: its awk programs are POSIX
+#                   awk, no {m,n} interval, exercised under mawk, gawk, busybox awk and the BWK awk)
+#                   claims-vs-reality: the suite count stated in README and pinned in run_all.sh
 #                   must equal the actual number of test files. Exists because a frozen published
 #                   claim drifted from reality three separate times in this project's history
 #                   (a stale suite count, a nonexistent "tested on" tag, and release bodies
 #                   carrying retracted wording). Numbers in public claims are now checked
 #                   mechanically, not remembered. v0.7 (pre-Block-4, №10): the same job also pins
 #                   the per-daemon counts of `date +%s` (wall-clock) and `${var//…}` (patsub)
-#                   lines — growth in either is a review-stop, enforced the same way.
+#                   lines — growth in either is a review-stop, enforced the same way. v0.7 Block 6.3.1:
+#                   the same job checks that every page the daemons send is named in docs/NOTIFICATIONS.md,
+#                   and that bash's /dev/tcp and /dev/udp redirections appear in one test fixture only.
 
 name: ci
 on:
@@ -50,6 +64,19 @@ jobs:
         run: /bin/bash --version | head -1
       - name: deps
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+      - name: awk fingerprint (must be mawk — the stock Ubuntu 24.04 awk; fail loudly if it cannot be selected)
+        # The same shape as the macOS job's bash 3.2 pin: the suites' awk programs must run, green, under the awk
+        # a deploy host has. A runner whose `awk` resolves elsewhere gets mawk selected (installed if absent).
+        run: |
+          a=$(readlink -f "$(command -v awk)"); echo "runner awk: $a"
+          case "$a" in
+            */mawk) ;;
+            *) command -v mawk > /dev/null 2>&1 || sudo apt-get install -y -qq mawk || true
+               sudo update-alternatives --set awk "$(command -v mawk || echo /usr/bin/mawk)" || true ;;
+          esac
+          a=$(readlink -f "$(command -v awk)")
+          case "$a" in */mawk) ;; *) echo "awk resolves to $a, not mawk — pin mawk or update this gate consciously"; exit 1 ;; esac
+          echo "awk: $a — $(awk -W version 2>&1 | head -1)"
       - name: full suite (parse gate + run gate + suite-count manifest)
         run: cd tests && /bin/bash run_all.sh
 
@@ -62,13 +89,42 @@ jobs:
         run: |
           /bin/bash --version | head -1
           /bin/bash --version | head -1 | grep -q "version 3\.2" || { echo "runner /bin/bash is not 3.2 — pin a 3.2 interpreter or update this gate consciously"; exit 1; }
+          echo "awk: $(command -v awk) — $(awk --version 2>&1 | head -1)"
       - name: deps
         run: which jq || brew install jq
       - name: full suite under the PINNED interpreter
         run: cd tests && /bin/bash run_all.sh
 
+  strace-hermetic:
+    name: no network at the syscall level · ubuntu 24.04 · bash 5.2 · run_all under strace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: interpreter fingerprint
+        run: /bin/bash --version | head -1
+      - name: deps (strace; the suites' jq and socat; REAL network clients, so a leaking exec would really connect)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq socat strace curl wget iputils-ping dnsutils netcat-openbsd openssh-client git rsync telnet traceroute whois python3 perl openssl
+      - name: awk fingerprint (must be mawk — the stock Ubuntu 24.04 awk; fail loudly if it cannot be selected)
+        # The same shape as the macOS job's bash 3.2 pin: the suites' awk programs must run, green, under the awk
+        # a deploy host has. A runner whose `awk` resolves elsewhere gets mawk selected (installed if absent).
+        run: |
+          a=$(readlink -f "$(command -v awk)"); echo "runner awk: $a"
+          case "$a" in
+            */mawk) ;;
+            *) command -v mawk > /dev/null 2>&1 || sudo apt-get install -y -qq mawk || true
+               sudo update-alternatives --set awk "$(command -v mawk || echo /usr/bin/mawk)" || true ;;
+          esac
+          a=$(readlink -f "$(command -v awk)")
+          case "$a" in */mawk) ;; *) echo "awk resolves to $a, not mawk — pin mawk or update this gate consciously"; exit 1 ;; esac
+          echo "awk: $a — $(awk -W version 2>&1 | head -1)"
+      - name: the whole run_all under strace -f (tests/strace-hermetic.sh — its header holds the rules)
+        run: /bin/bash tests/strace-hermetic.sh "$RUNNER_TEMP/strace-hermetic"
+
   shellcheck:
-    name: shellcheck -S error · eight shipped scripts + test harness lib
+    name: shellcheck -S error · eight shipped scripts + test harness lib + the strace job's script
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -82,10 +138,10 @@ jobs:
         # of the fence); same shippable-not-executed boundary as the fence scripts.
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -S error install.sh solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh failover-arm.sh tests/lib/harness.sh systemd/failover-fence.sh systemd/failover-fence-page-only.sh
+          shellcheck -S error install.sh solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh failover-arm.sh tests/lib/harness.sh systemd/failover-fence.sh systemd/failover-fence-page-only.sh tests/strace-hermetic.sh
 
   facts:
-    name: claims match reality (suite count, wall-clock/patsub pins, checksums)
+    name: claims match reality (suite count, wall-clock/patsub pins, checksums, every page documented, /dev/tcp)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -162,3 +218,87 @@ jobs:
           [ "$p_sby" = "4" ]  || { echo "standby patsub \${var//} lines: $p_sby != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
       - name: SHA256SUMS manifest matches the tree (regen — sha256sum <files> > SHA256SUMS)
         run: sha256sum -c SHA256SUMS
+      - name: bash's /dev/tcp and /dev/udp redirections — the A5 test fixture only (v0.7 Block 6.3.1)
+        # RULE: bash's network redirection (/dev/tcp/<host>/<port>, /dev/udp/…) opens a socket with no client
+        # binary, so run_all's net guard (stage 4) cannot see it (its LIMIT, tests/HARNESS.md); the strace job sees
+        # it at run time, and this step sees it in the source. Every *.sh file of the tree (find, not git ls-files:
+        # the step also runs on an exported tree) is grepped for /dev/tcp/ or /dev/udp/ followed by a host
+        # character; comment-only lines (first non-blank character #) are skipped. The ONE permitted code line is
+        # tests/test_own_view.sh's A5 fixture — text a mutant inserts into a copy of a daemon for a static census,
+        # never executed: `{ exec 9<>/dev/tcp/127.0.0.1/8899 && … }`, permitted once. Anything else is red, listed.
+        run: |
+          w=$(mktemp -d)
+          find . -name '*.sh' -type f -not -path './.git/*' | sort > "$w/f"
+          [ -s "$w/f" ] || { echo "no *.sh file found — run from the repository root"; exit 1; }
+          xargs grep -nE '/dev/(tcp|udp)/[^/[:space:]]' /dev/null < "$w/f" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' > "$w/h" || true
+          a5='    { exec 9<>/dev/tcp/127.0.0.1/8899 && printf "GET /health HTTP/1.0\r\n\r\n" >&9 && exec 9>&-; } 2>/dev/null || true'
+          bad=0; na5=0
+          while IFS= read -r h; do
+            f=${h%%:*}; r=${h#*:}; ln=${r%%:*}; code=${r#*:}
+            if [ "$f" = "./tests/test_own_view.sh" ] && [ "$code" = "$a5" ]; then na5=$((na5 + 1)); continue; fi
+            echo "NETWORK REDIRECTION outside the A5 fixture — $f:$ln: $code"; bad=1
+          done < "$w/h"
+          [ "$na5" -le 1 ] || { echo "the A5 fixture line appears $na5 times in tests/test_own_view.sh — it is permitted once"; bad=1; }
+          echo "$(wc -l < "$w/f" | tr -d ' ') *.sh files read; /dev/tcp|udp/<host> code lines: $(wc -l < "$w/h" | tr -d ' ') (the A5 fixture: $na5)"
+          rm -rf "$w"
+          [ "$bad" = 0 ] || { echo "RED: bash's network redirection outside the one permitted fixture (rule: this step's comment)"; exit 1; }
+          echo "no /dev/tcp or /dev/udp redirection in any *.sh code line but the A5 fixture"
+      - name: every page the daemons send is named in docs/NOTIFICATIONS.md (v0.7 Block 6.3.1)
+        # RULE: tests/lib/notif-titles.awk reads both daemons and lists every page they send, by its title as sent —
+        # an `alert` call's status (its third argument, verbatim) and an `alert_warn` message's heading (its leading
+        # literal text: up to the first $ or ` expansion, trailing blanks dropped; the whole message when it has
+        # none). It includes the calls of every WRAPPER, found mechanically, not listed: a function whose body passes
+        # its own "$N" to alert (as the status) or alert_warn (as the message) — its callers' Nth argument is the
+        # title (today _recheck_abort_alert, _own_veto_alert and _g2_env_alert, each `alert_warn "$1"`). RED on any
+        # title not found verbatim (grep -F) in docs/NOTIFICATIONS.md; RED on any call whose title the reader cannot
+        # read as a literal (a variable, a multi-line call, fewer arguments) unless NT_ALLOW below lists that call
+        # with the literal values it can take and where they come from; RED on a function the reader cannot see
+        # (defined in another shape than `name() {` at column 0), and when a daemon yields no page at all.
+        # OUTSIDE the check: alert_info (Telegram-only — its coverage is counted and printed) and the fence
+        # scripts' journal PAGE[…] lines. POSIX tools; the awk is mawk-safe (no {m,n} interval).
+        run: |
+          w=$(mktemp -d); tab=$(printf '\t'); doc=docs/NOTIFICATIONS.md; bad=0
+          d1=solana-primary-failover.sh; d2=solana-standby-failover.sh
+          awk -f tests/lib/notif-titles.awk "$d1" "$d2" "$d1" "$d2" > "$w/rows" || { echo "tests/lib/notif-titles.awk failed"; exit 1; }
+          # NT_ALLOW — a call whose title is not a literal, listed with the literal values it can take; one row per value,
+          # four TAB-separated fields: <daemon file> <text on the call's line, verbatim> <value> <where the value comes from>.
+          # Empty: every alert status and every alert_warn heading in both daemons reads as a literal today.
+          cat > "$w/allow" <<'NT_ALLOW'
+          NT_ALLOW
+          for f in "$d1" "$d2"; do
+            n=$(awk -F'\t' -v f="$f" '$1 == "T" && index($2, f ":") == 1' "$w/rows" | wc -l | tr -d ' ')
+            [ "$n" -gt 0 ] || { echo "no page read from $f — the reader is broken, not the doc complete"; bad=1; }
+          done
+          awk -F'\t' '$1 == "W" { printf "  wrapper: %s() forwards its %s to %s\n", $2, $4, $3 }' "$w/rows" | sort -u
+          awk -F'\t' '$1 == "X" { printf "UNSEEN FUNCTION SHAPE at %s: %s\n", $2, $3 }' "$w/rows" > "$w/x"
+          [ -s "$w/x" ] && { cat "$w/x"; bad=1; }
+          awk -F'\t' '$1 == "T" { k = $3 "\t" $4; if (!(k in at)) { n++; o[n] = k; at[k] = $2 } else at[k] = at[k] " " $2 }
+            END { for (i = 1; i <= n; i++) print o[i] "\t" at[o[i]] }' "$w/rows" > "$w/t"
+          while IFS="$tab" read -r kind title sites; do
+            grep -qF -e "$title" "$doc" || { echo "MISSING $kind: $title   [$sites]"; bad=1; }
+          done < "$w/t"
+          awk -F'\t' '$1 == "U" { print $2 "\t" $3 "\t" $4 }' "$w/rows" > "$w/u"
+          while IFS="$tab" read -r at kind why; do
+            f=${at%%:*}; n=${at##*:}; text=$(sed -n "${n}p" "$f"); listed=0
+            while IFS="$tab" read -r af atext aval asrc; do
+              [ "$af" = "$f" ] || continue
+              case "$text" in *"$atext"*) ;; *) continue ;; esac
+              listed=1
+              grep -qF -e "$aval" "$doc" || { echo "MISSING $kind (listed value of the call at $at, from $asrc): $aval"; bad=1; }
+            done < "$w/allow"
+            [ "$listed" = 1 ] || { echo "UNREADABLE $kind at $at ($why) — list the call in NT_ALLOW with the literal values it can take and where they come from"; bad=1; }
+          done < "$w/u"
+          st=$(awk -F'\t' '$1 == "T" && $3 == "status"' "$w/rows" | wc -l | tr -d ' ')
+          sd=$(awk -F'\t' '$1 == "T" && $3 == "status" { print $4 }' "$w/rows" | sort -u | wc -l | tr -d ' ')
+          ht=$(awk -F'\t' '$1 == "T" && $3 == "heading"' "$w/rows" | wc -l | tr -d ' ')
+          hd=$(awk -F'\t' '$1 == "T" && $3 == "heading" { print $4 }' "$w/rows" | sort -u | wc -l | tr -d ' ')
+          nu=$(wc -l < "$w/u" | tr -d ' '); nw=$(awk -F'\t' '$1 == "W"' "$w/rows" | wc -l | tr -d ' ')
+          ni=$(awk -F'\t' '$1 == "I" { print $2 }' "$w/rows")
+          awk -F'\t' '$1 == "N" { print $4 }' "$w/rows" | sort -u > "$w/info"
+          nid=$(wc -l < "$w/info" | tr -d ' '); nif=0
+          while IFS= read -r h; do grep -qF -e "$h" "$doc" && nif=$((nif + 1)); done < "$w/info"
+          echo "pages read: $st alert calls ($sd distinct statuses), $ht alert_warn calls ($hd distinct headings; $nw wrapper definitions), $nu not literal"
+          echo "alert_info (Telegram-only, OUTSIDE the check): $ni calls, $nid distinct headings, $nif of them named in $doc"
+          rm -rf "$w"
+          [ "$bad" = 0 ] || { echo "RED: a page the daemons send is not named in $doc (rule: this step's comment)"; exit 1; }
+          echo "every page the daemons send is named in $doc"

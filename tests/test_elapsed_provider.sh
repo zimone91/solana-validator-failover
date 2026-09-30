@@ -1265,7 +1265,7 @@ for tk in none page-only invalid; do
     r=$(TOK=$tk drive_ep "$STANDBY" case_inert | tail -1)
     [[ "$(field "$r" reg)" == "0" && "$(field "$r" ev)" == "0" && "$(field "$r" vlen)" == "0" ]] || { un_ok=0; bad "(7e) $tk: $r"; }
 done
-[[ $un_ok -eq 1 ]] && ok "(7e) ARMED spare, UNPAIRED (none / page-only / invalid token) → zero provider events on register+step+provider — silence-based take is disabled by construction, not by a check that could be skipped"
+[[ $un_ok -eq 1 ]] && ok "(7e) ARMED spare, UNPAIRED (none / page-only / invalid token) → zero provider events on register+step+provider — the silence-based provider never mints over an unattested holder, by construction, not by a check that could be skipped (that proof conditions a take only once 6.4 wires the gate)"
 
 # ── (8) boundedness + pets ─────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (8) boundedness: live read/pet census per step; static region census ───"
@@ -2356,8 +2356,9 @@ r3=$(TOK=ok drive_ep "$STANDBY" case_m8 | tail -1)
 if [[ "$(field "$r1" reg0)" == "0" && "$(field "$r1" reg)" == "0" && "$(field "$r1" wn)" == "1" && "$(field "$r1" in)" == "0" ]] \
    && [[ "$(field "$r1" w)" == "[proof-gate] paired (token gen=7), but watchdog-elapsed is NOT registered — restart the monitor to register (registration runs at startup only; proof providers registered now: NONE)" ]] \
    && [[ "$(field "$r2" wn)" == "1" && "$(field "$r2" w)" == *"paired token present (gen=9), but watchdog-elapsed is NOT registered and would not register: "*"SHORTER than the un-armed timer path"* ]] \
+   && [[ "$(field "$r2" w)" == *"— this release has no relinquish-proof gate (takes follow v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold); re-arm the holder and re-pair this spare: from the release that wires the gate, an invalidly paired spare's silence-based take is disabled" ]] \
    && [[ "$(field "$r3" reg)" == "1" && "$(field "$r3" wn)" == "0" && "$(field "$r3" in)" == "0" ]]; then
-    ok "(12g) M8 — an armed spare started UNPAIRED and paired while its monitor runs (no lazy registration in this build): the heartbeat status line WARNS 'paired (token gen=7), but watchdog-elapsed is NOT registered — restart the monitor to register (… registered now: NONE)'; a planted short-floor token is named instead ('would not register: … SHORTER than the un-armed timer path'); a spare registered at startup stays silent. Pre-fix: the unpaired line went quiet and NOTHING replaced it"
+    ok "(12g) M8 — an armed spare started UNPAIRED and paired while its monitor runs (no lazy registration in this build): the heartbeat status line WARNS 'paired (token gen=7), but watchdog-elapsed is NOT registered — restart the monitor to register (… registered now: NONE)'; a planted short-floor token is named instead ('would not register: … SHORTER than the un-armed timer path' — and that this release has no relinquish-proof gate: v0.6.x take semantics, the silence-based take disabled only from the release that wires it); a spare registered at startup stays silent. Pre-fix: the unpaired line went quiet and NOTHING replaced it"
 else
     bad "(12g) late-pair=$r1 :: late-lowfloor=$r2 :: registered=$r3"
 fi

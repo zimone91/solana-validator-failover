@@ -103,7 +103,7 @@ SHIPPED="$HARNESS_DIR/install.sh $PRIMARY $STANDBY $HARNESS_DIR/deploy-failover.
 # scripts) leaves exactly the functions the parse lists. LIMIT, named: a verb assembled at run time ("$verb", a variable)
 # or handed to eval as a string is not a command word here; the dynamic half is test_act_then_alert (15) — every staked
 # set-identity in that suite's sims follows the veto's read (its audited validator stub sees any spelling).
-ovp() {   # ovp <file> → the directory holding bp_parse's print and lex of <file> (parsed once per path, size and mtime); FAIL in it when bash cannot parse the file
+ovp() {   # ovp <file> → the directory holding bp_parse's print and lex of <file> (parsed once per path, size and mtime); FAIL in it when bp_parse refuses the file (bash cannot parse it, or bash 5.2 printed an if-condition here-document — its print.err says which)
     local _k _m
     _m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)
     _k="$WORK/bp/$(printf '%s' "$1" | cksum | cut -d' ' -f1).$(wc -c < "$1" | tr -d ' ').$_m"
@@ -222,18 +222,23 @@ fi
 # (0b) the guards' ORDER on each take path, on bash's own parse (6.3.1 fix round 6 — the delta panel 5's TS5-0B-NOT-ON-PARSE:
 # it read source lines for one spelling, so a here-document no-op block around the re-check and the veto, or a second
 # call spelled `if ! _own_view_veto`, passed). It walks the take function's own statements in order — the C records at
-# its own level (not in a substitution or a subshell) — and requires: `_fresh_proof_recheck || return 1`, then as the very
-# next statement `_own_view_veto || return 1`, then the DRY_RUN branch's condition [[ "$DRY_RUN" == "true" ]], then the
-# first set-identity command; and every command in the daemon whose effective command word is _own_view_veto (any
-# function, level or spelling bash's print keeps — `if !`, `$( )`, a prefix assignment) is that one call.
+# its own level (not in a substitution or a subshell), with the STRUCTURE bash runs them in (the parse's K records) — and
+# requires: `_fresh_proof_recheck || return 1`, then as the very next statement `_own_view_veto || return 1`, each a
+# statement at the take function's structure depth 0 (not inside an if, a case, a loop, a { } group or a subshell — a
+# guard there runs on some paths only) whose `return 1` is not followed by & | or |& (a background or pipeline return
+# returns nothing); then the DRY_RUN branch's condition [[ "$DRY_RUN" == "true" ]], then the first set-identity command;
+# and every command in the daemon whose effective command word is _own_view_veto (any function, level or spelling bash's
+# print keeps — `if !`, `$( )`, a prefix assignment) is that one call. Rows ob1–ob5 (the delta panel 6's): the two guards
+# inside a DRY_RUN-only if, an && { } group, a case arm, a while loop, and the veto's `|| return 1 &` — each red.
 B0_AWK="$BP_AWK_LIB"'
+$1 == "K" && $2 == fn && $5 == 1 && $6 == 0 { if ($7 == "if" || $7 == "loop" || $7 == "case" || $7 == "grp") dp++; else if ($7 == "fi" || $7 == "done" || $7 == "esac" || $7 == "grp-end") dp--; next }
 $1 == "C" { n = split($6, W, "\034"); split($7, X, ":"); k = bpcmd(n, W); q = k ? bpq(W[k]) : ""
   if (q == "_own_view_veto") nv++
   if ($2 != fn || X[1] != 1 || X[2] != 0) next
-  s++; Q[s] = q; P[s] = X[3]; O[s] = X[4]; A[s] = (k && k < n) ? bpq(W[k + 1]) : ""; J[s] = ""; si[s] = 0; LN[s] = $4
+  s++; Q[s] = q; P[s] = X[3]; O[s] = X[4]; A[s] = (k && k < n) ? bpq(W[k + 1]) : ""; J[s] = ""; si[s] = 0; LN[s] = $4; DP[s] = dp
   for (j = 1; j <= n; j++) { J[s] = J[s] (j > 1 ? " " : "") bpq(W[j]); if (bpq(W[j]) == "set-identity") si[s] = 1 } }
 END { for (i = 1; i <= s; i++) {
-        g = (Q[i + 1] == "return" && P[i + 1] == "||" && A[i + 1] == "1" && O[i] == "||")
+        g = (Q[i + 1] == "return" && P[i + 1] == "||" && A[i + 1] == "1" && O[i] == "||" && DP[i] == 0 && DP[i + 1] == 0 && O[i + 1] != "&" && O[i + 1] != "|" && O[i + 1] != "|&")
         if (!r && Q[i] == "_fresh_proof_recheck" && g) r = i
         if (!v && Q[i] == "_own_view_veto" && g) v = i
         if (!d && J[i] == "[[ $DRY_RUN == true ]]") d = i
@@ -249,7 +254,28 @@ for pair in "$PRIMARY:switch_to_staked" "$STANDBY:take_staked_identity"; do
         g_ok=0; bad "(0b) $(basename "$f") $fn: statement recheck=$rl veto=$vl dry=$dl setid=$sl veto-calls-in-file=$vc"
     fi
 done
-[[ $g_ok -eq 1 ]] && ok "(0b) on bash's own parse, on EVERY take path the veto's '|| return 1' is the statement right after the fresh re-check's, and both precede the DRY_RUN branch (DRY_RUN mirrors the live decision) and the first set-identity; every command of either daemon whose effective command word is _own_view_veto is that one call (primary 1, standby 1):$g_rows"
+# the rows ob1–ob5 (the delta panel 6's CEN6-0B-STRUCTURE — red first: each GREEN on fix round 6's (0b), which read the take
+# function's statements as a flat list; (3c-seg) was red on each): the standby's re-check and veto inside a DRY_RUN-only if
+# (ob1), an && { } group (ob2), a case arm (ob4), a while loop (ob5), and the veto's `|| return 1 &` (ob3)
+ob_mut() {   # ob_mut <name> <line before the re-check> <line after the veto> [<the veto's line replaced>] — awk -v: \n separates lines
+    awk -v b="$2" -v a="$3" -v r="${4:-}" '$0 == "take_staked_identity() {" { inf = 1 }
+        inf && !d1 && $0 == "    _fresh_proof_recheck || return 1" { if (b != "") print b; print; d1 = 1; next }
+        inf && d1 && !d2 && $0 == "    _own_view_veto || return 1" { print (r != "" ? r : $0); if (a != "") print a; d2 = 1; next }
+        { print } END { exit((d1 && d2) ? 0 : 1) }' "$STANDBY" > "$WORK/s-0b-$1.sh"
+}
+ob_mut ob1 '    if [[ "$DRY_RUN" != "true" ]]; then' '    fi'
+ob_mut ob2 '    [[ -z "${FAILOVER_SKIP_GUARDS:-}" ]] && {' '    }'
+ob_mut ob3 '' '' '    _own_view_veto || return 1 &'
+ob_mut ob4 '    case "$DRY_RUN" in\n    false)' '    ;;\n    esac'
+ob_mut ob5 '    while true; do' '    break; done'
+ob_rows=""; ob_ok=1
+for _o in ob1 ob2 ob3 ob4 ob5; do
+    [[ -s "$WORK/s-0b-$_o.sh" ]] && ! cmp -s "$STANDBY" "$WORK/s-0b-$_o.sh" || { ob_ok=0; ob_rows="$ob_rows $_o:NOT-BUILT"; continue; }
+    read -r rl vl dl sl vc rp vp dp sp_ < <(awk -F'\t' -v fn=take_staked_identity "$B0_AWK" "$(ovp "$WORK/s-0b-$_o.sh")/lex")
+    if [[ -n "$rl" && $rl -gt 0 && $vl -eq $((rl + 2)) && $dl -gt $vl && $sl -gt $dl && "$vc" == "1" ]]; then ob_ok=0; ob_rows="$ob_rows $_o:GREEN"; else ob_rows="$ob_rows $_o:red(recheck=$rl,veto=$vl)"; fi
+done
+[[ $ob_ok -eq 1 ]] || { g_ok=0; bad "(0b) a structure row is not red:$ob_rows"; }
+[[ $g_ok -eq 1 ]] && ok "(0b) on bash's own parse, on EVERY take path the veto's '|| return 1' is the statement right after the fresh re-check's, each a statement at the take function's structure depth 0 (not inside an if, a case, a loop, a { } group or a subshell) whose return is not followed by & | or |&, and both precede the DRY_RUN branch (DRY_RUN mirrors the live decision) and the first set-identity; every command of either daemon whose effective command word is _own_view_veto is that one call (primary 1, standby 1):$g_rows; rows ob1–ob5 (the guards in a DRY_RUN-only if, an && { } group, a case arm, a while loop, a backgrounded return) each red:$ob_rows"
 # the primary's other staked-going call is the pre-warm authorized-voter add (not a set-identity) — named
 if code_of "$STANDBY" | grep -q 'authorized-voter add' && ! code_of "$STANDBY" | grep 'authorized-voter add' | grep -q 'set-identity'; then
     ok "(0c) named exclusions: the standby's PREWARM authorized-voter add (off by default, live-test-gated) is not a set-identity and never makes this node vote the staked identity; the fence scripts and the arm only ever move toward UNSTAKED"
@@ -659,12 +685,14 @@ RPC_JQ='(if type == "array" then . elif type == "object" then [.] else error("no
 # (1a)/(1b) read every curl COMMAND in bash's own parse of the daemon (bp_parse): a word whose quotes and backslashes
 # removed read curl (or …/curl), in any function, the file level or after the marker — a command substitution, a
 # $((cmd) ) and an unquoted here-document's $( ) / backticks included (bp_parse lexes them as the code bash runs); its
-# URL word and -d body are its own words as printed. A SHELL run as a command (bash / sh / dash / zsh / ksh, directly or
-# behind timeout / env / command / nohup / nice / setsid / xargs / exec — bp_parse's bpshell) is a request body this
-# census cannot read: UNPARSEABLE (red; the daemons run none). LIMIT, named: a curl whose command word is assembled at
-# run time ("$c", a variable), a shell behind any other wrapper (find -exec, sudo, flock -c, …), a string handed to
-# eval / trap / mapfile -C (the (0d) census flags eval and pins every trap / mapfile), and code an interpreter runs from
-# a string (awk's system(), perl -e, python3 -c).
+# URL word and -d body are its own words as printed. A SHELL run as a command is a request body this census cannot read:
+# UNPARSEABLE (red; the daemons run none) — bp_parse's bpshell, found by the word, not by its wrappers: a literal word
+# naming a shell (bash / sh / dash / zsh / ksh by any path, busybox's sh / ash / hush / bash applet) followed by nothing
+# (its stdin), by an option word carrying c (-c, -ec, -lc …) or by a non-option word (a script), whatever precedes it
+# (timeout, env, nice --adjustment N, xargs --max-args N, stdbuf, sudo, find -exec …). LIMIT, named: a curl whose command
+# word is assembled at run time ("$c", a variable), a shell whose word is ("$SHELL -c"), a tool that runs its argument
+# through a shell it names itself (flock -c), a string handed to eval / trap / mapfile -C (the (0d) census flags eval and
+# pins every trap / mapfile), and code an interpreter runs from a string (awk's system(), perl -e, python3 -c).
 CURLS_AWK="$BP_AWK_LIB$NS_FUNCS"'
 $1 == "C" { n = split($6, W, "\034"); k = 0
     if (bpshell(n, W)) { printf "CURL\t%s\t(shell)\t0\t!a shell run as a command — its code is a string or a stream this census cannot read\n", $2; next }
@@ -686,7 +714,7 @@ $1 == "C" { n = split($6, W, "\034"); k = 0
 rpc_bodies() {   # $1=file → one line per RPC curl (bash's parse): "<fn> <method|batch[…]> <commitment|NONE|MIXED|->" or "<fn> UNPARSEABLE <url> <why>"
     local fn url nb body out _d kind
     _d=$(ovp "$1")
-    [[ -f "$_d/FAIL" ]] && { printf '(file) UNPARSEABLE (parse) bash cannot parse %s\n' "$(basename "$1")"; return 0; }
+    [[ -f "$_d/FAIL" ]] && { printf '(file) UNPARSEABLE (parse) bp_parse refused %s: %s\n' "$(basename "$1")" "$(head -c 160 "$_d/print.err" | tr '\n' ' ')"; return 0; }
     awk -F'\t' "$CURLS_AWK" "$_d/lex" | while IFS=$'\t' read -r kind fn url nb body; do
         case " $NONRPC_URLS " in *" $url "*) continue ;; esac
         if [[ "$body" == '!'* ]]; then printf '%s UNPARSEABLE %s %s\n' "$fn" "$url" "${body#!}"; continue; fi
@@ -747,7 +775,7 @@ d1_scan() {   # $1=file → line 1 "rpc=<n> unparseable=<n> gva/slot=<n> without
 d1_green() { local s; s=$(d1_scan "$1" | head -1); [[ "$s" == *" unparseable=0 "* && "$s" == *" without=0" ]]; }
 d1p=$(d1_scan "$PRIMARY"); d1s=$(d1_scan "$STANDBY")
 if [[ "$(printf '%s\n' "$d1p" | head -1)" == "rpc=27 unparseable=0 gva/slot=17 without=0" && "$(printf '%s\n' "$d1s" | head -1)" == "rpc=29 unparseable=0 gva/slot=17 without=0" ]]; then
-    ok "(1a) on bash's own parse of BOTH daemons (bp_parse), every curl COMMAND to an RPC endpoint — its command word read with quotes and backslashes removed, in any function, the file level or after the marker, a command substitution, a \$((cmd) ) and an unquoted here-document's \$( ) included — carries one literal -d body jq parses as a JSON-RPC request (primary 27, standby 29; the pages and pings excluded by their URL words), and every getVoteAccounts/getSlot request in them names params[0].commitment (17 bodies each, zero without one); no shell is run as a command (a string or a stream it would run is unreadable: red); not seen: a curl whose command word is assembled at run time, a shell behind another wrapper than timeout / env / command / nohup / nice / setsid / xargs / exec, a string run by eval / trap / mapfile -C (the (0d) census's), code an interpreter runs from a string (awk's system(), perl -e, python3 -c)"
+    ok "(1a) on bash's own parse of BOTH daemons (bp_parse), every curl COMMAND to an RPC endpoint — its command word read with quotes and backslashes removed, in any function, the file level or after the marker, a command substitution, a \$((cmd) ) and an unquoted here-document's \$( ) included — carries one literal -d body jq parses as a JSON-RPC request (primary 27, standby 29; the pages and pings excluded by their URL words), and every getVoteAccounts/getSlot request in them names params[0].commitment (17 bodies each, zero without one); no shell is run as a command (a literal shell word followed by nothing, an option carrying c or a script, whatever wraps it: its string, script or stream is unreadable — red); not seen: a curl or a shell whose command word is assembled at run time, a tool running its argument through a shell it names itself (flock -c), a string run by eval / trap / mapfile -C (the (0d) census's), code an interpreter runs from a string (awk's system(), perl -e, python3 -c)"
 else
     bad "(1a) primary: $d1p :: standby: $d1s"
 fi
@@ -2015,13 +2043,19 @@ fi
 # function that samples before each of its own reads (S: the gossip advisory, peer_has_relinquished,
 # take_staked_identity) — a read that brings its sample; a LOCAL-set function — a gap.
 #   A SAMPLE counts only as a statement of the walked function run in its own shell: _own_head_sample its EFFECTIVE command
-# word (not an argument, not a string), at the function's own level — not inside a command substitution, a subshell, a
-# pipeline, a background job or a compound command that is one (the ring write is lost there), not the right operand of
-# && / || (it may not run).
+# word (not an argument, not a string; not behind a `command` or `builtin` prefix — command skips the function lookup,
+# builtin refuses a non-builtin: bpcmd reports the prefix), at the function's own level — not inside a command
+# substitution, a subshell, a pipeline, a background job or a compound command that is one (the ring write is lost there),
+# not the right operand of && / || (it may not run).
 #   The STRUCTURE is walked as bash runs it: if / else / fi branches apart and merged; each case arm from the state the
 # case starts in, merged at esac with the no-match path unless an arm is `*)`; a loop body as run zero or more times (merged
-# with the path that skips it; break / continue leave it); a compound command that is the operand of && / || merged with
-# the path that skips it. A return / exit run in the function's own shell ends its path (a `cmd || return` is conditional).
+# with the path that skips it); a compound command that is the operand of && / || merged with the path that skips it. A
+# break or continue run in the function's own shell, whatever operator precedes it (a `cond && break`, a `cmd || continue`
+# — the daemons' own tier-loop idiom — or none), merges its path into the exit of the loop it leaves — the Nth enclosing
+# one for `break N` / `continue N` (an N deeper than the loops around it in the function's own shell, or one this census
+# cannot read, is red) — and ENDS the path only when it is unconditional (not an && / || right operand); a continue is
+# walked as leaving the loop (the body run again is the LIMIT's "a read a loop repeats"). A return / exit run in the
+# function's own shell ends its path (a `cmd || return` is conditional: its path goes on).
 #   A function's own first read is covered by its caller for the C functions (start clean) and needs a sample for the S
 # functions and attempt_takeover (start dirty: armed, the watchdog-elapsed evaluation's reads precede it in the cycle;
 # _elapsed_step itself follows the main loop's per-cycle sample — its first read is caller-covered). THE CALL GRAPH, over
@@ -2029,10 +2063,11 @@ fi
 # sampler, or calls one that reads; red when a walked function calls a reading function that is none of the sets above,
 # and when a LOCAL-set function reads. A notification sender's (send_telegram, send_webhook, heartbeat_ping) curl is not
 # a read only when EVERY URL word it sends to is that sender's own endpoint (api.telegram.org, "$WEBHOOK_URL",
-# "$HEARTBEAT_URL"). A SHELL run as a command anywhere in the daemon (bp_parse's bpshell: bash / sh / dash / zsh / ksh,
-# directly or behind timeout / env / command / nohup / nice / setsid / xargs / exec) is red: its -c string or its stdin
-# is code this census cannot walk (the daemons run none). (7g-local) pins where LOCAL_RPC is written — the LOCAL rule
-# trusts that name. The PRIMARY's recovery pass is walked the same way.
+# "$HEARTBEAT_URL"). A SHELL run as a command anywhere in the daemon is red: its -c string, its script or its stdin is code
+# this census cannot walk (the daemons run none) — bp_parse's bpshell: a literal word naming a shell (bash / sh / dash /
+# zsh / ksh by any path, busybox's sh / ash / hush / bash applet) followed by nothing, by an option word carrying c (-c,
+# -ec, -lc …) or by a non-option word, whatever wrappers and options precede it. (7g-local) pins where LOCAL_RPC is
+# written — the LOCAL rule trusts that name. The PRIMARY's recovery pass is walked the same way.
 #   The per-cycle and per-pass samples are not walked — worlds pin them (the delta panel 2 deleted each on fix round 2's
 # build): the main loop's ((4b-residual)'s cut110 and (2)'s race turn BLIND), the recovery ladder's (test_act_then_alert
 # (14a)'s rd20 is never recovered), the delay tail's (its (14d): the CLEAR age 15 → 12); the pass's FIRST sample by no
@@ -2041,15 +2076,16 @@ fi
 # per-cycle sample each changes a measured world; the confirm's reference samples, the fast path's, the probe's and the
 # watchdog-elapsed split's changed none of 40 worlds (their reads are either rare at the take — the reference path runs
 # only while TIER2 shows the holder within 128 slots — or followed by a chain longer than OWN_HEAD_H): this census pins
-# them — each one deleted, guarded by && / ||, in one case arm, a loop body, a subshell, a substitution, a pipeline or
-# a background job is red here (rows g1–g5 below guard each one by &&).
+# them — each one deleted, guarded by && / ||, in one case arm, a loop body (one a conditional break or continue skips
+# too), a subshell, a substitution, a pipeline or a background job is red here (rows g1–g5 below guard each one by &&;
+# T2 moves the confirm's reference sample to the end of a payload retry loop left by `&& break`).
 #   LIMIT, named — not seen: a read a loop repeats, or a while condition re-run (each walked once — the daemons' loops over
 # the tiers sample before every read of the body, directly or inside the S function they call); network clients other
 # than curl (wget, nc, socat, /dev/tcp — the daemons' only socat sends sd_notify datagrams to a UNIX socket); a read in
 # the main loop's body (this census walks the take-cycle functions); a command word assembled at run time ($fn …, "$c");
-# a string handed to eval / trap / mapfile -C (the (0d) census flags eval and pins every trap / mapfile); a shell behind
-# another wrapper (find -exec, sudo, flock -c, …); code an interpreter runs from a string (awk's system(), perl -e,
-# python3 -c).
+# a string handed to eval / trap / mapfile -C (the (0d) census flags eval and pins every trap / mapfile); a shell whose
+# word is assembled at run time ("$SHELL -c"), or a tool that runs its argument through a shell it names itself (flock -c);
+# code an interpreter runs from a string (awk's system(), perl -e, python3 -c).
 S2_PREP="$BP_AWK_LIB"'
 function s2arg(wd,   l) {   # a curl option that takes the next word (NS_FUNCS argopt)
     if (wd ~ /^--/) return (wd ~ /^--(max-time|request|header|data|data-raw|data-binary|data-ascii|data-urlencode|json|output|write-out|connect-timeout|user-agent|referer|user|config|upload-file|form|proxy|url|cookie|cookie-jar|range|retry|retry-delay|retry-max-time|resolve|cacert|cert|key)$/)
@@ -2104,11 +2140,17 @@ $1 == "C" { LNO = $4; n = split($6, W, "\034"); split($7, X, ":")
     if (w == "curl" || w ~ /\/curl$/) { if (locc(n, W, j)) { if (st != -1) st = 1 } else rd("curl"); break }
     if (w == "get_staked_liveness_sample" || (w in C)) rd(w)
     else if ((w in S) || (w in L)) { if (st != -1) st = 1 } }
-  own = (X[1] == 1 && X[2] == 0 && X[3] == "" && X[4] != "|" && X[4] != "|&" && X[4] != "&" && na == 0)   # a statement run in the function own shell
+  osh = (X[1] == 1 && X[2] == 0 && X[4] != "|" && X[4] != "|&" && X[4] != "&" && na == 0)   # run in the function own shell
+  own = (osh && X[3] == "")                                                                  # … as a statement of its own (not an && / || right operand)
   k = bpcmd(n, W); q = k ? bpq(W[k]) : ""
-  if (own && q == "_own_head_sample") { if (st != -1) st = 0 }
+  if (own && q == "_own_head_sample" && BPPRE == "") { if (st != -1) st = 0 }                # not behind command / builtin: neither runs a function
   else if (own && (q == "return" || q == "exit")) st = -1
-  else if (own && (q == "break" || q == "continue")) { for (j = fs; j > 0 && fk[j] != "loop"; j--) ; if (j > 0) { lm[j] = mv(lm[j], st); st = -1 } }
+  else if (osh && (q == "break" || q == "continue")) {                                       # the Nth enclosing loop exit takes this path; unconditional: it ends
+    lv = 1
+    if (k < n) { lv = bpq(W[k + 1]); if (!bplit(W[k + 1]) || lv !~ /^[1-9][0-9]*$/) { printf "%s:%d: %s %s — a loop count this census cannot read\n", fn, LNO, q, bpr(W[k + 1]); nb++; lv = 1 } else lv = lv + 0 }
+    for (j = fs; j > 0; j--) if (fk[j] == "loop" && --lv <= 0) break
+    if (j > 0) { lm[j] = mv(lm[j], st); if (X[3] == "") st = -1 }
+    else { printf "%s:%d: %s — more loops than enclose it in the function own shell\n", fn, LNO, q; nb++ } }
   next }
 END { exit (nb > 0) }'
 S2_SHELL_AWK="$BP_AWK_LIB"'
@@ -2176,7 +2218,7 @@ s2_sb() { s2_census "$1" "$S2_STANDBY_FNS" "$S2_STANDBY_C" "$S2_STANDBY_S"; }
 s2_pr() { s2_census "$1" "$S2_PRIMARY_FNS" "$S2_PRIMARY_C" "$S2_PRIMARY_S"; }
 s2_sb "$STANDBY" > "$WORK/s2sb.out"; s2_rc=$?; s2_out=$(cat "$WORK/s2sb.out"); s2_sbr=$s2_readers; s2_sbf=$s2_fns   # (not $(s2_sb …): s2_readers must survive)
 s2_pr "$PRIMARY" > "$WORK/s2pr.out"; s2p_rc=$?; s2p_out=$(cat "$WORK/s2pr.out"); s2_prr=$s2_readers; s2_prf=$s2_fns
-s2_nsamp=$(awk -F'\t' "$BP_AWK_LIB"' $1 == "C" && $2 ~ /^(attempt_takeover|confirm_delinquency_external|tier2_check_delinquency|check_primary_dropped_identity|peer_has_relinquished|staked_is_actively_voting|take_staked_identity|_elapsed_step)$/ { n = split($6, W, "\034"); split($7, X, ":"); k = bpcmd(n, W); if (k && bpq(W[k]) == "_own_head_sample" && X[1] == 1 && X[2] == 0 && X[3] == "" && X[4] !~ /^(\||\|&|&)$/) c++ } END { print c + 0 }' "$(ovp "$STANDBY")/lex")   # statement samples, in the own shell
+s2_nsamp=$(awk -F'\t' "$BP_AWK_LIB"' $1 == "C" && $2 ~ /^(attempt_takeover|confirm_delinquency_external|tier2_check_delinquency|check_primary_dropped_identity|peer_has_relinquished|staked_is_actively_voting|take_staked_identity|_elapsed_step)$/ { n = split($6, W, "\034"); split($7, X, ":"); k = bpcmd(n, W); if (k && bpq(W[k]) == "_own_head_sample" && BPPRE == "" && X[1] == 1 && X[2] == 0 && X[3] == "" && X[4] !~ /^(\||\|&|&)$/) c++ } END { print c + 0 }' "$(ovp "$STANDBY")/lex")   # statement samples, in the own shell
 mutate "$STANDBY" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 2, S2 — the delta panel.s DAV-1\/CK-2).*$/\1: deleted/' "$WORK/s-c7g-a.sh"
 mutate "$STANDBY" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 2, S2): between the reference and the re-read.*$/\1: deleted/' "$WORK/s-c7g-b.sh"
 mutate "$STANDBY" 's/^\(        _watchdog_pet   # §5 per-op pet (Block 5.2\/FF-B1 N-audit): bounded op completed (rc captured above) — post-op placement covers EVERY exit (holder-present return.*\)$/\1\
@@ -2292,6 +2334,84 @@ mutate "$STANDBY" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 2, 
 mutate "$STANDBY" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 2, S2): between the payload and the reference/\1[[ -n "${_x_never:-}" ]] \&\& _own_head_sample   # (guarded)/' "$WORK/s-c7g-g3.sh"
 mutate "$STANDBY" 's/^\( *\)_own_head_sample   # v0.7 (Block 6.3.1 fix round 2, S2): between the reference and the re-read/\1[[ -n "${_x_never:-}" ]] \&\& _own_head_sample   # (guarded)/' "$WORK/s-c7g-g4.sh"
 mutate "$STANDBY" 's/^\(        _es_s=$(TIER3_RPC="" get_staked_liveness_sample) || { \)_own_head_sample;/\1[[ -n "${_x_never:-}" ]] \&\& _own_head_sample;/' "$WORK/s-c7g-g5.sh"
+# the delta panel 6's CEN6-7G-CONDBREAK shapes (fix round 7 — red first; each GREEN on fix round 6's census, which ended a
+# path only at an unconditional break / continue and dropped one behind && / ||, and merged a `break 2` into the inner loop):
+# on the PRIMARY's recovery pass, _check_single_rpc's getVoteAccounts read in a retry loop with the sample before
+# getClusterNodes moved to the loop's end — P1 `[[ $_csr_rc -eq 0 ]] && break`, P1or `[[ $_csr_rc -ne 0 ]] || break`, P3
+# `&& continue` (a one-pass loop), P5 an inner loop left by `if …; then break 2; fi`, P5and by `… && break 2`, Pdeep a
+# `break 2` with one loop around it, Pvar a `break "$_n"`; beside the if-forms P1if / P3if (red on fix round 6 too) and the
+# control P5b1 (a plain `break` out of the inner loop, the sample after it: GREEN, correctly); on the STANDBY, T2 the
+# confirm's payload read in an opt-in retry loop (`&& break`, `|| break`) with the reference's sample moved to its end —
+# the sample the header says no world pins (test_elapsed_provider (13b)'s op order catches it elsewhere) — beside T2if;
+# and g13 a liveness read in a two-try loop left by `&& break` right after the fence's sample, beside g13if. The delta
+# panel 6's CEN6-7G-CMDPREFIX (red first; GREEN on fix round 6's census): b16 / b17 the fence's sample spelled
+# `command _own_head_sample` / `builtin _own_head_sample` — neither runs the function (rc 127 / rc 1). Its
+# CEN6-BPSHELL-LONGOPT (red first; GREEN on fix round 6's census, which enumerated wrappers): w01 `nice --adjustment 5
+# bash -c '…curl…'`, w02 `… | xargs --max-args 1 bash -c '…curl…' _` and wsb `stdbuf -o0 bash -c '…curl…'`, each right
+# after the fence's sample — a shell run as a command, found by its word
+lw_mut() {   # lw_mut <in> <out> <fn> <open> <close> <head> <tail> [<sample-anchor>] — inside fn: <head> printed before the line
+             # holding <open>, <tail> after the next line holding <close> (awk -v: \n separates lines), and the first
+             # _own_head_sample statement after the line holding <sample-anchor> deleted; rc 1 when an anchor is missing
+    awk -v fn="$3" -v oa="$4" -v ca="$5" -v hd="$6" -v tl="$7" -v sa="${8:-}" '
+      $0 == fn "() {" { inf = 1 }
+      inf && $0 == "}" { inf = 0 }
+      inf && !o && index($0, oa) { print hd; print; o = 1; next }
+      inf && o && !c && index($0, ca) { print; print tl; c = 1; next }
+      inf && sa != "" && !sd && !sw && index($0, sa) { print; sw = 1; next }
+      sw && $0 ~ /^[[:space:]]*_own_head_sample[[:space:]]/ { sw = 0; sd = 1; next }
+      { print } END { exit((o && c && (sa == "" || sd)) ? 0 : 1) }' "$1" > "$2"
+}
+CB_O='vote_info=$(curl -s -m 15 "$rpc_url" -X POST'; CB_C='fires on the unreachable early-return too'; CB_S='local cluster_info staked_gossip_ep'
+lw_mut "$PRIMARY" "$WORK/p-c7g-P1.sh" _check_single_rpc "$CB_O" "$CB_C" 'for _csr_try in 1 2; do' '[[ $_csr_rc -eq 0 ]] && break\n_own_head_sample\ndone' "$CB_S"
+lw_mut "$PRIMARY" "$WORK/p-c7g-P1if.sh" _check_single_rpc "$CB_O" "$CB_C" 'for _csr_try in 1 2; do' 'if [[ $_csr_rc -eq 0 ]]; then break; fi\n_own_head_sample\ndone' "$CB_S"
+lw_mut "$PRIMARY" "$WORK/p-c7g-P1or.sh" _check_single_rpc "$CB_O" "$CB_C" 'for _csr_try in 1 2; do' '[[ $_csr_rc -ne 0 ]] || break\n_own_head_sample\ndone' "$CB_S"
+lw_mut "$PRIMARY" "$WORK/p-c7g-P3.sh" _check_single_rpc "$CB_O" "$CB_C" 'for _csr_try in 1; do' '[[ $_csr_rc -eq 0 ]] && continue\n_own_head_sample\ndone' "$CB_S"
+lw_mut "$PRIMARY" "$WORK/p-c7g-P3if.sh" _check_single_rpc "$CB_O" "$CB_C" 'for _csr_try in 1; do' 'if [[ $_csr_rc -eq 0 ]]; then continue; fi\n_own_head_sample\ndone' "$CB_S"
+lw_mut "$PRIMARY" "$WORK/p-c7g-P5.sh" _check_single_rpc "$CB_O" "$CB_C" 'for _csr_o in 1; do\nfor _csr_try in 1; do' 'if [[ $_csr_rc -eq 0 ]]; then break 2; fi\ndone\n_own_head_sample\ndone' "$CB_S"
+lw_mut "$PRIMARY" "$WORK/p-c7g-P5and.sh" _check_single_rpc "$CB_O" "$CB_C" 'for _csr_o in 1; do\nfor _csr_try in 1; do' '[[ $_csr_rc -eq 0 ]] && break 2\ndone\n_own_head_sample\ndone' "$CB_S"
+lw_mut "$PRIMARY" "$WORK/p-c7g-P5b1.sh" _check_single_rpc "$CB_O" "$CB_C" 'for _csr_o in 1; do\nfor _csr_try in 1; do' 'if [[ $_csr_rc -eq 0 ]]; then break; fi\ndone\n_own_head_sample\ndone' "$CB_S"
+lw_mut "$PRIMARY" "$WORK/p-c7g-Pdeep.sh" _check_single_rpc "$CB_O" "$CB_C" 'for _csr_try in 1 2; do' '[[ $_csr_rc -eq 0 ]] && break 2\n_own_head_sample\ndone' "$CB_S"
+lw_mut "$PRIMARY" "$WORK/p-c7g-Pvar.sh" _check_single_rpc "$CB_O" "$CB_C" 'for _csr_try in 1 2; do' '[[ $_csr_rc -eq 0 ]] && break "$_n"\n_own_head_sample\ndone' "$CB_S"
+CB_TO='vote_result=$(curl -s -m "$curl_timeout" "$TIER2_RPC" -X POST'; CB_TC='a completed 15 s curl timeout is a completed op'; CB_TS='local current_slot last_vote'
+lw_mut "$STANDBY" "$WORK/s-c7g-T2.sh" tier2_check_delinquency "$CB_TO" "$CB_TC" 'for _t2_try in 1 2; do' '[[ $_t2_rc -eq 0 && -n "$vote_result" ]] && break\n[[ $_t2_try -lt 2 && "${TIER2_RETRY:-false}" == "true" ]] || break\n_own_head_sample\ndone' "$CB_TS"
+lw_mut "$STANDBY" "$WORK/s-c7g-T2if.sh" tier2_check_delinquency "$CB_TO" "$CB_TC" 'for _t2_try in 1 2; do' 'if [[ $_t2_rc -eq 0 && -n "$vote_result" ]]; then break; fi\n[[ $_t2_try -lt 2 && "${TIER2_RETRY:-false}" == "true" ]] || break\n_own_head_sample\ndone' "$CB_TS"
+ev_mut "$STANDBY" "R3): before the fence" after "$WORK/s-c7g-g13.sh" <<'EOB'
+        for _try in 1 2; do
+            _s=$(get_staked_liveness_sample) && break
+            _own_head_sample
+        done
+EOB
+ev_mut "$STANDBY" "R3): before the fence" after "$WORK/s-c7g-g13if.sh" <<'EOB'
+        for _try in 1 2; do
+            if _s=$(get_staked_liveness_sample); then break; fi
+            _own_head_sample
+        done
+EOB
+s2_rep b16 '        command _own_head_sample'
+s2_rep b17 '        builtin _own_head_sample'
+ev_mut "$STANDBY" "R3): before the fence" after "$WORK/s-c7g-w01.sh" <<'EOB'
+        _x=$(nice --adjustment 5 bash -c 'curl -s -m 10 "$1" -X POST -d x' _ "$TIER2_RPC")
+EOB
+ev_mut "$STANDBY" "R3): before the fence" after "$WORK/s-c7g-w02.sh" <<'EOB'
+        _x=$(printf '%s\n' "$TIER2_RPC" | xargs --max-args 1 bash -c 'curl -s -m 10 "$1" -X POST -d x' _)
+EOB
+ev_mut "$STANDBY" "R3): before the fence" after "$WORK/s-c7g-wsb.sh" <<'EOB'
+        _x=$(stdbuf -o0 bash -c 'curl -s -m 10 "$1" -X POST -d x' _ "$TIER2_RPC")
+EOB
+c7g_r7=1; c7g_r7r=""
+for _g in "P1|p|_check_single_rpc:*: curl — an external read" "P1if|p|_check_single_rpc:*: curl — an external read" "P1or|p|_check_single_rpc:*: curl — an external read" \
+          "P3|p|_check_single_rpc:*: curl — an external read" "P3if|p|_check_single_rpc:*: curl — an external read" "P5|p|_check_single_rpc:*: curl — an external read" \
+          "P5and|p|_check_single_rpc:*: curl — an external read" "Pdeep|p|_check_single_rpc:*break — more loops than enclose it" "Pvar|p|_check_single_rpc:*a loop count this census cannot read" \
+          "P5b1|p|GREEN" "T2|s|tier2_check_delinquency:*: curl — an external read" "T2if|s|tier2_check_delinquency:*: curl — an external read" \
+          "g13|s|attempt_takeover:*staked_is_actively_voting — an external read" "g13if|s|attempt_takeover:*staked_is_actively_voting — an external read" \
+          "b16|s|attempt_takeover:*staked_is_actively_voting — an external read" "b17|s|attempt_takeover:*staked_is_actively_voting — an external read" \
+          "w01|s|attempt_takeover:*bash — a shell run as a command" "w02|s|attempt_takeover:*bash — a shell run as a command" "wsb|s|attempt_takeover:*bash — a shell run as a command"; do
+    _n=${_g%%|*}; _k=${_g#*|}; _w=${_k#*|}; _k=${_k%%|*}; _f="$WORK/$_k-c7g-$_n.sh"
+    [[ -s "$_f" ]] && ! cmp -s "$([[ $_k == p ]] && echo "$PRIMARY" || echo "$STANDBY")" "$_f" || { c7g_r7=0; c7g_r7r="$c7g_r7r [$_n: NOT-BUILT]"; continue; }
+    if [[ $_k == p ]]; then _o=$(s2_pr "$_f"); _r=$?; else _o=$(s2_sb "$_f"); _r=$?; fi
+    if [[ "$_w" == "GREEN" ]]; then [[ $_r -eq 0 && -z "$_o" ]] || { c7g_r7=0; c7g_r7r="$c7g_r7r [$_n: rc=$_r (want GREEN) $(printf '%s' "$_o" | tr '\n' ';' | cut -c1-160)]"; }; continue; fi
+    [[ $_r -ne 0 && "$_o" == *$_w* ]] || { c7g_r7=0; c7g_r7r="$c7g_r7r [$_n: rc=$_r $(printf '%s' "$_o" | tr '\n' ';' | cut -c1-200)]"; }
+done
 c7g_r6=1; c7g_r6r=""
 for _g in "w1|attempt_takeover:*staked_is_actively_voting — an external read" "w2|attempt_takeover:*staked_is_actively_voting — an external read" "w3|attempt_takeover:*staked_is_actively_voting — an external read" "w4|attempt_takeover:*bash — a shell run as a command" \
           "s01|attempt_takeover:*staked_is_actively_voting — an external read" "s02|attempt_takeover:*staked_is_actively_voting — an external read" "s03|attempt_takeover:*staked_is_actively_voting — an external read" \
@@ -2316,10 +2436,10 @@ for _g in "f|attempt_takeover:*staked_is_actively_voting — an external read" "
     [[ $_r -ne 0 && "$_o" == *${_g#*|}* ]] || { c7g_t8=0; c7g_t8r="$c7g_t8r [${_g%%|*}: rc=$_r $(printf '%s' "$_o" | tr '\n' ';' | cut -c1-200)]"; }
 done
 if [[ $s2_rc -eq 0 && -z "$s2_out" && $s2p_rc -eq 0 && -z "$s2p_out" && $c7g_er -ne 0 && "$c7g_e" == *"attempt_safe_recovery:"*"_check_rpc_delinquency"* && "$s2_nsamp" == "13" && $c7g_ar -ne 0 && "$c7g_a" == *"check_primary_dropped_identity:"*"curl"* && $c7g_br -ne 0 && "$c7g_b" == *"tier2_check_delinquency:"* \
-      && $c7g_cr -ne 0 && "$c7g_c" == *"check_primary_dropped_identity:"* && $c7g_dr -ne 0 && "$c7g_d" == *"attempt_takeover:"*"get_staked_liveness_sample"* && $c7g_t8 -eq 1 && $c7g_r6 -eq 1 ]]; then
-    ok "(7g) S2 census on bash's own parse of both daemons (bp_parse's commands and structure): walking each take-cycle function's statements in order (the standby's 10, $s2_nsamp statement sample sites; the PRIMARY's recovery pass) — if / case / loop / && || operands as the branches they are — every external read (a curl command that is not LOCAL — a LOCAL one: its one URL word \"\$LOCAL_RPC\" — the liveness sampler, a call to a caller-covered function; wherever bash runs it: a substitution, a \$((cmd) ), an unquoted here-document body) has an own-head sample since the previous read, a sample counting only as a statement run in the function's own shell (not an argument or a string, not in a substitution, subshell, pipeline, background job or one arm, not an && / || right operand), a LOCAL read in between being a gap; over the call graph of every function the parse defines (standby $s2_sbf, $s2_sbr reading; primary $s2_prf, $s2_prr), no walked function calls a reading function outside the census's sets, no LOCAL-set function reads, a sender's curl sends only to its own endpoint; no shell is run as a command. Not seen (the header): a read a loop repeats, a read in the main loop's body, a network client other than curl, a command word assembled at run time, a string run by eval / trap / mapfile -C (the (0d) census's), a shell behind another wrapper, code an interpreter runs from a string (awk's system(), perl -e, python3 -c); the per-cycle / per-pass samples are the worlds' (the header names which world pins each, and the one no world pins). Controls a–t, w1–w4, s01–s06, s08, s14, s15 and g1–g5 (each sample no world pins, guarded), each red; s13 (the sample first in an || list: it runs) green"
+      && $c7g_cr -ne 0 && "$c7g_c" == *"check_primary_dropped_identity:"* && $c7g_dr -ne 0 && "$c7g_d" == *"attempt_takeover:"*"get_staked_liveness_sample"* && $c7g_t8 -eq 1 && $c7g_r6 -eq 1 && $c7g_r7 -eq 1 ]]; then
+    ok "(7g) S2 census on bash's own parse of both daemons (bp_parse's commands and structure): walking each take-cycle function's statements in order (the standby's 10, $s2_nsamp statement sample sites; the PRIMARY's recovery pass) — if / case / loop / && || operands as the branches they are, a break / continue (behind && / || too, and break N / continue N) as the exit of the loop it leaves — every external read (a curl command that is not LOCAL — a LOCAL one: its one URL word \"\$LOCAL_RPC\" — the liveness sampler, a call to a caller-covered function; wherever bash runs it: a substitution, a \$((cmd) ), an unquoted here-document body) has an own-head sample since the previous read, a sample counting only as a statement run in the function's own shell (not an argument or a string, not behind command / builtin, not in a substitution, subshell, pipeline, background job or one arm, not an && / || right operand), a LOCAL read in between being a gap; over the call graph of every function the parse defines (standby $s2_sbf, $s2_sbr reading; primary $s2_prf, $s2_prr), no walked function calls a reading function outside the census's sets, no LOCAL-set function reads, a sender's curl sends only to its own endpoint; no shell is run as a command. Not seen (the header): a read a loop repeats, a read in the main loop's body, a network client other than curl, a command word assembled at run time, a string run by eval / trap / mapfile -C (the (0d) census's), a shell whose word is assembled at run time or that a tool runs itself (flock -c), code an interpreter runs from a string (awk's system(), perl -e, python3 -c); the per-cycle / per-pass samples are the worlds' (the header names which world pins each, and the one no world pins). Controls a–t, w1–w4, w01, w02, wsb (a shell behind nice --adjustment N, xargs --max-args N, stdbuf), s01–s06, s08, s14, s15, b16, b17, g1–g5 (each sample no world pins, guarded), g13 / g13if, P1 / P1if / P1or, P3 / P3if, P5 / P5and, Pdeep, Pvar and T2 / T2if (a loop left by a conditional break or continue, or by break N), each red; s13 (the sample first in an || list: it runs) and P5b1 (a plain break out of an inner loop, the sample after it) green"
 else
-    bad "(7g) S2 census rc=$s2_rc samples=$s2_nsamp :: $s2_out :: primary rc=$s2p_rc $s2p_out e=$c7g_er[$c7g_e] :: controls a=$c7g_ar[$c7g_a] b=$c7g_br[$c7g_b] c=$c7g_cr[$c7g_c] d=$c7g_dr[$c7g_d] :: T8:$c7g_t8r :: fix round 6:$c7g_r6r"
+    bad "(7g) S2 census rc=$s2_rc samples=$s2_nsamp :: $s2_out :: primary rc=$s2p_rc $s2p_out e=$c7g_er[$c7g_e] :: controls a=$c7g_ar[$c7g_a] b=$c7g_br[$c7g_b] c=$c7g_cr[$c7g_c] d=$c7g_dr[$c7g_d] :: T8:$c7g_t8r :: fix round 6:$c7g_r6r :: fix round 7:$c7g_r7r"
 fi
 # (7g-local) where bash's parse WRITES LOCAL_RPC (the LOCAL rule above trusts the name): pinned — its default, at the file
 # level (the operator's config may set it; it is sourced there). Red first on the delta panel 4's T4-7G-LOCALNAME shapes,

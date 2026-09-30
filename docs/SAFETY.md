@@ -34,8 +34,10 @@ Two independent mechanisms enforce this:
    takes 1 s with prompt tiers; with a slow tier as well, where the take lands, up to **+40 s** in the
    measured cells (the probe's sample can push the first frozen verdict under the span floor — a whole take
    cycle; phase-dependent: a measured maximum, not a bound). **With `TIER2` failing late and a slow `TIER3`
-   the spare never takes a dead holder** (residual 7 — the first 6.3.1 build's, an availability regression
-   against the 6.3 build, which takes there): the veto's own-head baseline must span `TIER2`'s time to
+   the spare never takes a dead holder** (residual 7 — introduced by 6.3.1's own-view veto, an availability
+   regression: the 6.3 build has no veto and takes these holders; the spare pages the veto page
+   `⚠️ Take VETOED by this spare's own view (it could not testify): …` and then the starvation page
+   `⚠️ TAKEOVER STARVATION: …`): the veto's own-head baseline must span `TIER2`'s time to
    failure (a timeout at its 10 s bound, or any unusable answer — an error body, garbage, a refusal — that
    arrives late), `TIER3`'s answer and two LOCAL reads within 16 s — after `TIER2`'s timeout, `TIER3` 7 s
    late or more with prompt LOCAL reads, 5 s or more when every LOCAL read takes 1 s; a `TIER2` error after
@@ -232,8 +234,10 @@ per cycle at `CHECK_INTERVAL=3` — mainnet load does not inflate the loop (per-
 
 Automated suites additionally drive the real decision functions (self-fence, takeover gating,
 cross-node timing) with mocked I/O, and every safety fix ships with a control that fails when the fix
-is reverted. **Known limit:** these are function-level — they do not prove cross-process ordering
-between two live systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
+is reverted. Network clients reached through `PATH` are caught by `run_all.sh`'s stage (4) on every
+leg; at the syscall level, the CI strace job (ubuntu-24.04) sees no inet socket in the whole run.
+**Known limit:** these are function-level — they do not prove cross-process ordering between two live
+systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
 
 ## Residual risks (be honest with yourself)
 
@@ -629,12 +633,12 @@ included (a documented residual, `test_elapsed_provider` (3l-R5a)).
      the boundary is the veto's own read: t124 vetoed, t125 (the take's own second) taken, **0 s**;
    - the intermediary controlling latency: the take still lands at t147, and the veto reads last —
      t146 vetoed, t147 taken, **0 s** (`GOSSIP_VERIFY=true`: vetoed at t175; `TIER2` blackholed: the
-     re-check — the 6.3 build's one sequential call again since fix round 3 — waits out `TIER2`'s 10 s
-     timeout and then reads `TIER3` (9 s here), and no own-head sample may sit inside that span, so none
-     is younger than 19 s at the veto: vetoed BLIND at t182, and a dead holder behind that latency is
-     **never taken** — the first 6.3.1 build's outcome, residual 7 of the own view (fix round 1 took it at
-     t172 and fix round 2 at t173, through the two re-check changes fix round 3 removed — each took a
-     voting holder elsewhere);
+     re-check — the 6.3 build's one sequential call — waits out `TIER2`'s 10 s timeout and then reads
+     `TIER3` (9 s here), and no own-head sample may sit inside that span, so none is younger than 19 s at
+     the veto: vetoed BLIND at t182, and a dead holder behind that latency is **never taken** — residual 7
+     of the own view, introduced by 6.3.1's own-view veto (the 6.3 build, with no veto, takes it; a
+     re-check that reads the pinned `TIER3` alone, or both tiers at once, takes it too — at t172 / t173 —
+     and takes a voting holder elsewhere: neither is in this build);
    - **armed, the exposure left is the veto's own pet** — the one op between the veto's snapshot and
      `set-identity`: with every pet 7 s and prompt tiers the veto reads at t609 and the take lands at
      t616 (fix round 1: t602 / t609; t574 / t581 in the first 6.3.1 build: the take cycle's added
@@ -888,8 +892,8 @@ piece is **veto-only** — it can turn a take into a hold, never the reverse.
   taken 21–29 s into the voting where the 6.3 build re-pins onto `TIER2` and its next verdict sees the vote
   (LB-2). On the restored re-check every one of those worlds is never taken (`test_own_view` (7f)); **what
   comes back, named below: residual 6 (the mirror world) — the 6.3 build's own, taken at the same second on
-  both builds — and residual 7 (the re-check's starvation) — the first 6.3.1 build's, an availability
-  regression against the 6.3 build, which has no own-view veto and takes those dead holders on time.** On a single-vantage configuration (`TIER2` = `TIER3`) nothing changed: 49 / 58 s, as on every
+  both builds — and residual 7 (the re-check's starvation) — introduced by 6.3.1's own-view veto, an
+  availability regression against the 6.3 build, which has no veto and takes those dead holders on time.** On a single-vantage configuration (`TIER2` = `TIER3`) nothing changed: 49 / 58 s, as on every
   build. Reported, not changed: per-provider ages are 6.4's.
 - **The spare's own head: advancing now, and at a rate (D4).** Own-head samples (`getSlot{confirmed}`
   + its pet) are taken once per cycle of an open episode, once at the head of each take function, and
@@ -934,8 +938,8 @@ piece is **veto-only** — it can turn a take into a hold, never the reverse.
   still never took a dead holder when the gossip advisory's `TIER2` read ran to its 15 s bound (every veto
   BLIND, the starvation page at t374; the wizard preset t330). Now the hold worlds and the advisory world
   take on time (t142 / t98); `TIER2` down with `TIER3` ≥ 7 s late (≥ 5 s with every LOCAL read at 1 s; on a
-  real host one second less at some phases) is NOT — the first 6.3.1 build's starvation, back since fix
-  round 3 removed the two re-check changes that had closed it (residual 7). An opening-time
+  real host one second less at some phases) is NOT — residual 7, the starvation 6.3.1's own-view veto
+  introduces (the 6.3 build, with no veto, takes these holders). An opening-time
   baseline would not do: a spare cut off after the episode opened advanced from it up to the cut. (e)
   watchdog-elapsed's `[elapsed-rate]` layer (see *Slot time* — it bounds the own head's span average only).
 
@@ -957,12 +961,13 @@ t241 → t243 → **t243** (15: t240 → t262 → t270 → t272 → **t272**) �
 its 2 s bound times out (below); pets at the house 7 s t504 → t581 → t609 → t616 → **t616** (a real pet
 is a datagram). With `TIER2` down (timing out) and `TIER3` answering 0 / 4 / 6 / 7 / 9 s late a dead holder is
 taken at t150 / t162 / t168 / never / never — **the 6.3 build at t150 / t162 / t168 / t171 / t177**: the
-never-cells are residual 7, an availability regression against the 6.3 build (which takes `TIER3` 7 s at t193
-at the shipped defaults, t173 at 3.7 slots/s, t149 at the wizard preset, t126 at `MAX_DELINQUENT_SLOTS` 15 —
-each never here); the first 6.3.1 build's outcome again (fix round 1: t140 / t152 / t158
-/ t161 / t167 — its re-check read the pinned `TIER3` alone; fix round 2: t150 / t158 / t162 / t164 / t168
-— both tiers at once; both removed in fix round 3); with `TIER3` down the re-check reads `TIER2` alone
-again, as on the first 6.3.1 build (fix round 2 waited out the dead tier's 10 s: +10 … +1 s). On the primary's recovery path (one chain model,
+never-cells are residual 7, introduced by 6.3.1's own-view veto — an availability regression against the
+6.3 build, which has no veto and takes these holders (`TIER3` 7 s at t193 at the shipped defaults, t173 at 3.7
+slots/s, t149 at the wizard preset, t126 at `MAX_DELINQUENT_SLOTS` 15 — each never here); a re-check that
+read the pinned `TIER3` alone would take them (t140 / t152 / t158 / t161 / t167), and one that read both tiers
+at once (t150 / t158 / t162 / t164 / t168), and each takes a voting holder elsewhere: neither is in this build;
+with `TIER3` down the re-check reads `TIER2` alone (a both-tiers-at-once read waits out the dead tier's 10 s:
++10 … +1 s). On the primary's recovery path (one chain model,
 1.0 slots/s, `RECOVERY_DELAY` 20 / 40): recovered at t129 / t150, as the 6.3 build — the first 6.3.1 build
 read BLIND at every recovery take there (its baseline was older than `OWN_HEAD_H` after the ladder's
 30 s waits) and never recovered by t250. **The recovery-path veto passes only in a band** — its take
@@ -1005,8 +1010,9 @@ or later with every LOCAL read at 1 s) is never taken at all (residual 7; on a r
 vetoed BLIND at some phases, each such veto costing as above). (Fix round 2's text said +77 to +102 s on its build; the delta
 review of fix round 2 measured up to +157 s there and +156 s on fix round 1's — AV2-2, CKB-3 — in cells
 the restored re-check no longer takes.) Whether a transient LOCAL hiccup should cost that much is the
-reviewer's policy question — the policy is unchanged. Every such hold is loud: the veto page, and the
-takeover starvation page covers the rest.
+reviewer's policy question — the policy is unchanged. Every such hold is loud: the veto page
+`⚠️ Take VETOED by this spare's own view (it could not testify): …` (for a veto that read the holder voting,
+`⚠️ Take VETOED by this spare's own view: …`), and the starvation page `⚠️ TAKEOVER STARVATION: …` covers the rest.
 
 **What it leaves, named (residuals of the own view):**
 
@@ -1097,8 +1103,8 @@ takeover starvation page covers the rest.
    Pre-existing on the 6.3 build and the first 6.3.1 build; fix round 2's concurrent read closed it and took
    a voting holder in other worlds (the delta reviews' LB-1 / LB-2), so fix round 3 removed that read and
    names this instead.
-7. **The re-check's starvation (the review's AV-6 — the first 6.3.1 build's, back since fix round 3; an
-   availability regression against the 6.3 build).** No own-head sample may sit inside the re-check (it is
+7. **The re-check's starvation — introduced by 6.3.1's own-view veto: an availability regression against
+   the 6.3 build, which has no veto and takes these holders.** No own-head sample may sit inside the re-check (it is
    inside the acceptance→mutation span `PROOF_MAX_AGE` counts), so the veto's youngest baseline is the
    pre-take sample, and its age at the veto is a SUM: the sample's own LOCAL read, `TIER2`'s time to FAILURE
    (x), `TIER3`'s answer (y), the veto's own LOCAL read and the glue between them. `TIER2`'s term is whatever
@@ -1106,8 +1112,10 @@ takeover starvation page covers the rest.
    `TIER3` on a timeout at the read's 10 s bound (x = 10, the most it can be) and on a JSON-RPC error body,
    an HTTP 5xx page, garbage or a non-canonical lastVote, a refusal or a reset after x s. When the sum
    exceeds `OWN_HEAD_H` (16 s) every veto is BLIND and a
-   dead holder is never taken over, loudly (the veto page — "no own-head sample within the last 16 s" —
-   then the takeover starvation page). After `TIER2`'s timeout: with prompt LOCAL reads from `TIER3` 7 s
+   dead holder is never taken over, loudly: the veto page
+   `⚠️ Take VETOED by this spare's own view (it could not testify): …` (its reason: "no own-head sample within
+   the last 16 s"; repeats per `ALERT_THROTTLE`), then the starvation page `⚠️ TAKEOVER STARVATION: …` (repeats
+   per `ALERT_THROTTLE`). After `TIER2`'s timeout: with prompt LOCAL reads from `TIER3` 7 s
    late, with every LOCAL read at 1 s from 5 s (4 s is taken, the baseline exactly 16 s old: t171,
    `GOSSIP_VERIFY` on t193). `TIER2` answering a non-canonical lastVote after x s, `TIER3` honest after y s,
    prompt LOCAL reads, at the shipped defaults: x + y = 8 + 9 is never taken (first BLIND veto t190, the
@@ -1148,9 +1156,9 @@ takeover starvation page covers the rest.
    `G2_VANTAGE_A` names another provider (with `PRIMARY_UNSTAKED_PUBKEY` empty no G2 is registered: no page,
    no P6 warning) — or use a `TIER3` that answers the full `getVoteAccounts` well under ~5 s (about 3 s when
    every LOCAL read takes 1 s; `TIER2`'s time to failure is at most its 10 s bound, so that holds whatever the
-   failure). The first 6.3.1 build had it; fix round 1 closed it by
-   reading the pinned `TIER3` alone (t161 — the DL-1 regression) and fix round 2 by the concurrent read (t164
-   — LB-1), and both are removed. Availability only — the failure is toward not taking — and one
+   failure). A re-check that reads the pinned `TIER3` alone (t161) or both tiers at once (t164) takes these
+   holders, and each takes a voting holder in other worlds: neither is in this build. Availability only — the
+   failure is toward not taking — and one
    intermediary that makes `TIER2`'s read fail late (a blackhole, or an error answer after a delay) with a slow
    `TIER3` is enough. This build's world cells are pinned cell by cell — all of them above but the late-error
    cells named as not pinned: `test_own_view` (7c), (7c-age), (7c-r7).
@@ -1348,9 +1356,12 @@ the daemon pages rather than guesses (`TAKEOVER_STARVATION_ALERT_SECS`, default 
   in practice rarely fires; the proven path is the timer + vote-liveness fence.
 - **No lazy provider registration** (v0.7): watchdog-elapsed registers only at the monitor's startup,
   over a token that classifies ok; a spare paired while its monitor runs says so every heartbeat
-  ("paired, but watchdog-elapsed is NOT registered — restart the monitor"), and the unpaired posture
-  prints the measured provider registry ("NONE — no provider can prove here" where G2 is unconfigured).
-  By design, not changed.
+  ("paired, but watchdog-elapsed is NOT registered — restart the monitor"), and the unpaired posture —
+  the `ARMED SPARE NOT ATTESTED 🚨` page at every start and its heartbeat line — names no provider: it says
+  the holder is not attested and that this release has no relinquish-proof gate (no provider's verdict
+  conditions any take, armed or not; the take follows the v0.6.x semantics, which the 6.3 re-check and the
+  own-view veto can only hold), and that from the release that wires the gate an unpaired or invalidly
+  paired spare's silence-based take is disabled. By design, not changed.
 - **Span starts are stamped after the read that establishes them** (6.3): a silence start can no longer
   predate its evidence. The price, named: the observation-span floor can bind LATER — +19 to +53 s
   measured, pinned t167 → t197 (`test_elapsed_provider` (13e)).

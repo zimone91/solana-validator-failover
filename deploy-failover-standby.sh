@@ -1044,10 +1044,12 @@ fi
 echo ""
 echo -e "  ${BOLD}${YELLOW}ATTESTATION NOTE (v0.7)${NC}"
 echo -e "    ${DIM}This config carries NO pairing attestation. Once this spare is ARMED ('failover arm'),${NC}"
-echo -e "    ${DIM}it runs proof providers: verified-demote ONLY (NONE if G2 is unconfigured) — holder${NC}"
-echo -e "    ${DIM}not attested; silence-based take disabled — and pages CRITICAL at every start until${NC}"
-echo -e "    ${DIM}paired. Upgrade+arm the HOLDER first (its arm prints the pairing token), then re-run${NC}"
-echo -e "    ${DIM}this spare's arm with ARM_PAIRING_TOKEN='<token line>'. Un-armed hosts: no behavior change.${NC}"
+echo -e "    ${DIM}it pages CRITICAL at every start until paired (holder not attested). This release has no${NC}"
+echo -e "    ${DIM}relinquish-proof gate: armed or not, the spare takes on v0.6.x semantics, which the 6.3${NC}"
+echo -e "    ${DIM}re-check and the own-view veto can only hold; from the release that wires the gate, an${NC}"
+echo -e "    ${DIM}unpaired spare's silence-based take is disabled. Upgrade+arm the HOLDER first (its arm${NC}"
+echo -e "    ${DIM}prints the pairing token), then re-run this spare's arm with ARM_PAIRING_TOKEN='<token line>'.${NC}"
+echo -e "    ${DIM}Un-armed hosts: no behavior change.${NC}"
 
 sleep 2
 

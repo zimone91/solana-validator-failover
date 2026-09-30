@@ -8,33 +8,33 @@ All notable changes are documented here. Versions follow the project's internal 
 - **Block 6.3.1 — the spare's own view: detection on the slow reliable view (finalized), a veto on the fast one
   (confirmed).** The spare's own node (`LOCAL_RPC`, the one input no `TIER2`/`TIER3` intermediary can splice)
   now testifies at every take, and every piece is veto-only: it can turn a take into a hold, never the reverse.
-  Every residual and every number lives in `docs/SAFETY.md`, linked here.
+  Every residual and number lives in `docs/SAFETY.md`: [the spare's own view](docs/SAFETY.md#the-spares-own-view-v07-block-631) and,
+  every crossing of the holder's fence and the spare's earliest take, [the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
   - **Explicit commitments:** every `getVoteAccounts`/`getSlot` body in both daemons names its commitment
     (detection reads `finalized`, agave's default — behavior-neutral); a census parses every body with jq.
   - **The own bank restarts the countdown:** the own bank's holder-voting evidence (a not-delinquent own-bank read with
     a positive basis, a `lastVote` advance, or a VOTING veto) is a fourth takeover-anchor input; watchdog-elapsed's
     silence restarts with it (`[elapsed-own]`); reset at every episode close; the witness fast path never skips it.
-  - **One bounded local veto read before the switch**, on every take path (the standby's `take_staked_identity`,
-    the primary's `switch_to_staked`): one `LOCAL_RPC` batch (`curl -m 2`) after the fresh re-check and before
-    the `DRY_RUN` branch. A failed read vetoes, a voting holder re-anchors, and the spare's own confirmed head
-    must have advanced past a sample no older than `OWN_HEAD_H` = 16 s. The act-then-alert rule now reads:
-    **no network, no alerts; one bounded local veto read allowed.**
-  - **The spare's own head:** sampled before every external read of the take cycle (a structural census);
-    watchdog-elapsed's `[elapsed-rate]` layer abstains below an average of 2.5 slots/s; `N_HEAD` =
-    (`MARGIN_ELAPSED` − 1) × 5/2 = 22 slots. This narrows the slow-cluster residual; it does not retire it.
+  - **One bounded local veto read before the switch**, on every take path (the standby's `take_staked_identity`, the
+    primary's `switch_to_staked`): one `LOCAL_RPC` batch (`curl -m 2`) after the fresh re-check and before the `DRY_RUN`
+    branch. A failed read vetoes, a voting holder re-anchors, and the spare's own confirmed head must have advanced past a
+    sample no older than `OWN_HEAD_H` = 16 s. The act-then-alert rule: **no network, no alerts; one bounded local veto read allowed.**
+  - **The spare's own head:** sampled before every external read of the take cycle (a structural census); watchdog-elapsed's
+    `[elapsed-rate]` layer abstains below an average of 2.5 slots/s; `N_HEAD` = (`MARGIN_ELAPSED` − 1) × 5/2 = 22 slots.
+    This narrows the slow-cluster residual; it does not retire it.
   - **Small calls:** Tier 1 is the node's own health verdict (`LOCAL_HEALTH_MAX_BEHIND` enters no decision); a failed
     latency reference is no longer holder-voting evidence; the holder's opt-in latency demote reads its payload first
     (not part of the cross-node invariant); `failover arm` refuses a symlinked or non-canonical state directory before
     creating anything, unless a symlink is raced onto the path mid-arm (a local root's race, named in SAFETY).
-  - **The fresh re-check is the 6.3 build's, unchanged;** two changes tried during review opened take-while-voting
-    paths and were reverted. Two residuals come with it, named in SAFETY: the mirror world (residual 6), the 6.3
-    build's own; and the re-check's starvation (residual 7) — a `TIER2` that fails slowly (a timeout, or an error
-    answered late) while `TIER3` is slow leaves the veto no fresh baseline, so a dead holder is never taken over,
-    loudly — this block's own availability regression against Block 6.3, never a double-sign.
-  - The mechanism, its costs and its residuals (the `RECOVERY_MODE=rpc` one included): [the spare's own view](docs/SAFETY.md#the-spares-own-view-v07-block-631);
-    the holder's fence against the spare's earliest take and mint, every crossing named: [the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
-  - Tests: `test_own_view` and `test_d6_holder` (new). `run_all.sh` runs every suite behind failing, logging stand-ins for
-    `curl` and the listed network clients, first in `PATH` (contract and limits: `tests/HARNESS.md`); earlier suites read `127.0.0.1:8899`.
+  - **The fresh re-check is the 6.3 build's, unchanged** (two changes tried in review opened take-while-voting paths and
+    were reverted). Residuals, named in SAFETY: the mirror world (6), the 6.3 build's own; the starvation (7), introduced
+    by this block's own-view veto (Block 6.3 has none and takes these holders): a `TIER2` failing slowly (a timeout, an
+    error answered late) with a slow `TIER3` leaves the veto no fresh baseline — a dead holder is never taken over, loudly
+    (`⚠️ Take VETOED by this spare's own view (it could not testify): …`, then `⚠️ TAKEOVER STARVATION: …`); availability.
+  - **No relinquish-proof gate in this release** (6.4 wires it): the armed spare's pages say so — its take follows v0.6.x
+    semantics, held only by the re-check and the veto. `docs/NOTIFICATIONS.md` lists every page, checked in CI.
+  - Tests: `test_own_view`, `test_d6_holder` (new). Network clients reached through `PATH` are caught by `run_all.sh`'s stage (4)
+    on every leg; at the syscall level, CI's strace job (ubuntu-24.04) sees no inet socket in the whole run.
 
 - **Block 6.3 — the watchdog-elapsed proof provider (attested time), the spare's observation surface
   as a standing property, and the holder-side hardening of five review rounds.** Every residual and

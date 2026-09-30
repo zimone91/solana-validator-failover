@@ -3859,10 +3859,12 @@ _proof_age_edge_check() {
 
 # ── the §2.7 LOUD unpaired state [6.0-COND-4] — every-start scream + standing status line ──────
 # An armed spare with no (or invalid) pairing token — or a fence=page-only token, for the time
-# path — can still take via verified-demote (6.2) but NEVER on silence, and that must SCREAM,
-# not sit in a doc: (a) a CRITICAL page at EVERY daemon startup (the safety-page channel;
-# called from startup_checks in both daemons — deliberately UNTHROTTLED across restarts, the
-# §2.6 every-start-scream rule, same class as ALLOW_UNFENCED_TAKEOVER), and (b) a standing
+# path — is not attested: once 6.4 wires the gate it can take only via verified-demote (6.2), NEVER
+# on silence; in this release no gate exists (require_relinquish_proof is called nowhere) and its
+# take follows v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold. The
+# posture must SCREAM either way, not sit in a doc: (a) a CRITICAL page at EVERY daemon startup (the
+# safety-page channel; called from startup_checks in both daemons — deliberately UNTHROTTLED across
+# restarts, the §2.6 every-start-scream rule, same class as ALLOW_UNFENCED_TAKEOVER), and (b) a standing
 # line on the periodic status surface (the v0.6.4 ♥ Heartbeat block — called from the main
 # loop's heartbeat site, once per HEARTBEAT_INTERVAL, same wording every interval).
 _proof_startup_check() {
@@ -3890,16 +3892,16 @@ _proof_startup_check() {
         # a VALID-shape fence=real token whose floor did NOT converge (the overflow/wrap backstop
         # above): an INVALID pairing, not a healthy PAIRED spare — the §2.7 CRITICAL page, naming
         # the non-converging floor, NEVER the PAIRED line (fail toward NOT-TAKING).
-        alert "armed spare pairing INVALID — ${_proof_floor_why}; a corrupted/forged, overflowing, or mis-bounded token is NOT a healthy pairing — silence-based take stays DISABLED. Re-arm the holder and re-pair this spare with a fresh token." "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
+        alert "armed spare pairing INVALID — ${_proof_floor_why}; a corrupted/forged, overflowing, or mis-bounded token is NOT a healthy pairing. This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold. Re-arm the holder first and re-pair this spare with the fresh token it prints: from the release that wires the gate, an invalidly paired spare's silence-based take is disabled." "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
         return 0
     fi
-    alert "proof providers: $(_proof_unpaired_registry) — holder not attested (${_proof_unpaired_why}); silence-based take disabled — upgrade/pair the holder (arm prints the token)" "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
+    alert "holder not attested (${_proof_unpaired_why}). This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold. Pair it: arm the holder first and copy the token it prints. From the release that wires the gate, an unpaired spare's silence-based take is disabled." "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
     return 0
 }
 # (6.3 fix round, M8 — INT-5) the PAIRED-but-UNREGISTERED posture: registration happens at startup
 # ONLY (no lazy registration in this build), so a spare paired while its monitor runs has a token
 # that classifies ok and NO watchdog-elapsed provider — the unpaired line above goes quiet while
-# silence-based take is still unavailable. The status surface says so, loudly, every interval
+# the silence-based provider is still not registered. The status surface says so, loudly, every interval
 # (a restart registers it; a token whose floor does not derive is named instead — restarting would
 # not register that one). (6.3 fix round 4, W3) A REGISTERED provider whose token is a symlink cannot
 # prove either — the same surface names that too, every interval; so does one whose token DIRECTORY is
@@ -3917,15 +3919,16 @@ _proof_status_line() {
         if _derive_proof_floors; then
             log_warn "[proof-gate] paired (token gen=${_proof_token_gen}), but watchdog-elapsed is NOT registered — restart the monitor to register (registration runs at startup only; proof providers registered now: ${_proof_provider_labels:-NONE})"
         else
-            log_warn "[proof-gate] paired token present (gen=${_proof_token_gen}), but watchdog-elapsed is NOT registered and would not register: ${_proof_floor_why} — silence-based take disabled; re-arm the holder and re-pair this spare"
+            log_warn "[proof-gate] paired token present (gen=${_proof_token_gen}), but watchdog-elapsed is NOT registered and would not register: ${_proof_floor_why} — this release has no relinquish-proof gate (takes follow v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold); re-arm the holder and re-pair this spare: from the release that wires the gate, an invalidly paired spare's silence-based take is disabled"
         fi
         return 0
     fi
-    log_info "[proof-gate] proof providers: $(_proof_unpaired_registry) — holder not attested (${_proof_unpaired_why}); silence-based take disabled — upgrade/pair the holder (arm prints the token)"
+    log_info "[proof-gate] holder not attested (${_proof_unpaired_why}) — this release has no relinquish-proof gate: no provider's verdict conditions any take; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold. Pair it: arm the holder first and copy the token it prints — from the release that wires the gate, an unpaired spare's silence-based take is disabled"
     return 0
 }
-# _proof_unpaired_registry — the MEASURED provider set behind the §2.7 unpaired posture (6.3 fix
-# round, X4): the registered labels that can still prove WITHOUT attestation — watchdog-elapsed
+# _proof_unpaired_registry — the MEASURED provider set behind require_relinquish_proof's REFUSE posture (reached only
+# once 6.4 wires the gate; the §2.7 page and status line print no registry — no provider's verdict conditions a take in
+# this release) (6.3 fix round, X4): the registered labels that can still prove WITHOUT attestation — watchdog-elapsed
 # cannot (it proves only over an attested holder) — as "<labels> ONLY", or "NONE — no provider can
 # prove here" when nothing else is registered (G2 unconfigured). Measured, never remembered.
 _proof_unpaired_registry() {
@@ -5006,7 +5009,8 @@ _elapsed_verdict_why() {
 # provider exists ONLY over an attested holder: a token that does not classify ok at the derivation
 # site (none / invalid / page-only / non-converging / shorter than TAKEOVER_DELAY) registers NOTHING
 # and emits nothing — the §2.7 posture printed by _proof_startup_check already says, loudly, that
-# silence-based take is disabled. Registration adopts the token in force (N4: its stamp is now —
+# the holder is not attested (and that, once the gate is wired, its silence-based take is disabled).
+# Registration adopts the token in force (N4: its stamp is now —
 # nothing observed before this process started exists in the seam anyway), keyed on the full token
 # (R4; an unreadable file identity leaves the key short, so the first evaluation re-adopts — later).
 _elapsed_register() {
@@ -5672,10 +5676,11 @@ _fence_rot_check() {
         fi
         # §2.1-rev2.1 №2 / D3 — WHY THIS WINDOW DOES NOT REOPEN DOUBLE-SIGN (the reasoning lives
         # AT the check, not in docs only): during the grace the holder is VOTING and PAGING —
-        # the spare's silence-based path (watchdog-elapsed) cannot fire against a voting holder,
-        # so the window adds no double-sign exposure; if the grace expires, the demote below is
-        # the GRACEFUL path the spare consumes via verified-demote proof — an automatic failover
-        # to the healthy side.
+        # the spare's silence-based path cannot fire against a voting holder (watchdog-elapsed,
+        # a take's condition once 6.4 wires the gate; in this release the spare's vote-liveness
+        # check sees the holder voting), so the window adds no double-sign exposure; if the grace
+        # expires, the demote below is the GRACEFUL path the spare consumes (via verified-demote
+        # proof, once the gate is wired) — an automatic failover to the healthy side.
         if [[ $(( _rot_now - _rot_open_since )) -ge $FENCE_ROT_GRACE ]]; then
             # ROT-INT-2 demote-attempt throttle, AT the rot call site (the adapters are not
             # reworked): the FIRST attempt at expiry is immediate; while an attempt leaves this
