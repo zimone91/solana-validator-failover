@@ -235,7 +235,7 @@ $1 == "K" && $2 == fn && $5 == 1 && $6 == 0 { if ($7 == "if" || $7 == "loop" || 
 $1 == "C" { n = split($6, W, "\034"); split($7, X, ":"); k = bpcmd(n, W); q = k ? bpq(W[k]) : ""
   if (q == "_own_view_veto") nv++
   if ($2 != fn || X[1] != 1 || X[2] != 0) next
-  s++; Q[s] = q; P[s] = X[3]; O[s] = X[4]; A[s] = (k && k < n) ? bpq(W[k + 1]) : ""; J[s] = ""; si[s] = 0; LN[s] = $4; DP[s] = dp
+  s++; Q[s] = q; P[s] = X[3]; O[s] = X[4]; A[s] = (k && k < n) ? bpq(W[k + 1]) : ""; J[s] = ""; si[s] = 0; LN[s] = $4; DP[s] = dp + 0   # + 0: busybox awk copies an unset dp as the STRING "", which is not == 0
   for (j = 1; j <= n; j++) { J[s] = J[s] (j > 1 ? " " : "") bpq(W[j]); if (bpq(W[j]) == "set-identity") si[s] = 1 } }
 END { for (i = 1; i <= s; i++) {
         g = (Q[i + 1] == "return" && P[i + 1] == "||" && A[i + 1] == "1" && O[i] == "||" && DP[i] == 0 && DP[i + 1] == 0 && O[i + 1] != "&" && O[i + 1] != "|" && O[i + 1] != "|&")
