@@ -284,24 +284,32 @@ run_arm() {   # [VAR=val …] — subprocess, clean env, stub PATH, every root a
 out_has()  { grep -q "$1" "$MOCK_DIR/out"; }
 # K4's negatives (6.3.1 fix round 8 — the delta panel 7's CHK7-K4-TESTS-PARTIAL-REGRESSION: the K4 rows checked that the
 # new text was present, not that the removed claims were absent, so the false present-tense claims could return beside
-# it). k4_neg <text> [g2] prints each negative the text violates (empty = all hold):
-#   tense      a "disabled" (any case) outside the scoped clause K4_SCOPED — the present-tense "silence-based take
-#              disabled", "take disabled.", "stays DISABLED" (this release has no gate, so nothing is disabled yet)
-#   vdonly     "verified-demote ONLY" (any case)
-#   providers  "proof providers" (any case; the PAIRED spare's "registered now" line is not a K4 message)
-#   g2-named   with g2 (a world with G2 configured, verified-demote registered): "verified-demote" at all — no
-#              provider is named as able to prove
+# it). k4_neg <text> [g2] prints each negative the text violates (empty = all hold); every match ignores case:
+#   tense      a "disabled" outside the scoped clause K4_SCOPED, the clause counting only where it ENDS its sentence (a
+#              . ; or : next, or the end of the text) — the present-tense "silence-based take disabled", "take disabled.",
+#              "stays DISABLED", and a claim tacked onto the clause (", as it is in this release", " (and is today)") (this
+#              release has no gate, so nothing is disabled yet)
+#   vdonly     "verified-demote only" or "verified-demote-only"
+#   providers  "proof provider" or "proof providers" (the PAIRED spare's "registered now" line is not a K4 message)
+#   g2-named   with g2 (a world with G2 configured, verified-demote registered; and the wizard's static NOTE): "verified-demote"
+#              at all — no provider is named as able to prove
 K4_SCOPED="[Ff]rom the release that wires the gate, (its|an unpaired spare's|an invalidly paired spare's) silence-based take is disabled"
 k4_neg() {
     local t="$1" v=""
-    printf '%s\n' "$t" | sed -E "s/$K4_SCOPED//g" | grep -qi 'disabled' && v="$v tense"
-    printf '%s\n' "$t" | grep -qi 'verified-demote only' && v="$v vdonly"
-    printf '%s\n' "$t" | grep -qi 'proof providers' && v="$v providers"
+    printf '%s\n' "$t" | sed -E "s/$K4_SCOPED([.;:]|\$)/\2/g" | grep -qi 'disabled' && v="$v tense"
+    printf '%s\n' "$t" | grep -qiE 'verified-demote[- ]only' && v="$v vdonly"
+    printf '%s\n' "$t" | grep -qi 'proof provider' && v="$v providers"
     [[ -n "${2:-}" ]] && printf '%s\n' "$t" | grep -qi 'verified-demote' && v="$v g2-named"
     printf '%s' "$v"
 }
-# the arm's K4 lines in $MOCK_DIR/out: the P5 no-token and page-only lines and the two pairing summaries
-k4_arm_lines() { grep -E 'precondition P5: (NO pairing token|pairing token VERIFIED and stored \(.*fence=page-only)|pairing summary: (UNPAIRED SPARE|token stored but fence=page-only)' "$MOCK_DIR/out"; }
+# the arm's K4 lines in $MOCK_DIR/out: EVERY line the arm prints in its P5 section — from the line after the §2.3
+# "precondition 5:" announcement to the first line of the next section (P6, the G2 vantage ceremony, or the probe) — and
+# every line after its "ARMED (…)" completion line but the G2 vantage summary (the pairing-summary section). P6 and the G2
+# summary, between and beside them, name verified-demote and its proof provider by design: not K4 sites
+k4_arm_lines() { awk '/^\[failover-arm\] precondition 5: / { s = 1; next }
+                      s == 1 && /^\[failover-arm\] (WARN: )?(precondition P6|probe|install|verify)/ { s = 0 }
+                      /^\[failover-arm\] ARMED \(/ { s = 3; next }
+                      s == 1 || (s == 3 && !/G2 vantage summary/)' "$MOCK_DIR/out"; }
 token_line() { grep '^v0\.7|gen=' "$MOCK_DIR/out" | tail -1; }
 
 # the arm's OWN crc mechanics, extracted and eval'd (input-crafting uses the runner's actual
@@ -466,7 +474,7 @@ for _w in plain g2; do
        && [[ $(printf '%s\n' "$k4l" | grep -c 'This release has no relinquish-proof gate') -eq 2 && $(printf '%s\n' "$k4l" | grep -c "from the release that wires the gate, its silence-based take is disabled") -eq 2 ]] \
        && out_has 'the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold' && [[ -z "$k4v" ]] && { [[ -z "$_g2" ]] || out_has 'precondition P6'; }; then
         if [[ -z "$_g2" ]]; then
-            ok "(1d) fence=page-only → arm PROCEEDS (token stored) + elapsed attestation REFUSED + loud §2.7 posture in the P5 line and the summary, each saying this release has no relinquish-proof gate (the spare takes on v0.6.x semantics, held only by the 6.3 re-check and the own-view veto) and that its silence-based take is disabled from the release that wires the gate; neither line claims a take disabled now, 'verified-demote ONLY' or 'proof providers' (k4_neg)"
+            ok "(1d) fence=page-only → arm PROCEEDS (token stored) + elapsed attestation REFUSED + loud §2.7 posture in the P5 line and the summary, each saying this release has no relinquish-proof gate (the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold) and that its silence-based take is disabled from the release that wires the gate; neither line claims a take disabled now, 'verified-demote only' (or -only) or 'proof provider(s)' (k4_neg)"
         else
             ok "(1d-g2) the same page-only pairing with G2 configured (P6 ran): the two K4 lines hold every K4 negative and name no provider (no 'verified-demote')"
         fi
@@ -485,7 +493,7 @@ for _w in plain g2; do
        && [[ $(printf '%s\n' "$k4l" | grep -c "This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not") -eq 2 ]] \
        && [[ $(printf '%s\n' "$k4l" | grep -c "from the release that wires the gate, an unpaired spare's silence-based take is disabled") -eq 2 ]] && [[ -z "$k4v" ]] && { [[ -z "$_g2" ]] || out_has 'precondition P6'; }; then
         if [[ -z "$_g2" ]]; then
-            ok "(1e) no token → arm PROCEEDS into the §2.7 unpaired posture + end-of-summary UNPAIRED warning (never silent); the P5 line and the summary each say this release has no relinquish-proof gate (no provider's verdict conditions any take, armed or not) and that an unpaired spare's silence-based take is disabled from the release that wires the gate; neither claims a take disabled now, 'verified-demote ONLY' or 'proof providers' (k4_neg)"
+            ok "(1e) no token → arm PROCEEDS into the §2.7 unpaired posture + end-of-summary UNPAIRED warning (never silent); the P5 line and the summary each say this release has no relinquish-proof gate (no provider's verdict conditions any take, armed or not) and that an unpaired spare's silence-based take is disabled from the release that wires the gate; neither claims a take disabled now, 'verified-demote only' (or -only) or 'proof provider(s)' (k4_neg)"
         else
             ok "(1e-g2) the same unpaired arm with G2 configured (P6 ran): the two K4 lines hold every K4 negative and name no provider (no 'verified-demote')"
         fi
@@ -501,10 +509,10 @@ done
 wz_lines=$(awk '/ATTESTATION NOTE \(v0\.7\)/ { on = 1 } on && /^sleep 2$/ { exit } on && NF' "$HARNESS_DIR/deploy-failover-standby.sh")
 wz_bad=$(printf '%s\n' "$wz_lines" | grep -vc '^echo -e "[^"]*"$')
 wz_text=$(printf '%s\n' "$wz_lines" | sed -E 's/^echo -e "//; s/"$//; s/\$\{(DIM|NC|BOLD|YELLOW)\}//g' | tr '\n' ' ' | tr -s ' ')
-wz_v=$(k4_neg "$wz_text")
+wz_v=$(k4_neg "$wz_text" g2)   # the NOTE is static: no G2 world can hold it, so "verified-demote" at all is a violation here
 if [[ $(printf '%s\n' "$wz_lines" | grep -c .) -ge 8 && "$wz_bad" == "0" && -z "$wz_v" ]] \
    && [[ "$wz_text" == *"This release has no relinquish-proof gate: armed or not, the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold; from the release that wires the gate, an unpaired spare's silence-based take is disabled."* ]]; then
-    ok "(1o) the standby wizard's ATTESTATION NOTE ($(printf '%s\n' "$wz_lines" | grep -c .) echo lines, read as printed): no relinquish-proof gate in this release (v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold), an unpaired spare's silence-based take disabled from the release that wires the gate; no take claimed disabled now, no 'verified-demote ONLY', no 'proof providers' (k4_neg)"
+    ok "(1o) the standby wizard's ATTESTATION NOTE ($(printf '%s\n' "$wz_lines" | grep -c .) echo lines, read as printed): no relinquish-proof gate in this release (v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold), an unpaired spare's silence-based take disabled from the release that wires the gate; no take claimed disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)', no 'verified-demote' at all (k4_neg with the G2 negative)"
 else
     bad "(1o) wizard NOTE: lines=$(printf '%s\n' "$wz_lines" | grep -c .) non-echo=$wz_bad k4-violations=[$wz_v] text=${wz_text:0:300}"
 fi
@@ -904,7 +912,7 @@ if [[ "$(field "$r" drc)" == "1" && "$(field "$r" floor)" == -* ]] \
          && "$(field "$r" lastpage)" == *"from the release that wires the gate, an invalidly paired spare's silence-based take is disabled."* && -z "$(k4_neg "$(field "$r" lastpage)")" ]] \
    && [[ "$(field "$r" lastinfo)" != *"armed spare PAIRED"* ]] \
    && [[ "$(field "$rg" drc)" == "1" && "$(field "$rg" pages)" == "1" && " $(field "$rg" labels) " == *" verified-demote "* && "$(field "$rg" lastpage)" == *"did not converge"* && -z "$(k4_neg "$(field "$rg" lastpage)" g2)" ]]; then
-    ok "(4d) planted wrapping-W token (bypasses intake) → _derive_proof_floors INVALID (rc 1, floor=$(field "$r" floor)) + §2.7 CRITICAL page naming the non-converging floor and saying this release has no relinquish-proof gate (v0.6.x take semantics; an invalidly paired spare's silence-based take disabled from the release that wires the gate); NO PAIRED line (the on-disk backstop, independent of the arm ceiling); the page claims no take disabled now, no 'verified-demote ONLY', no 'proof providers' (k4_neg), and with G2 configured (registered: $(field "$rg" labels)) names no provider"
+    ok "(4d) planted wrapping-W token (bypasses intake) → _derive_proof_floors INVALID (rc 1, floor=$(field "$r" floor)) + §2.7 CRITICAL page naming the non-converging floor and saying this release has no relinquish-proof gate (v0.6.x take semantics; an invalidly paired spare's silence-based take disabled from the release that wires the gate); NO PAIRED line (the on-disk backstop, independent of the arm ceiling); the page claims no take disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)' (k4_neg), and with G2 configured (registered: $(field "$rg" labels)) names no provider"
 else
     bad "(4d) $r :: g2: $rg"
 fi
@@ -1016,7 +1024,7 @@ lp=$(field "$r" lastpage)
 PG_TRUTH="This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold."
 if [[ "$(field "$r" pages)" == "2" ]] && [[ "$tt" == ";ARMED SPARE NOT ATTESTED 🚨;ARMED SPARE NOT ATTESTED 🚨" ]] && [[ "$lp" == "holder not attested (no pairing token stored). "* && "$lp" == *"$PG_TRUTH"* \
       && "$lp" == *"Pair it: arm the holder first and copy the token it prints. From the release that wires the gate, an unpaired spare's silence-based take is disabled."* && -z "$(k4_neg "$lp")" ]]; then
-    ok "(6a) armed spare, no token → CRITICAL page at EVERY start (2 drives → 2 pages, unthrottled): the attestation state (holder not attested — no pairing token stored), the truth of this release (no relinquish-proof gate: no provider's verdict conditions any take, armed or not; the take follows v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold), the action (arm the holder first, copy its token) and why (from the release that wires the gate, an unpaired spare's silence-based take is disabled); no take claimed disabled now, no 'verified-demote ONLY', no 'proof providers' (k4_neg)"
+    ok "(6a) armed spare, no token → CRITICAL page at EVERY start (2 drives → 2 pages, unthrottled): the attestation state (holder not attested — no pairing token stored), the truth of this release (no relinquish-proof gate: no provider's verdict conditions any take, armed or not; the take follows v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold), the action (arm the holder first, copy its token) and why (from the release that wires the gate, an unpaired spare's silence-based take is disabled); no take claimed disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)' (k4_neg)"
 else
     bad "(6a) $r"
 fi
@@ -1058,7 +1066,7 @@ SL_HEAD="[proof-gate] holder not attested (no pairing token stored) — this rel
 r=$(drive_gate "$STANDBY" 1 "" none case_status_lines | tail -1)
 if [[ "$(field "$r" slines)" == "2" && "$(field "$r" last)" == "$SL_HEAD"* \
       && "$(field "$r" last)" == *"from the release that wires the gate, an unpaired spare's silence-based take is disabled" && -z "$(k4_neg "$(field "$r" last)")" ]]; then
-    ok "(6d) standing line at every interval (2 calls → 2 identical §2.7 lines on the status surface): holder not attested, no relinquish-proof gate in this release (v0.6.x take semantics, held only by the 6.3 re-check and the own-view veto), an unpaired spare's silence-based take disabled from the release that wires the gate; no take claimed disabled now, no 'verified-demote ONLY', no 'proof providers' (k4_neg)"
+    ok "(6d) standing line at every interval (2 calls → 2 identical §2.7 lines on the status surface): holder not attested, no relinquish-proof gate in this release (v0.6.x take semantics, which the 6.3 re-check and the own-view veto can only hold), an unpaired spare's silence-based take disabled from the release that wires the gate; no take claimed disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)' (k4_neg)"
 else
     bad "(6d) $r"
 fi

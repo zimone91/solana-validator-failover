@@ -32,8 +32,8 @@ All notable changes are documented here. Versions follow the project's internal 
     error answered late) with a slow `TIER3` leaves the veto no fresh baseline — a dead holder is never taken over, loudly
     (`⚠️ Take VETOED by this spare's own view (it could not testify): …`, then `⚠️ TAKEOVER STARVATION: …`); availability.
   - **No relinquish-proof gate in this release** (6.4 wires it; the attestation pages say so): the take follows v0.6.x semantics, which
-    the re-check and the veto can only hold. CI: every page sent has an entry in `docs/NOTIFICATIONS.md` (a status as a whole code span,
-    a heading as a whole span or the opening of one followed by "…").
+    the re-check and the veto can only hold. CI: every page sent has an entry in `docs/NOTIFICATIONS.md` (a status — an `alert`'s, a
+    direct `send_webhook`'s title — as a whole code span, a heading as a whole span or the opening of one followed by "…" or a blank and "…").
   - Tests: `test_own_view`, `test_d6_holder` (new). `PATH` clients: `run_all.sh`'s stage (4), every leg; inet sockets: `tests/strace-hermetic.sh`.
 
 - **Block 6.3 — the watchdog-elapsed proof provider (attested time), the spare's observation surface

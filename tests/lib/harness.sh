@@ -98,7 +98,8 @@ _HARNESS_TMP=$(mktemp -d)
 #   - a plain `env -i` child (the libc or bash default PATH; only `env -i PATH=…` keeps the guard);
 #   - an absolute path (/usr/bin/curl, /sbin/ping);
 #   - a PATH a suite builds without this directory (the arm suites' `env -i PATH="$STUB_DIR:$TOOLDIR"` scenarios);
-#   - a call made after run_all's final read of the logs (a child outliving the last suite);
+#   - a call made after run_all's final read of the logs (a child of the last suite that left its process group — run_all
+#     stops whatever stays in a suite's group when the suite ends);
 #   - an interpreter's own socket;
 #   - socat, left out on purpose (above);
 #   - a client not on the list;
@@ -106,7 +107,9 @@ _HARNESS_TMP=$(mktemp -d)
 #     a stand-in that is GONE).
 # The stand-in directory is written to HARNESS_STUB_DIRS_LOG when that is set (tests/strace-hermetic.sh sets it), and so
 # is every directory a suite names with harness_stub_dir (its own stubs of a listed client): the strace job counts a
-# listed client's exec from a directory on that list as a stand-in's or a stub's, from anywhere else as the REAL client.
+# listed client's exec from a directory on that list as a stand-in's or a stub's, from anywhere else as the REAL client —
+# a listed directory counting only under the run's own temp root (the job points TMPDIR there: every mktemp of the run
+# lands under it; a directory listed from anywhere else is red), so name only a directory made under mktemp.
 harness_stub_dir() {   # harness_stub_dir <dir> — <dir> holds this suite's own stub of a listed network client (curl …)
     [[ -z "${HARNESS_STUB_DIRS_LOG:-}" ]] || printf '%s\n' "$1" >> "$HARNESS_STUB_DIRS_LOG"
 }
@@ -338,9 +341,9 @@ dump_freshness() {
 # run time ($x, "$cmd", $(…) as the command); code inside a STRING a command runs — eval, trap, mapfile -C, a shell's
 # -c — which the lexer cannot read as code: the (0d) census flags eval anywhere and pins every trap / mapfile /
 # readarray, and (7g) and (1a) flag a shell run as a command by its word, whatever wraps it (bpshell below: a literal
-# shell word followed by anything but only --version / --help) — no census flags a shell whose word is assembled at
-# run time, a tool running its argument through a shell it names itself (flock -c), or code an interpreter runs from a
-# string (awk's system(), perl -e, python3 -c); a
+# shell word followed by anything but only --version / --help; an env -S string read as words; sudo -s / -i) — no census
+# flags a shell whose word is assembled at run time, a tool running a shell it picks itself (flock -c, su, script -c …),
+# or code an interpreter runs from a string (awk's system(), perl -e, python3 -c); a
 # here-document opened inside a here-document body's $( ) (read as that body's text); a nested backtick inside
 # backticks; and aliases (expand_aliases is off in a script; the (0d) census flags alias and shopt by name).
 BP_LEX_AWK='
@@ -622,12 +625,18 @@ END { NLINES = NR; for (LNR = 1; LNR <= NLINES; LNR++) lexline(LINES[LNR])
 #                     command prefix it skipped ("" when none) — a FUNCTION behind either never runs (command skips the
 #                     function lookup, builtin refuses a non-builtin)
 #   bpshell(n, W)   — the index of a SHELL the command runs, found by the word, not by its wrappers — FAIL-CLOSED: the first
-#                     literal word naming a shell — bash / sh / dash / zsh / ksh, by any path, or busybox's sh / ash / hush /
-#                     bash applet — whatever wrappers and options precede it (timeout, env, nice --adjustment N, xargs
-#                     --max-args N, stdbuf, sudo, find -exec …), UNLESS the only words after it are --version or --help
-#                     (at least one): followed by nothing it reads its stdin, and any option (-s -e -x -i -l - -- --norc
-#                     --posix …), -c string or script word runs code this census cannot walk; a redirection is not a word,
-#                     so `bash -e < file` is one too; 0 when none, and for a lookup (`command -v bash`)
+#                     literal word naming a shell — sh, bash, rbash, dash, ash, hush, zsh, ksh, ksh93, mksh, lksh, pdksh,
+#                     oksh, posh, yash, csh, tcsh or fish, by any path (busybox's ash / hush called by their own names
+#                     included), or busybox followed by its sh / ash / hush / bash applet — whatever wrappers and options
+#                     precede it (timeout, env, nice --adjustment N, xargs --max-args N, stdbuf, sudo, find -exec …), UNLESS
+#                     the only words after it are --version or --help (at least one): followed by nothing it reads its
+#                     stdin, and any option (-s -e -x -i -l - -- --norc --posix …), -c string or script word runs code this
+#                     census cannot walk; a redirection is not a word, so `bash -e < file` is one too. Behind env, a -S /
+#                     --split-string string (separate or attached) is read as the words env splits it into, so `env -S
+#                     'bash -s'` is one; and sudo with -s / -i / --shell / --login among its own options runs the user's
+#                     shell (the index of sudo then). 0 when none, and for a lookup (`command -v bash`). LIMIT: a tool that
+#                     runs a shell it picks itself — su, chroot without a command, runuser, script -c, flock -c,
+#                     machinectl shell — and a shell whose word is assembled at run time
 BP_AWK_LIB='
 function bpq(w) { sub(/\035.*/, "", w); return substr(w, 2) }
 function bpr(w) { sub(/^[^\035]*\035/, "", w); return w }
@@ -650,15 +659,38 @@ function bpcmd(n, W,   k, q, lead) {
     }
     return 0
 }
-function bpshell(n, W,   k, j, a, b) {
+function bpshname(b) { sub(/.*\//, "", b); return (b ~ /^(sh|bash|rbash|dash|ash|hush|zsh|ksh|ksh93|mksh|lksh|pdksh|oksh|posh|yash|csh|tcsh|fish)$/) }
+function bpshell(n, W,   k, j, a, b, m, x, y, i, e) {
     if (bpcmd(n, W) == 0) return 0
+    m = 0; e = 0                                  # V[1..m]: the words, an env -S string as its words (VI: the W it came from)
     for (k = 1; k <= n; k++) {
-        if (!bplit(W[k])) continue
-        b = bpq(W[k]); sub(/.*\//, "", b)
-        if (b == "busybox" && k < n && bplit(W[k + 1]) && bpq(W[k + 1]) ~ /^(sh|ash|hush|bash)$/) k++
-        else if (b !~ /^(bash|sh|dash|zsh|ksh)$/) continue
-        if (k == n) return k
-        for (j = k + 1; j <= n; j++) { a = bpq(W[j]); if (a != "--version" && a != "--help") return k }
+        if (!bplit(W[k])) { m++; V[m] = W[k]; VI[m] = k; continue }
+        a = bpq(W[k]); b = a; sub(/.*\//, "", b); x = ""
+        if (b == "env") e = 1
+        if (e && (a == "-S" || a == "--split-string") && k < n) { k++; x = " " bpq(W[k]) }
+        else if (e && a ~ /^-S./) x = " " substr(a, 3)
+        else if (e && a ~ /^--split-string=/) x = " " substr(a, 16)
+        if (x == "") { m++; V[m] = W[k]; VI[m] = k; continue }
+        i = split(x, BPY, /[ \t]+/)
+        for (j = 1; j <= i; j++) { y = BPY[j]; gsub(/["\\]/, "", y); gsub("\047", "", y); if (y != "") { m++; V[m] = "L" y "\035" y; VI[m] = k } }
+    }
+    for (k = 1; k <= m; k++) {
+        if (!bplit(V[k])) continue
+        a = bpq(V[k]); b = a; sub(/.*\//, "", b)
+        if (b == "sudo") {                         # its own options, up to the command it runs: -s / -i run a login or user shell
+            for (j = k + 1; j <= m && bpq(V[j]) ~ /^-./ && bpq(V[j]) != "--"; j++) {
+                a = bpq(V[j])
+                if (a == "--shell" || a == "--login") return VI[k]
+                if (a ~ /^--/) { if (a ~ /^--(user|group|host|prompt|role|type|other-user|close-from|chdir|chroot|command-timeout)$/) j++; continue }
+                x = substr(a, 2)
+                while (x != "") { y = substr(x, 1, 1); x = substr(x, 2); if (y == "s" || y == "i") return VI[k]; if (y ~ /[CDghpRrtTUu]/) { if (x == "") j++; break } }
+            }
+            continue
+        }
+        if (b == "busybox" && k < m && bplit(V[k + 1]) && bpq(V[k + 1]) ~ /^(sh|ash|hush|bash)$/) k++
+        else if (!bpshname(a)) continue
+        if (k == m) return VI[k]
+        for (j = k + 1; j <= m; j++) { a = bpq(V[j]); if (a != "--version" && a != "--help") return VI[k] }
     }
     return 0
 }

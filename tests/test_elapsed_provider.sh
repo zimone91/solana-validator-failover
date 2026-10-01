@@ -2357,13 +2357,15 @@ r3=$(TOK=ok drive_ep "$STANDBY" case_m8 | tail -1)
 # K4's negatives on the would-not-register warn (a K4 message; 6.3.1 fix round 8 — the delta panel 7's
 # CHK7-K4-TESTS-PARTIAL-REGRESSION: the row matched a prefix and a suffix, so a claim inserted between them passed):
 # no "disabled" outside the scoped "from the release that wires the gate, an invalidly paired spare's silence-based
-# take is disabled" (the present-tense "silence-based take disabled", "stays DISABLED"), no "verified-demote ONLY", no
-# "proof providers" — and, with G2 configured (verified-demote registered), no "verified-demote" at all
+# take is disabled", the clause counting only where it ends its sentence (a . ; or : next, or the end of the text: a claim
+# tacked onto it — ", as it is in this release" — is the present tense) — the present-tense "silence-based take
+# disabled", "stays DISABLED"; no "verified-demote only" or "verified-demote-only"; no "proof provider" or "proof
+# providers"; every match ignoring case — and, with G2 configured (verified-demote registered), no "verified-demote" at all
 m8_neg() {   # m8_neg <warn> [g2] — prints the violated negatives (test_proof_gate's k4_neg)
     local t="$1" v=""
-    printf '%s\n' "$t" | sed -E "s/from the release that wires the gate, an invalidly paired spare's silence-based take is disabled//g" | grep -qi 'disabled' && v="$v tense"
-    printf '%s\n' "$t" | grep -qi 'verified-demote only' && v="$v vdonly"
-    printf '%s\n' "$t" | grep -qi 'proof providers' && v="$v providers"
+    printf '%s\n' "$t" | sed -E "s/from the release that wires the gate, an invalidly paired spare's silence-based take is disabled([.;:]|\$)/\1/g" | grep -qi 'disabled' && v="$v tense"
+    printf '%s\n' "$t" | grep -qiE 'verified-demote[- ]only' && v="$v vdonly"
+    printf '%s\n' "$t" | grep -qi 'proof provider' && v="$v providers"
     [[ -n "${2:-}" ]] && printf '%s\n' "$t" | grep -qi 'verified-demote' && v="$v g2-named"
     printf '%s' "$v"
 }
@@ -2373,7 +2375,7 @@ if [[ "$(field "$r1" reg0)" == "0" && "$(field "$r1" reg)" == "0" && "$(field "$
    && [[ "$(field "$r2" w)" == *"— this release has no relinquish-proof gate (takes follow v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold); re-arm the holder and re-pair this spare: from the release that wires the gate, an invalidly paired spare's silence-based take is disabled" && -z "$(m8_neg "$(field "$r2" w)")" ]] \
    && [[ "$(field "$r2g" wn)" == "1" && " $(field "$r2g" labels) " == *" verified-demote "* && "$(field "$r2g" w)" == *"would not register: "*"SHORTER than the un-armed timer path"* && -z "$(m8_neg "$(field "$r2g" w)" g2)" ]] \
    && [[ "$(field "$r3" reg)" == "1" && "$(field "$r3" wn)" == "0" && "$(field "$r3" in)" == "0" ]]; then
-    ok "(12g) M8 — an armed spare started UNPAIRED and paired while its monitor runs (no lazy registration in this build): the heartbeat status line WARNS 'paired (token gen=7), but watchdog-elapsed is NOT registered — restart the monitor to register (… registered now: NONE)'; a planted short-floor token is named instead ('would not register: … SHORTER than the un-armed timer path' — and that this release has no relinquish-proof gate: v0.6.x take semantics, an invalidly paired spare's silence-based take disabled from the release that wires the gate), that warn claiming no take disabled now, no 'verified-demote ONLY', no 'proof providers', and with G2 configured (registered: $(field "$r2g" labels)) naming no provider; a spare registered at startup stays silent. Pre-fix: the unpaired line went quiet and NOTHING replaced it"
+    ok "(12g) M8 — an armed spare started UNPAIRED and paired while its monitor runs (no lazy registration in this build): the heartbeat status line WARNS 'paired (token gen=7), but watchdog-elapsed is NOT registered — restart the monitor to register (… registered now: NONE)'; a planted short-floor token is named instead ('would not register: … SHORTER than the un-armed timer path' — and that this release has no relinquish-proof gate: v0.6.x take semantics, an invalidly paired spare's silence-based take disabled from the release that wires the gate), that warn claiming no take disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)', and with G2 configured (registered: $(field "$r2g" labels)) naming no provider; a spare registered at startup stays silent. Pre-fix: the unpaired line went quiet and NOTHING replaced it"
 else
     bad "(12g) late-pair=$r1 :: late-lowfloor=$r2 :: late-lowfloor-g2=$r2g :: registered=$r3"
 fi

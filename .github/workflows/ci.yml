@@ -16,8 +16,10 @@
 #   Debian 12 install. That is the badge's meaning.
 #
 # Job summary (each job's interpreter and awk). Every job runs in GitHub's environment — CI=true, GITHUB_*, RUNNER_* —
-# which no test reads (the facts job checks it); each suite job's timeout-minutes is derived in its comment, and a suite
-# still running RUN_ALL_SUITE_CAP (3600 s) after it started is killed by run_all and fails the run, named.
+# which no test reads (the facts job checks it). Each suite job sets run_all's per-suite cap, RUN_ALL_SUITE_CAP, from its
+# own runner's model (3600 s Linux, 7200 s macOS, 5400 s under strace; each derived at its job): a suite still running at
+# it is killed by run_all and fails the run, named, with whatever it left in its process group; each job's
+# timeout-minutes, derived in its comment, leaves room for one such kill on top of its run at the modeled speed.
 #   linux-bash52  — the deploy target (Ubuntu 24.04, /bin/bash 5.2; awk: mawk, pinned — the stock Ubuntu
 #                   24.04 awk a deploy host runs, fingerprinted and selected by the "awk fingerprint" step,
 #                   which fails loudly if awk still resolves to anything else): full suite.
@@ -28,14 +30,19 @@
 #                   construct parses "green" while the 3.2 interpreter never runs the suite.
 #   strace-hermetic — no network at the syscall level (Ubuntu 24.04, /bin/bash 5.2; awk: mawk, pinned the
 #                   same way): the WHOLE tests/run_all.sh under `strace -f` (tests/strace-hermetic.sh, its
-#                   filter tests/lib/strace-net.awk) — red on any AF_INET/AF_INET6 syscall from any process
-#                   (loopback included), on any socket of another family than AF_UNIX/AF_LOCAL and AF_NETLINK
-#                   (AF_PACKET, AF_VSOCK …), on any exec of a client on the net guard's list by its basename from
-#                   outside the run's stand-in and stub directories (a symlink to it or a copy under the same name
-#                   included; a RENAMED copy is the named limit, seen by the socket rules once it opens one), and on
-#                   a failing run_all. run_all's own stage (4) catches the network clients a suite reaches through
-#                   PATH on every leg; of what that stage cannot see (its LIMIT, tests/HARNESS.md), this job sees
-#                   whatever opens a socket.
+#                   filter tests/lib/strace-net.awk) — a syscall line's family is its socket's own (socket()'s first
+#                   argument, else the line's sockaddr; a decoded netlink payload's family word is not the socket's)
+#                   — red on any AF_INET/AF_INET6 socket's syscall from any process (loopback included), on any socket
+#                   of another family than AF_UNIX/AF_LOCAL and AF_NETLINK (AF_PACKET, AF_VSOCK, an unknown one …), on
+#                   any exec of a client on the net guard's list by its basename from outside the run's stand-in and
+#                   stub directories (a symlink to it or a copy under the same name included; a RENAMED copy and an
+#                   exec through a file descriptor are the named limit, seen by the socket rules once they open one),
+#                   on a stub directory listed outside the run's own temp root (the script points TMPDIR there), on a
+#                   failing run_all, and on a run that does not end (strace still tracing 30 s after run_all exited, or
+#                   the step's STRACE_HERMETIC_BOUND reached: every process still traced is named and stopped). run_all's
+#                   output streams into the step log as it runs. run_all's own stage (4) catches the network clients a
+#                   suite reaches through PATH on every leg; of what that stage cannot see (its LIMIT, tests/HARNESS.md),
+#                   this job sees whatever opens a socket.
 #   shellcheck    — `-S error` on the shipped scripts, the test harness lib and the strace job's script (the
 #                   same bar every change has met; runs no interpreter).
 #   facts         — (Ubuntu 24.04, the runner's bash and default awk, not pinned: its awk programs are POSIX
@@ -67,12 +74,15 @@ jobs:
   linux-bash52:
     name: tests · ubuntu 24.04 · bash 5.2 (deploy target)
     runs-on: ubuntu-24.04
-    # timeout-minutes, derived (6.3.1 fix round 8): the plain run measured 3568 s start to end on ONE docker vCPU set up
-    # as this job is — stock ubuntu:24.04, /bin/bash 5.2, mawk, jq, a non-root user, CI=true (fix round 8's ubuntu-mawk
-    # gate leg on this tree, 54/54 green); taken at 2x for a hosted runner up to half that vCPU's speed per core (the
-    # hosted runner has four), plus one suite killed at run_all's per-suite cap (3600 s), so a single hang still ends
-    # as a named red inside this job: 2 x 3568 + 3600 = 10736 s, rounded up to the next 15 min.
-    timeout-minutes: 180
+    # Sized from the gate's ubuntu-mawk leg — set up as this job is: stock ubuntu:24.04, /bin/bash 5.2, mawk, jq, a
+    # non-root runner, CI=true, on ONE docker vCPU — measured on the 6.3.1 fix round 8 gate (two runs, 54/54 green): the
+    # plain run took 1,879 and 1,897 s start to end; its slowest suite, test_own_view, 996 and 967 s. The model: a hosted
+    # core up to half that vCPU's speed (the hosted runner has four), so up to 2x.
+    # RUN_ALL_SUITE_CAP (on the suite step): 3600 s, 1.81x the slowest suite at the model (2 x 996 = 1,992 s).
+    # timeout-minutes: the run at the model plus ONE suite killed at the cap (+5 s for its SIGKILL), so a single hang still
+    # ends as a named red inside this job: 2 x 1,897 + 3,600 + 5 = 7,399 s, rounded up to the next 15 min. A second hang
+    # can reach the timeout; every KILLED line is in the step log by then (run_all prints it as it happens).
+    timeout-minutes: 135
     steps:
       - uses: actions/checkout@v5
       - name: interpreter fingerprint
@@ -93,17 +103,24 @@ jobs:
           case "$a" in */mawk) ;; *) echo "awk resolves to $a, not mawk — pin mawk or update this gate consciously"; exit 1 ;; esac
           echo "awk: $a — $(awk -W version 2>&1 | head -1)"
       - name: full suite (parse gate + run gate + suite-count manifest)
+        env:
+          RUN_ALL_SUITE_CAP: 3600   # this job's model (its comment above)
         run: cd tests && /bin/bash run_all.sh
 
   macos-bash32:
     name: tests · macOS · /bin/bash 3.2.57 (compatibility floor)
     runs-on: macos-latest
-    # timeout-minutes, derived (6.3.1 fix round 8): each suite run alone on the measuring Mac (an Apple M5 Max, 18 cores,
-    # /bin/bash 3.2, CI=true) — its wall time w and its CPU time c; three cores of that speed (the hosted macos-latest
-    # runner has three) run a suite within w + c/3 (its longest chain plus its work shared three ways): the sum over
-    # the suites is 4710 s; taken at 2x for cores up to half that speed, plus one suite killed at run_all's per-suite cap
-    # (3600 s): 2 x 4710 + 3600 = 13020 s, rounded up to the next 15 min.
-    timeout-minutes: 225
+    # Sized from each suite run alone on the measuring Mac (an Apple M5 Max, 18 cores, /bin/bash 3.2, CI=true; this tree,
+    # 6.3.1 fix round 9): its wall time w and its CPU time c. Three cores of that speed (the hosted macos-latest runner has
+    # three) run a suite within w + c/3 (its longest chain plus its work shared three ways); the model takes cores up to
+    # half that speed, so up to 2x.
+    # RUN_ALL_SUITE_CAP (on the suite step): 7200 s. The slowest suite at the model is test_own_view — w 482 s, c 4,444 s
+    # here; w 487 s, c 4,650 s in the delta panel 8's run — at most 2 x (487 + 4,650 / 3) = 4,074 s: the cap is 1.77x that.
+    # timeout-minutes: the run at the model plus ONE suite killed at the cap (+5 s for its SIGKILL), so a single hang still
+    # ends as a named red inside this job: the sum of w + c/3 over the suites is 4,626 s; 2 x 4,626 + 7,200 + 5 = 16,457 s,
+    # rounded up to the next 15 min. A second hang can reach the timeout; every KILLED line is in the step log by then
+    # (run_all prints it as it happens).
+    timeout-minutes: 285
     steps:
       - uses: actions/checkout@v5
       - name: interpreter fingerprint (must be 3.2.x — fail loudly if the runner ever changes it)
@@ -114,15 +131,24 @@ jobs:
       - name: deps
         run: which jq || brew install jq
       - name: full suite under the PINNED interpreter
+        env:
+          RUN_ALL_SUITE_CAP: 7200   # this job's model (its comment above)
         run: cd tests && /bin/bash run_all.sh
 
   strace-hermetic:
     name: no network at the syscall level · ubuntu 24.04 · bash 5.2 · run_all under strace
     runs-on: ubuntu-24.04
-    # timeout-minutes, derived (6.3.1 fix round 8) as linux-bash52's: the whole run_all under strace -f measured 1.3x the
-    # plain run (the delta panel 7's measurement on fix round 7's gate legs: 2785 s against 2124 s, each on one docker
-    # vCPU), so 2 x 1.3 x 3568 + 3600 = 12877 s, rounded up to the next 15 min.
-    timeout-minutes: 225
+    # Sized as linux-bash52, from the gate's strace leg — the tracked tests/strace-hermetic.sh as a non-root runner in
+    # ubuntu:24.04 with real clients, CI=true, on ONE docker vCPU — measured on the 6.3.1 fix round 8 gate (two runs): the
+    # whole run under strace -f took 2,599 and 2,620 s start to end (1.37x and 1.39x the plain run's 1,897 and 1,879 s);
+    # its slowest suite, test_own_view, 1,394 and 1,392 s. At the same 2x model:
+    #   RUN_ALL_SUITE_CAP 5400 s — 1.94x the slowest suite at the model (2 x 1,394 = 2,788 s);
+    #   STRACE_HERMETIC_BOUND 10645 s — where the script ends the run itself, a named red listing every process still
+    #   traced: the run at the model plus ONE suite killed at the cap, 2 x 2,620 + 5,400 + 5 = 10,645 s;
+    #   timeout-minutes: the bound plus 10 min for the steps around it (11,245 s), rounded up to the next 15 min.
+    # So a hang ends as a named red before GitHub's timeout: run_all's KILLED line streams into the step log as it happens,
+    # a process that outlives run_all is named and stopped 30 s after run_all's end, and anything else at the bound.
+    timeout-minutes: 195
     steps:
       - uses: actions/checkout@v5
       - name: interpreter fingerprint
@@ -145,6 +171,9 @@ jobs:
           case "$a" in */mawk) ;; *) echo "awk resolves to $a, not mawk — pin mawk or update this gate consciously"; exit 1 ;; esac
           echo "awk: $a — $(awk -W version 2>&1 | head -1)"
       - name: the whole run_all under strace -f (tests/strace-hermetic.sh — its header holds the rules)
+        env:
+          RUN_ALL_SUITE_CAP: 5400        # this job's model (its comment above)
+          STRACE_HERMETIC_BOUND: 10645   # the same comment: the run at the model + one capped hang
         run: /bin/bash tests/strace-hermetic.sh "$RUNNER_TEMP/strace-hermetic"
 
   shellcheck:
@@ -248,25 +277,33 @@ jobs:
         # this step sees it in the source. It reads every *.sh file of the tree and the shipped files bash sources or runs
         # that are not *.sh — the config templates failover.env.example and failover-standby.env.example and the five unit
         # skeletons systemd/*.service.skel (find, not git ls-files: the step also runs on an exported tree); find hands
-        # every name to grep as it is (-exec … {} +: blanks and quotes included), grep's own exit status must be 0 or 1
-        # (anything else is red), and the step prints how many files grep read against how many it found. A match is
-        # /dev/tcp or /dev/udp followed by a / — a closing quote allowed before it (`"/dev/tcp"/"$h"/80` opens a socket
-        # too) — on ANY line, comment lines included (fail-closed: a line of an unquoted here-document that begins with #
-        # is code to bash, which runs its $( )). The ONE permitted line is tests/test_own_view.sh's A5 fixture — text a
-        # mutant inserts into a copy of a daemon for a static census, never executed:
-        # `{ exec 9<>/dev/tcp/127.0.0.1/8899 && … }` — required EXACTLY once (a scan that read nothing cannot pass).
-        # Anything else is red, listed.
+        # every name to the reader as it is (-exec … {} +: blanks and quotes included). Each file is read whole, every
+        # byte as text: a DE-QUOTED copy of it — every ' " and \ removed, as bash removes them before it resolves the path,
+        # so /dev/"tcp"/…, "/dev/tc"p/…, /dev/tcp\/… and /dev/'udp'/… match like /dev/tcp/… — is searched with grep -a
+        # (a NUL byte or a byte invalid in the runner's UTF-8 locale cannot hide a line), grep's own exit status must be 0
+        # or 1, and an unreadable file is red; the step prints how many files were read against how many it found. A match
+        # is /dev/tcp/ or /dev/udp/ in the de-quoted line, on ANY line, comment lines included (fail-closed: a line of an
+        # unquoted here-document that begins with # is code to bash, which runs its $( )); the line is reported as it is
+        # written. The ONE permitted line is tests/test_own_view.sh's A5 fixture — text a mutant inserts into a copy of a
+        # daemon for a static census, never executed: `{ exec 9<>/dev/tcp/127.0.0.1/8899 && … }` — required EXACTLY once
+        # (a scan that read nothing cannot pass). Anything else is red, listed. LIMIT: a path assembled at run time (a
+        # variable, an ANSI-C $'…' escape, a line continued by a backslash-newline) is not seen here; the strace job sees
+        # the socket it opens.
         run: |
-          w=$(mktemp -d); re='/dev/(tcp|udp)["'"'"']?/'
+          w=$(mktemp -d); re='/dev/(tcp|udp)/'; dq="\"'\\\\"
           find . -type f -not -path './.git/*' \( -name '*.sh' -o -name '*.env.example' -o -path './systemd/*.service.skel' \) > "$w/found"
           [ -s "$w/found" ] || { echo "no file found — run from the repository root"; exit 1; }
           find . -type f -not -path './.git/*' \( -name '*.sh' -o -name '*.env.example' -o -path './systemd/*.service.skel' \) -exec sh -c '
-            w=$1; re=$2; shift 2
-            grep -cH -E -e "$re" "$@" >> "$w/read"; r=$?; [ "$r" -le 1 ] || echo "grep -c exited $r" >> "$w/err"
-            grep -nH -E -e "$re" "$@" >> "$w/hits"; r=$?; [ "$r" -le 1 ] || echo "grep -n exited $r" >> "$w/err"
-            exit 0' sh "$w" "$re" {} +
+            w=$1; re=$2; dq=$3; shift 3
+            for f do
+              tr -d "$dq" < "$f" > "$w/dq" || { echo "could not read $f" >> "$w/err"; continue; }
+              grep -n -a -E -e "$re" "$w/dq" > "$w/ln"; r=$?; [ "$r" -le 1 ] || { echo "grep -n exited $r on $f" >> "$w/err"; continue; }
+              printf "%s\n" "$f" >> "$w/read"
+              while IFS=: read -r n x; do printf "%s:%s:" "$f" "$n" >> "$w/hits"; sed -n "${n}p" "$f" >> "$w/hits"; done < "$w/ln"
+            done
+            exit 0' sh "$w" "$re" "$dq" {} +
           : >> "$w/read"; : >> "$w/hits"
-          if [ -s "$w/err" ]; then sed 's/^/GREP FAILED: /' "$w/err"; echo "RED: grep could not read the tree"; exit 1; fi
+          if [ -s "$w/err" ]; then sed 's/^/READ FAILED: /' "$w/err"; echo "RED: the tree could not be read"; exit 1; fi
           nf=$(wc -l < "$w/found" | tr -d ' '); nr=$(wc -l < "$w/read" | tr -d ' ')
           cp "$w/hits" "$w/h"
           a5='    { exec 9<>/dev/tcp/127.0.0.1/8899 && printf "GET /health HTTP/1.0\r\n\r\n" >&9 && exec 9>&-; } 2>/dev/null || true'
@@ -277,11 +314,11 @@ jobs:
             echo "NETWORK REDIRECTION outside the A5 fixture — $f:$ln: $code"; bad=1
           done < "$w/h"
           [ "$na5" -eq 1 ] || { echo "the A5 fixture line appears $na5 times in tests/test_own_view.sh — it is required exactly once"; bad=1; }
-          [ "$nr" -eq "$nf" ] || { echo "grep read $nr of the $nf files found"; bad=1; }
-          echo "$nf files found (*.sh, the two *.env.example, the five systemd/*.service.skel), $nr read by grep; /dev/tcp|udp lines: $(wc -l < "$w/h" | tr -d ' ') (the A5 fixture: $na5)"
+          [ "$nr" -eq "$nf" ] || { echo "read $nr of the $nf files found"; bad=1; }
+          echo "$nf files found (*.sh, the two *.env.example, the five systemd/*.service.skel), $nr read whole (de-quoted, grep -a); /dev/tcp|udp lines: $(wc -l < "$w/h" | tr -d ' ') (the A5 fixture: $na5)"
           rm -rf "$w"
           [ "$bad" = 0 ] || { echo "RED: bash's network redirection outside the one permitted fixture (rule: this step's comment)"; exit 1; }
-          echo "no /dev/tcp or /dev/udp redirection in any line of those files but the A5 fixture, read once"
+          echo "no /dev/tcp or /dev/udp path in any line of those files, quotes and backslashes removed, but the A5 fixture, read once"
       - name: no test reads a variable GitHub's runner sets — CI, GITHUB_*, RUNNER_* (v0.7 Block 6.3.1)
         # RULE: GitHub sets CI=true in every job, and GITHUB_* / RUNNER_* variables; a test that uses such a name as its own
         # knob reads the runner's value instead of its default — three suites used CI as their check-interval knob, bash
@@ -290,21 +327,23 @@ jobs:
         # comment-only (first non-blank character #) is red when it holds the word CI, or a word beginning GITHUB_ or
         # RUNNER_ (a word: not preceded or followed by a letter, a digit or _), in any context — an expansion, an assignment
         # or a prefix assignment, an arithmetic name, awk's ENVIRON, a string: fail-closed, so a code line names the
-        # workflow otherwise (ci.yml). grep's exit status must be 0 or 1; the step prints how many files grep read. LIMIT:
-        # a here-document line that begins with # is skipped as a comment, though bash expands an unquoted one's ${ }.
+        # workflow otherwise (ci.yml). Every grep reads every byte as text (-a: a NUL byte, or a byte invalid in the
+        # runner's UTF-8 locale, cannot hide a line); grep's exit status must be 0 or 1; the step prints how many files grep
+        # read. LIMIT: a here-document line that begins with # is skipped as a comment, though bash expands an unquoted
+        # one's ${ }.
         run: |
           w=$(mktemp -d); re='(^|[^A-Za-z0-9_])(CI|GITHUB_[A-Za-z0-9_]*|RUNNER_[A-Za-z0-9_]*)([^A-Za-z0-9_]|$)'
           find tests -type f \( -name '*.sh' -o -name '*.awk' \) > "$w/found"
           [ -s "$w/found" ] || { echo "no test file found — run from the repository root"; exit 1; }
           find tests -type f \( -name '*.sh' -o -name '*.awk' \) -exec sh -c '
             w=$1; re=$2; shift 2
-            grep -cH -E -e "$re" "$@" >> "$w/read"; r=$?; [ "$r" -le 1 ] || echo "grep -c exited $r" >> "$w/err"
-            grep -nH -E -e "$re" "$@" >> "$w/hits"; r=$?; [ "$r" -le 1 ] || echo "grep -n exited $r" >> "$w/err"
+            grep -cH -a -E -e "$re" "$@" >> "$w/read"; r=$?; [ "$r" -le 1 ] || echo "grep -c exited $r" >> "$w/err"
+            grep -nH -a -E -e "$re" "$@" >> "$w/hits"; r=$?; [ "$r" -le 1 ] || echo "grep -n exited $r" >> "$w/err"
             exit 0' sh "$w" "$re" {} +
           : >> "$w/read"; : >> "$w/hits"
           if [ -s "$w/err" ]; then sed 's/^/GREP FAILED: /' "$w/err"; echo "RED: grep could not read the tests"; exit 1; fi
           nf=$(wc -l < "$w/found" | tr -d ' '); nr=$(wc -l < "$w/read" | tr -d ' ')
-          grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' "$w/hits" > "$w/h" || true
+          grep -a -vE '^[^:]+:[0-9]+:[[:space:]]*#' "$w/hits" > "$w/h" || true
           nh=$(wc -l < "$w/h" | tr -d ' ')
           sed 's/^/A NAME GITHUB SETS, IN A TEST — /' "$w/h"
           echo "$nf test files found, $nr read by grep; lines naming CI / GITHUB_* / RUNNER_*: $nh"
@@ -315,23 +354,31 @@ jobs:
       - name: every page the daemons send has an entry in docs/NOTIFICATIONS.md (v0.7 Block 6.3.1)
         # RULE: tests/lib/notif-titles.awk reads both daemons (its header holds how it reads a line) and lists every page
         # they send, by its title as sent — an `alert` call's status (its third argument, verbatim), an `alert_warn`
-        # message's heading, and the heading of a DIRECT send (`send_telegram` / `send_webhook` outside the four sinks
-        # alert, alert_warn, alert_info and flush_pending_alerts, whose sends carry their callers' pages); a heading is the
-        # message's leading literal text, up to the first $ or ` expansion, trailing blanks dropped (the whole message when
-        # it has none). It includes the calls of every WRAPPER, found mechanically: a function whose body passes its own
-        # "$N" as such a title (today _recheck_abort_alert, _own_veto_alert and _g2_env_alert, each `alert_warn "$1"`).
+        # message's heading, and the title of a DIRECT send outside the four sinks alert, alert_warn, alert_info and
+        # flush_pending_alerts, whose sends carry their callers' pages: a `send_telegram`'s heading (its first argument) and
+        # a `send_webhook`'s status (its THIRD argument, verbatim — the title its receiver shows: ntfy's Title header, the
+        # JSON text's "status:"); a heading is the message's leading literal text, up to the first $ or ` expansion,
+        # trailing blanks dropped (the whole message when it has none). It reads a call wherever bash runs one: past
+        # assignment words and redirections, inside $( ) and backticks at any depth — a double-quoted "…", an unquoted
+        # ${ … } or $(( … )) and an array value NAME=( … ) included. It includes the calls of every WRAPPER, found
+        # mechanically: a function whose body passes its own "$N" as such a title (today _recheck_abort_alert,
+        # _own_veto_alert and _g2_env_alert, each `alert_warn "$1"`).
         # A title is NAMED when docs/NOTIFICATIONS.md has an ENTRY for it — a table row whose first cell holds code spans,
-        # or a list item that begins with code spans joined by " / " — with a span that holds it: a STATUS only as a whole
-        # span (`STATUS`); a HEADING as a whole span, or as the opening of one followed by "…" or " …" (`HEADING …rest`).
-        # RED on a title with no such entry; RED on every call the reader marks UNREADABLE — a status that is not a literal,
-        # a title with fewer than 10 letters or digits beyond its emoji and punctuation (an empty heading included), a line
-        # ending in a backslash, a quote open at the line's end, fewer arguments, a call word spelled with quotes, or a
-        # daemon word alert / alert_warn / send_telegram / send_webhook / a wrapper's name standing where no call was read —
+        # or a list item that begins with code spans joined by " / " — with a span that holds it: a STATUS (an alert's, a
+        # direct send_webhook's) only as a whole span (`STATUS`); a HEADING as a whole span, or as the opening of one
+        # followed by "…" or by a blank and "…" (`HEADING…rest`, `HEADING …rest`).
+        # RED on a title with no such entry; RED on every call the reader marks UNREADABLE — a status or webhook title that
+        # is not a literal, a title with fewer than 10 letters or digits beyond its emoji and punctuation (an empty heading
+        # included), a line ending in a backslash, a quote open at the line's end, fewer arguments, a call word with any
+        # quoted part or a backslash (bash removes the quotes and runs it: "alert", al"ert", $'alert', \alert), a command
+        # word holding an ANSI-C escape the reader does not decode, or a daemon word alert / alert_warn / send_telegram /
+        # send_webhook / a wrapper's name standing where no call was read (an argument; a name in an unquoted $(( … ))) —
         # unless NT_ALLOW below lists that call with the literal values it can take and where they come from (each value is
         # then matched the same way; the value - for a line that sends no page); RED on a function the reader cannot see
         # (defined in another shape than `name() {` at column 0), and when a daemon yields no page at all.
         # OUTSIDE the check: alert_info (Telegram-only — its coverage is counted and printed) and the fence scripts'
-        # journal PAGE[…] lines. POSIX tools; the awk is mawk-safe (no {m,n} interval).
+        # journal PAGE[…] lines. LIMIT: the reader's (its header) — a command word assembled at run time, a call in a string
+        # eval or trap runs, a construct spanning lines. POSIX tools; the awk is mawk-safe (no {m,n} interval).
         run: |
           w=$(mktemp -d); tab=$(printf '\t'); doc=docs/NOTIFICATIONS.md; bad=0
           d1=solana-primary-failover.sh; d2=solana-standby-failover.sh
@@ -369,9 +416,10 @@ jobs:
             done < "$w/allow"
             [ "$listed" = 1 ] || { echo "UNREADABLE $kind at $at ($why) — list the call in NT_ALLOW with the literal values it can take and where they come from"; bad=1; }
           done < "$w/u"
-          # the matcher: a status as a whole span; a heading or a direct send's heading as a whole span or a span's opening + "…" / " …"
+          # the matcher: a status or a webhook title as a whole span; a heading or a direct send_telegram's heading as a whole
+          # span or a span's opening + "…" / " …"
           awk -F'\t' 'NR == FNR { E[++ne] = $0; next }
-            { ok = 0; for (k = 1; k <= ne; k++) { e = E[k]; if (e == $2 || ($1 != "status" && (index(e, $2 "…") == 1 || index(e, $2 " …") == 1))) { ok = 1; break } }
+            { ok = 0; for (k = 1; k <= ne; k++) { e = E[k]; if (e == $2 || ($1 != "status" && $1 != "webhook" && (index(e, $2 "…") == 1 || index(e, $2 " …") == 1))) { ok = 1; break } }
               if (!ok) printf "MISSING %s: %s   [%s]\n", $1, $2, $3 }' "$w/entries" "$w/t" > "$w/missing"
           [ -s "$w/missing" ] && { cat "$w/missing"; bad=1; }
           st=$(awk -F'\t' '$1 == "T" && $3 == "status"' "$w/rows" | wc -l | tr -d ' ')
@@ -379,13 +427,14 @@ jobs:
           ht=$(awk -F'\t' '$1 == "T" && $3 == "heading"' "$w/rows" | wc -l | tr -d ' ')
           hd=$(awk -F'\t' '$1 == "T" && $3 == "heading" { print $4 }' "$w/rows" | sort -u | wc -l | tr -d ' ')
           dt=$(awk -F'\t' '$1 == "T" && $3 == "direct"' "$w/rows" | wc -l | tr -d ' ')
+          wt=$(awk -F'\t' '$1 == "T" && $3 == "webhook"' "$w/rows" | wc -l | tr -d ' ')
           nu=$(wc -l < "$w/u" | tr -d ' '); nw=$(awk -F'\t' '$1 == "W"' "$w/rows" | wc -l | tr -d ' '); ne=$(wc -l < "$w/entries" | tr -d ' ')
           ni=$(awk -F'\t' '$1 == "I" { print $2 }' "$w/rows")
           awk -F'\t' '$1 == "N" { print "info\t" $4 }' "$w/rows" | sort -u > "$w/info"
           nid=$(wc -l < "$w/info" | tr -d ' ')
           nif=$(awk -F'\t' 'NR == FNR { E[++ne] = $0; next } { for (k = 1; k <= ne; k++) if (E[k] == $2 || index(E[k], $2 "…") == 1 || index(E[k], $2 " …") == 1) { c++; break } } END { print c + 0 }' "$w/entries" "$w/info")
-          echo "pages read: $st alert calls ($sd distinct statuses), $ht alert_warn calls ($hd distinct headings; $nw wrapper definitions), $dt direct sends; $nu unreadable; $ne doc entries"
+          echo "pages read: $st alert calls ($sd distinct statuses), $ht alert_warn calls ($hd distinct headings; $nw wrapper definitions), $dt direct send_telegram and $wt direct send_webhook sends; $nu unreadable; $ne doc entries"
           echo "alert_info (Telegram-only, OUTSIDE the check): $ni calls, $nid distinct headings, $nif of them with an entry in $doc"
           rm -rf "$w"
           [ "$bad" = 0 ] || { echo "RED: a page the daemons send has no entry in $doc, or a call is unreadable (rule: this step's comment)"; exit 1; }
-          echo "every alert status, alert_warn heading and direct send of both daemons, and every wrapper's, has an entry in $doc: a status as a whole code span, a heading as a whole span or the opening of one followed by an ellipsis"
+          echo "every alert status, alert_warn heading and direct send of both daemons, and every wrapper's, has an entry in $doc: a status (an alert's, a direct send_webhook's) as a whole code span, a heading as a whole span or the opening of one followed by an ellipsis, directly or after a blank"

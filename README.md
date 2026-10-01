@@ -81,7 +81,7 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
   at every start: arm the holder first and copy its token, because from the release that wires the gate (Block
   6.4) an unpaired or invalidly paired spare's silence-based take is disabled — and an unpaired spare with no other
   provider configured (no `PRIMARY_UNSTAKED_PUBKEY`, or G2 disabled by its vantage check) takes nothing at all. A
-  `fence=page-only` token means the holder was armed without its real fence (`DRY_RUN=false` on the holder, then
+  `fence=page-only` token means the holder was armed without its real fence (fix: `DRY_RUN=false` on the holder, then
   `failover arm` there); a `TAKEOVER_DELAY` raised after pairing makes the pairing INVALID, and re-pairing is refused
   until the holder's bounds cover it (the arm prints both fixes). That gate will decide *how* the old
   holder is known to be gone; its providers already run on an armed spare. The strongest proof is
@@ -192,8 +192,9 @@ cd tests && bash run_all.sh
 54 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
 mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Network clients reached
 through `PATH` are caught by `run_all.sh`'s stage (4) on every leg; at the syscall level, `tests/strace-hermetic.sh`
-(CI's strace job, ubuntu-24.04) fails on any inet socket in the whole run. A suite still running an hour after it
-started is killed and fails the run (`RUN_ALL_SUITE_CAP`). Note the limit: these are function-level tests — they do
+(CI's strace job, ubuntu-24.04) fails on any inet socket in the whole run. A suite still running at `run_all.sh`'s
+per-suite cap (`RUN_ALL_SUITE_CAP`: an hour by default; CI sizes it per job) is killed, with whatever it left in its
+process group, and fails the run, named. Note the limit: these are function-level tests — they do
 **not** prove cross-process ordering between two live systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
 
 ## ⚠️ Before you point this at a mainnet identity

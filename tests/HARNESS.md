@@ -62,13 +62,14 @@ offending lines are printed for diagnosis. Two consequences:
   compares the parse with what sourcing the file's executable head leaves defined. LIMIT, named in its header: a
   command word assembled at run time; code inside a string a command runs — eval / trap / `mapfile -C` (the (0d)
   census flags or pins them) and a shell's `-c` string, script or stdin ((1a) and (7g) flag a shell run as a command by
-  its word, whatever wraps it: a literal `bash` / `sh` / `dash` / `zsh` / `ksh` word, or busybox's shell applet,
-  followed by anything but only `--version` / `--help` — nothing (stdin), any option, a script — not a shell whose word
-  is assembled at run time, a
-  tool running its argument through a shell it names itself (`flock -c`), nor code an interpreter runs from a string,
-  such as awk's `system()`); a here-document opened inside a here-document body's `$( )`; a backtick nested in
-  backticks; aliases. bash 5.2 prints an if-condition's here-document after the then-branch's first statement, which
-  the lexer would read as body text: `bp_parse` refuses such a print (every parse census red; the daemons use none).
+  its word, whatever wraps it: a literal shell word — `sh`, `bash`, `rbash`, `dash`, `ash`, `hush`, `zsh`, `ksh`,
+  `ksh93`, `mksh` and the others `bpshell`'s header lists — or busybox's shell applet, followed by anything but only
+  `--version` / `--help` — nothing (stdin), any option, a script; an `env -S` / `--split-string` string read as its
+  words; `sudo -s` / `-i` — not a shell whose word is assembled at run time, a tool running a shell it picks itself
+  (`flock -c`, `su`, `script -c`), nor code an interpreter runs from a string, such as awk's `system()`); a
+  here-document opened inside a here-document body's `$( )`; a backtick nested in backticks; aliases. bash 5.2 prints
+  an if-condition's here-document after the then-branch's first statement, which the lexer would read as body text:
+  `bp_parse` refuses such a print (every parse census red; the daemons use none).
 - `dump_freshness` — **the sole reader of the freshness triple**
   (`_liveness_first_provider` / `_liveness_obs_since` / `_last_blind_end`) in suites; run_all
   stage (3) enforces this mechanically (a `$`-dereference in any suite = red). Priming WRITES in
@@ -78,8 +79,10 @@ offending lines are printed for diagnosis. Two consequences:
 
 Network clients reached through `PATH` are caught by run_all's stage (4) on every leg; at the syscall level,
 `tests/strace-hermetic.sh` (CI's `strace-hermetic` job, ubuntu-24.04; its header holds the rules) fails on any inet
-socket in the whole run — and on any other socket family than AF_UNIX and AF_NETLINK, and on an exec of a listed client
-from outside the run's stand-in and stub directories. This section is the `PATH` half.
+socket in the whole run — a line's family being its socket's own — and on any other socket family than AF_UNIX and
+AF_NETLINK, on an exec of a listed client from outside the run's stand-in and stub directories, on a stub directory
+listed outside the run's own temp root, and on a run that does not end (strace still tracing 30 s after run_all has
+exited). This section is the `PATH` half.
 
 `tests/lib/harness.sh` puts a directory of logging stand-ins FIRST in `PATH` for every suite that sources it — for
 `curl` and for each client on its `HARNESS_NET_CLIENTS` list, the clients this guard stands in for:
@@ -100,15 +103,19 @@ harness's directory comes first, so `curl` there is the mock above). Each stand-
 so a child that keeps a guard directory on its `PATH` still logs, even with its environment cleared
 (`env -i PATH="$PATH" …`). A plain `env -i` child does not: it gets the libc or bash default `PATH` and runs the
 host's client. Stage (4) reads each suite's log right after the suite and again after the last suite — a call a child
-made after its suite's own check is then named with that suite — and removes the stand-ins only after that final
-read. A suite whose log is not empty FAILS stage (4), named with its calls; a setup failure FAILS it with its own
+made after its suite's own check is then named with that suite (a child that left the suite's process group: what stays
+in the group is stopped when the suite ends) — and removes the stand-ins only after that final read. A suite whose log
+is not empty FAILS stage (4), named with its calls; a setup failure FAILS it with its own
 reason, named with the suite: no client list readable, a stand-in or log not written, or — checked after each suite and
 again at the final read — a suite's log, its stand-in directory or one of its stand-ins GONE (after that, a client the
 suite ran went to the host's own). The GREEN line says "no network client reached through PATH". Every stand-in
 directory — run_all's, the harness's, and each directory a suite names with `harness_stub_dir` because it holds the
 suite's own stub of a listed client (`test_act_then_alert`, `test_proof_gate`, `test_own_view`,
 `test_installer_guardrails`) — is written to `HARNESS_STUB_DIRS_LOG` when the strace job sets it: the job counts an exec
-of a listed client from a directory on that list as a stand-in's or a stub's, from anywhere else as the REAL client. A suite whose world runs a daemon path that reaches a client stubs the client in that world (the precedent:
+of a listed client from a directory on that list as a stand-in's or a stub's, from anywhere else as the REAL client. A
+listed directory counts only under the run's own temp root — the job points `TMPDIR` at a fresh directory for the run,
+so every `mktemp` lands under it — and one listed from anywhere else (`/etc/alternatives`, `/usr/bin`) is red. A suite
+whose world runs a daemon path that reaches a client stubs the client in that world (the precedent:
 `test_elapsed_provider`'s m5 world stubs `ping`; before fix round 6 that world — the primary's real `check_internet`
 and heartbeat summary — ran the host's `ping` 126–135 times a run).
 
@@ -122,7 +129,7 @@ family than AF_UNIX and AF_NETLINK):
 - a plain `env -i` child (the libc or bash default `PATH`; only `env -i PATH=…` keeps the guard);
 - an absolute path (`/usr/bin/curl`, `/sbin/ping`);
 - a `PATH` a suite builds without the guard (the arm suites' `env -i PATH="$STUB_DIR:$TOOLDIR"` scenarios);
-- a call made after stage (4)'s final read of the logs (a child outliving the last suite);
+- a call made after stage (4)'s final read of the logs (a child of the last suite that left its process group);
 - an interpreter's own socket;
 - `socat` — left out of the list on purpose, with the interpreters (the notify socket is a UNIX socket;
   `test_primary_self_fence` reads a clock through perl; `test_arm_ceremony` finds python3 and perl through `PATH` and
@@ -133,8 +140,13 @@ family than AF_UNIX and AF_NETLINK):
   failure, above).
 
 The per-suite TIME CAP: `run_all.sh` runs each suite in its own process group under a watchdog; a suite still running
-`RUN_ALL_SUITE_CAP` seconds (default 3600) after it started is killed with every process it started and FAILS the run
-gate, named. Each run prints every suite's wall time and its three slowest against the cap.
+`RUN_ALL_SUITE_CAP` seconds after it started (a whole number, base 10; default 3600 — the slowest suite on the slowest
+gate leg measured 1,858 s; CI sizes it per job, in `.github/workflows/ci.yml`) gets SIGTERM and FAILS the run gate,
+named. When a suite's main process has ended — by itself or by that TERM — whatever is still in its process group gets
+SIGTERM and, 5 s later, SIGKILL, and the run names the suite (`LEFT RUNNING`): no process left in the group outlives
+its suite. A process that left the group (its own `set -m`, `setsid`) is not stopped; under the strace job, one that
+holds strace past run_all's end is named and stopped by `tests/strace-hermetic.sh`. Each run prints every suite's wall
+time and its three slowest against the cap.
 
 ## Deliberately NOT migrated (and why — decided, not deferred)
 
