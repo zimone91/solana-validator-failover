@@ -7,8 +7,8 @@
 #      FAILS on bash 3.2; without this gate such a break silently skipped a whole suite there (v0.6.9
 #      B3: test_collision_detector.sh, 34/35 as 35/35).
 #   2. RUN gate — execute every suite; a non-zero exit fails the gate, and so does a suite still running at the
-#      PER-SUITE TIME CAP (RUN_ALL_SUITE_CAP, below): it is killed and named, so a hang is a red in an hour, not a job
-#      that runs to its timeout. Each suite runs behind the NET GUARD's failing,
+#      PER-SUITE TIME CAP (RUN_ALL_SUITE_CAP, below; an hour by default, CI sizes it per job): it is killed and named, so
+#      a hang is a red at the cap, not a job that runs to its timeout. Each suite runs behind the NET GUARD's failing,
 #      logging network-client stand-ins, first in PATH; stage (4) fails the gate when any suite reached one of them
 #      through PATH (named with its calls; the harness's own curl stand-in — the suites' RPC mock — logs only to its
 #      suite's banner, never here). Network clients reached through PATH are caught by this stage (4) on every leg; at
@@ -50,19 +50,36 @@ EXPECTED_SUITES=54
 # The PER-SUITE TIME CAP (6.3.1 fix round 8 — the delta panel 7's CIP-1: GitHub's CI=true froze two suites' simulated
 # clocks, and each would have held its job to the job's timeout, 6 h by default). Each suite runs in its own process group
 # (set -m around the launch) under a watchdog: a suite still running RUN_ALL_SUITE_CAP seconds after it started is KILLED
-# — its whole process group, SIGTERM and SIGKILL 5 s later — and FAILS this stage, named ("KILLED at the per-suite cap").
-# The default, 3600 s, is 2.4x the slowest suite measured on the slowest leg (test_own_view: 1,502 s on one docker vCPU,
-# bash 5.2) and 1.8x that suite under the strace job (the whole run under strace -f measured 1.3x the plain run); every
-# leg prints each suite's wall time and its three slowest against the cap. Override for a slower machine:
-# RUN_ALL_SUITE_CAP=<seconds>.
+# — its process group gets SIGTERM — and FAILS this stage, named ("KILLED at the per-suite cap"). Once a suite's main
+# process has ended, by itself or by that TERM, every process still in its group (a child that survived the TERM, a
+# background child a green suite left running) gets SIGTERM and, 5 s later, SIGKILL, and the run names the suite ("LEFT
+# RUNNING"); a process that left the group (its own set -m, setsid) is not stopped (the strace job names one that holds
+# strace past run_all's end). The cap is base 10, without a leading zero (0100 would be octal to bash arithmetic).
+# The default, 3600 s, covers every gate leg: the slowest suite on the slowest leg measured 1,858 s (test_own_view, bash
+# 5.2 with busybox awk on one docker vCPU; the 6.3.1 fix round 8 gate's legs: 1,722 and 1,858 s), 1.94x under it — and
+# ubuntu 24.04 with mawk 967 / 996 s, the same under strace -f 1,394 / 1,392 s, macOS bash 3.2 (test_elapsed_provider)
+# 1,036 / 1,176 s. CI sizes it per job from each runner's own model (.github/workflows/ci.yml: 3600 s Linux, 7200 s
+# macOS, 5400 s under strace). Every leg prints each suite's wall time and its three slowest against the cap. Override for
+# a slower machine: RUN_ALL_SUITE_CAP=<seconds>.
 RUN_ALL_SUITE_CAP=${RUN_ALL_SUITE_CAP:-3600}
-case "$RUN_ALL_SUITE_CAP" in ''|*[!0-9]*|0) echo "  RUN_ALL_SUITE_CAP must be a positive number of seconds (got '$RUN_ALL_SUITE_CAP')"; exit 2 ;; esac
+# base 10 only: a leading zero is refused (bash arithmetic would read 0100 as octal 64 s, and 0900 as no number at all)
+case "$RUN_ALL_SUITE_CAP" in ''|*[!0-9]*|0*) echo "  RUN_ALL_SUITE_CAP must be a whole number of seconds, base 10, without a leading zero (got '$RUN_ALL_SUITE_CAP')"; exit 2 ;; esac
 run_pass=0; run_fail=0; failed=""
 _suite_out=$(mktemp); _ra_times=$(mktemp); _ra_pid=""; _ra_wd=""
-_ra_abort() {   # run_all itself interrupted: the running suite is in its own process group — stop it too
-    [[ -n "$_ra_wd" ]] && kill "$_ra_wd" 2>/dev/null
-    [[ -n "$_ra_pid" ]] && kill -TERM -- "-$_ra_pid" 2>/dev/null
-    echo "  run_all interrupted ($1): the running suite's process group was stopped — NOT GREEN"
+_ra_reap() {    # _ra_reap <pgid> — every process still in that process group (the suite's: a child that survived the cap's
+                # TERM, a background child the suite left running) gets TERM, and KILL once 5 s have passed; rc 1 when any
+                # process was there to stop
+    local _n=0
+    kill -0 -- "-$1" 2>/dev/null || return 0
+    kill -TERM -- "-$1" 2>/dev/null
+    while (( _n < 5 )) && kill -0 -- "-$1" 2>/dev/null; do sleep 1; _n=$((_n + 1)); done
+    kill -KILL -- "-$1" 2>/dev/null
+    return 1
+}
+_ra_abort() {   # run_all itself interrupted: the running suite is in its own process group — stop it too (TERM, then KILL)
+    [[ -n "$_ra_wd" ]] && kill -- "-$_ra_wd" 2>/dev/null
+    [[ -n "$_ra_pid" ]] && _ra_reap "$_ra_pid"
+    echo "  run_all interrupted ($1): the running suite's process group was stopped (TERM, then KILL 5 s later) — NOT GREEN"
     exit 2
 }
 trap '_ra_abort INT' INT; trap '_ra_abort TERM' TERM; trap '_ra_abort HUP' HUP
@@ -73,8 +90,9 @@ trap '_ra_abort INT' INT; trap '_ra_abort TERM' TERM; trap '_ra_abort HUP' HUP
 # for the harness, whose own client stand-ins (first in a suite that sources it) write there too — its curl stand-in does
 # not: it answers rc 7 and is counted only in the suite's RESULTS banner (the suites' RPC mock, by design). So a child
 # that keeps a guard directory on its PATH — `env -i PATH="$PATH" …` included — still logs, to its own suite's log. Each
-# log is read right after its suite and AGAIN after the last suite (a child that outlived its suite and called later is
-# named with that suite); the stand-ins are removed only after that final read. A suite whose log is not empty FAILS
+# log is read right after its suite and AGAIN after the last suite (a child that outlived its suite — one that left the
+# suite's process group: what stays in it is stopped when the suite ends — and called later is named with that suite);
+# the stand-ins are removed only after that final read. A suite whose log is not empty FAILS
 # stage (4), named with its calls; a setup failure fails it with its own reason, named with the suite: no client list, a
 # stand-in or a log not written, or — checked after each suite and again at the final read — a suite's log, its stand-in
 # directory or one of its stand-ins GONE (a suite that deleted them; after that a client it ran went to the host's own).
@@ -86,8 +104,9 @@ trap '_ra_abort INT' INT; trap '_ra_abort TERM' TERM; trap '_ra_abort HUP' HUP
 # name them). The strace job (tests/strace-hermetic.sh; CI's strace-hermetic job, ubuntu-24.04) sees each of these that
 # opens a socket, whatever opened it; a real client reached past a rewritten stand-in is its REAL exec.
 # Each stand-in directory is written to HARNESS_STUB_DIRS_LOG when that is set (the strace job sets it): the job counts a
-# listed client's exec from a directory on that list as a stand-in's, from anywhere else outside the system directories
-# as REAL.
+# listed client's exec from a directory on that list as a stand-in's, from anywhere else as REAL — a listed directory
+# counting only under the run's own temp root (the job points TMPDIR there, so every mktemp lands under it; one listed
+# from anywhere else is red).
 _ra_net=$(mktemp -d)
 _ra_clients=$(sed -n 's/^HARNESS_NET_CLIENTS="\(.*\)"$/\1/p' lib/harness.sh)
 net_fail=0; netfailed=""; net_setup=""; _ra_tampered=""
@@ -141,7 +160,12 @@ for t in test_*.sh; do
     _ra_wd=$!
     set +m
     wait "$_ra_pid"; _suite_rc=$?
-    kill -- "-$_ra_wd" 2>/dev/null; wait "$_ra_wd" 2>/dev/null; _ra_wd=""; _ra_pid=""
+    kill -- "-$_ra_wd" 2>/dev/null; wait "$_ra_wd" 2>/dev/null; _ra_wd=""
+    # the suite's main process has ended (by itself, or by the cap's TERM): whatever it left in its process group is
+    # stopped now — TERM, KILL 5 s later — so no child outlives its suite there (under the strace job, a leftover would
+    # hold strace -f, and the step, open)
+    _ra_left=""; _ra_reap "$_ra_pid" || _ra_left=1
+    _ra_pid=""
     printf '%s %s\n' "$(( SECONDS - _ra_s0 ))" "$t" >> "$_ra_times"
     if [[ -f "$_ra_net/$t.killed" ]]; then
         run_fail=$((run_fail+1)); failed="$failed $t(KILLED-at-the-${RUN_ALL_SUITE_CAP}s-cap)"
@@ -173,6 +197,7 @@ for t in test_*.sh; do
         grep "❌" "$_suite_out" 2>/dev/null | head -3 | _diag_tag "offending" "$t"
         tail -5 "$_suite_out" 2>/dev/null | _diag_tag "tail" "$t"
     fi
+    [[ -z "$_ra_left" ]] || echo "      LEFT RUNNING: a process of the suite's process group outlived the suite — stopped (TERM, then KILL 5 s later) [$t]"
     _ra_g=$(_ra_gone "$t")
     [[ -z "$_ra_g" ]] || { net_setup="$net_setup [$t:$_ra_g — gone after the suite (it deleted them; a client it ran after that went to the host's own)]"; _ra_tampered="${_ra_tampered:-} $t"; }
     _ra_n=$(grep -c . "$_ra_log" 2>/dev/null); echo "${_ra_n:-0}" > "$_ra_net/$t.seen"
