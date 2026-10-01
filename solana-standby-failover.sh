@@ -4305,7 +4305,8 @@ _g2_register() {
     G2_VANTAGE_B="${G2_VANTAGE_B:-${TIER3_RPC:-}}"
     # the vantage distinctness tripwire (startup, armed): identical URLs or one shared host make
     # "present on BOTH vantages" a single witness wearing two names — G2 is then permanently
-    # cannot-determine for this run (fail toward not-taking; a CRITICAL page names the fix). The
+    # cannot-determine for this run (once the gate is wired, that fails toward not-taking; in this
+    # release no G2 answer conditions any take; a CRITICAL page names the fix). The
     # deeper CNAME/IP-level case cannot be seen from here — it belongs to the Block-6 panel and,
     # where it matters (a shared cache serving shared bytes), to the cross-vantage detector below.
     if [[ -z "$G2_VANTAGE_A" || -z "$G2_VANTAGE_B" ]]; then

@@ -1413,7 +1413,7 @@ echo ""; echo "─── (11) D0: the own-bank veto, the timing race, the interm
 # branch: H1). HOSTILE=lv0 the tiers serve the holder's lastVote as the JSON STRING "0009999";
 # HOSTILE=headwrap the spare's processed getSlot answers 2^64 + the true head (M4).
 # 6.3 FIX ROUND 2 (the delta panel's differential knobs, ported verbatim from its driver so the round's
-# reds run here): CI/TI/TCD = CHECK_INTERVAL / TURBO_INTERVAL / TAKEOVER_COOLDOWN (defaults 5 / 1 / 120);
+# reds run here): CKI/TI/TCD = CHECK_INTERVAL / TURBO_INTERVAL / TAKEOVER_COOLDOWN (defaults 5 / 1 / 120);
 # VOTES=a:b[,c:d…] the holder votes in each window [a, b] (b < 0: forever) instead of RESUME/STOP;
 # T2LAT / T3LAT_ALL / LOCLAT = every read of that source answers that many s late within [LATFROM,
 # LATTO) (>= the read's -m bound: a timeout at the bound); T2BADFROM/T2BADTO TIER2 refuses instantly in
@@ -1457,7 +1457,7 @@ $region
         [[ -n "${LHMB:-}" ]] && LOCAL_HEALTH_MAX_BEHIND=$LHMB
         SOLANA_PATH="$W"; LEDGER_PATH=/x; VALIDATOR_TYPE=agave; SETIDENTITY_TIMEOUT=15
         STAKED_KEYPAIR="$W/staked.json"; printf '[1]' > "$STAKED_KEYPAIR"; UNSTAKED_KEYPAIR="$W/unstaked.json"; printf '[2]' > "$UNSTAKED_KEYPAIR"
-        CHECK_INTERVAL=${CI:-5}; TURBO_INTERVAL=${TI:-1}; _current_interval=${CI:-5}; HEARTBEAT_INTERVAL=999999; _last_heartbeat=$T0
+        CHECK_INTERVAL=${CKI:-5}; TURBO_INTERVAL=${TI:-1}; _current_interval=${CKI:-5}; HEARTBEAT_INTERVAL=999999; _last_heartbeat=$T0
         ALERT_THROTTLE=600; TAKEOVER_STARVATION_ALERT_SECS=${STARVE:-0}
         [[ "${HOLDCOOL:-0}" == "1" ]] && { LAST_TAKEOVER_TIME=$T0; TAKEOVER_COOLDOWN=999999; }
         # the FILE-BACKED mono clock (installed AFTER load_seam: its reshim re-applies the _SIM_NOW shims)
@@ -2348,19 +2348,34 @@ case_m8() {
     printf '%s\n' "$(mk_token "${PG:-7}" "${PW:-30}" "${PB:-60}" real holder1)" > "$PROOF_STATE_DIR/pairing-token"
     WARNCT=0; LASTWARN=""; INFOCT=0; LASTINFO=""
     _proof_status_line
-    echo "reg0=$reg0|reg=$_elapsed_registered|w=$LASTWARN|wn=$WARNCT|in=$INFOCT"
+    echo "reg0=$reg0|reg=$_elapsed_registered|w=$LASTWARN|wn=$WARNCT|in=$INFOCT|labels=${_proof_provider_labels:-}"
 }
 r1=$(TOK=none drive_ep "$STANDBY" case_m8 | tail -1)
 r2=$(TOK=none PG=9 PW=10 PB=20 drive_ep "$STANDBY" case_m8 | tail -1)
+r2g=$(TOK=none PG=9 PW=10 PB=20 G2PK=UPK1 drive_ep "$STANDBY" case_m8 | tail -1)   # the same with G2 configured (verified-demote registers at startup)
 r3=$(TOK=ok drive_ep "$STANDBY" case_m8 | tail -1)
+# K4's negatives on the would-not-register warn (a K4 message; 6.3.1 fix round 8 — the delta panel 7's
+# CHK7-K4-TESTS-PARTIAL-REGRESSION: the row matched a prefix and a suffix, so a claim inserted between them passed):
+# no "disabled" outside the scoped "from the release that wires the gate, an invalidly paired spare's silence-based
+# take is disabled" (the present-tense "silence-based take disabled", "stays DISABLED"), no "verified-demote ONLY", no
+# "proof providers" — and, with G2 configured (verified-demote registered), no "verified-demote" at all
+m8_neg() {   # m8_neg <warn> [g2] — prints the violated negatives (test_proof_gate's k4_neg)
+    local t="$1" v=""
+    printf '%s\n' "$t" | sed -E "s/from the release that wires the gate, an invalidly paired spare's silence-based take is disabled//g" | grep -qi 'disabled' && v="$v tense"
+    printf '%s\n' "$t" | grep -qi 'verified-demote only' && v="$v vdonly"
+    printf '%s\n' "$t" | grep -qi 'proof providers' && v="$v providers"
+    [[ -n "${2:-}" ]] && printf '%s\n' "$t" | grep -qi 'verified-demote' && v="$v g2-named"
+    printf '%s' "$v"
+}
 if [[ "$(field "$r1" reg0)" == "0" && "$(field "$r1" reg)" == "0" && "$(field "$r1" wn)" == "1" && "$(field "$r1" in)" == "0" ]] \
    && [[ "$(field "$r1" w)" == "[proof-gate] paired (token gen=7), but watchdog-elapsed is NOT registered — restart the monitor to register (registration runs at startup only; proof providers registered now: NONE)" ]] \
    && [[ "$(field "$r2" wn)" == "1" && "$(field "$r2" w)" == *"paired token present (gen=9), but watchdog-elapsed is NOT registered and would not register: "*"SHORTER than the un-armed timer path"* ]] \
-   && [[ "$(field "$r2" w)" == *"— this release has no relinquish-proof gate (takes follow v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold); re-arm the holder and re-pair this spare: from the release that wires the gate, an invalidly paired spare's silence-based take is disabled" ]] \
+   && [[ "$(field "$r2" w)" == *"— this release has no relinquish-proof gate (takes follow v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold); re-arm the holder and re-pair this spare: from the release that wires the gate, an invalidly paired spare's silence-based take is disabled" && -z "$(m8_neg "$(field "$r2" w)")" ]] \
+   && [[ "$(field "$r2g" wn)" == "1" && " $(field "$r2g" labels) " == *" verified-demote "* && "$(field "$r2g" w)" == *"would not register: "*"SHORTER than the un-armed timer path"* && -z "$(m8_neg "$(field "$r2g" w)" g2)" ]] \
    && [[ "$(field "$r3" reg)" == "1" && "$(field "$r3" wn)" == "0" && "$(field "$r3" in)" == "0" ]]; then
-    ok "(12g) M8 — an armed spare started UNPAIRED and paired while its monitor runs (no lazy registration in this build): the heartbeat status line WARNS 'paired (token gen=7), but watchdog-elapsed is NOT registered — restart the monitor to register (… registered now: NONE)'; a planted short-floor token is named instead ('would not register: … SHORTER than the un-armed timer path' — and that this release has no relinquish-proof gate: v0.6.x take semantics, the silence-based take disabled only from the release that wires it); a spare registered at startup stays silent. Pre-fix: the unpaired line went quiet and NOTHING replaced it"
+    ok "(12g) M8 — an armed spare started UNPAIRED and paired while its monitor runs (no lazy registration in this build): the heartbeat status line WARNS 'paired (token gen=7), but watchdog-elapsed is NOT registered — restart the monitor to register (… registered now: NONE)'; a planted short-floor token is named instead ('would not register: … SHORTER than the un-armed timer path' — and that this release has no relinquish-proof gate: v0.6.x take semantics, an invalidly paired spare's silence-based take disabled from the release that wires the gate), that warn claiming no take disabled now, no 'verified-demote ONLY', no 'proof providers', and with G2 configured (registered: $(field "$r2g" labels)) naming no provider; a spare registered at startup stays silent. Pre-fix: the unpaired line went quiet and NOTHING replaced it"
 else
-    bad "(12g) late-pair=$r1 :: late-lowfloor=$r2 :: registered=$r3"
+    bad "(12g) late-pair=$r1 :: late-lowfloor=$r2 :: late-lowfloor-g2=$r2g :: registered=$r3"
 fi
 
 # (12h) N2 (CC-6c) — what [elapsed-blind] means, measured: "no STAMPED blindness since the start". Blindness
@@ -2387,15 +2402,15 @@ fi
 # ── (13) 6.3 fix round 2: the round's reds, re-run green — and its documented residual ─────────────────
 echo ""; echo "─── (13) fix round 2: R1 observed_at (loop) / R2 own-bank MDS reference first / R3 head gap (loop) / R7 span floor / R8 cadence ───"
 # (13a) R1 (REG-A) through the REAL loop under the 6.4-placement emulation. The shipped-defaults degraded
-# world (GV=true MDS=0 CI=5; TIER2 down, TIER3 answering 5 s late; the holder's one vote at t146) and the
+# world (GV=true MDS=0 CKI=5; TIER2 down, TIER3 answering 5 s late; the holder's one vote at t146) and the
 # W1 world (TIER2 refusing to t160 then 10 s late, the first set-identity failing, the holder resuming at
 # t320). Pre-fix red (f22d492): a proof-gated take at t441 in the first; t357 on a holder voting since
 # t320 (hvafter=1) in the second. de21927 and the M3-only-revert control: no take / vetoed at t342.
 # 6.3.1: the degraded world's mint is measured with [elapsed-rate] neutered (as in (12a)); the W1 world mints
 # nothing that reaches its take either way.
-r13a1=$(WSCRIPT="$WORK/n-rate.sh" ARMED=1 GATE=1 PETS=0 MDS=0 CI=5 GV=true VOTES=146:146 T2DOWN=1 T3LAT_ALL=5 HORIZON=700 world | tail -1)
-r13a2=$(ARMED=1 GATE=1 PETS=0 MDS=0 CI=5 T2BADFROM=0 T2BADTO=160 T2LAT=10 LATFROM=160 SIFAIL=1 RESUME=320 HORIZON=500 world | tail -1)
-r13a1s=$(SLOT_NUM=37 SLOT_DEN=10 ARMED=1 GATE=1 PETS=0 MDS=0 CI=5 GV=true VOTES=146:146 T2DOWN=1 T3LAT_ALL=5 HORIZON=700 world | tail -1)   # the SHIPPED twin (T9), 3.7 slots/s
+r13a1=$(WSCRIPT="$WORK/n-rate.sh" ARMED=1 GATE=1 PETS=0 MDS=0 CKI=5 GV=true VOTES=146:146 T2DOWN=1 T3LAT_ALL=5 HORIZON=700 world | tail -1)
+r13a2=$(ARMED=1 GATE=1 PETS=0 MDS=0 CKI=5 T2BADFROM=0 T2BADTO=160 T2LAT=10 LATFROM=160 SIFAIL=1 RESUME=320 HORIZON=500 world | tail -1)
+r13a1s=$(SLOT_NUM=37 SLOT_DEN=10 ARMED=1 GATE=1 PETS=0 MDS=0 CKI=5 GV=true VOTES=146:146 T2DOWN=1 T3LAT_ALL=5 HORIZON=700 world | tail -1)   # the SHIPPED twin (T9), 3.7 slots/s
 if [[ "$(field "$r13a1" mutation)" == "none" && "$(field "$r13a1" emint)" == "381" && "$(field "$r13a1s" emint)" == "212" && "$(field "$r13a1s" mutation)" == "none" ]] \
    && [[ "$(field "$r13a2" veto)" == "342" && "$(field "$r13a2" mutation)" == "none" ]]; then
     ok "(13a) R1 on the REAL loop: the shipped-defaults degraded world ([elapsed-rate] neutered) mints at t381 and the gate never accepts it — no take through t700 (the SHIPPED provider at a certified 3.7 slots/s: mints at t212, never accepted, no take); the W1 world vetoes at t342 — no take on the holder that resumed at t320. Both equal the 6.3 build as first reviewed and the M3-only-revert control take-for-take. Pre-fix (M3): a proof-gated take at t441; a take at t357 on a holder voting 37 s"
@@ -2471,7 +2486,7 @@ else
     bad "(13c) lag20=$r13c1 :: lag0=$r13c2"
 fi
 # (13e) R7 (REG-B): fix round 1's M2 (post-read silence starts) CAN make the span floor bind where it did
-# not — only ever later. The binding world pinned as a differential: GV=true MDS=0 CI=5, LOCAL reads 2 s,
+# not — only ever later. The binding world pinned as a differential: GV=true MDS=0 CKI=5, LOCAL reads 2 s,
 # TIER2 9 s. The 6.3 build as first reviewed: MUTATION at t167 with zero span-floor holds. 6.3.1: every LOCAL read here answers at
 # 2 s — the own-view veto's curl -m 2 bound — so the veto read times out: BLIND, no take at all (the named
 # availability cost of the bound: a spare whose own node needs >= 2 s for a loopback read cannot testify).
@@ -2486,30 +2501,30 @@ fi
 # build and on fix round 1: BLIND at t206, fix round 1 t196; one hold at TIER2 1-4 s, two at 0 s); at 1 s LOCAL
 # reads the take lands at t168 (fix round 1: t169 — the longer probe cycle moves the 5 s attempt cadence so the
 # take attempt starts 2 s earlier; a dead holder, the cadence phase of (13f)).
-r13e=$(GV=true MDS=0 CI=5 LOCLAT=2 T2LAT=9 HORIZON=260 world | tail -1)
-r13e4=$(GV=true MDS=0 CI=5 LOCLAT=2 T2LAT=4 HORIZON=320 world | tail -1)
-r13e1=$(GV=true MDS=0 CI=5 LOCLAT=1 T2LAT=9 HORIZON=260 world | tail -1)
+r13e=$(GV=true MDS=0 CKI=5 LOCLAT=2 T2LAT=9 HORIZON=260 world | tail -1)
+r13e4=$(GV=true MDS=0 CKI=5 LOCLAT=2 T2LAT=4 HORIZON=320 world | tail -1)
+r13e1=$(GV=true MDS=0 CKI=5 LOCLAT=1 T2LAT=9 HORIZON=260 world | tail -1)
 if [[ "$(field "$r13e" mutation)" == "none" && "$(field "$r13e" floor_holds)" == "0" && "$(field "$r13e" ov_veto)" == "201:blind" ]] \
    && [[ "$(field "$r13e4" mutation)" == "none" && "$(field "$r13e4" floor_holds)" == "1" && "$(field "$r13e4" ov_veto)" == "206:blind" ]] \
    && [[ "$(field "$r13e1" mutation)" == "168" && "$(field "$r13e1" floor_holds)" == "0" ]]; then
-    ok "(13e) R7 — M2 binds the observation-span floor where the 6.3 build as first reviewed did not (GV=true MDS=0 CI=5, LOCAL reads 2 s, TIER2 9 s: that build t167 with zero holds; the 6.3 build: one hold, the take at t197). Since 6.3.1 the take never lands at 2 s LOCAL reads: the own-view veto's LOCAL read times out at its 2 s bound → BLIND (availability — a LOCAL answering in 2 s is at the bound). The per-read own-head samples time out there too and re-phase it: TIER2 9 s → zero holds, BLIND at t201 (fix round 1: t193; before it: one hold, t217); the floor's binding re-witnessed at TIER2 4 s → one hold, BLIND at t206 (fix round 1: t196; at TIER2 6 s fix round 2 holds no more: t189, zero holds); at 1 s LOCAL reads the take lands at t168 (fix round 1: t169; before it: t165 — the cadence phase). Later, never sooner"
+    ok "(13e) R7 — M2 binds the observation-span floor where the 6.3 build as first reviewed did not (GV=true MDS=0 CKI=5, LOCAL reads 2 s, TIER2 9 s: that build t167 with zero holds; the 6.3 build: one hold, the take at t197). Since 6.3.1 the take never lands at 2 s LOCAL reads: the own-view veto's LOCAL read times out at its 2 s bound → BLIND (availability — a LOCAL answering in 2 s is at the bound). The per-read own-head samples time out there too and re-phase it: TIER2 9 s → zero holds, BLIND at t201 (fix round 1: t193; before it: one hold, t217); the floor's binding re-witnessed at TIER2 4 s → one hold, BLIND at t206 (fix round 1: t196; at TIER2 6 s fix round 2 holds no more: t189, zero holds); at 1 s LOCAL reads the take lands at t168 (fix round 1: t169; before it: t165 — the cadence phase). Later, never sooner"
 else
     bad "(13e) t2lat9=$r13e :: t2lat4=$r13e4 :: loclat1=$r13e1"
 fi
 # (13f) R8 (REG-C) — DOCUMENTED RESIDUAL, not a defect of this round: the episode window CLOSES on CYCLE
 # COUNT (7-of-10, 'mostly clear') while the own bank's visibility of a holder vote is TIME, so any
 # cadence change (pets that cost time, CHECK_INTERVAL, read latency) re-phases vetoes and closes BOTH
-# WAYS — de21927 included. The world: MDS=0 CI=5 GV=false, the holder's one vote at t141, TIER2 10 s late
+# WAYS — de21927 included. The world: MDS=0 CKI=5 GV=false, the holder's one vote at t141, TIER2 10 s late
 # during t73–t118, armed, the shipped (un-gated) path. FLIPS WHEN THE CLOSE RULE BECOMES TIME-BASED
 # (a reviewed 6.4+ change; not in this round).
-r8p0=$(ARMED=1 GATE=0 PETS=0 MDS=0 CI=5 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
-r8p1=$(ARMED=1 GATE=0 PETS=1 MDS=0 CI=5 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
-r8p2=$(ARMED=1 GATE=0 PETS=2 MDS=0 CI=5 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
-r8c4=$(ARMED=1 GATE=0 PETS=0 MDS=0 CI=4 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
-r8c6=$(ARMED=1 GATE=0 PETS=0 MDS=0 CI=6 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
+r8p0=$(ARMED=1 GATE=0 PETS=0 MDS=0 CKI=5 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
+r8p1=$(ARMED=1 GATE=0 PETS=1 MDS=0 CKI=5 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
+r8p2=$(ARMED=1 GATE=0 PETS=2 MDS=0 CKI=5 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
+r8c4=$(ARMED=1 GATE=0 PETS=0 MDS=0 CKI=4 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
+r8c6=$(ARMED=1 GATE=0 PETS=0 MDS=0 CKI=6 GV=false VOTES=141:141 T2LAT=10 LATFROM=73 LATTO=118 HORIZON=450 world | tail -1)
 if [[ "$(field "$r8p0" mutation)" == "125" && "$(field "$r8p1" mutation)" == "271" && "$(field "$r8p2" mutation)" == "274" ]] \
    && [[ "$(field "$r8c4" mutation)" == "138" && "$(field "$r8c6" mutation)" == "126" ]]; then
-    ok "(13f) R8 DOCUMENTED RESIDUAL (cadence, both ways): the same world takes at t125 with free pets, t271 with 1 s pets and t274 with 2 s pets (fix round 1: t125 / t270 / t272 — fix round 2's take-cycle samples, each with its pet, re-phased it; fix round 3's restored one sequential re-check leaves t271 / t274; 6.3.1 before fix round 1: t125 / t272 / t268 — fix round 1's per-read take-cycle samples and their pets re-phased it; the 6.3 build: t125 / t254 / t218 — 6.3.1's per-cycle own-head sample and its pet re-phased it; the 6.3 build as first reviewed: t125 / t152 / t284); CI 4/5/6 with free pets → t138 / t125 / t126 on EVERY tree. The window closes on cycle count, the own bank sees a vote in time — flips when the close rule becomes time-based"
+    ok "(13f) R8 DOCUMENTED RESIDUAL (cadence, both ways): the same world takes at t125 with free pets, t271 with 1 s pets and t274 with 2 s pets (fix round 1: t125 / t270 / t272 — fix round 2's take-cycle samples, each with its pet, re-phased it; fix round 3's restored one sequential re-check leaves t271 / t274; 6.3.1 before fix round 1: t125 / t272 / t268 — fix round 1's per-read take-cycle samples and their pets re-phased it; the 6.3 build: t125 / t254 / t218 — 6.3.1's per-cycle own-head sample and its pet re-phased it; the 6.3 build as first reviewed: t125 / t152 / t284); CKI 4/5/6 with free pets → t138 / t125 / t126 on EVERY tree. The window closes on cycle count, the own bank sees a vote in time — flips when the close rule becomes time-based"
 else
     bad "(13f) pets0=$r8p0 :: pets1=$r8p1 :: pets2=$r8p2 :: ci4=$r8c4 :: ci6=$r8c6"
 fi

@@ -874,7 +874,8 @@ WITNESS_FASTPATH_FIRST_SPARE=${CFG_WITNESS_FASTPATH_FIRST_SPARE}
 # --- v0.7 (Block 6.2): G2 verified-demote proof vantages (ARMED spares only; inert otherwise) ---
 # Default A=TIER2_RPC, B=TIER3_RPC (already required distinct). Uncomment ONLY to pin different
 # bank-bearing RPC providers in DISTINCT failure domains; identical/same-host values page CRITICAL
-# and leave G2 cannot-determine for the run (fail toward NOT-taking). BOTH vantages must support
+# and leave G2 cannot-determine for the run (no G2 answer conditions a take in this release; once the
+# gate is wired, verified-demote cannot prove here). BOTH vantages must support
 # JSON-RPC batching ([getSlot, getClusterNodes] in one POST) and must not resolve to the same
 # address — \`failover arm\` probes both and refuses with REFUSE[P6-batch] / REFUSE[P6-vantage].
 # RECOMMENDED: point at least ONE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN (a different

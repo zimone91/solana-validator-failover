@@ -528,7 +528,7 @@ startup banner prints the live fast-path state (`ARMED` / `DISABLED (fail-closed
 | Knob | Default | Meaning |
 |---|---|---|
 | `G2_VANTAGE_A` | `TIER2_RPC` | First pinned vantage for the verified-demote (G2) proof provider on an **armed** spare: the holder's unstaked identity must be observed at the staked identity's exact endpoint on **both** vantages at T1 and still be there ≥60 s later. Any bank-bearing RPC node works. **Recommended override: a third endpoint in a separate failure domain** — see the note below. |
-| `G2_VANTAGE_B` | `TIER3_RPC` | Second pinned vantage — **must be a distinct provider in a distinct failure domain**. Identical or same-host values page CRITICAL at startup and leave G2 *cannot-determine* for the whole run (fail toward not-taking). |
+| `G2_VANTAGE_B` | `TIER3_RPC` | Second pinned vantage — **must be a distinct provider in a distinct failure domain**. Identical or same-host values page CRITICAL at startup and leave G2 *cannot-determine* for the whole run: in this release no G2 answer conditions any take; from the release that wires the gate, verified-demote cannot prove on that host. |
 
 **Recommended: point at least one vantage at a THIRD endpoint in a separate failure domain.** On
 the defaults, G2's vantages *are* `TIER2_RPC`/`TIER3_RPC` — the same two endpoints every
@@ -711,7 +711,8 @@ timeline is identical to v0.6.6 (~70s).
 > `⚠️ TAKEOVER STARVATION: …` — repair that `TIER2`, or while it is broken leave `TIER2_RPC` empty
 > (the witness fast path, which needs two tiers, is then off; on an armed spare with `PRIMARY_UNSTAKED_PUBKEY`
 > set G2's vantage A defaults to `TIER2_RPC`, so the daemon pages CRITICAL "G2 VANTAGES NOT DISTINCT" at every
-> start — verified-demote off for the run; a paired spare keeps watchdog-elapsed — and `failover arm`'s P6 warns, unless
+> start — verified-demote cannot prove for the run once the gate is wired, and conditions no take in this release — and
+> `failover arm`'s P6 warns, unless
 > `G2_VANTAGE_A` names another provider), or use a `TIER3` that answers the full
 > `getVoteAccounts` well under ~5 s (about 3 s when every local read takes 1 s); a `TIER2` that refuses at
 > once does not starve the take. The per-class measurement of the whole

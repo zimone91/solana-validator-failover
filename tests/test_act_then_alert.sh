@@ -173,6 +173,7 @@ esac
 exit 0
 EOS
   chmod +x "$1/curl" "$1/agave-validator"
+  harness_stub_dir "$1"   # its curl: a stub of a listed client (the strace job counts its execs as a stub's)
 }
 
 # ── STANDBY sim: REAL attempt_takeover → REAL take_staked_identity over a timeline ─────────────
@@ -372,7 +373,7 @@ sim_pr() {
 # behind the chain (their every view at t − TLAG); LOCAL is never behind. CONTVOTE=1 (fix round 3, U2): the staked
 # account is voted at every slot — the failed-over state, the STANDBY holding the identity. LFREEZE=<t> (fix round 4, RM-2): this node's OWN
 # view (LOCAL_RPC) frozen at chain time t. DISPATCH=<mode> (fix round 4): each cycle runs the main loop's REAL RECOVERY_MODE dispatch
-# with that mode instead of attempt_safe_recovery. The loop: attempt_safe_recovery every CI s (default 3);
+# with that mode instead of attempt_safe_recovery. The loop: attempt_safe_recovery every CKI s (default 3);
 # every sleep — the recovery ladder's, switch_to_staked's — advances the clock; LAST_SWITCH_TIME = T0.
 # Events: PASS-START t= (a recovery-eligible pass), TAKE-ENTER t=, VETO <kind> t=, CLEAR age= (the veto's
 # baseline age), MUTATE t=, PAGE <kind> t= (every page, through any sender — fix round 3, U2: veto | blocked (ACTIVELY VOTING
@@ -459,7 +460,7 @@ $_CHAIN_DISPATCH
   while [[ $(( _SIM_NOW - T0 )) -le ${HZ:-400} ]]; do
       if [[ -n "${DISPATCH:-}" ]]; then _chain_dispatch >/dev/null 2>&1; else attempt_safe_recovery >/dev/null 2>&1; fi
       grep -q '^MUTATE' "$EVT" && break
-      _SIM_NOW=$(( _SIM_NOW + ${CI:-3} )); export _SIM_NOW
+      _SIM_NOW=$(( _SIM_NOW + ${CKI:-3} )); export _SIM_NOW
   done
   printf 'EVENTS=%s\n' "$(tr '\n' ';' < "$EVT")"
   )

@@ -381,6 +381,7 @@ hd_render() {   # $1 = deploy script, $2 = its env path in the opener → "err=<
   for c in date failover solana agave-validator fdctl systemctl journalctl curl jq cat sed awk grep hostname id whoami uname ls rm env sh bash true false echo printf sleep kill touch mkdir chmod chown tee head tail tr cut sort uniq wc xargs find ssh scp getent nproc timeout install cp mv ln readlink dirname basename stat; do
     ln -s .rec "$d/canary/$c"
   done
+  harness_stub_dir "$d/canary"   # canaries named curl, ssh, getent: stubs of listed clients (the strace job counts their execs as stubs')
   s=$(grep -n "^cat > ${envp} << ENVEOF\$" "$f" | cut -d: -f1)
   e=""; [[ -n "$s" ]] && e=$(awk -v s="$s" 'NR > s && /^ENVEOF$/ { print NR; exit }' "$f")
   if [[ -z "$s" || -z "$e" ]]; then echo "err=(no ENVEOF heredoc for ${envp})|rec=|out="; rm -rf "$d"; return; fi

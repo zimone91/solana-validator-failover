@@ -225,20 +225,26 @@ fi
 # its own level (not in a substitution or a subshell), with the STRUCTURE bash runs them in (the parse's K records) — and
 # requires: `_fresh_proof_recheck || return 1`, then as the very next statement `_own_view_veto || return 1`, each a
 # statement at the take function's structure depth 0 (not inside an if, a case, a loop, a { } group or a subshell — a
-# guard there runs on some paths only) whose `return 1` is not followed by & | or |& (a background or pipeline return
-# returns nothing); then the DRY_RUN branch's condition [[ "$DRY_RUN" == "true" ]], then the first set-identity command;
-# and every command in the daemon whose effective command word is _own_view_veto (any function, level or spelling bash's
-# print keeps — `if !`, `$( )`, a prefix assignment) is that one call. Rows ob1–ob5 (the delta panel 6's): the two guards
-# inside a DRY_RUN-only if, an && { } group, a case arm, a while loop, and the veto's `|| return 1 &` — each red.
+# guard there runs on some paths only), each guard's command the first of its statement (no && || | or |& before it:
+# `true || _fresh_proof_recheck || return 1` never runs the re-check), neither guard negated by a `!` (the lexer's C
+# record carries the negation flag: `! _own_view_veto || return 1` takes exactly when the veto refuses), and whose
+# `return 1` is not followed by & | or |& (a background or pipeline return returns nothing); then the DRY_RUN branch's
+# condition [[ "$DRY_RUN" == "true" ]], then the first set-identity command; and every command in the daemon whose
+# effective command word is _own_view_veto (any function, level or spelling bash's print keeps — `if !`, `$( )`, a prefix
+# assignment) is that one call. Rows ob1–ob5 (the delta panel 6's): the two guards inside a DRY_RUN-only if, an && { }
+# group, a case arm, a while loop, and the veto's `|| return 1 &`; rows obn1–obn2 (the delta panel 7's
+# CHK7-0B-NEGATION): `! _own_view_veto || return 1` and `! _fresh_proof_recheck || return 1`; rows obl1–obl2 (fix round
+# 8's, found closing it): `true || _fresh_proof_recheck || return 1` and `: | _fresh_proof_recheck || return 1` — each
+# red.
 B0_AWK="$BP_AWK_LIB"'
 $1 == "K" && $2 == fn && $5 == 1 && $6 == 0 { if ($7 == "if" || $7 == "loop" || $7 == "case" || $7 == "grp") dp++; else if ($7 == "fi" || $7 == "done" || $7 == "esac" || $7 == "grp-end") dp--; next }
 $1 == "C" { n = split($6, W, "\034"); split($7, X, ":"); k = bpcmd(n, W); q = k ? bpq(W[k]) : ""
   if (q == "_own_view_veto") nv++
   if ($2 != fn || X[1] != 1 || X[2] != 0) next
-  s++; Q[s] = q; P[s] = X[3]; O[s] = X[4]; A[s] = (k && k < n) ? bpq(W[k + 1]) : ""; J[s] = ""; si[s] = 0; LN[s] = $4; DP[s] = dp + 0   # + 0: busybox awk copies an unset dp as the STRING "", which is not == 0
+  s++; Q[s] = q; P[s] = X[3]; O[s] = X[4]; NG[s] = X[5]; A[s] = (k && k < n) ? bpq(W[k + 1]) : ""; J[s] = ""; si[s] = 0; LN[s] = $4; DP[s] = dp + 0   # + 0: busybox awk copies an unset dp as the STRING "", which is not == 0
   for (j = 1; j <= n; j++) { J[s] = J[s] (j > 1 ? " " : "") bpq(W[j]); if (bpq(W[j]) == "set-identity") si[s] = 1 } }
 END { for (i = 1; i <= s; i++) {
-        g = (Q[i + 1] == "return" && P[i + 1] == "||" && A[i + 1] == "1" && O[i] == "||" && DP[i] == 0 && DP[i + 1] == 0 && O[i + 1] != "&" && O[i + 1] != "|" && O[i + 1] != "|&")
+        g = (Q[i + 1] == "return" && P[i + 1] == "||" && A[i + 1] == "1" && O[i] == "||" && P[i] == "" && NG[i] == "" && DP[i] == 0 && DP[i + 1] == 0 && O[i + 1] != "&" && O[i + 1] != "|" && O[i + 1] != "|&")
         if (!r && Q[i] == "_fresh_proof_recheck" && g) r = i
         if (!v && Q[i] == "_own_view_veto" && g) v = i
         if (!d && J[i] == "[[ $DRY_RUN == true ]]") d = i
@@ -256,10 +262,14 @@ for pair in "$PRIMARY:switch_to_staked" "$STANDBY:take_staked_identity"; do
 done
 # the rows ob1–ob5 (the delta panel 6's CEN6-0B-STRUCTURE — red first: each GREEN on fix round 6's (0b), which read the take
 # function's statements as a flat list; (3c-seg) was red on each): the standby's re-check and veto inside a DRY_RUN-only if
-# (ob1), an && { } group (ob2), a case arm (ob4), a while loop (ob5), and the veto's `|| return 1 &` (ob3)
-ob_mut() {   # ob_mut <name> <line before the re-check> <line after the veto> [<the veto's line replaced>] — awk -v: \n separates lines
-    awk -v b="$2" -v a="$3" -v r="${4:-}" '$0 == "take_staked_identity() {" { inf = 1 }
-        inf && !d1 && $0 == "    _fresh_proof_recheck || return 1" { if (b != "") print b; print; d1 = 1; next }
+# (ob1), an && { } group (ob2), a case arm (ob4), a while loop (ob5), and the veto's `|| return 1 &` (ob3); the rows
+# obn1–obn2 (the delta panel 7's CHK7-0B-NEGATION — red first: each GREEN on fix round 7's (0b), whose lexer dropped the
+# `!`): the veto negated (obn1), the re-check negated (obn2); the rows obl1–obl2 (fix round 8's — red first: each GREEN on
+# fix round 7's (0b), which read a guard's command without the operator before it): the re-check behind `true ||` (obl1:
+# it never runs) and as a pipeline's last command (obl2)
+ob_mut() {   # ob_mut <name> <line before the re-check> <line after the veto> [<the veto's line replaced>] [<the re-check's line replaced>] — awk -v: \n separates lines
+    awk -v b="$2" -v a="$3" -v r="${4:-}" -v rc="${5:-}" '$0 == "take_staked_identity() {" { inf = 1 }
+        inf && !d1 && $0 == "    _fresh_proof_recheck || return 1" { if (b != "") print b; print (rc != "" ? rc : $0); d1 = 1; next }
         inf && d1 && !d2 && $0 == "    _own_view_veto || return 1" { print (r != "" ? r : $0); if (a != "") print a; d2 = 1; next }
         { print } END { exit((d1 && d2) ? 0 : 1) }' "$STANDBY" > "$WORK/s-0b-$1.sh"
 }
@@ -268,14 +278,18 @@ ob_mut ob2 '    [[ -z "${FAILOVER_SKIP_GUARDS:-}" ]] && {' '    }'
 ob_mut ob3 '' '' '    _own_view_veto || return 1 &'
 ob_mut ob4 '    case "$DRY_RUN" in\n    false)' '    ;;\n    esac'
 ob_mut ob5 '    while true; do' '    break; done'
+ob_mut obn1 '' '' '    ! _own_view_veto || return 1'
+ob_mut obn2 '' '' '' '    ! _fresh_proof_recheck || return 1'
+ob_mut obl1 '' '' '' '    true || _fresh_proof_recheck || return 1'
+ob_mut obl2 '' '' '' '    : | _fresh_proof_recheck || return 1'
 ob_rows=""; ob_ok=1
-for _o in ob1 ob2 ob3 ob4 ob5; do
+for _o in ob1 ob2 ob3 ob4 ob5 obn1 obn2 obl1 obl2; do
     [[ -s "$WORK/s-0b-$_o.sh" ]] && ! cmp -s "$STANDBY" "$WORK/s-0b-$_o.sh" || { ob_ok=0; ob_rows="$ob_rows $_o:NOT-BUILT"; continue; }
     read -r rl vl dl sl vc rp vp dp sp_ < <(awk -F'\t' -v fn=take_staked_identity "$B0_AWK" "$(ovp "$WORK/s-0b-$_o.sh")/lex")
     if [[ -n "$rl" && $rl -gt 0 && $vl -eq $((rl + 2)) && $dl -gt $vl && $sl -gt $dl && "$vc" == "1" ]]; then ob_ok=0; ob_rows="$ob_rows $_o:GREEN"; else ob_rows="$ob_rows $_o:red(recheck=$rl,veto=$vl)"; fi
 done
 [[ $ob_ok -eq 1 ]] || { g_ok=0; bad "(0b) a structure row is not red:$ob_rows"; }
-[[ $g_ok -eq 1 ]] && ok "(0b) on bash's own parse, on EVERY take path the veto's '|| return 1' is the statement right after the fresh re-check's, each a statement at the take function's structure depth 0 (not inside an if, a case, a loop, a { } group or a subshell) whose return is not followed by & | or |&, and both precede the DRY_RUN branch (DRY_RUN mirrors the live decision) and the first set-identity; every command of either daemon whose effective command word is _own_view_veto is that one call (primary 1, standby 1):$g_rows; rows ob1–ob5 (the guards in a DRY_RUN-only if, an && { } group, a case arm, a while loop, a backgrounded return) each red:$ob_rows"
+[[ $g_ok -eq 1 ]] && ok "(0b) on bash's own parse, on EVERY take path the veto's '|| return 1' is the statement right after the fresh re-check's, each a statement at the take function's structure depth 0 (not inside an if, a case, a loop, a { } group or a subshell), each guard's command the first of its statement, neither guard negated by a '!', whose return is not followed by & | or |&, and both precede the DRY_RUN branch (DRY_RUN mirrors the live decision) and the first set-identity; every command of either daemon whose effective command word is _own_view_veto is that one call (primary 1, standby 1):$g_rows; rows ob1–ob5 (the guards in a DRY_RUN-only if, an && { } group, a case arm, a while loop, a backgrounded return) obn1–obn2 (the veto negated, the re-check negated) and obl1–obl2 (the re-check behind 'true ||', in a pipeline) each red:$ob_rows"
 # the primary's other staked-going call is the pre-warm authorized-voter add (not a set-identity) — named
 if code_of "$STANDBY" | grep -q 'authorized-voter add' && ! code_of "$STANDBY" | grep 'authorized-voter add' | grep -q 'set-identity'; then
     ok "(0c) named exclusions: the standby's PREWARM authorized-voter add (off by default, live-test-gated) is not a set-identity and never makes this node vote the staked identity; the fence scripts and the arm only ever move toward UNSTAKED"
@@ -352,6 +366,7 @@ rd_fakes() {   # rd_fakes <dir> — the fake binaries, written ONCE per suite ru
     printf '#!/bin/sh\nprintf "agave-validator %%s\\n" "$*" >> "${RD_CALLS:-/dev/null}"\ncase " $* " in *" contact-info "*) echo "Identity: UNSTAKEDPK1" ;; esac\nexit 0\n' > "$1/sp/agave-validator"
     printf '#!/bin/sh\n[ "$1" = pubkey ] || exit 1\ncase "$2" in *unstaked.json) echo UNSTAKEDPK1 ;; *staked.json) echo STAKEDPK1 ;; *) exit 1 ;; esac\n' > "$1/sp/solana-keygen"
     chmod +x "$1/bin/"* "$1/sp/"*
+    harness_stub_dir "$1/bin"   # its curl: a stub of a listed client (the strace job counts its execs as a stub's)
 }
 rd_dyn() {   # rd_dyn <daemon> <ALPENGLOW_GATE_CHECK_HOURS> → "" when the REAL prologue changed nothing; else what changed: +NAME /
              # -NAME / ~NAME (a function appeared / vanished / changed), T: S: O: E: A: (a trap / shopt / set -o / enable / alias
@@ -686,10 +701,10 @@ RPC_JQ='(if type == "array" then . elif type == "object" then [.] else error("no
 # removed read curl (or …/curl), in any function, the file level or after the marker — a command substitution, a
 # $((cmd) ) and an unquoted here-document's $( ) / backticks included (bp_parse lexes them as the code bash runs); its
 # URL word and -d body are its own words as printed. A SHELL run as a command is a request body this census cannot read:
-# UNPARSEABLE (red; the daemons run none) — bp_parse's bpshell, found by the word, not by its wrappers: a literal word
-# naming a shell (bash / sh / dash / zsh / ksh by any path, busybox's sh / ash / hush / bash applet) followed by nothing
-# (its stdin), by an option word carrying c (-c, -ec, -lc …) or by a non-option word (a script), whatever precedes it
-# (timeout, env, nice --adjustment N, xargs --max-args N, stdbuf, sudo, find -exec …). LIMIT, named: a curl whose command
+# UNPARSEABLE (red; the daemons run none) — bp_parse's bpshell, found by the word, not by its wrappers, fail-closed: a
+# literal word naming a shell (bash / sh / dash / zsh / ksh by any path, busybox's sh / ash / hush / bash applet),
+# whatever precedes it (timeout, env, nice --adjustment N, xargs --max-args N, stdbuf, sudo, find -exec …), unless the
+# only words after it are --version or --help (nothing: its stdin; any option, a -c string, a script). LIMIT, named: a curl whose command
 # word is assembled at run time ("$c", a variable), a shell whose word is ("$SHELL -c"), a tool that runs its argument
 # through a shell it names itself (flock -c), a string handed to eval / trap / mapfile -C (the (0d) census flags eval and
 # pins every trap / mapfile), and code an interpreter runs from a string (awk's system(), perl -e, python3 -c).
@@ -775,7 +790,7 @@ d1_scan() {   # $1=file → line 1 "rpc=<n> unparseable=<n> gva/slot=<n> without
 d1_green() { local s; s=$(d1_scan "$1" | head -1); [[ "$s" == *" unparseable=0 "* && "$s" == *" without=0" ]]; }
 d1p=$(d1_scan "$PRIMARY"); d1s=$(d1_scan "$STANDBY")
 if [[ "$(printf '%s\n' "$d1p" | head -1)" == "rpc=27 unparseable=0 gva/slot=17 without=0" && "$(printf '%s\n' "$d1s" | head -1)" == "rpc=29 unparseable=0 gva/slot=17 without=0" ]]; then
-    ok "(1a) on bash's own parse of BOTH daemons (bp_parse), every curl COMMAND to an RPC endpoint — its command word read with quotes and backslashes removed, in any function, the file level or after the marker, a command substitution, a \$((cmd) ) and an unquoted here-document's \$( ) included — carries one literal -d body jq parses as a JSON-RPC request (primary 27, standby 29; the pages and pings excluded by their URL words), and every getVoteAccounts/getSlot request in them names params[0].commitment (17 bodies each, zero without one); no shell is run as a command (a literal shell word followed by nothing, an option carrying c or a script, whatever wraps it: its string, script or stream is unreadable — red); not seen: a curl or a shell whose command word is assembled at run time, a tool running its argument through a shell it names itself (flock -c), a string run by eval / trap / mapfile -C (the (0d) census's), code an interpreter runs from a string (awk's system(), perl -e, python3 -c)"
+    ok "(1a) on bash's own parse of BOTH daemons (bp_parse), every curl COMMAND to an RPC endpoint — its command word read with quotes and backslashes removed, in any function, the file level or after the marker, a command substitution, a \$((cmd) ) and an unquoted here-document's \$( ) included — carries one literal -d body jq parses as a JSON-RPC request (primary 27, standby 29; the pages and pings excluded by their URL words), and every getVoteAccounts/getSlot request in them names params[0].commitment (17 bodies each, zero without one); no shell is run as a command (a literal shell word followed by anything but only --version / --help, whatever wraps it: its string, script or stream is unreadable — red); not seen: a curl or a shell whose command word is assembled at run time, a tool running its argument through a shell it names itself (flock -c), a string run by eval / trap / mapfile -C (the (0d) census's), code an interpreter runs from a string (awk's system(), perl -e, python3 -c)"
 else
     bad "(1a) primary: $d1p :: standby: $d1s"
 fi
@@ -1455,16 +1470,16 @@ wlaunch u37_15    MDS=15 SLOT_NUM=37 SLOT_DEN=10 HORIZON=150
 wlaunch a25_15    ARMED=1 GATE=1 MDS=15 SLOT_NUM=5 SLOT_DEN=2 HORIZON=260
 wlaunch a37_15    ARMED=1 GATE=1 MDS=15 SLOT_NUM=37 SLOT_DEN=10 HORIZON=200
 # fix round 1 (R4 — the panel's CC-5/F6): the spare's EARLIEST take / mint is the MINIMUM over the read phase (the
-# holder's last vote at t = 0..CI−1 of the spare's grid) and CHECK_INTERVAL 1 / 3 / 5 — not the one phase above
+# holder's last vote at t = 0..CKI−1 of the spare's grid) and CHECK_INTERVAL 1 / 3 / 5 — not the one phase above
 for _mds in 15 0; do for _r in 25 37; do
     case $_r in 25) _sn=5; _sd=2 ;; 37) _sn=37; _sd=10 ;; esac
     for _ci in 1 3 5; do for ((_k = 0; _k < _ci; _k++)); do
-        wlaunch "swu_${_mds}_${_r}_${_ci}_$_k" MDS=$_mds SLOT_NUM=$_sn SLOT_DEN=$_sd CI=$_ci VOTES=0:$_k HORIZON=150
-        [[ $_r == 37 ]] && wlaunch "swa_${_mds}_${_r}_${_ci}_$_k" ARMED=1 GATE=1 MDS=$_mds SLOT_NUM=$_sn SLOT_DEN=$_sd CI=$_ci VOTES=0:$_k HORIZON=190
+        wlaunch "swu_${_mds}_${_r}_${_ci}_$_k" MDS=$_mds SLOT_NUM=$_sn SLOT_DEN=$_sd CKI=$_ci VOTES=0:$_k HORIZON=150
+        [[ $_r == 37 ]] && wlaunch "swa_${_mds}_${_r}_${_ci}_$_k" ARMED=1 GATE=1 MDS=$_mds SLOT_NUM=$_sn SLOT_DEN=$_sd CKI=$_ci VOTES=0:$_k HORIZON=190
     done; done
 done; done
 for _mds in 15 0; do for _ci in 1 3 5; do for ((_k = 0; _k < _ci; _k++)); do   # fix round 2 (CK-9): CHECK_INTERVAL 3 too
-    wlaunch "swa_${_mds}_2525_${_ci}_$_k" ARMED=1 GATE=1 MDS=$_mds SLOT_NUM=101 SLOT_DEN=40 CI=$_ci VOTES=0:$_k HORIZON=200
+    wlaunch "swa_${_mds}_2525_${_ci}_$_k" ARMED=1 GATE=1 MDS=$_mds SLOT_NUM=101 SLOT_DEN=40 CKI=$_ci VOTES=0:$_k HORIZON=200
 done; done; done
 # (7) FIX ROUND 1 — R1 (the panel's L1 worlds, verbatim knobs; the verifier's labels): a holder voting INTO the
 # open episode with each vote landing 20 slots behind (delinquent by MAX_DELINQUENT_SLOTS=15's latency test,
@@ -1500,7 +1515,7 @@ wlaunch r2down55  MDS=15 REFMODE=down REFFROM=55 REFTO=56 HORIZON=200
 wlaunch r2tmo40   MDS=15 REFMODE=tmo REFFROM=40 REFTO=41 HORIZON=200
 wlaunch r2garb40  MDS=15 REFMODE=garb REFFROM=40 REFTO=41 HORIZON=200
 wlaunch r2always  MDS=15 REFMODE=down REFFROM=0 REFTO=9999 HORIZON=200
-wlaunch r2wiz60   GV=true CI=3 MDS=15 REFMODE=down REFFROM=60 REFTO=61 HORIZON=200
+wlaunch r2wiz60   GV=true CKI=3 MDS=15 REFMODE=down REFFROM=60 REFTO=61 HORIZON=200
 wlaunch r2r37     SLOT_NUM=37 SLOT_DEN=10 MDS=15 REFMODE=down REFFROM=30 REFTO=31 HORIZON=200
 wlaunch r2a37     ARMED=1 GATE=1 SLOT_NUM=37 SLOT_DEN=10 MDS=15 REFMODE=down REFFROM=40 REFTO=41 HORIZON=240
 wlaunch r2mds0    MDS=0 REFMODE=down REFFROM=40 REFTO=41 HORIZON=200
@@ -1513,18 +1528,18 @@ for _m in ship nor3; do
     wlaunch "h6_$_m"   $_ws T2LAT=6 HOLDFROM=136 HOLDTO=143 HORIZON=320
     wlaunch "h8_$_m"   $_ws T2LAT=8 HOLDFROM=138 HOLDTO=147 HORIZON=320
     wlaunch "hm15_$_m" $_ws T2LAT=7 MDS=15 HOLDFROM=92 HOLDTO=100 HORIZON=320
-    wlaunch "hwiz_$_m" $_ws GV=true CI=3 T2LAT=6 MDS=15 HOLDFROM=98 HOLDTO=105 HORIZON=320
+    wlaunch "hwiz_$_m" $_ws GV=true CKI=3 T2LAT=6 MDS=15 HOLDFROM=98 HOLDTO=105 HORIZON=320
     wlaunch "hd0_$_m"  $_ws T2DOWN=1 T3LAT_ALL=0 HOLDFROM=140 HOLDTO=151 HORIZON=320
     wlaunch "d7_$_m"   $_ws T2DOWN=1 T3LAT_ALL=7 STARVE=300 HORIZON=420
     wlaunch "m15d7_$_m" $_ws T2DOWN=1 T3LAT_ALL=7 MDS=15 STARVE=300 HORIZON=420
     wlaunch "gv15_$_m"  $_ws GV=true GCNLAT_T2=15 GCNLAT_T3=2 GCNONLYADV=1 STARVE=300 HORIZON=420
-    wlaunch "gv15w_$_m" $_ws GV=true MDS=15 CI=3 GCNLAT_T2=15 GCNLAT_T3=2 GCNONLYADV=1 STARVE=300 HORIZON=420
+    wlaunch "gv15w_$_m" $_ws GV=true MDS=15 CKI=3 GCNLAT_T2=15 GCNLAT_T3=2 GCNONLYADV=1 STARVE=300 HORIZON=420
     wlaunch "c3g_$_m"   $_ws GV=true T2LAT=3 T3LAT_ALL=10 HORIZON=320
 done
 wlaunch hd4_8     T2DOWN=1 T3LAT_ALL=4 HOLDFROM=144 HOLDTO=153 HORIZON=320
 # the RETURNING AV-6 starvation (fix round 3) at the shipped defaults (GOSSIP_VERIFY on, CHECK_INTERVAL 5) and the wizard preset
-wlaunch d7gv      GV=true CI=5 T2DOWN=1 T3LAT_ALL=7 STARVE=300 HORIZON=420
-wlaunch d7wiz     GV=true CI=3 MDS=15 T2DOWN=1 T3LAT_ALL=7 STARVE=300 HORIZON=420
+wlaunch d7gv      GV=true CKI=5 T2DOWN=1 T3LAT_ALL=7 STARVE=300 HORIZON=420
+wlaunch d7wiz     GV=true CKI=3 MDS=15 T2DOWN=1 T3LAT_ALL=7 STARVE=300 HORIZON=420
 wlaunch hd4_7     T2DOWN=1 T3LAT_ALL=4 HOLDFROM=145 HOLDTO=153 HORIZON=320
 # fix round 4 (the delta panel 3's TS3-E-UNPINNED, G1): residual 7's cells docs/SAFETY.md states beyond the four above, its threshold as a
 # SUM with every LOCAL read at 1 s (the pre-take sample's and the veto's own LOCAL reads are inside the baseline's age: TIER3 4 s is
@@ -1534,12 +1549,12 @@ wlaunch hd4_7     T2DOWN=1 T3LAT_ALL=4 HOLDFROM=145 HOLDTO=153 HORIZON=320
 # (non-canonical) lastVote after 8 s, TIER3 honest after 9 s — never; 8 + 8 — taken, the baseline exactly 16 s old; every LOCAL
 # read at 1 s, 8 + 7 — never (red first on the 6.3 build: t190 / t186 / t185, every one taken); and (the delta panel 4's
 # CC4-3) the blanked-TIER2 mitigation at the shipped defaults (GOSSIP_VERIFY on), beside its GOSSIP_VERIFY-off rows
-R7_CELLS='d6gv|mutation=189,ov_veto=none|GV=true CI=5 T2DOWN=1 T3LAT_ALL=6 STARVE=300 HORIZON=420
-d8gv|mutation=none,ov_veto=197:blind,starve=385|GV=true CI=5 T2DOWN=1 T3LAT_ALL=8 STARVE=300 HORIZON=420
-d9gv|mutation=none,ov_veto=201:blind,starve=368|GV=true CI=5 T2DOWN=1 T3LAT_ALL=9 STARVE=300 HORIZON=420
-d7gv37|mutation=none,ov_veto=173:blind,starve=352|GV=true CI=5 T2DOWN=1 T3LAT_ALL=7 SLOT_NUM=37 SLOT_DEN=10 STARVE=300 HORIZON=420
-d9wiz|mutation=none,ov_veto=157:blind,starve=324|GV=true CI=3 MDS=15 T2DOWN=1 T3LAT_ALL=9 STARVE=300 HORIZON=420
-h7gv|mutation=none,ov_veto=188:blind,starve=380|GV=true CI=5 T2LAT=10 T3LAT_ALL=7 STARVE=300 HORIZON=420
+R7_CELLS='d6gv|mutation=189,ov_veto=none|GV=true CKI=5 T2DOWN=1 T3LAT_ALL=6 STARVE=300 HORIZON=420
+d8gv|mutation=none,ov_veto=197:blind,starve=385|GV=true CKI=5 T2DOWN=1 T3LAT_ALL=8 STARVE=300 HORIZON=420
+d9gv|mutation=none,ov_veto=201:blind,starve=368|GV=true CKI=5 T2DOWN=1 T3LAT_ALL=9 STARVE=300 HORIZON=420
+d7gv37|mutation=none,ov_veto=173:blind,starve=352|GV=true CKI=5 T2DOWN=1 T3LAT_ALL=7 SLOT_NUM=37 SLOT_DEN=10 STARVE=300 HORIZON=420
+d9wiz|mutation=none,ov_veto=157:blind,starve=324|GV=true CKI=3 MDS=15 T2DOWN=1 T3LAT_ALL=9 STARVE=300 HORIZON=420
+h7gv|mutation=none,ov_veto=188:blind,starve=380|GV=true CKI=5 T2LAT=10 T3LAT_ALL=7 STARVE=300 HORIZON=420
 l1d4|mutation=171,ov_age=16|LOCLAT=1 T2DOWN=1 T3LAT_ALL=4 STARVE=300 HORIZON=420
 l1d5|mutation=none,ov_veto=175:blind,starve=380|LOCLAT=1 T2DOWN=1 T3LAT_ALL=5 STARVE=300 HORIZON=420
 l1d6|mutation=none,ov_veto=179:blind,starve=371|LOCLAT=1 T2DOWN=1 T3LAT_ALL=6 STARVE=300 HORIZON=420
@@ -1554,9 +1569,9 @@ t2u9gv|mutation=161,ov_veto=none|GV=true T2URL= T3LAT_ALL=9 HORIZON=320
 t2u6l1gv|mutation=159,ov_veto=none|GV=true T2URL= LOCLAT=1 T3LAT_ALL=6 HORIZON=320
 t2r7gv|mutation=153,ov_veto=none|GV=true T2BADFROM=0 T2BADTO=99999 T3LAT_ALL=7 HORIZON=320
 t2r9gv|mutation=161,ov_veto=none|GV=true T2BADFROM=0 T2BADTO=99999 T3LAT_ALL=9 HORIZON=320
-lv8y9gv|mutation=none,ov_veto=190:blind,starve=366|GV=true CI=5 HOSTILE=lv0 T3MODE=honest T2LAT=8 T3LAT_ALL=9 STARVE=300 HORIZON=420
-lv8y8gv|mutation=186,ov_age=16|GV=true CI=5 HOSTILE=lv0 T3MODE=honest T2LAT=8 T3LAT_ALL=8 STARVE=300 HORIZON=420
-lv8y7l1gv|mutation=none,ov_veto=196:blind,starve=378|GV=true CI=5 LOCLAT=1 HOSTILE=lv0 T3MODE=honest T2LAT=8 T3LAT_ALL=7 STARVE=300 HORIZON=420'
+lv8y9gv|mutation=none,ov_veto=190:blind,starve=366|GV=true CKI=5 HOSTILE=lv0 T3MODE=honest T2LAT=8 T3LAT_ALL=9 STARVE=300 HORIZON=420
+lv8y8gv|mutation=186,ov_age=16|GV=true CKI=5 HOSTILE=lv0 T3MODE=honest T2LAT=8 T3LAT_ALL=8 STARVE=300 HORIZON=420
+lv8y7l1gv|mutation=none,ov_veto=196:blind,starve=378|GV=true CKI=5 LOCLAT=1 HOSTILE=lv0 T3MODE=honest T2LAT=8 T3LAT_ALL=7 STARVE=300 HORIZON=420'
 while IFS='|' read -r _n _w _k; do [[ -n "$_n" ]] || continue; wlaunch "r7_$_n" $_k </dev/null; done <<EOF_R7
 $R7_CELLS
 EOF_R7
@@ -1606,9 +1621,9 @@ wlaunch lb1dead   MDS=0 LAG=40 VOTES=0:0 T2DOWN=1 T3MODE=honest T3TLAG=0 HORIZON
 # defaults (GOSSIP_VERIFY on, CHECK_INTERVAL 5; 2.5 and 3.7 slots/s; the wizard preset); the dead-holder controls
 for _mw in "symsp|MDS=0 LAG=40 VOTES=0:0,140:-1 T2MODE=splice" "symlag|MDS=0 LAG=40 VOTES=0:0,140:-1 T2MODE=honest T2TLAG=40" \
            "symsp15|MDS=15 SLOT_NUM=37 SLOT_DEN=10 LAG=30 VOTES=0:0,90:-1 T2MODE=splice" "symdead|MDS=0 LAG=40 VOTES=0:0 T2MODE=splice" \
-           "mirdef|GV=true CI=5 MDS=0 LAG=40 VOTES=0:0,140:-1 T2MODE=splice" "mirdef37|GV=true CI=5 MDS=0 SLOT_NUM=37 SLOT_DEN=10 LAG=30 VOTES=0:0,120:-1 T2MODE=splice" \
-           "mirwiz|GV=true MDS=15 CI=3 LAG=40 VOTES=0:0,100:-1 T2MODE=splice" "mirwiz37|GV=true MDS=15 CI=3 SLOT_NUM=37 SLOT_DEN=10 LAG=30 VOTES=0:0,90:-1 T2MODE=splice" \
-           "mirwizdead|GV=true MDS=15 CI=3 LAG=40 VOTES=0:0 T2MODE=splice"; do
+           "mirdef|GV=true CKI=5 MDS=0 LAG=40 VOTES=0:0,140:-1 T2MODE=splice" "mirdef37|GV=true CKI=5 MDS=0 SLOT_NUM=37 SLOT_DEN=10 LAG=30 VOTES=0:0,120:-1 T2MODE=splice" \
+           "mirwiz|GV=true MDS=15 CKI=3 LAG=40 VOTES=0:0,100:-1 T2MODE=splice" "mirwiz37|GV=true MDS=15 CKI=3 SLOT_NUM=37 SLOT_DEN=10 LAG=30 VOTES=0:0,90:-1 T2MODE=splice" \
+           "mirwizdead|GV=true MDS=15 CKI=3 LAG=40 VOTES=0:0 T2MODE=splice"; do
     wlaunch "${_mw%%|*}" ${_mw#*|} T3MODE=honest T3TLAG=0 HORIZON=260
 done
 # fix round 4 (the delta panel 3's RM-4 / CC3-4): residual 6's exposure is up to the spare's lag, and the node's own
@@ -1626,7 +1641,7 @@ d64l26|mutation=none,ov_veto=none|DIST=64 LAG=26 VOTES=0:0,140:-1
 d38l15|mutation=140,hvafter=1|DIST=38 LAG=15 VOTES=0:0,140:-1
 d38l15r125|mutation=140,hvafter=1|DIST=38 LAG=15 VOTES=0:0,125:-1
 d38l16|mutation=none,ov_veto=none|DIST=38 LAG=16 VOTES=0:0,140:-1'
-while IFS='|' read -r _n _w _k; do [[ -n "$_n" ]] || continue; wlaunch "r6_$_n" GV=true CI=5 MDS=0 T2MODE=splice T3MODE=honest T3TLAG=0 HORIZON=320 $_k </dev/null; done <<EOF_R6
+while IFS='|' read -r _n _w _k; do [[ -n "$_n" ]] || continue; wlaunch "r6_$_n" GV=true CKI=5 MDS=0 T2MODE=splice T3MODE=honest T3TLAG=0 HORIZON=320 $_k </dev/null; done <<EOF_R6
 $R6_CELLS
 EOF_R6
 # L4 (the panel's forged-flip world: WITNESS_FASTPATH with a PRESENTED flip, the intermittent holder) and L3 (a node
@@ -2064,9 +2079,10 @@ fi
 # and when a LOCAL-set function reads. A notification sender's (send_telegram, send_webhook, heartbeat_ping) curl is not
 # a read only when EVERY URL word it sends to is that sender's own endpoint (api.telegram.org, "$WEBHOOK_URL",
 # "$HEARTBEAT_URL"). A SHELL run as a command anywhere in the daemon is red: its -c string, its script or its stdin is code
-# this census cannot walk (the daemons run none) — bp_parse's bpshell: a literal word naming a shell (bash / sh / dash /
-# zsh / ksh by any path, busybox's sh / ash / hush / bash applet) followed by nothing, by an option word carrying c (-c,
-# -ec, -lc …) or by a non-option word, whatever wrappers and options precede it. (7g-local) pins where LOCAL_RPC is
+# this census cannot walk (the daemons run none) — bp_parse's bpshell, fail-closed: a literal word naming a shell (bash /
+# sh / dash / zsh / ksh by any path, busybox's sh / ash / hush / bash applet), whatever wrappers and options precede it,
+# unless the only words after it are --version or --help (nothing after it reads stdin; any option, -c string or script
+# runs code). (7g-local) pins where LOCAL_RPC is
 # written — the LOCAL rule trusts that name. The PRIMARY's recovery pass is walked the same way.
 #   The per-cycle and per-pass samples are not walked — worlds pin them (the delta panel 2 deleted each on fix round 2's
 # build): the main loop's ((4b-residual)'s cut110 and (2)'s race turn BLIND), the recovery ladder's (test_act_then_alert
@@ -2398,6 +2414,38 @@ EOB
 ev_mut "$STANDBY" "R3): before the fence" after "$WORK/s-c7g-wsb.sh" <<'EOB'
         _x=$(stdbuf -o0 bash -c 'curl -s -m 10 "$1" -X POST -d x' _ "$TIER2_RPC")
 EOB
+# The delta panel 7's CHK7-BPSHELL-STDIN-REGRESSION (red first; GREEN on fix round 7's bpshell, which passed a shell
+# followed only by options without c, and busybox's `sh -s` on every earlier round): ws — sixteen shells right after the
+# fence's sample, one per line, each reading code from its stdin: `| bash -s`, `bash -e <<'EOS'` holding a confirmed
+# getVoteAccounts curl, `| sh -eu`, `| bash -`, `| env bash -s`, `| busybox sh -s`, `bash -e < /dev/null`, `bash
+# --noprofile --norc`, `| /bin/sh -s`, `| dash -e`, `| bash -i`, `| bash --posix`, `| bash --`, `| timeout 10 bash -x`,
+# `| bash --norc`, `bash -l -s < /dev/null` — (7g) names sixteen shells and (1a) reads sixteen unparseable; wsv `bash
+# --version` and `bash --help` (the only words bpshell lets follow a shell) green on both
+ev_mut "$STANDBY" "R3): before the fence" after "$WORK/s-c7g-ws.sh" <<'EOB'
+        _x=$(printf ':' | bash -s)
+        _x=$(bash -e <<'EOS'
+curl -s -m 10 "$TIER2_RPC" -X POST -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts","params":[{"commitment":"confirmed"}]}'
+EOS
+)
+        _x=$(printf ':' | sh -eu)
+        _x=$(printf ':' | bash -)
+        _x=$(printf ':' | env bash -s)
+        _x=$(printf ':' | busybox sh -s)
+        _x=$(bash -e < /dev/null)
+        _x=$(bash --noprofile --norc < /dev/null)
+        _x=$(printf ':' | /bin/sh -s)
+        _x=$(printf ':' | dash -e)
+        _x=$(printf ':' | bash -i)
+        _x=$(printf ':' | bash --posix)
+        _x=$(printf ':' | bash --)
+        _x=$(printf ':' | timeout 10 bash -x)
+        _x=$(printf ':' | bash --norc)
+        _x=$(bash -l -s < /dev/null)
+EOB
+ev_mut "$STANDBY" "R3): before the fence" after "$WORK/s-c7g-wsv.sh" <<'EOB'
+        _v=$(bash --version | head -1)
+        _v=$(bash --help | head -1)
+EOB
 c7g_r7=1; c7g_r7r=""
 for _g in "P1|p|_check_single_rpc:*: curl — an external read" "P1if|p|_check_single_rpc:*: curl — an external read" "P1or|p|_check_single_rpc:*: curl — an external read" \
           "P3|p|_check_single_rpc:*: curl — an external read" "P3if|p|_check_single_rpc:*: curl — an external read" "P5|p|_check_single_rpc:*: curl — an external read" \
@@ -2412,6 +2460,15 @@ for _g in "P1|p|_check_single_rpc:*: curl — an external read" "P1if|p|_check_s
     if [[ "$_w" == "GREEN" ]]; then [[ $_r -eq 0 && -z "$_o" ]] || { c7g_r7=0; c7g_r7r="$c7g_r7r [$_n: rc=$_r (want GREEN) $(printf '%s' "$_o" | tr '\n' ';' | cut -c1-160)]"; }; continue; fi
     [[ $_r -ne 0 && "$_o" == *$_w* ]] || { c7g_r7=0; c7g_r7r="$c7g_r7r [$_n: rc=$_r $(printf '%s' "$_o" | tr '\n' ';' | cut -c1-200)]"; }
 done
+# ws / wsv (CHK7-BPSHELL-STDIN-REGRESSION): sixteen shells named by (7g) and read unparseable by (1a); wsv green on both
+if [[ -s "$WORK/s-c7g-ws.sh" && -s "$WORK/s-c7g-wsv.sh" ]]; then
+    _o=$(s2_sb "$WORK/s-c7g-ws.sh"); _r=$?; _n=$(printf '%s\n' "$_o" | grep -c ' — a shell run as a command'); _d=$(d1_scan "$WORK/s-c7g-ws.sh" | head -1)
+    [[ $_r -ne 0 && "$_n" == "16" && "$_d" == *" unparseable=16 "* ]] || { c7g_r7=0; c7g_r7r="$c7g_r7r [ws: rc=$_r shells named=$_n (want 16) (1a) $_d]"; }
+    _o=$(s2_sb "$WORK/s-c7g-wsv.sh"); _r=$?; _d=$(d1_scan "$WORK/s-c7g-wsv.sh" | head -1)
+    [[ $_r -eq 0 && -z "$_o" && "$_d" == *" unparseable=0 "* ]] || { c7g_r7=0; c7g_r7r="$c7g_r7r [wsv: rc=$_r (want GREEN) $(printf '%s' "$_o" | tr '\n' ';' | cut -c1-160) (1a) $_d]"; }
+else
+    c7g_r7=0; c7g_r7r="$c7g_r7r [ws/wsv: NOT-BUILT]"
+fi
 c7g_r6=1; c7g_r6r=""
 for _g in "w1|attempt_takeover:*staked_is_actively_voting — an external read" "w2|attempt_takeover:*staked_is_actively_voting — an external read" "w3|attempt_takeover:*staked_is_actively_voting — an external read" "w4|attempt_takeover:*bash — a shell run as a command" \
           "s01|attempt_takeover:*staked_is_actively_voting — an external read" "s02|attempt_takeover:*staked_is_actively_voting — an external read" "s03|attempt_takeover:*staked_is_actively_voting — an external read" \
@@ -2437,7 +2494,7 @@ for _g in "f|attempt_takeover:*staked_is_actively_voting — an external read" "
 done
 if [[ $s2_rc -eq 0 && -z "$s2_out" && $s2p_rc -eq 0 && -z "$s2p_out" && $c7g_er -ne 0 && "$c7g_e" == *"attempt_safe_recovery:"*"_check_rpc_delinquency"* && "$s2_nsamp" == "13" && $c7g_ar -ne 0 && "$c7g_a" == *"check_primary_dropped_identity:"*"curl"* && $c7g_br -ne 0 && "$c7g_b" == *"tier2_check_delinquency:"* \
       && $c7g_cr -ne 0 && "$c7g_c" == *"check_primary_dropped_identity:"* && $c7g_dr -ne 0 && "$c7g_d" == *"attempt_takeover:"*"get_staked_liveness_sample"* && $c7g_t8 -eq 1 && $c7g_r6 -eq 1 && $c7g_r7 -eq 1 ]]; then
-    ok "(7g) S2 census on bash's own parse of both daemons (bp_parse's commands and structure): walking each take-cycle function's statements in order (the standby's 10, $s2_nsamp statement sample sites; the PRIMARY's recovery pass) — if / case / loop / && || operands as the branches they are, a break / continue (behind && / || too, and break N / continue N) as the exit of the loop it leaves — every external read (a curl command that is not LOCAL — a LOCAL one: its one URL word \"\$LOCAL_RPC\" — the liveness sampler, a call to a caller-covered function; wherever bash runs it: a substitution, a \$((cmd) ), an unquoted here-document body) has an own-head sample since the previous read, a sample counting only as a statement run in the function's own shell (not an argument or a string, not behind command / builtin, not in a substitution, subshell, pipeline, background job or one arm, not an && / || right operand), a LOCAL read in between being a gap; over the call graph of every function the parse defines (standby $s2_sbf, $s2_sbr reading; primary $s2_prf, $s2_prr), no walked function calls a reading function outside the census's sets, no LOCAL-set function reads, a sender's curl sends only to its own endpoint; no shell is run as a command. Not seen (the header): a read a loop repeats, a read in the main loop's body, a network client other than curl, a command word assembled at run time, a string run by eval / trap / mapfile -C (the (0d) census's), a shell whose word is assembled at run time or that a tool runs itself (flock -c), code an interpreter runs from a string (awk's system(), perl -e, python3 -c); the per-cycle / per-pass samples are the worlds' (the header names which world pins each, and the one no world pins). Controls a–t, w1–w4, w01, w02, wsb (a shell behind nice --adjustment N, xargs --max-args N, stdbuf), s01–s06, s08, s14, s15, b16, b17, g1–g5 (each sample no world pins, guarded), g13 / g13if, P1 / P1if / P1or, P3 / P3if, P5 / P5and, Pdeep, Pvar and T2 / T2if (a loop left by a conditional break or continue, or by break N), each red; s13 (the sample first in an || list: it runs) and P5b1 (a plain break out of an inner loop, the sample after it) green"
+    ok "(7g) S2 census on bash's own parse of both daemons (bp_parse's commands and structure): walking each take-cycle function's statements in order (the standby's 10, $s2_nsamp statement sample sites; the PRIMARY's recovery pass) — if / case / loop / && || operands as the branches they are, a break / continue (behind && / || too, and break N / continue N) as the exit of the loop it leaves — every external read (a curl command that is not LOCAL — a LOCAL one: its one URL word \"\$LOCAL_RPC\" — the liveness sampler, a call to a caller-covered function; wherever bash runs it: a substitution, a \$((cmd) ), an unquoted here-document body) has an own-head sample since the previous read, a sample counting only as a statement run in the function's own shell (not an argument or a string, not behind command / builtin, not in a substitution, subshell, pipeline, background job or one arm, not an && / || right operand), a LOCAL read in between being a gap; over the call graph of every function the parse defines (standby $s2_sbf, $s2_sbr reading; primary $s2_prf, $s2_prr), no walked function calls a reading function outside the census's sets, no LOCAL-set function reads, a sender's curl sends only to its own endpoint; no shell is run as a command. Not seen (the header): a read a loop repeats, a read in the main loop's body, a network client other than curl, a command word assembled at run time, a string run by eval / trap / mapfile -C (the (0d) census's), a shell whose word is assembled at run time or that a tool runs itself (flock -c), code an interpreter runs from a string (awk's system(), perl -e, python3 -c); the per-cycle / per-pass samples are the worlds' (the header names which world pins each, and the one no world pins). Controls a–t, w1–w4, w01, w02, wsb (a shell behind nice --adjustment N, xargs --max-args N, stdbuf), ws (sixteen shells reading their stdin: -s, -e, -, --, -i, -l, --posix, --norc, env / timeout / busybox sh / /bin/sh / dash, a here-document and a redirection — each named, and in (1a) unparseable), s01–s06, s08, s14, s15, b16, b17, g1–g5 (each sample no world pins, guarded), g13 / g13if, P1 / P1if / P1or, P3 / P3if, P5 / P5and, Pdeep, Pvar and T2 / T2if (a loop left by a conditional break or continue, or by break N), each red; s13 (the sample first in an || list: it runs) and P5b1 (a plain break out of an inner loop, the sample after it) green, and wsv (bash --version, bash --help) green on (7g) and (1a)"
 else
     bad "(7g) S2 census rc=$s2_rc samples=$s2_nsamp :: $s2_out :: primary rc=$s2p_rc $s2p_out e=$c7g_er[$c7g_e] :: controls a=$c7g_ar[$c7g_a] b=$c7g_br[$c7g_b] c=$c7g_cr[$c7g_c] d=$c7g_dr[$c7g_d] :: T8:$c7g_t8r :: fix round 6:$c7g_r6r :: fix round 7:$c7g_r7r"
 fi

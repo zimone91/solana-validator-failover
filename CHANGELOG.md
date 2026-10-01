@@ -31,10 +31,10 @@ All notable changes are documented here. Versions follow the project's internal 
     by this block's own-view veto (Block 6.3 has none and takes these holders): a `TIER2` failing slowly (a timeout, an
     error answered late) with a slow `TIER3` leaves the veto no fresh baseline — a dead holder is never taken over, loudly
     (`⚠️ Take VETOED by this spare's own view (it could not testify): …`, then `⚠️ TAKEOVER STARVATION: …`); availability.
-  - **No relinquish-proof gate in this release** (6.4 wires it): the armed spare's pages say so — its take follows v0.6.x
-    semantics, held only by the re-check and the veto. `docs/NOTIFICATIONS.md` lists every page, checked in CI.
-  - Tests: `test_own_view`, `test_d6_holder` (new). Network clients reached through `PATH` are caught by `run_all.sh`'s stage (4)
-    on every leg; at the syscall level, CI's strace job (ubuntu-24.04) sees no inet socket in the whole run.
+  - **No relinquish-proof gate in this release** (6.4 wires it; the attestation pages say so): the take follows v0.6.x semantics, which
+    the re-check and the veto can only hold. CI: every page sent has an entry in `docs/NOTIFICATIONS.md` (a status as a whole code span,
+    a heading as a whole span or the opening of one followed by "…").
+  - Tests: `test_own_view`, `test_d6_holder` (new). `PATH` clients: `run_all.sh`'s stage (4), every leg; inet sockets: `tests/strace-hermetic.sh`.
 
 - **Block 6.3 — the watchdog-elapsed proof provider (attested time), the spare's observation surface
   as a standing property, and the holder-side hardening of five review rounds.** Every residual and

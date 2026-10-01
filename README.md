@@ -70,15 +70,20 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
   `⚠️ Take VETOED by this spare's own view (it could not testify): …`, then the starvation page
   `⚠️ TAKEOVER STARVATION: …` (on a real host one second less is vetoed too, at some phases) — repair that
   `TIER2`, or while it is broken leave `TIER2_RPC` empty (an armed spare with
-  `PRIMARY_UNSTAKED_PUBKEY` set then pages "G2 VANTAGES NOT DISTINCT" at every start — verified-demote off for
-  the run; a paired spare keeps watchdog-elapsed — unless `G2_VANTAGE_A` names another provider), or use a `TIER3`
+  `PRIMARY_UNSTAKED_PUBKEY` set then pages "G2 VANTAGES NOT DISTINCT" at every start — verified-demote cannot
+  prove for the run once the gate is wired, and conditions no take in this release — unless `G2_VANTAGE_A` names
+  another provider), or use a `TIER3`
   that answers the full `getVoteAccounts` well under ~5 s (about 3 s when local reads take 1 s); a `TIER2`
   that refuses at once does not starve the take.
 - **This release has no relinquish-proof gate:** armed or not, the spare's take follows the v0.6.x semantics,
   which the 6.3 re-check and the own-view veto can only hold — no provider's verdict conditions any take. An armed
   spare that is not paired (or is paired with an invalid or page-only token) pages `ARMED SPARE NOT ATTESTED 🚨`
   at every start: arm the holder first and copy its token, because from the release that wires the gate (Block
-  6.4) an unpaired or invalidly paired spare's silence-based take is disabled. That gate will decide *how* the old
+  6.4) an unpaired or invalidly paired spare's silence-based take is disabled — and an unpaired spare with no other
+  provider configured (no `PRIMARY_UNSTAKED_PUBKEY`, or G2 disabled by its vantage check) takes nothing at all. A
+  `fence=page-only` token means the holder was armed without its real fence (`DRY_RUN=false` on the holder, then
+  `failover arm` there); a `TAKEOVER_DELAY` raised after pairing makes the pairing INVALID, and re-pairing is refused
+  until the holder's bounds cover it (the arm prints both fixes). That gate will decide *how* the old
   holder is known to be gone; its providers already run on an armed spare. The strongest proof is
   **verified-demote (G2)**: the holder's *unstaked* identity observed in gossip at the staked identity's exact
   endpoint, and still there ≥60s later on two pinned RPC
@@ -167,7 +172,8 @@ properties every `FENCE_ROT_CHECK_SECS` (default 60 s): drift that verifiably ki
 fence) pages CRITICAL immediately with the exact fix command, and only if it persists for
 `FENCE_ROT_GRACE` (default 1800 s, floor max(600, `ALERT_THROTTLE`)) while the node still
 verifiably holds the staked identity does the holder gracefully demote itself to unstaked — the
-spare then takes over via the verified-demote proof. Never instant, never on a guess: a failing
+spare then takes over on its timer path (the v0.6.x semantics, with or without G2; once Block 6.4 wires
+the relinquish-proof gate, via the verified-demote proof). Never instant, never on a guess: a failing
 `systemctl` is treated as cannot-verify (page after a blind streak, no demote clock), and both
 knobs are daemon defaults with validation — no env entry needed. Un-armed hosts (everything
 before the v0.7 rollout) see zero behavior change.
@@ -185,8 +191,9 @@ cd tests && bash run_all.sh
 ```
 54 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
 mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Network clients reached
-through `PATH` are caught by `run_all.sh`'s stage (4) on every leg; at the syscall level, the CI strace job
-(ubuntu-24.04) sees no inet socket in the whole run. Note the limit: these are function-level tests — they do
+through `PATH` are caught by `run_all.sh`'s stage (4) on every leg; at the syscall level, `tests/strace-hermetic.sh`
+(CI's strace job, ubuntu-24.04) fails on any inet socket in the whole run. A suite still running an hour after it
+started is killed and fails the run (`RUN_ALL_SUITE_CAP`). Note the limit: these are function-level tests — they do
 **not** prove cross-process ordering between two live systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
 
 ## ⚠️ Before you point this at a mainnet identity
