@@ -11,7 +11,7 @@
 # LOCAL node in which t = 0 is its last landed vote. Only I/O is stubbed. The driver is the 6.3.1 panel's
 # d6table lens driver, adopted verbatim (its knobs below), plus a job throttle.
 #   MODE     frozen | egress | deadrefuse | deadhang | garbage | fullwedge | none   (the failure from t > 0)
-#   CI       CHECK_INTERVAL (3 = the primary default)          GRACE   STARTUP_GRACE (30 = the default)
+#   CKI       CHECK_INTERVAL (3 = the primary default)          GRACE   STARTUP_GRACE (30 = the default)
 #   RATE_N/RATE_D  slot rate (5/2 = 2.5 slots/s; 37/10 = 3.7)
 #   INST     "start:die start:die …" — monitor instances (offsets from t0; die -1 = runs to HORIZON). Each
 #            instance is a FRESH process image (a new subshell that re-sources the seam); the state file (save_state
@@ -56,7 +56,7 @@
 # NOT COVERED (fix round 2, S4 — the delta panel's CK-3 and CK-9, stated rather than widened):
 #   - the clock is INTEGER seconds and a cycle costs ZERO overhead beyond its stubbed reads and sleeps: a real
 #     cycle costs a few hundred ms more (SAFETY's measured 3.12–3.33 s cycles at CHECK_INTERVAL 3), and a
-#     millisecond model of the same loop lands the frozen fence at 30.3–36.1 s (CI 3) / 32.0–37.0 s (CI 5) against
+#     millisecond model of the same loop lands the frozen fence at 30.3–36.1 s (CKI 3) / 32.0–37.0 s (CKI 5) against
 #     this suite's 30–32 / 30–34 (the delta panel's executed model) — a margin under ~4 s below is not a margin;
 #   - (d) is ONE sample I/O mix, not the maximum over mixes: with every LOCAL read 1 s inside ITS OWN -m bound
 #     (SLOWLOCAL=b — the -m 10 reads at 9 s) the rows fence later (the (d′) rows below pin that second mix); the
@@ -92,7 +92,7 @@ $region
     # ── config (after the seam: its defaults are the shipped ones; these are the harness values) ──
     STAKED_PUBKEY=S1; UNSTAKED_PUBKEY=U1; VOTE_PUBKEY=V1
     LOCAL_RPC="http://local.mock"; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"
-    CHECK_INTERVAL=${CI:-3}; TURBO_INTERVAL=1; _current_interval=$CHECK_INTERVAL; STARTUP_GRACE=${GRACE:-30}
+    CHECK_INTERVAL=${CKI:-3}; TURBO_INTERVAL=1; _current_interval=$CHECK_INTERVAL; STARTUP_GRACE=${GRACE:-30}
     DRY_RUN=false; RECOVERY_MODE=manual; PRIMARY_SELF_FENCE=true
     SOLANA_PATH="$W/bin"; LEDGER_PATH=/x; VALIDATOR_TYPE=agave
     STAKED_KEYPAIR="$W/staked.json"; UNSTAKED_KEYPAIR="$W/unstaked.json"
@@ -302,13 +302,13 @@ spans() {
 # reads can delay the first read that sees the failure by up to ~25 s. Such a row is run over the phase:
 #   D6_SWEEP=full   EVERY start offset -100..-159 (one full period; the first instance's start sets the phase)
 #                   for every phase-swept row and cadence — N-is-all; ~1,700 worlds, minutes, not the gate's run
-#   default         the read-phase set (-100 .. -100-(CI-1)) plus, per row and cadence, the full sweep's WORST
+#   default         the read-phase set (-100 .. -100-(CKI-1)) plus, per row and cadence, the full sweep's WORST
 #                   offset and its two neighbours and its BEST offset (pinned below from a D6_SWEEP=full run) —
 #                   so the pinned min–max is the full sweep's; a drift of the worst phase or of its value goes
 #                   red; a NEW worst elsewhere in the period needs D6_SWEEP=full (run it after any change to the
 #                   loop's schedule or its reads)
 D6_SWEEP=${D6_SWEEP:-pinned}
-phase_set() {   # phase_set <CI> <worst offset> <best offset> — the start offsets (positive) a phase-swept row runs at
+phase_set() {   # phase_set <CKI> <worst offset> <best offset> — the start offsets (positive) a phase-swept row runs at
     local ci="$1" w="$2" b="$3" o out=""
     if [[ "$D6_SWEEP" == "full" ]]; then for ((o = 100; o <= 159; o++)); do out="$out $o"; done; echo "$out"; return 0; fi
     for ((o = 100; o < 100 + ci; o++)); do out="$out $o"; done
@@ -318,16 +318,16 @@ phase_set() {   # phase_set <CI> <worst offset> <best offset> — the start offs
     done
     echo "$out"
 }
-PH_ROWS=""   # "<name>|<CI>|<offsets>" per phase-swept row and cadence — spanp reads it back
-# phlaunch <name> <CI> <worst> <best> <INST template, @ = the start offset> VAR=val … — a phase-swept row
+PH_ROWS=""   # "<name>|<CKI>|<offsets>" per phase-swept row and cadence — spanp reads it back
+# phlaunch <name> <CKI> <worst> <best> <INST template, @ = the start offset> VAR=val … — a phase-swept row
 phlaunch() {
     local n="$1" ci="$2" w="$3" b="$4" tmpl="$5" o offs; shift 5
     offs=$(phase_set "$ci" "$w" "$b")
     PH_ROWS="$PH_ROWS
 ${n}|${ci}|${offs}"
-    for o in $offs; do hlaunch "${n}_${ci}_o$o" CI="$ci" "INST=${tmpl//@/-$o}" "$@"; done
+    for o in $offs; do hlaunch "${n}_${ci}_o$o" CKI="$ci" "INST=${tmpl//@/-$o}" "$@"; done
 }
-spanp() {   # spanp <name> <CI> — the min-max of that phase-swept row over its offsets
+spanp() {   # spanp <name> <CKI> — the min-max of that phase-swept row over its offsets
     local l offs=""
     while IFS= read -r l; do [[ "${l%%|*}" == "$1" && "${l#*|}" == "$2|"* ]] && { offs="${l##*|}"; break; }; done <<EOF_PH
 $PH_ROWS
@@ -343,24 +343,24 @@ C_SLOT='CORRUPT=s/^SF_LAST_CONFIRMED_SLOT=.*/SF_LAST_CONFIRMED_SLOT=abc/'
 for ci in 1 3 5; do
     for ((k = 0; k < ci; k++)); do
         st=$(( -100 - k ))
-        hlaunch "dr_${ci}_$k"  MODE=deadrefuse CI=$ci INST=$st:-1 HORIZON=120
-        hlaunch "fz_${ci}_$k"  MODE=frozen CI=$ci INST=$st:-1 HORIZON=120
-        hlaunch "e25_${ci}_$k" MODE=egress CI=$ci RATE_N=5 RATE_D=2 INST=$st:-1 HORIZON=120
-        hlaunch "e37_${ci}_$k" MODE=egress CI=$ci RATE_N=37 RATE_D=10 INST=$st:-1 HORIZON=120
-        hlaunch "gb_${ci}_$k"  MODE=garbage CI=$ci INST=$st:-1 HORIZON=120
-        hlaunch "hb_${ci}_$k"  MODE=frozen HEALTHBEHIND=1 CI=$ci INST=$st:-1 HORIZON=120
-        hlaunch "fw_${ci}_$k"  MODE=fullwedge CI=$ci INST=$st:-1 HORIZON=300
-        hlaunch "r1g0_30_${ci}_$k" MODE=frozen CI=$ci GRACE=0 INST=$st:25,30:-1 "$C_SLOT" HORIZON=260
-        hlaunch "crash_${ci}_$k"  MODE=frozen CI=$ci INST=$st:$((29 + ci)),$((39 + ci)):-1 HORIZON=260
+        hlaunch "dr_${ci}_$k"  MODE=deadrefuse CKI=$ci INST=$st:-1 HORIZON=120
+        hlaunch "fz_${ci}_$k"  MODE=frozen CKI=$ci INST=$st:-1 HORIZON=120
+        hlaunch "e25_${ci}_$k" MODE=egress CKI=$ci RATE_N=5 RATE_D=2 INST=$st:-1 HORIZON=120
+        hlaunch "e37_${ci}_$k" MODE=egress CKI=$ci RATE_N=37 RATE_D=10 INST=$st:-1 HORIZON=120
+        hlaunch "gb_${ci}_$k"  MODE=garbage CKI=$ci INST=$st:-1 HORIZON=120
+        hlaunch "hb_${ci}_$k"  MODE=frozen HEALTHBEHIND=1 CKI=$ci INST=$st:-1 HORIZON=120
+        hlaunch "fw_${ci}_$k"  MODE=fullwedge CKI=$ci INST=$st:-1 HORIZON=300
+        hlaunch "r1g0_30_${ci}_$k" MODE=frozen CKI=$ci GRACE=0 INST=$st:25,30:-1 "$C_SLOT" HORIZON=260
+        hlaunch "crash_${ci}_$k"  MODE=frozen CKI=$ci INST=$st:$((29 + ci)),$((39 + ci)):-1 HORIZON=260
     done
 done
 for k in 0 1 2; do
     st=$(( -100 - k ))
     for R in 30 45 63; do
-        hlaunch "r1g30_${R}_$k" MODE=frozen CI=3 GRACE=30 INST=$st:25,$R:-1 "$C_SLOT" HORIZON=260
-        hlaunch "f1_${R}_$k"    MODE=frozen CI=3 GRACE=30 INST=$st:25,$R:-1 HORIZON=260
+        hlaunch "r1g30_${R}_$k" MODE=frozen CKI=3 GRACE=30 INST=$st:25,$R:-1 "$C_SLOT" HORIZON=260
+        hlaunch "f1_${R}_$k"    MODE=frozen CKI=3 GRACE=30 INST=$st:25,$R:-1 HORIZON=260
     done
-    for R in 45 63; do hlaunch "r1g0_${R}_3_$k" MODE=frozen CI=3 GRACE=0 INST=$st:25,$R:-1 "$C_SLOT" HORIZON=260; done
+    for R in 45 63; do hlaunch "r1g0_${R}_3_$k" MODE=frozen CKI=3 GRACE=0 INST=$st:25,$R:-1 "$C_SLOT" HORIZON=260; done
 done
 # the phase-swept (a)/(b) rows (T1-D6): the worst / best start offset per cadence (or restart) from D6_SWEEP=full
 phlaunch dh 1 128 100 "@:-1" MODE=deadhang HORIZON=120
@@ -377,29 +377,29 @@ for R in 30 63; do
     i=0
     for cyc in 1 4; do for stop in 0 20; do for k in 0 1; do
         d2=$(( R + 30 + cyc * 3 ))
-        hlaunch "rm${R}_$i" MODE=frozen CI=3 GRACE=30 INST=$(( -100 - k )):25,$R:$d2,$(( d2 + stop )):-1 "$C_SLOT" HORIZON=320
+        hlaunch "rm${R}_$i" MODE=frozen CKI=3 GRACE=30 INST=$(( -100 - k )):25,$R:$d2,$(( d2 + stop )):-1 "$C_SLOT" HORIZON=320
         i=$((i + 1))
     done; done; done
 done
 for ci in 3 5; do
     for ((k = 0; k < ci; k++)); do
         st=$(( -100 - k ))
-        hlaunch "w_${ci}_$k"     MODE=frozen CI=$ci WEDGE=1 INST=$st:-1 HORIZON=200
-        hlaunch "wk_${ci}_$k"    MODE=frozen CI=$ci WEDGE=1 WEDGEK=1 INST=$st:-1 HORIZON=200
-        hlaunch "wkh_${ci}_$k"   MODE=frozen CI=$ci WEDGE=1 WEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
+        hlaunch "w_${ci}_$k"     MODE=frozen CKI=$ci WEDGE=1 INST=$st:-1 HORIZON=200
+        hlaunch "wk_${ci}_$k"    MODE=frozen CKI=$ci WEDGE=1 WEDGEK=1 INST=$st:-1 HORIZON=200
+        hlaunch "wkh_${ci}_$k"   MODE=frozen CKI=$ci WEDGE=1 WEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
         # fix round 2 (S4 — the delta panel's CK-1): the hard stop's `systemctl mask --runtime` (after the failed stop,
         # before the kill) and the other wedge order (remove-all answers, the set-identity to unstaked hangs)
-        hlaunch "wm0_${ci}_$k"   MODE=frozen CI=$ci WEDGE=1 STOPHANG=1 MASKHANG=1 INST=$st:-1 HORIZON=200
-        hlaunch "wkhm_${ci}_$k"  MODE=frozen CI=$ci WEDGE=1 WEDGEK=1 STOPHANG=1 MASKHANG=1 INST=$st:-1 HORIZON=200
-        hlaunch "wkhmk_${ci}_$k" MODE=frozen CI=$ci WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 INST=$st:-1 HORIZON=200
-        hlaunch "wp_${ci}_$k"    MODE=frozen CI=$ci WEDGE=1 STOPHANG=1 MASKHANG=1 TERMOK=1 INST=$st:-1 HORIZON=200
-        hlaunch "s7_${ci}_$k"    MODE=frozen CI=$ci RASECS=7 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
-        hlaunch "s14_${ci}_$k"   MODE=frozen CI=$ci RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
-        hlaunch "s7m_${ci}_$k"   MODE=frozen CI=$ci RASECS=7 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 MASKHANG=1 INST=$st:-1 HORIZON=200
+        hlaunch "wm0_${ci}_$k"   MODE=frozen CKI=$ci WEDGE=1 STOPHANG=1 MASKHANG=1 INST=$st:-1 HORIZON=200
+        hlaunch "wkhm_${ci}_$k"  MODE=frozen CKI=$ci WEDGE=1 WEDGEK=1 STOPHANG=1 MASKHANG=1 INST=$st:-1 HORIZON=200
+        hlaunch "wkhmk_${ci}_$k" MODE=frozen CKI=$ci WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 INST=$st:-1 HORIZON=200
+        hlaunch "wp_${ci}_$k"    MODE=frozen CKI=$ci WEDGE=1 STOPHANG=1 MASKHANG=1 TERMOK=1 INST=$st:-1 HORIZON=200
+        hlaunch "s7_${ci}_$k"    MODE=frozen CKI=$ci RASECS=7 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
+        hlaunch "s14_${ci}_$k"   MODE=frozen CKI=$ci RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
+        hlaunch "s7m_${ci}_$k"   MODE=frozen CKI=$ci RASECS=7 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 MASKHANG=1 INST=$st:-1 HORIZON=200
         # fix round 3 (U4 — the delta panel 2's CKB-1): the other order with the stop and the mask at their -k bounds too,
         # remove-all answering after 14 s (SETIDENTITY_TIMEOUT − 1 — the latest answer on this integer clock; RASECS=max since
         # fix round 4 derives it from the seam's SETIDENTITY_TIMEOUT)
-        hlaunch "s14k_${ci}_$k"  MODE=frozen CI=$ci RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 INST=$st:-1 HORIZON=200
+        hlaunch "s14k_${ci}_$k"  MODE=frozen CKI=$ci RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 INST=$st:-1 HORIZON=200
     done
 done
 # the phase-swept (c) rows (T1-D6 — the tiers at their bounds, then every LOCAL read at 4 s): worst / best offsets

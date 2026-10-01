@@ -188,8 +188,9 @@ On a `VALIDATOR_TYPE=frankendancer` box **every real-fence dispatch takes the st
 bans the daemons' fd identity read (a localhost curl `getIdentity`) like any other network call,
 and no `fdctl` demote rung exists in the fence. A monitor failure on fd therefore means full
 validator stop + `fenced-stopped` + HOLD (operator-owned recovery) — and a stopped node never
-re-advertises the unstaked flip, so the spare's G2 verified-demote proof cannot form (slower or
-no takeover). The daemons DO demote fd (bounded `fdctl set-identity`); the fence deliberately
+re-advertises the unstaked flip, so from the release that wires the relinquish-proof gate the spare's G2
+verified-demote proof cannot form there (a slower takeover, or none); in this release no proof conditions a
+take and the spare takes on its timer path. The daemons DO demote fd (bounded `fdctl set-identity`); the fence deliberately
 does not in v0.7. An fd-native demote rung is future work; until then, arming a frankendancer
 box means accepting stop-only fencing.
 

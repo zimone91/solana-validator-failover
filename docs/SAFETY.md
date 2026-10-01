@@ -235,7 +235,8 @@ per cycle at `CHECK_INTERVAL=3` — mainnet load does not inflate the loop (per-
 Automated suites additionally drive the real decision functions (self-fence, takeover gating,
 cross-node timing) with mocked I/O, and every safety fix ships with a control that fails when the fix
 is reverted. Network clients reached through `PATH` are caught by `run_all.sh`'s stage (4) on every
-leg; at the syscall level, the CI strace job (ubuntu-24.04) sees no inet socket in the whole run.
+leg; at the syscall level, `tests/strace-hermetic.sh` (CI's strace job, ubuntu-24.04) fails on any inet socket in
+the whole run.
 **Known limit:** these are function-level — they do not prove cross-process ordering between two live
 systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
 
@@ -286,14 +287,20 @@ under this escalation contract:
    validator faster than a human can read a page. A healed fence closes the window; a later
    re-rot starts a fresh one.
 3. **Graceful self-demote** only if the rot persists past the grace *and* the node still verifiably
-   holds the staked identity: the standard set-identity-to-unstaked path, which the spare consumes
-   as a verified-demote proof — an automatic failover to the healthy side. An unreadable identity
-   at expiry demotes nothing (that would be a guess); paging continues.
+   holds the staked identity: the standard set-identity-to-unstaked path (a PRIMARY's
+   `switch_to_unstaked`, a promoted STANDBY's `give_back_identity`). In this release the spare then takes
+   on its timer path — the v0.6.x semantics, with or without G2: the demoted holder stops voting and the
+   spare's detection runs its course; once Block 6.4 wires the relinquish-proof gate, it takes via the
+   verified-demote proof. That is an automatic failover to the healthy side where a spare watches the
+   demoting node: behind a PRIMARY, the STANDBY; behind a promoted STANDBY, a BACKUP if there is one (the
+   old PRIMARY re-takes only with `RECOVERY_MODE=rpc`; at the default `manual` it does not). An unreadable
+   identity at expiry demotes nothing (that would be a guess); paging continues.
 
 The availability tradeoff is accepted and bounded: a broken-but-loud fence costs (at worst) one
 graceful failover to the healthy spare after ≥30 minutes of CRITICAL paging — against the
-alternative of a spare consuming `watchdog-elapsed` over a holder whose fence silently no longer
-exists, which is the double-sign class this tool exists to prevent. During the grace the holder is
+alternative of a spare taking on the holder's silence (its timer path in this release, `watchdog-elapsed`
+once the gate is wired) over a holder whose fence silently no longer exists, which is the double-sign
+class this tool exists to prevent. During the grace the holder is
 voting and paging, so the spare's silence-based path cannot fire against it: the window itself adds
 no double-sign exposure.
 
@@ -1151,8 +1158,8 @@ reviewer's policy question — the policy is unchanged. Every such hold is loud:
    t153 / t161, every LOCAL read at 1 s and `TIER3` 6 s t159; `GOSSIP_VERIFY` off t146 / t152 / t170) and the
    witness fast path, which needs two tiers, is off; on an armed spare with `PRIMARY_UNSTAKED_PUBKEY` set,
    G2's vantage A defaults to `TIER2_RPC`, so G2 is left one vantage — the daemon pages CRITICAL "G2
-   VANTAGES NOT DISTINCT" at every start (verified-demote cannot-determine for the run; a paired spare keeps
-   watchdog-elapsed) and `failover arm`'s P6 warns that the spare arms without verified-demote, unless
+   VANTAGES NOT DISTINCT" at every start (verified-demote cannot prove for the run once the gate is wired, and
+   conditions no take in this release) and `failover arm`'s P6 warns that the spare arms without verified-demote, unless
    `G2_VANTAGE_A` names another provider (with `PRIMARY_UNSTAKED_PUBKEY` empty no G2 is registered: no page,
    no P6 warning) — or use a `TIER3` that answers the full `getVoteAccounts` well under ~5 s (about 3 s when
    every LOCAL read takes 1 s; `TIER2`'s time to failure is at most its 10 s bound, so that holds whatever the

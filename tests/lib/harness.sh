@@ -64,8 +64,9 @@ STANDBY="$HARNESS_DIR/solana-standby-failover.sh"
 _HARNESS_TMP=$(mktemp -d)
 
 # ── the net guard (v0.7 Block 6.3.1 fix round 1 — the panel's T10, N-is-all over the suites) ───────────
-# Network clients reached through PATH are caught by run_all's stage (4) on every leg; at the syscall level, the CI
-# strace job (ubuntu-24.04) sees no inet socket in the whole run. This is the PATH half: a directory FIRST in PATH for
+# Network clients reached through PATH are caught by run_all's stage (4) on every leg; at the syscall level,
+# tests/strace-hermetic.sh (CI's strace-hermetic job, ubuntu-24.04) fails on any inet socket of the whole run. This is
+# the PATH half: a directory FIRST in PATH for
 # every suite that sources this harness, holding a stand-in for curl and for each client on HARNESS_NET_CLIENTS below
 # (ping ping6 nc ncat netcat wget dig host nslookup drill getent ssh scp sftp telnet traceroute tftp ftp whois nmap
 # openssl rsync git) — the clients this guard stands in for, not every client a host could have:
@@ -89,7 +90,8 @@ _HARNESS_TMP=$(mktemp -d)
 # perl, test_arm_ceremony finds python3 and perl through PATH and provisions them to its scenarios as removal tools — an
 # interpreter's socket cannot be told apart from its local use by a wrapper).
 # LIMIT (named): this guard and run_all's stage (4) see a client reached through a PATH that holds a stand-in, nothing
-# else. They do not see, and the CI strace job does see (any inet socket, from any process of the run):
+# else. They do not see, and the strace job does see when it opens a socket (any inet socket, any other family than
+# AF_UNIX and AF_NETLINK, from any process of the run):
 #   - bash's /dev/tcp and /dev/udp redirections (no binary runs; CI's facts job also permits them in one test fixture
 #     only, text a mutant inserts and never runs);
 #   - `command -p <client>`, which searches the default PATH, not this one;
@@ -99,7 +101,15 @@ _HARNESS_TMP=$(mktemp -d)
 #   - a call made after run_all's final read of the logs (a child outliving the last suite);
 #   - an interpreter's own socket;
 #   - socat, left out on purpose (above);
-#   - a client not on the list.
+#   - a client not on the list;
+#   - a suite that truncates its own log or rewrites a stand-in (deliberate; run_all names a log, a stand-in directory or
+#     a stand-in that is GONE).
+# The stand-in directory is written to HARNESS_STUB_DIRS_LOG when that is set (tests/strace-hermetic.sh sets it), and so
+# is every directory a suite names with harness_stub_dir (its own stubs of a listed client): the strace job counts a
+# listed client's exec from a directory on that list as a stand-in's or a stub's, from anywhere else as the REAL client.
+harness_stub_dir() {   # harness_stub_dir <dir> — <dir> holds this suite's own stub of a listed network client (curl …)
+    [[ -z "${HARNESS_STUB_DIRS_LOG:-}" ]] || printf '%s\n' "$1" >> "$HARNESS_STUB_DIRS_LOG"
+}
 HARNESS_NET_CLIENTS="ping ping6 nc ncat netcat wget dig host nslookup drill getent ssh scp sftp telnet traceroute tftp ftp whois nmap openssl rsync git"
 mkdir -p "$_HARNESS_TMP/netguard"
 _HARNESS_NETLOG="$_HARNESS_TMP/netguard/log"; export _HARNESS_NETLOG
@@ -118,6 +128,7 @@ exit 2
 EOS
 done
 chmod +x "$_HARNESS_TMP/netguard/"*
+harness_stub_dir "$_HARNESS_TMP/netguard"
 PATH="$_HARNESS_TMP/netguard:$PATH"; export PATH
 seam_cut() {
     local script="$1" mt sz cache
@@ -303,10 +314,11 @@ dump_freshness() {
 #   C <fn> <depth> <line> <n> <words> <ctx>  a simple command: n words joined by \034, each "<L|X><quote-removed>\035<raw>" —
 #                                        L: no expansion in it; quote-removed: its quotes and backslashes deleted, so
 #                                        'eval' ev''al \source "curl" cu''rl c\url read as eval source curl; <ctx> =
-#                                        "<level>:<subshell>:<pre>:<post>" — level 1 = not inside a substitution (a
+#                                        "<level>:<subshell>:<pre>:<post>:<neg>" — level 1 = not inside a substitution (a
 #                                        here-document body's $( ) is one), subshell = the ( ) depth there, pre = the
 #                                        operator before it (&& || | |&, or empty at a statement's start), post = the one
-#                                        after it (&& || | |& & ; ;; nl ) or empty)
+#                                        after it (&& || | |& & ; ;; nl ) or empty), neg = "!" when a `!` negates the
+#                                        pipeline this command begins (the lexer drops the `!` word itself), else empty
 #   K <fn> <depth> <line> <level> <subshell> <event> <id> <ctx>  the structure, in order: if then else fi, loop (while
 #                                        until for select) do done, case arm arm-end esac, grp grp-end ({ }) — <id> the
 #                                        compound command's number; <ctx> = the operator before an opening (a compound
@@ -326,7 +338,7 @@ dump_freshness() {
 # run time ($x, "$cmd", $(…) as the command); code inside a STRING a command runs — eval, trap, mapfile -C, a shell's
 # -c — which the lexer cannot read as code: the (0d) census flags eval anywhere and pins every trap / mapfile /
 # readarray, and (7g) and (1a) flag a shell run as a command by its word, whatever wraps it (bpshell below: a literal
-# shell word followed by nothing, an option carrying c, or a script) — no census flags a shell whose word is assembled at
+# shell word followed by anything but only --version / --help) — no census flags a shell whose word is assembled at
 # run time, a tool running its argument through a shell it names itself (flock -c), or code an interpreter runs from a
 # string (awk's system(), perl -e, python3 -c); a
 # here-document opened inside a here-document body's $( ) (read as that body's text); a nested backtick inside
@@ -351,7 +363,8 @@ function endword(l,   raw, disp, q) {
     if (redir[l]) { redir[l] = 0; printf "R\t%s\t%d\t%d\tredir\t%s\n", fnname(), fndep(), LNR, raw; return }                      # the target of a redirection, a here-string
     if (cmdn[l] == 0 && wlit[l] && !wq[l] && q ~ /^(if|then|else|elif|fi|do|done|while|until|!|time)$/) {
         if (q == "if") fopen(l, "if"); else if (q == "while" || q == "until") fopen(l, "loop"); else if (q == "fi" || q == "done") fclose(l, q)
-        else if (q != "!" && q != "time") kev(l, q, fsk[fk], "")
+        else if (q == "!") neg[l] = 1
+        else if (q != "time") kev(l, q, fsk[fk], "")
         return
     }
     if (cmdn[l] == 0 && wlit[l] && !wq[l] && (q == "for" || q == "select")) fopen(l, "loop")
@@ -364,19 +377,19 @@ function endword(l,   raw, disp, q) {
 function endcmd(l, op,   first) {
     endword(l)
     if (cmdn[l] > 0) {
-        printf "C\t%s\t%d\t%d\t%d\t%s\t%d:%d:%s:%s\n", fnname(), fndep(), cln[l], cmdn[l], cmdw[l], l, pd[l], cpre[l], op
+        printf "C\t%s\t%d\t%d\t%d\t%s\t%d:%d:%s:%s:%s\n", fnname(), fndep(), cln[l], cmdn[l], cmdw[l], l, pd[l], cpre[l], op, (neg[l] ? "!" : "")
         first = cmdw[l]; sub(/\035.*/, "", first)
         if (first == "Lcase") cs[l] = cs[l] "p"
         lop[l] = (op == "&&" || op == "||" || op == "|" || op == "|&") ? op : ""
     } else if (op == "&&" || op == "||" || op == "|" || op == "|&") lop[l] = op
     else if (op == ";" || op == "&" || op == ";;" || op == ";&" || op == ";;&") lop[l] = ""
     if (pclose[l] != "" && op != "") { if (op == "|" || op == "|&" || op == "&") printf "A\t%s\n", pclose[l]; pclose[l] = "" }
-    cmdw[l] = ""; cmdn[l] = 0; cond[l] = 0; redir[l] = 0
+    cmdw[l] = ""; cmdn[l] = 0; cond[l] = 0; redir[l] = 0; neg[l] = 0
 }
 function push(t, o) { sp++; ty[sp] = t; own[sp] = o; pb[sp] = 0; ap[sp] = 0 }
 function pushc(closer, lf) {                                                                # a nested code level: $( ) ` ` <( )
     sp++; ty[sp] = "C"; cl[sp] = closer; lift[sp] = lf; pd[sp] = 0; cv[sp] = ""; cmdw[sp] = ""; cmdn[sp] = 0; win[sp] = 0
-    cond[sp] = 0; redir[sp] = 0; cs[sp] = ""; defpend[sp] = ""; lop[sp] = ""; pclose[sp] = ""; patraw[sp] = ""
+    cond[sp] = 0; redir[sp] = 0; cs[sp] = ""; defpend[sp] = ""; lop[sp] = ""; pclose[sp] = ""; patraw[sp] = ""; neg[sp] = 0
 }
 function popc(   l, inner, p) {
     l = sp; endcmd(l, ")"); inner = cv[l]; sp--; p = sp
@@ -596,7 +609,7 @@ function lexline(line,   hl, hr) {
     scan(line)
 }
 BEGIN { sp = 1; ty[1] = "C"; cl[1] = ""; lift[1] = 0; pd[1] = 0; cv[1] = ""; cmdw[1] = ""; cmdn[1] = 0; win[1] = 0; cs[1] = ""; defpend[1] = ""
-        lop[1] = ""; pclose[1] = ""; patraw[1] = ""; fsp = 0; bsp = 0; HD = 0; nhd = 0; started = 0; cont = 0; fid = 0; fk = 0; hqopen = 0 }
+        lop[1] = ""; pclose[1] = ""; patraw[1] = ""; neg[1] = 0; fsp = 0; bsp = 0; HD = 0; nhd = 0; started = 0; cont = 0; fid = 0; fk = 0; hqopen = 0 }
 { LINES[NR] = $0 }
 END { NLINES = NR; for (LNR = 1; LNR <= NLINES; LNR++) lexline(LINES[LNR])
       if (started) { endcmd(1, "nl"); emitline() } }
@@ -608,12 +621,13 @@ END { NLINES = NR; for (LNR = 1; LNR <= NLINES; LNR++) lexline(LINES[LNR])
 #                     `command -v|-V …`, a lookup, and for a command of assignments only); it sets BPPRE to the builtin /
 #                     command prefix it skipped ("" when none) — a FUNCTION behind either never runs (command skips the
 #                     function lookup, builtin refuses a non-builtin)
-#   bpshell(n, W)   — the index of a SHELL the command runs, found by the word, not by its wrappers: the first literal word
-#                     naming a shell — bash / sh / dash / zsh / ksh, by any path, or busybox's sh / ash / hush / bash applet —
-#                     that is followed by nothing (a shell reading its stdin), by an option word carrying c (-c, -ec, -lc …)
-#                     or by a word that is not an option (a script file), whatever wrappers and options precede it (timeout,
-#                     env, nice --adjustment N, xargs --max-args N, stdbuf, sudo, find -exec …); 0 when none, and for a
-#                     lookup (`command -v bash`). A shell word followed only by options without c (`bash --version`) is not one
+#   bpshell(n, W)   — the index of a SHELL the command runs, found by the word, not by its wrappers — FAIL-CLOSED: the first
+#                     literal word naming a shell — bash / sh / dash / zsh / ksh, by any path, or busybox's sh / ash / hush /
+#                     bash applet — whatever wrappers and options precede it (timeout, env, nice --adjustment N, xargs
+#                     --max-args N, stdbuf, sudo, find -exec …), UNLESS the only words after it are --version or --help
+#                     (at least one): followed by nothing it reads its stdin, and any option (-s -e -x -i -l - -- --norc
+#                     --posix …), -c string or script word runs code this census cannot walk; a redirection is not a word,
+#                     so `bash -e < file` is one too; 0 when none, and for a lookup (`command -v bash`)
 BP_AWK_LIB='
 function bpq(w) { sub(/\035.*/, "", w); return substr(w, 2) }
 function bpr(w) { sub(/^[^\035]*\035/, "", w); return w }
@@ -644,7 +658,7 @@ function bpshell(n, W,   k, j, a, b) {
         if (b == "busybox" && k < n && bplit(W[k + 1]) && bpq(W[k + 1]) ~ /^(sh|ash|hush|bash)$/) k++
         else if (b !~ /^(bash|sh|dash|zsh|ksh)$/) continue
         if (k == n) return k
-        for (j = k + 1; j <= n; j++) { a = bpq(W[j]); if (a ~ /^-[A-Za-z]*c[A-Za-z]*$/ || a !~ /^-/) return k }
+        for (j = k + 1; j <= n; j++) { a = bpq(W[j]); if (a != "--version" && a != "--help") return k }
     }
     return 0
 }
