@@ -331,33 +331,43 @@ jobs:
         # knob reads the runner's value instead of its default — three suites used CI as their check-interval knob, bash
         # arithmetic read `true` as 0, their simulated clocks stopped, and two of them never ended (the delta panel 7's
         # CIP-1). Every line of tests/*.sh, tests/lib/*.sh, tests/lib/*.awk and tests/strace-hermetic.sh that is not
-        # comment-only (first non-blank character #) is red when it holds the word CI, or a word beginning GITHUB_ or
-        # RUNNER_ (a word: not preceded or followed by a letter, a digit or _), in any context — an expansion, an assignment
-        # or a prefix assignment, an arithmetic name, awk's ENVIRON, a string: fail-closed, so a code line names the
-        # workflow otherwise (ci.yml). Every grep reads every byte as text (-a: a NUL byte, or a byte invalid in the
-        # runner's UTF-8 locale, cannot hide a line); grep's exit status must be 0 or 1; the step prints how many files grep
-        # read. LIMIT: a here-document line that begins with # is skipped as a comment, though bash expands an unquoted
-        # one's ${ }.
+        # comment-only (its first character other than a space or a tab is #: the blanks bash skips before a word, so a
+        # line that begins with a CR, VT or FF byte before its # is code to bash, and read here) is red when it holds the
+        # word CI, or a word beginning GITHUB_ or RUNNER_ (a word: not preceded or followed by a letter, a digit or _), in
+        # any context — an expansion, an assignment or a prefix assignment, an arithmetic name, awk's ENVIRON, a string:
+        # fail-closed, so a code line names the workflow otherwise (ci.yml). The step runs in the C locale (LC_ALL=C: every
+        # byte is one character to tr and grep, so a byte invalid in UTF-8 right after a name ends the word, as it ends the
+        # name for bash: $CI<0xE9> is $CI). Each file is read whole, every NUL byte dropped first (bash drops it from a
+        # script line: ${C<NUL>I} is ${CI}), the rest read as text (grep -a); grep's exit status must be 0 or 1, and an
+        # unreadable file is red; the step prints how many files were read against how many it found. LIMIT: a name split
+        # by a backslash-newline (${C\ on one line, I} on the next), by quotes or a backslash (printenv C''I, C\I), or
+        # assembled at run time (${!v}, eval) is not seen; and a line that begins with # but is not a comment to bash — in
+        # an unquoted here-document or a "…" string spanning lines — is skipped, though bash expands its ${ }.
         run: |
+          export LC_ALL=C
           w=$(mktemp -d); re='(^|[^A-Za-z0-9_])(CI|GITHUB_[A-Za-z0-9_]*|RUNNER_[A-Za-z0-9_]*)([^A-Za-z0-9_]|$)'
           find tests -type f \( -name '*.sh' -o -name '*.awk' \) > "$w/found"
           [ -s "$w/found" ] || { echo "no test file found — run from the repository root"; exit 1; }
           find tests -type f \( -name '*.sh' -o -name '*.awk' \) -exec sh -c '
             w=$1; re=$2; shift 2
-            grep -cH -a -E -e "$re" "$@" >> "$w/read"; r=$?; [ "$r" -le 1 ] || echo "grep -c exited $r" >> "$w/err"
-            grep -nH -a -E -e "$re" "$@" >> "$w/hits"; r=$?; [ "$r" -le 1 ] || echo "grep -n exited $r" >> "$w/err"
+            for f do
+              tr -d "\\000" < "$f" > "$w/nz" || { echo "could not read $f" >> "$w/err"; continue; }
+              grep -n -a -E -e "$re" "$w/nz" > "$w/ln"; r=$?; [ "$r" -le 1 ] || { echo "grep -n exited $r on $f" >> "$w/err"; continue; }
+              printf "%s\n" "$f" >> "$w/read"
+              while IFS= read -r l; do printf "%s:%s\n" "$f" "$l" >> "$w/hits"; done < "$w/ln"
+            done
             exit 0' sh "$w" "$re" {} +
           : >> "$w/read"; : >> "$w/hits"
-          if [ -s "$w/err" ]; then sed 's/^/GREP FAILED: /' "$w/err"; echo "RED: grep could not read the tests"; exit 1; fi
+          if [ -s "$w/err" ]; then sed 's/^/READ FAILED: /' "$w/err"; echo "RED: the tests could not be read"; exit 1; fi
           nf=$(wc -l < "$w/found" | tr -d ' '); nr=$(wc -l < "$w/read" | tr -d ' ')
-          grep -a -vE '^[^:]+:[0-9]+:[[:space:]]*#' "$w/hits" > "$w/h" || true
+          grep -a -vE '^[^:]+:[0-9]+:[[:blank:]]*#' "$w/hits" > "$w/h" || true
           nh=$(wc -l < "$w/h" | tr -d ' ')
           sed 's/^/A NAME GITHUB SETS, IN A TEST — /' "$w/h"
-          echo "$nf test files found, $nr read by grep; lines naming CI / GITHUB_* / RUNNER_*: $nh"
+          echo "$nf test files found, $nr read whole (NUL bytes dropped, grep -a, LC_ALL=C); lines naming CI / GITHUB_* / RUNNER_*: $nh"
           rm -rf "$w"
-          [ "$nr" -eq "$nf" ] || { echo "RED: grep read $nr of the $nf test files"; exit 1; }
+          [ "$nr" -eq "$nf" ] || { echo "RED: read $nr of the $nf test files"; exit 1; }
           [ "$nh" -eq 0 ] || { echo "RED: a test names a variable GitHub's runner sets (rule: this step's comment)"; exit 1; }
-          echo "no test names CI, GITHUB_* or RUNNER_* in a code line"
+          echo "no test names CI, GITHUB_* or RUNNER_* in a line that is not comment-only, every NUL byte dropped and every other byte read as one character"
       - name: every page the daemons send has an entry in docs/NOTIFICATIONS.md (v0.7 Block 6.3.1)
         # RULE: tests/lib/notif-titles.awk reads both daemons (its header holds how it reads a line) and lists every page
         # they send, by its title as sent — an `alert` call's status (its third argument, verbatim), an `alert_warn`
