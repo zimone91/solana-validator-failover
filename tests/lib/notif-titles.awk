@@ -19,7 +19,11 @@
 #                                          this reader does not decode; and — fail-closed — the word alert, alert_warn,
 #                                          send_telegram, send_webhook or a wrapper's name standing in the code as an
 #                                          unquoted word where no call was read (an argument: behind eval / command / exec /
-#                                          a pipe tool; a name inside an unquoted $(( … )); a definition in another shape …)
+#                                          a pipe tool; a name inside a $(( … )); a definition in another shape …); and a
+#                                          line the reader ends inside a level it opened — a ${ … }, a $(( … )) or a "…",
+#                                          or a $( … ) or backticks unless a backslash continues the line (the daemons'
+#                                          `x=$(curl … \` lines): a construct spanning lines, or a line the reader lost
+#                                          its place on — a call after that point would go unread
 #   W <function> alert|alert_warn|direct|webhook <$N>   a WRAPPER: a function whose body passes its own "$N" as an alert
 #                                          call's status, an alert_warn message, a direct send_telegram's message or a
 #                                          direct send_webhook's title; its callers' Nth argument is read as that title
@@ -30,13 +34,17 @@
 # How a line is read: comment-only and blank lines are skipped; the code is lexed into shell words with its quoting
 # (' " \ $'…' $"…"), the literal text of a double-quoted part joining its word as bash's quote removal joins it; its
 # $( … ) and backticks are read as CODE at any depth — inside a double-quoted "…", an unquoted ${ … } or $(( … )), and an
-# array value NAME=( … ) included; a command word is the first word of a simple command — after ; & | { } ( ) ! or then
-# / do / else / if / elif / while / until / time, and PAST any assignment words (NAME=… NAME+=… NAME[…]=…) and
-# redirections (n> > >> < <<< &> n>&m and their target words) that precede it. A # starts a comment only at a word's
-# start. A function is `name() {` at column 0 and ends at a `}` at column 0 (every function in both daemons is written
-# that way). The sends inside the four SINKS — alert, alert_warn, alert_info, flush_pending_alerts — are the transport of
-# their callers' pages (read at the callers), not pages of their own. LIMIT (named): the reader is line-based (a
-# here-document body is read as code; a $( ) or a quote spanning lines is read up to the line's end), and a command word
+# array value NAME=( … ) included; a $(( … )) is the same level quoted or not (a name in it as above); a ${ … } ends at
+# its first } that is not quoted, escaped or inside a level it opened, as bash ends it (a bare { in it is text); a command
+# word is the first word of a simple command — after ; & | { } ( ) ! or then / do / else / if / elif / while / until /
+# time (and time's -p and --), and PAST any assignment words (NAME=… NAME+=… NAME[…]=…) and redirections (n> > >> < <<<
+# &> n>&m and their target words) that precede it. A # starts a comment only at a word's start. A function is
+# `name() {` at column 0 and ends at a `}` at column 0 (every function in both daemons is written that way). The sends
+# inside the four SINKS — alert, alert_warn, alert_info, flush_pending_alerts — are the transport of their callers'
+# pages (read at the callers), not pages of their own. LIMIT (named): the reader is line-based (a here-document body is
+# read as code; a construct spanning lines is read up to the line's end — the U row above), a backslash-escaped backtick
+# inside backticks (a nested command substitution in the old spelling, `… \`cmd\` …`) is read as a quoted character, not
+# as code (the daemons have no backtick in their code; the parse censuses name the same shape), and a command word
 # assembled at run time ($f, "$cmd") or a call in a string that eval or trap runs is not seen — the (7g)-style parse
 # censuses are the tool for those shapes, not this doc check.
 BEGIN {
@@ -104,14 +112,15 @@ function row(kind, k, who,    h) {                   # the T or U row for argume
     else printf "T\t%s\t%s\t%s\n", at, kind, h
 }
 # The lexer's levels: C — code (CLO its closer: "" the line, ")" a $( … ) / ( … ) value, "`" backticks); D — a
-# double-quoted "…" (WL: the level whose word its literal text joins, 0 for none); P — an unquoted ${ … } (PB its open
-# braces); A — an unquoted $(( … )) (PA its open parentheses). In D, P and A a $( … ) or backticks open a C level.
-function pushc(closer) { sp++; TY[sp] = "C"; CLO[sp] = closer; PD[sp] = 0; CPOS[sp] = 1; RDT[sp] = 0; INW[sp] = 0 }
+# double-quoted "…" (WL: the level whose word its literal text joins, 0 for none); P — an unquoted ${ … }, ended by its
+# first } (bash counts no bare { in it); A — a $(( … )) (PA its open parentheses). In D, P and A a $( … ) or backticks
+# open a C level, a $(( … )) an A level; in P and A a ${ … } opens a P level.
+function pushc(closer) { sp++; TY[sp] = "C"; CLO[sp] = closer; PD[sp] = 0; CPOS[sp] = 1; RDT[sp] = 0; INW[sp] = 0; TP[sp] = 0 }
 function pushd(wl) { sp++; TY[sp] = "D"; WL[sp] = wl; INW[sp] = 0 }
-function pushp() { sp++; TY[sp] = "P"; PB[sp] = 0; INW[sp] = 0 }
+function pushp() { sp++; TY[sp] = "P"; INW[sp] = 0 }
 function pusha() { sp++; TY[sp] = "A"; PA[sp] = 0; INW[sp] = 0 }
 function wstart(i) { if (!INW[sp]) { INW[sp] = 1; WS[sp] = i; WT[sp] = ""; WQ[sp] = 0; WX[sp] = 0; WE[sp] = 0 } }
-function endword(s, i,    w, j, isdef, isasg) {  # the word that ends at i (exclusive) at level sp: a call, a mention, …
+function endword(s, i,    w, j, isdef, isasg, tp) {  # the word that ends at i (exclusive) at level sp: a call, a mention, …
     if (!INW[sp]) return
     INW[sp] = 0; w = WT[sp]
     if (RDT[sp]) { RDT[sp] = 0; return }                                   # a redirection's target: the position stays
@@ -121,7 +130,8 @@ function endword(s, i,    w, j, isdef, isasg) {  # the word that ends at i (excl
     isdef = (substr(s, j, 2) == "()" || substr(s, j, 3) == "( )")
     if (FNKW) { FNKW = 0; isdef = 1 }                                     # the name after `function`
     if (CPOS[sp]) {
-        CPOS[sp] = (!WQ[sp] && !WX[sp] && w ~ /^(then|do|else|if|elif|while|until|time|!)$/)
+        tp = TP[sp]; TP[sp] = (!WQ[sp] && !WX[sp] && (w == "time" || (tp && w == "-p")))   # time, then its -p and --
+        CPOS[sp] = (!WQ[sp] && !WX[sp] && (w ~ /^(then|do|else|if|elif|while|until|time|!)$/ || (tp && w ~ /^(-p|--)$/)))
         if (!WQ[sp] && !WX[sp] && w == "function") { FNKW = 1; return }
         if (isdef || WX[sp]) return
         if (WE[sp]) { ne++; EW[ne] = w; return }                          # $'\x61lert' — an escape this reader does not decode
@@ -141,9 +151,18 @@ function inner(s, i, c,    d) {   # in a D, P or A level: a $( ), backticks, ${ 
     if (d == "{") { pushp(); return i + 2 }
     return 0
 }
+function lost(s,    k) {   # the line ends (or a quote runs past its end) with level sp open: LOST names the innermost level
+                           # the reader opened that is still open — any ${ … }, $(( … )) or "…"; a $( … ) or backticks unless
+                           # a backslash continues the line — "" when none is
+    for (k = sp; k > 1; k--) {
+        if (TY[k] == "C" && s ~ /\\$/) continue
+        if (TY[k] == "P") LOST = "${ … }"; else if (TY[k] == "A") LOST = "$(( … ))"; else if (TY[k] == "D") LOST = "\"…\""; else LOST = "$( … ) or backticks"
+        return
+    }
+}
 function calls(s,    n, i, c, d, k, op) {           # the calls on one line: CW[1..nc] (CP past the word, CC its closer)
-    nc = 0; nm = 0; nq = 0; ne = 0; n = length(s); i = 1; FNKW = 0
-    sp = 1; TY[1] = "C"; CLO[1] = ""; PD[1] = 0; CPOS[1] = 1; RDT[1] = 0; INW[1] = 0
+    nc = 0; nm = 0; nq = 0; ne = 0; n = length(s); i = 1; FNKW = 0; LOST = ""
+    sp = 1; TY[1] = "C"; CLO[1] = ""; PD[1] = 0; CPOS[1] = 1; RDT[1] = 0; INW[1] = 0; TP[1] = 0
     while (i <= n) {
         c = substr(s, i, 1)
         if (TY[sp] == "D") {                                               # "…": text — it joins its word (quote removal, as
@@ -151,21 +170,17 @@ function calls(s,    n, i, c, d, k, op) {           # the calls on one line: CW[
             if (c == "\\") { d = substr(s, i + 1, 1); if (k) WT[k] = WT[k] ((d ~ /[$`"\\]/) ? d : c d); i += 2; continue }
             if (c == "\"") { sp--; i++; continue }
             if (c == "$" && substr(s, i + 1, 1) == "$") { if (k) { WX[k] = 1; WT[k] = WT[k] "$$" } i += 2; continue }
-            if (c == "$" && substr(s, i + 1, 1) == "(" && substr(s, i + 2, 1) != "(") { if (k) WX[k] = 1; pushc(")"); i += 2; continue }
+            if (c == "$" && substr(s, i + 1, 1) == "(") { if (k) WX[k] = 1; if (substr(s, i + 2, 1) == "(") { pusha(); i += 3 } else { pushc(")"); i += 2 } continue }
             if (c == "`") { if (k) WX[k] = 1; pushc("`"); i++; continue }
             if (k) { if (c == "$") WX[k] = 1; WT[k] = WT[k] c }
             i++; continue
         }
-        if (TY[sp] == "P" || TY[sp] == "A") {                              # an unquoted ${ … } or $(( … )): text and names —
+        if (TY[sp] == "P" || TY[sp] == "A") {                              # an unquoted ${ … } or a $(( … )): text and names —
             if (c == "\\") { i += 2; continue }                            # a $( ), backticks, ${ } or $(( )) in it opens its
-            if (c == "\047") { k = index(substr(s, i + 1), "\047"); if (!k) return; i += k + 1; continue }   # level
+            if (c == "\047") { k = index(substr(s, i + 1), "\047"); if (!k) { lost(s); return } i += k + 1; continue }   # level
             if (c == "\"") { pushd(0); i++; continue }
             k = inner(s, i, c); if (k) { i = k; continue }
-            if (TY[sp] == "P") {
-                if (c == "{") PB[sp]++
-                else if (c == "}") { if (PB[sp] > 0) PB[sp]--; else sp-- }
-                i++; continue
-            }
+            if (TY[sp] == "P") { if (c == "}") sp--; i++; continue }       # its first } ends it, as bash ends it
             if (c == "$") { i++; while (i <= n && substr(s, i, 1) ~ /[A-Za-z0-9_]/) i++; continue }   # $name: a variable
             if (c ~ /[A-Za-z_]/) {                                         # a name: a variable to bash — fail-closed when it
                 k = i; while (i <= n && substr(s, i, 1) ~ /[A-Za-z0-9_]/) i++   # is a watched word ($((alert …) ) runs it)
@@ -176,10 +191,10 @@ function calls(s,    n, i, c, d, k, op) {           # the calls on one line: CW[
             if (c == ")") { if (PA[sp] > 0) { PA[sp]--; i++; continue } sp--; i += (substr(s, i + 1, 1) == ")") ? 2 : 1; continue }
             i++; continue
         }
-        if (c == "\047") { wstart(i); WQ[sp] = 1; k = index(substr(s, i + 1), "\047"); if (!k) return; WT[sp] = WT[sp] substr(s, i + 1, k - 1); i += k + 1; continue }
+        if (c == "\047") { wstart(i); WQ[sp] = 1; k = index(substr(s, i + 1), "\047"); if (!k) { lost(s); return } WT[sp] = WT[sp] substr(s, i + 1, k - 1); i += k + 1; continue }
         if (c == "\"") { wstart(i); WQ[sp] = 1; pushd(sp); i++; continue }
         if (c == "\\") { wstart(i); WQ[sp] = 1; WT[sp] = WT[sp] substr(s, i + 1, 1); i += 2; continue }
-        if (c == "#" && !INW[sp]) return                                    # a comment
+        if (c == "#" && !INW[sp]) { lost(s); return }                     # a comment
         if (c == "`") {
             if (CLO[sp] == "`") { endword(s, i); sp--; i++; continue }
             wstart(i); WX[sp] = 1; pushc("`"); i++; continue
@@ -223,6 +238,7 @@ function calls(s,    n, i, c, d, k, op) {           # the calls on one line: CW[
         if ((c == "{" || c == "}") && !INW[sp]) { CPOS[sp] = 1; i++; continue }
         wstart(i); WT[sp] = WT[sp] c; i++
     }
+    lost(s)                                                                # a level left open: a U row (the caller)
     while (sp > 1 && TY[sp] != "C") sp--                                   # a quote or an expansion left open: its word ends
     endword(s, n + 1)
 }
@@ -264,6 +280,7 @@ FNR == 1 { if (first == "") { first = FILENAME; pass = 1 } else if (FILENAME == 
         for (k = 1; k <= nq; k++) printf "U\t%s\tcall\tthe call word %s spelled with quotes or a backslash\n", at, QW[k]
         for (k = 1; k <= ne; k++) printf "U\t%s\tcall\ta command word holding an ANSI-C escape this reader does not decode: $'%s'\n", at, EW[k]
         for (k = 1; k <= nm; k++) if (!(MW[k] == "send_telegram" || MW[k] == "send_webhook") || !(fn in SINK)) printf "U\t%s\tcall\tthe word %s where no call was read (an argument — behind eval / command / exec / a tool — or a word this reader cannot place)\n", at, MW[k]
+        if (LOST != "") printf "U\t%s\tcall\ta %s still open at the end of the line (a construct spanning lines, or a line the reader lost its place on: a call after that point would go unread)\n", at, LOST
     }
     if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*\(\)[ \t]*\{.*\}[ \t]*$/) fn = ""           # a one-line function ends on its line
 }

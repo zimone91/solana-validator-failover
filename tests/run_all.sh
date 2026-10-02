@@ -54,7 +54,8 @@ EXPECTED_SUITES=54
 # process has ended, by itself or by that TERM, every process still in its group (a child that survived the TERM, a
 # background child a green suite left running) gets SIGTERM and, 5 s later, SIGKILL, and the run names the suite ("LEFT
 # RUNNING"); a process that left the group (its own set -m, setsid) is not stopped (the strace job names one that holds
-# strace past run_all's end). The cap is base 10, without a leading zero (0100 would be octal to bash arithmetic).
+# strace past run_all's end). The cap is base 10, without a leading zero (0100 would be octal to bash arithmetic), and at
+# most 18 digits (bash's 64-bit arithmetic wraps a 19-digit number, so it would kill every suite at once).
 # The default, 3600 s, covers every gate leg: the slowest suite on the slowest leg measured 1,858 s (test_own_view, bash
 # 5.2 with busybox awk on one docker vCPU; the 6.3.1 fix round 8 gate's legs: 1,722 and 1,858 s), 1.94x under it — and
 # ubuntu 24.04 with mawk 967 / 996 s, the same under strace -f 1,394 / 1,392 s, macOS bash 3.2 (test_elapsed_provider)
@@ -62,8 +63,9 @@ EXPECTED_SUITES=54
 # macOS, 5400 s under strace). Every leg prints each suite's wall time and its three slowest against the cap. Override for
 # a slower machine: RUN_ALL_SUITE_CAP=<seconds>.
 RUN_ALL_SUITE_CAP=${RUN_ALL_SUITE_CAP:-3600}
-# base 10 only: a leading zero is refused (bash arithmetic would read 0100 as octal 64 s, and 0900 as no number at all)
-case "$RUN_ALL_SUITE_CAP" in ''|*[!0-9]*|0*) echo "  RUN_ALL_SUITE_CAP must be a whole number of seconds, base 10, without a leading zero (got '$RUN_ALL_SUITE_CAP')"; exit 2 ;; esac
+# base 10 only: a leading zero is refused (bash arithmetic would read 0100 as octal 64 s, and 0900 as no number at all);
+# 19 digits or more are refused too (9999999999999999999 wraps negative in bash's 64-bit arithmetic)
+case "$RUN_ALL_SUITE_CAP" in ''|*[!0-9]*|0*|???????????????????*) echo "  RUN_ALL_SUITE_CAP must be a whole number of seconds, base 10, without a leading zero, at most 18 digits (got '$RUN_ALL_SUITE_CAP')"; exit 2 ;; esac
 run_pass=0; run_fail=0; failed=""
 _suite_out=$(mktemp); _ra_times=$(mktemp); _ra_pid=""; _ra_wd=""
 _ra_reap() {    # _ra_reap <pgid> — every process still in that process group (the suite's: a child that survived the cap's
@@ -105,8 +107,8 @@ trap '_ra_abort INT' INT; trap '_ra_abort TERM' TERM; trap '_ra_abort HUP' HUP
 # opens a socket, whatever opened it; a real client reached past a rewritten stand-in is its REAL exec.
 # Each stand-in directory is written to HARNESS_STUB_DIRS_LOG when that is set (the strace job sets it): the job counts a
 # listed client's exec from a directory on that list as a stand-in's, from anywhere else as REAL — a listed directory
-# counting only under the run's own temp root (the job points TMPDIR there, so every mktemp lands under it; one listed
-# from anywhere else is red).
+# counting only under the run's own temp root (the job points TMPDIR there, so every mktemp of run_all, the harness and
+# the suites lands under it — none names an absolute template; one listed from anywhere else is red).
 _ra_net=$(mktemp -d)
 _ra_clients=$(sed -n 's/^HARNESS_NET_CLIENTS="\(.*\)"$/\1/p' lib/harness.sh)
 net_fail=0; netfailed=""; net_setup=""; _ra_tampered=""

@@ -705,9 +705,11 @@ RPC_JQ='(if type == "array" then . elif type == "object" then [.] else error("no
 # literal word naming a shell (sh, bash, rbash, dash, ash, hush, zsh, ksh, ksh93, mksh, lksh, pdksh, oksh, posh, yash, csh,
 # tcsh, fish by any path; busybox's sh / ash / hush / bash applet), whatever precedes it (timeout, env, nice --adjustment
 # N, xargs --max-args N, stdbuf, sudo, find -exec …), unless the only words after it are --version or --help (nothing: its
-# stdin; any option, a -c string, a script) — an env -S / --split-string string read as the words env splits it into, and
-# sudo -s / -i (the user shell sudo runs) included. LIMIT, named: a curl whose command
-# word is assembled at run time ("$c", a variable), a shell whose word is ("$SHELL -c"), a tool that runs a shell it picks
+# stdin; any option, a -c string, a script) — an env -S string (in a cluster too: -iS) or a --split-string string (or an
+# abbreviation down to --s) read as the words env splits it into, and sudo -s / -i (in a cluster too), --login or --shell
+# (or an abbreviation down to --sh) — the user shell sudo runs — included. LIMIT, named: a curl whose command
+# word is assembled at run time ("$c", a variable), a shell whose word is ("$SHELL -c") or that goes by a name not on
+# bpshell's list (ksh2020, bash5.2), a tool that runs a shell it picks
 # itself (flock -c, su, script -c, chroot without a command), a string handed to eval / trap / mapfile -C (the (0d)
 # census flags eval and pins every trap / mapfile), and code an interpreter runs from a string (awk's system(), perl -e,
 # python3 -c).
@@ -2085,8 +2087,9 @@ fi
 # this census cannot walk (the daemons run none) — bp_parse's bpshell, fail-closed: a literal word naming a shell (sh /
 # bash / rbash / dash / ash / hush / zsh / ksh / ksh93 / mksh and the other shells its header lists, by any path;
 # busybox's sh / ash / hush / bash applet), whatever wrappers and options precede it, unless the only words after it are
-# --version or --help (nothing after it reads stdin; any option, -c string or script runs code); an env -S string is read
-# as its words, and sudo -s / -i runs a shell. (7g-local) pins where LOCAL_RPC is
+# --version or --help (nothing after it reads stdin; any option, -c string or script runs code); an env -S / --split-string
+# string is read as its words (a cluster, an abbreviation included), and sudo -s / -i / --login / --shell (a cluster, an
+# abbreviation included) runs a shell; a shell under a name not on bpshell's list is not seen. (7g-local) pins where LOCAL_RPC is
 # written — the LOCAL rule trusts that name. The PRIMARY's recovery pass is walked the same way.
 #   The per-cycle and per-pass samples are not walked — worlds pin them (the delta panel 2 deleted each on fix round 2's
 # build): the main loop's ((4b-residual)'s cut110 and (2)'s race turn BLIND), the recovery ladder's (test_act_then_alert
@@ -2454,7 +2457,13 @@ EOB
 # ksh only and read no env -S string): wn — ten shells right after the fence's sample, one per line, each reading code from
 # its stdin or a -c string: `| ash -s`, `/bin/ash -c`, `| hush`, `| mksh -s`, `| rbash -s`, `| ksh93 -s`, `env -S 'bash
 # -s'`, `env -S'bash -s'`, `env --split-string='bash -s'`, `sudo -s` — (7g) names ten shells and (1a) reads ten
-# unparseable; wnv `env -S 'printf x'`, `sudo -u nobody printf x` and `env -u FOO printf x` (no shell) green on both
+# unparseable; wnv `env -S 'printf x'`, `sudo -u nobody printf x` and `env -u FOO printf x` (no shell) green on both.
+# The delta panel 9's CHK9-BPSHELL-ENV-SUDO-SPELLINGS (red first; GREEN on fix round 9's bpshell, which read env -S only
+# as -S / -S… / --split-string(=) and sudo's long options only as spelled in full): eight more wn lines — `env -vS 'bash
+# -s'`, `env -iS 'bash -s'`, `env --split='bash -s'`, `env --split 'bash -s'`, `env --sp='bash -s'` (GNU env's getopt
+# reads the cluster and the abbreviations), `env -S 'bash\_-s'` (env reads \_ as a blank), `sudo --sh` (--shell) and
+# `sudo --us root -s` (--user's abbreviation takes root, then -s) — so (7g) names eighteen shells and (1a) reads eighteen
+# unparseable; wnv gains `sudo --us nobody printf x`, `env -uS printf x` and `env --sp='printf x'` (no shell), green
 ev_mut "$STANDBY" "R3): before the fence" after "$WORK/s-c7g-wn.sh" <<'EOB'
         _x=$(printf ':' | ash -s)
         _x=$(/bin/ash -c ':')
@@ -2466,11 +2475,22 @@ ev_mut "$STANDBY" "R3): before the fence" after "$WORK/s-c7g-wn.sh" <<'EOB'
         _x=$(printf ':' | env -S'bash -s')
         _x=$(env --split-string='bash -s' < /dev/null)
         _x=$(sudo -s < /dev/null)
+        _x=$(printf ':' | env -vS 'bash -s')
+        _x=$(printf ':' | env -iS 'bash -s')
+        _x=$(printf ':' | env --split='bash -s')
+        _x=$(printf ':' | env --split 'bash -s')
+        _x=$(printf ':' | env --sp='bash -s')
+        _x=$(printf ':' | env -S 'bash\_-s')
+        _x=$(sudo --sh < /dev/null)
+        _x=$(sudo --us root -s < /dev/null)
 EOB
 ev_mut "$STANDBY" "R3): before the fence" after "$WORK/s-c7g-wnv.sh" <<'EOB'
         _v=$(env -S 'printf x')
         _v=$(sudo -u nobody printf x)
         _v=$(env -u FOO printf x)
+        _v=$(sudo --us nobody printf x)
+        _v=$(env -uS printf x)
+        _v=$(env --sp='printf x')
 EOB
 c7g_r7=1; c7g_r7r=""
 for _g in "P1|p|_check_single_rpc:*: curl — an external read" "P1if|p|_check_single_rpc:*: curl — an external read" "P1or|p|_check_single_rpc:*: curl — an external read" \
@@ -2495,10 +2515,11 @@ if [[ -s "$WORK/s-c7g-ws.sh" && -s "$WORK/s-c7g-wsv.sh" ]]; then
 else
     c7g_r7=0; c7g_r7r="$c7g_r7r [ws/wsv: NOT-BUILT]"
 fi
-# wn / wnv (CHK8-BPSHELL-NAMES): ten shells named by (7g) and read unparseable by (1a); wnv green on both
+# wn / wnv (CHK8-BPSHELL-NAMES, CHK9-BPSHELL-ENV-SUDO-SPELLINGS): eighteen shells named by (7g) and read unparseable by
+# (1a); wnv green on both
 if [[ -s "$WORK/s-c7g-wn.sh" && -s "$WORK/s-c7g-wnv.sh" ]]; then
     _o=$(s2_sb "$WORK/s-c7g-wn.sh"); _r=$?; _n=$(printf '%s\n' "$_o" | grep -c ' — a shell run as a command'); _d=$(d1_scan "$WORK/s-c7g-wn.sh" | head -1)
-    [[ $_r -ne 0 && "$_n" == "10" && "$_d" == *" unparseable=10 "* ]] || { c7g_r7=0; c7g_r7r="$c7g_r7r [wn: rc=$_r shells named=$_n (want 10) (1a) $_d]"; }
+    [[ $_r -ne 0 && "$_n" == "18" && "$_d" == *" unparseable=18 "* ]] || { c7g_r7=0; c7g_r7r="$c7g_r7r [wn: rc=$_r shells named=$_n (want 18) (1a) $_d]"; }
     _o=$(s2_sb "$WORK/s-c7g-wnv.sh"); _r=$?; _d=$(d1_scan "$WORK/s-c7g-wnv.sh" | head -1)
     [[ $_r -eq 0 && -z "$_o" && "$_d" == *" unparseable=0 "* ]] || { c7g_r7=0; c7g_r7r="$c7g_r7r [wnv: rc=$_r (want GREEN) $(printf '%s' "$_o" | tr '\n' ';' | cut -c1-160) (1a) $_d]"; }
 else
@@ -2529,7 +2550,7 @@ for _g in "f|attempt_takeover:*staked_is_actively_voting — an external read" "
 done
 if [[ $s2_rc -eq 0 && -z "$s2_out" && $s2p_rc -eq 0 && -z "$s2p_out" && $c7g_er -ne 0 && "$c7g_e" == *"attempt_safe_recovery:"*"_check_rpc_delinquency"* && "$s2_nsamp" == "13" && $c7g_ar -ne 0 && "$c7g_a" == *"check_primary_dropped_identity:"*"curl"* && $c7g_br -ne 0 && "$c7g_b" == *"tier2_check_delinquency:"* \
       && $c7g_cr -ne 0 && "$c7g_c" == *"check_primary_dropped_identity:"* && $c7g_dr -ne 0 && "$c7g_d" == *"attempt_takeover:"*"get_staked_liveness_sample"* && $c7g_t8 -eq 1 && $c7g_r6 -eq 1 && $c7g_r7 -eq 1 ]]; then
-    ok "(7g) S2 census on bash's own parse of both daemons (bp_parse's commands and structure): walking each take-cycle function's statements in order (the standby's 10, $s2_nsamp statement sample sites; the PRIMARY's recovery pass) — if / case / loop / && || operands as the branches they are, a break / continue (behind && / || too, and break N / continue N) as the exit of the loop it leaves — every external read (a curl command that is not LOCAL — a LOCAL one: its one URL word \"\$LOCAL_RPC\" — the liveness sampler, a call to a caller-covered function; wherever bash runs it: a substitution, a \$((cmd) ), an unquoted here-document body) has an own-head sample since the previous read, a sample counting only as a statement run in the function's own shell (not an argument or a string, not behind command / builtin, not in a substitution, subshell, pipeline, background job or one arm, not an && / || right operand), a LOCAL read in between being a gap; over the call graph of every function the parse defines (standby $s2_sbf, $s2_sbr reading; primary $s2_prf, $s2_prr), no walked function calls a reading function outside the census's sets, no LOCAL-set function reads, a sender's curl sends only to its own endpoint; no shell is run as a command. Not seen (the header): a read a loop repeats, a read in the main loop's body, a network client other than curl, a command word assembled at run time, a string run by eval / trap / mapfile -C (the (0d) census's), a shell whose word is assembled at run time or that a tool runs itself (flock -c), code an interpreter runs from a string (awk's system(), perl -e, python3 -c); the per-cycle / per-pass samples are the worlds' (the header names which world pins each, and the one no world pins). Controls a–t, w1–w4, w01, w02, wsb (a shell behind nice --adjustment N, xargs --max-args N, stdbuf), ws (sixteen shells reading their stdin: -s, -e, -, --, -i, -l, --posix, --norc, env / timeout / busybox sh / /bin/sh / dash, a here-document and a redirection — each named, and in (1a) unparseable), wn (ten more by name or wrapper: ash, /bin/ash -c, hush, mksh, rbash, ksh93, env -S / -S'…' / --split-string='bash -s', sudo -s — each named, and in (1a) unparseable), s01–s06, s08, s14, s15, b16, b17, g1–g5 (each sample no world pins, guarded), g13 / g13if, P1 / P1if / P1or, P3 / P3if, P5 / P5and, Pdeep, Pvar and T2 / T2if (a loop left by a conditional break or continue, or by break N), each red; s13 (the sample first in an || list: it runs) and P5b1 (a plain break out of an inner loop, the sample after it) green, and wsv (bash --version, bash --help) and wnv (env -S 'printf x', sudo -u nobody printf x, env -u FOO printf x) green on (7g) and (1a)"
+    ok "(7g) S2 census on bash's own parse of both daemons (bp_parse's commands and structure): walking each take-cycle function's statements in order (the standby's 10, $s2_nsamp statement sample sites; the PRIMARY's recovery pass) — if / case / loop / && || operands as the branches they are, a break / continue (behind && / || too, and break N / continue N) as the exit of the loop it leaves — every external read (a curl command that is not LOCAL — a LOCAL one: its one URL word \"\$LOCAL_RPC\" — the liveness sampler, a call to a caller-covered function; wherever bash runs it: a substitution, a \$((cmd) ), an unquoted here-document body) has an own-head sample since the previous read, a sample counting only as a statement run in the function's own shell (not an argument or a string, not behind command / builtin, not in a substitution, subshell, pipeline, background job or one arm, not an && / || right operand), a LOCAL read in between being a gap; over the call graph of every function the parse defines (standby $s2_sbf, $s2_sbr reading; primary $s2_prf, $s2_prr), no walked function calls a reading function outside the census's sets, no LOCAL-set function reads, a sender's curl sends only to its own endpoint; no shell is run as a command. Not seen (the header): a read a loop repeats, a read in the main loop's body, a network client other than curl, a command word assembled at run time, a string run by eval / trap / mapfile -C (the (0d) census's), a shell whose word is assembled at run time or that a tool runs itself (flock -c), code an interpreter runs from a string (awk's system(), perl -e, python3 -c); the per-cycle / per-pass samples are the worlds' (the header names which world pins each, and the one no world pins). Controls a–t, w1–w4, w01, w02, wsb (a shell behind nice --adjustment N, xargs --max-args N, stdbuf), ws (sixteen shells reading their stdin: -s, -e, -, --, -i, -l, --posix, --norc, env / timeout / busybox sh / /bin/sh / dash, a here-document and a redirection — each named, and in (1a) unparseable), wn (eighteen more by name or wrapper: ash, /bin/ash -c, hush, mksh, rbash, ksh93, env -S / -S'…' / --split-string='bash -s', sudo -s, and env -vS / -iS / --split= / --split / --sp= 'bash -s', env -S 'bash\\_-s', sudo --sh, sudo --us root -s — each named, and in (1a) unparseable; wnv, no shell behind env -S / -uS / --sp= or sudo -u / --us, green), s01–s06, s08, s14, s15, b16, b17, g1–g5 (each sample no world pins, guarded), g13 / g13if, P1 / P1if / P1or, P3 / P3if, P5 / P5and, Pdeep, Pvar and T2 / T2if (a loop left by a conditional break or continue, or by break N), each red; s13 (the sample first in an || list: it runs) and P5b1 (a plain break out of an inner loop, the sample after it) green, and wsv (bash --version, bash --help) and wnv (env -S 'printf x', sudo -u nobody printf x, env -u FOO printf x) green on (7g) and (1a)"
 else
     bad "(7g) S2 census rc=$s2_rc samples=$s2_nsamp :: $s2_out :: primary rc=$s2p_rc $s2p_out e=$c7g_er[$c7g_e] :: controls a=$c7g_ar[$c7g_a] b=$c7g_br[$c7g_b] c=$c7g_cr[$c7g_c] d=$c7g_dr[$c7g_d] :: T8:$c7g_t8r :: fix round 6:$c7g_r6r :: fix round 7:$c7g_r7r"
 fi
