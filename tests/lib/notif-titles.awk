@@ -20,10 +20,11 @@
 #                                          send_telegram, send_webhook or a wrapper's name standing in the code as an
 #                                          unquoted word where no call was read (an argument: behind eval / command / exec /
 #                                          a pipe tool; a name inside a $(( … )); a definition in another shape …); and a
-#                                          line the reader ends inside a level it opened — a ${ … }, a $(( … )) or a "…",
-#                                          or a $( … ) or backticks unless a backslash continues the line (the daemons'
-#                                          `x=$(curl … \` lines): a construct spanning lines, or a line the reader lost
-#                                          its place on — a call after that point would go unread
+#                                          line the reader ends inside a quote or a level it opened — a '…', $'…' or "…",
+#                                          a ${ … } or $(( … )), or a $( … ), <( … ), >( … ), NAME=( … ) or backticks
+#                                          unless a backslash continues the line (the daemons' `x=$(curl … \` lines): a
+#                                          construct spanning lines, or a line the reader lost its place on — a call after
+#                                          that point would go unread
 #   W <function> alert|alert_warn|direct|webhook <$N>   a WRAPPER: a function whose body passes its own "$N" as an alert
 #                                          call's status, an alert_warn message, a direct send_telegram's message or a
 #                                          direct send_webhook's title; its callers' Nth argument is read as that title
@@ -151,12 +152,13 @@ function inner(s, i, c,    d) {   # in a D, P or A level: a $( ), backticks, ${ 
     if (d == "{") { pushp(); return i + 2 }
     return 0
 }
-function lost(s,    k) {   # the line ends (or a quote runs past its end) with level sp open: LOST names the innermost level
-                           # the reader opened that is still open — any ${ … }, $(( … )) or "…"; a $( … ) or backticks unless
-                           # a backslash continues the line — "" when none is
+function lost(s,    k) {   # the line ends (or a comment ends it) with level sp open: LOST names the innermost level the
+                           # reader opened that is still open — any ${ … }, $(( … )) or "…"; a $( … ), <( … ), >( … ),
+                           # NAME=( … ) or backticks unless a backslash continues the line — "" when none is (a '…' or
+                           # $'…' left open at the line's end sets LOST where it is read)
     for (k = sp; k > 1; k--) {
         if (TY[k] == "C" && s ~ /\\$/) continue
-        if (TY[k] == "P") LOST = "${ … }"; else if (TY[k] == "A") LOST = "$(( … ))"; else if (TY[k] == "D") LOST = "\"…\""; else LOST = "$( … ) or backticks"
+        if (TY[k] == "P") LOST = "${ … }"; else if (TY[k] == "A") LOST = "$(( … ))"; else if (TY[k] == "D") LOST = "\"…\""; else LOST = "$( … ), <( … ), >( … ), NAME=( … ) or backticks"
         return
     }
 }
@@ -177,7 +179,7 @@ function calls(s,    n, i, c, d, k, op) {           # the calls on one line: CW[
         }
         if (TY[sp] == "P" || TY[sp] == "A") {                              # an unquoted ${ … } or a $(( … )): text and names —
             if (c == "\\") { i += 2; continue }                            # a $( ), backticks, ${ } or $(( )) in it opens its
-            if (c == "\047") { k = index(substr(s, i + 1), "\047"); if (!k) { lost(s); return } i += k + 1; continue }   # level
+            if (c == "\047") { k = index(substr(s, i + 1), "\047"); if (!k) { LOST = "\047…\047"; return } i += k + 1; continue }   # level
             if (c == "\"") { pushd(0); i++; continue }
             k = inner(s, i, c); if (k) { i = k; continue }
             if (TY[sp] == "P") { if (c == "}") sp--; i++; continue }       # its first } ends it, as bash ends it
@@ -191,7 +193,7 @@ function calls(s,    n, i, c, d, k, op) {           # the calls on one line: CW[
             if (c == ")") { if (PA[sp] > 0) { PA[sp]--; i++; continue } sp--; i += (substr(s, i + 1, 1) == ")") ? 2 : 1; continue }
             i++; continue
         }
-        if (c == "\047") { wstart(i); WQ[sp] = 1; k = index(substr(s, i + 1), "\047"); if (!k) { lost(s); return } WT[sp] = WT[sp] substr(s, i + 1, k - 1); i += k + 1; continue }
+        if (c == "\047") { wstart(i); WQ[sp] = 1; k = index(substr(s, i + 1), "\047"); if (!k) { LOST = "\047…\047"; return } WT[sp] = WT[sp] substr(s, i + 1, k - 1); i += k + 1; continue }
         if (c == "\"") { wstart(i); WQ[sp] = 1; pushd(sp); i++; continue }
         if (c == "\\") { wstart(i); WQ[sp] = 1; WT[sp] = WT[sp] substr(s, i + 1, 1); i += 2; continue }
         if (c == "#" && !INW[sp]) { lost(s); return }                     # a comment
@@ -204,6 +206,7 @@ function calls(s,    n, i, c, d, k, op) {           # the calls on one line: CW[
             if (d == "\047") {                                             # $'…': an ANSI-C quoted part of the word
                 wstart(i); WQ[sp] = 1; i += 2
                 while (i <= n) { c = substr(s, i, 1); if (c == "\\") { WE[sp] = 1; WT[sp] = WT[sp] substr(s, i, 2); i += 2; continue } i++; if (c == "\047") break; WT[sp] = WT[sp] c }
+                if (c != "\047") { LOST = "$\047…\047"; return }           # no closing ' on this line
                 continue
             }
             if (d == "\"") { wstart(i); WQ[sp] = 1; pushd(sp); i += 2; continue }   # $"…": a locale-translated "…"

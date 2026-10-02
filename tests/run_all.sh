@@ -108,7 +108,7 @@ trap '_ra_abort INT' INT; trap '_ra_abort TERM' TERM; trap '_ra_abort HUP' HUP
 # Each stand-in directory is written to HARNESS_STUB_DIRS_LOG when that is set (the strace job sets it): the job counts a
 # listed client's exec from a directory on that list as a stand-in's, from anywhere else as REAL — a listed directory
 # counting only under the run's own temp root (the job points TMPDIR there, so every mktemp of run_all, the harness and
-# the suites lands under it — none names an absolute template; one listed from anywhere else is red).
+# the suites lands under it — none names a template outside "${TMPDIR:-/tmp}"; one listed from anywhere else is red).
 _ra_net=$(mktemp -d)
 _ra_clients=$(sed -n 's/^HARNESS_NET_CLIENTS="\(.*\)"$/\1/p' lib/harness.sh)
 net_fail=0; netfailed=""; net_setup=""; _ra_tampered=""
