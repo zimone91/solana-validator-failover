@@ -117,8 +117,9 @@ suite's own stub of a listed client (`test_act_then_alert`, `test_proof_gate`, `
 `test_installer_guardrails`) — is written to `HARNESS_STUB_DIRS_LOG` when the strace job sets it: the job counts an exec
 of a listed client from a directory on that list as a stand-in's or a stub's, from anywhere else as the REAL client. A
 listed directory counts only under the run's own temp root — the job points `TMPDIR` at a fresh directory for the run,
-so every `mktemp` of run_all, the harness and the suites lands under it (none names an absolute template; a suite makes
-its directories with `mktemp` and no template, or one under `"${TMPDIR:-/tmp}"`) — and one listed from anywhere else
+so every `mktemp` of run_all, the harness and the suites lands under it (none names a template outside
+`"${TMPDIR:-/tmp}"`: a suite makes its directories with `mktemp` and no template, or one under `"${TMPDIR:-/tmp}"` or
+under a directory made there) — and one listed from anywhere else
 (`/etc/alternatives`, `/usr/bin`) is red. A suite whose world runs a daemon path that reaches a client stubs the client
 in that world (the precedent:
 `test_elapsed_provider`'s m5 world stubs `ping`; before fix round 6 that world — the primary's real `check_internet`

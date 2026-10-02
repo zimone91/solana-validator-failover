@@ -109,8 +109,9 @@ _HARNESS_TMP=$(mktemp -d)
 # is every directory a suite names with harness_stub_dir (its own stubs of a listed client): the strace job counts a
 # listed client's exec from a directory on that list as a stand-in's or a stub's, from anywhere else as the REAL client —
 # a listed directory counting only under the run's own temp root (the job points TMPDIR there: every mktemp of run_all,
-# the harness and the suites lands under it — none names an absolute template; a directory listed from anywhere else is
-# red), so name only a directory made under $TMPDIR (a mktemp with no template, or with one under "${TMPDIR:-/tmp}").
+# the harness and the suites lands under it — none names a template outside "${TMPDIR:-/tmp}"; a directory listed from
+# anywhere else is red), so name only a directory made under $TMPDIR (a mktemp with no template, or with one under
+# "${TMPDIR:-/tmp}").
 harness_stub_dir() {   # harness_stub_dir <dir> — <dir> holds this suite's own stub of a listed network client (curl …)
     [[ -z "${HARNESS_STUB_DIRS_LOG:-}" ]] || printf '%s\n' "$1" >> "$HARNESS_STUB_DIRS_LOG"
 }

@@ -282,18 +282,19 @@ jobs:
         # skeletons systemd/*.service.skel (find, not git ls-files: the step also runs on an exported tree); find hands
         # every name to the reader as it is (-exec … {} +: blanks and quotes included). The step runs in the C locale
         # (LC_ALL=C: every byte is one character to sed, tr, grep and read, so a NUL byte or a byte invalid in UTF-8 cannot
-        # hide a line or join two). Each file is read whole: a DE-QUOTED copy of it — the $ of $'…' and $"…" dropped (a $
-        # right before a quote), then every ' " and \ removed, as bash removes them before it resolves the path, so
-        # /dev/"tcp"/…, "/dev/tc"p/…, /dev/tcp\/…, /dev/'udp'/…, /dev/$'tcp'/… and /dev/tc$""p/… match like /dev/tcp/… — is
-        # searched with grep -a, grep's own exit status must be 0 or 1, and an unreadable file is red; the step prints how
-        # many files were read against how many it found. A match is /dev/tcp/ or /dev/udp/ in the de-quoted line, on ANY
-        # line, comment lines included (fail-closed: a line of an unquoted here-document that begins with # is code to bash,
-        # which runs its $( )); the line is reported as it is written, each on its own line (a file's last line without a
-        # newline included). The ONE permitted line is tests/test_own_view.sh's A5 fixture — text a mutant inserts into a
-        # copy of a daemon for a static census, never executed: `{ exec 9<>/dev/tcp/127.0.0.1/8899 && … }` — required
-        # EXACTLY once (a scan that read nothing cannot pass). Anything else is red, listed. LIMIT: a path assembled at run
-        # time (a variable, an escape in an ANSI-C $'…' string, a line continued by a backslash-newline) is not seen here;
-        # the strace job sees the socket it opens.
+        # hide a line or join two). Each file is read whole: a DE-QUOTED copy of it — every NUL byte dropped (bash drops it
+        # from a script line), then the $ of $'…' and $"…" (a $ right before a quote), then every ' " and \ removed, as bash
+        # removes them before it resolves the path, so /dev/"tcp"/…, "/dev/tc"p/…, /dev/tcp\/…, /dev/'udp'/…, /dev/$'tcp'/…,
+        # /dev/tc$""p/… and a /dev/tcp/… with a NUL byte inside it match like /dev/tcp/… — is searched with grep -a, grep's
+        # own exit status must be 0 or 1, and an unreadable file is red; the step prints how many files were read against
+        # how many it found. A match is /dev/tcp/ or /dev/udp/ in the de-quoted line, on ANY line, comment lines included
+        # (fail-closed: a line of an unquoted here-document that begins with # is code to bash, which runs its $( )); the
+        # line is reported as it is written, each on its own line (a file's last line without a newline included). The ONE
+        # permitted line is tests/test_own_view.sh's A5 fixture — text a mutant inserts into a copy of a daemon for a static
+        # census, never executed: `{ exec 9<>/dev/tcp/127.0.0.1/8899 && … }` — required EXACTLY once (a scan that read
+        # nothing cannot pass). Anything else is red, listed. LIMIT: a path assembled at run time (a variable, an escape in
+        # an ANSI-C $'…' string, a line continued by a backslash-newline) is not seen here; the strace job sees the socket
+        # it opens.
         run: |
           export LC_ALL=C
           w=$(mktemp -d); re='/dev/(tcp|udp)/'; dd="s/[\$]\([\"']\)/\1/g"; dq="\"'\\\\"
@@ -302,7 +303,7 @@ jobs:
           find . -type f -not -path './.git/*' \( -name '*.sh' -o -name '*.env.example' -o -path './systemd/*.service.skel' \) -exec sh -c '
             w=$1; re=$2; dd=$3; dq=$4; shift 4
             for f do
-              sed "$dd" "$f" > "$w/dd" && tr -d "$dq" < "$w/dd" > "$w/dq" || { echo "could not read $f" >> "$w/err"; continue; }
+              tr -d "\\000" < "$f" > "$w/nz" && sed "$dd" "$w/nz" > "$w/dd" && tr -d "$dq" < "$w/dd" > "$w/dq" || { echo "could not read $f" >> "$w/err"; continue; }
               grep -n -a -E -e "$re" "$w/dq" > "$w/ln"; r=$?; [ "$r" -le 1 ] || { echo "grep -n exited $r on $f" >> "$w/err"; continue; }
               printf "%s\n" "$f" >> "$w/read"
               while IFS=: read -r n x; do printf "%s:%s:%s\n" "$f" "$n" "$(sed -n "${n}p" "$f")" >> "$w/hits"; done < "$w/ln"
@@ -324,7 +325,7 @@ jobs:
           echo "$nf files found (*.sh, the two *.env.example, the five systemd/*.service.skel), $nr read whole (de-quoted, grep -a, LC_ALL=C); /dev/tcp|udp lines: $(wc -l < "$w/h" | tr -d ' ') (the A5 fixture: $na5)"
           rm -rf "$w"
           [ "$bad" = 0 ] || { echo "RED: bash's network redirection outside the one permitted fixture (rule: this step's comment)"; exit 1; }
-          echo "no /dev/tcp or /dev/udp path in any line of those files, de-quoted (the \$ of \$'…' and \$\"…\", every quote and backslash removed), but the A5 fixture, read once"
+          echo "no /dev/tcp or /dev/udp path in any line of those files, de-quoted (every NUL byte, the \$ of \$'…' and \$\"…\", every quote and backslash removed), but the A5 fixture, read once"
       - name: no test reads a variable GitHub's runner sets — CI, GITHUB_*, RUNNER_* (v0.7 Block 6.3.1)
         # RULE: GitHub sets CI=true in every job, and GITHUB_* / RUNNER_* variables; a test that uses such a name as its own
         # knob reads the runner's value instead of its default — three suites used CI as their check-interval knob, bash
@@ -380,17 +381,18 @@ jobs:
         # quoted part or a backslash (bash removes the quotes and runs it: "alert", al"ert", $'alert', \alert), a command
         # word holding an ANSI-C escape the reader does not decode, or a daemon word alert / alert_warn / send_telegram /
         # send_webhook / a wrapper's name standing where no call was read (an argument; a name in a $(( … ))), or a line
-        # the reader ends inside a level it opened — a ${ … }, a $(( … )) or a "…", or a $( … ) or backticks on a line not
-        # continued by a backslash (a construct spanning lines, or a line the reader lost its place on) — unless NT_ALLOW
-        # below lists that call with the literal values it can take and where they come from (each value is then matched
-        # the same way; the value - for a line that sends no page); RED on a function the reader cannot see (defined in
-        # another shape than `name() {` at column 0), and when a daemon yields no page at all.
+        # the reader ends inside a quote or a level it opened — a '…', $'…' or "…", a ${ … } or $(( … )), or a $( … ),
+        # <( … ), >( … ), NAME=( … ) or backticks on a line not continued by a backslash (a construct spanning lines, or a
+        # line the reader lost its place on) — unless NT_ALLOW below lists that call with the literal values it can take
+        # and where they come from (each value is then matched the same way; the value - for a line that sends no page);
+        # RED on a function the reader cannot see (defined in another shape than `name() {` at column 0), and when a
+        # daemon yields no page at all.
         # OUTSIDE the check: alert_info (Telegram-only — its coverage is counted and printed) and the fence scripts'
         # journal PAGE[…] lines. LIMIT: the reader's (its header) — a command word assembled at run time, a call in a string
-        # eval or trap runs, a $( … ) or backticks a backslash-newline continues on the next line (each line is read on its
-        # own: the shipped `x=$(curl … \` lines), a backslash-escaped backtick inside backticks (a nested command
-        # substitution in the old spelling: read as a quoted character, not as code; the daemons have no backtick in their
-        # code). POSIX tools; the awk is mawk-safe (no {m,n} interval).
+        # eval or trap runs, a $( … ), <( … ), >( … ), NAME=( … ) or backticks a backslash-newline continues on the next
+        # line (each line is read on its own: the shipped `x=$(curl … \` lines), a backslash-escaped backtick inside
+        # backticks (a nested command substitution in the old spelling: read as a quoted character, not as code; the
+        # daemons have no backtick in their code). POSIX tools; the awk is mawk-safe (no {m,n} interval).
         run: |
           w=$(mktemp -d); tab=$(printf '\t'); doc=docs/NOTIFICATIONS.md; bad=0
           d1=solana-primary-failover.sh; d2=solana-standby-failover.sh
