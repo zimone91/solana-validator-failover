@@ -108,8 +108,9 @@ _HARNESS_TMP=$(mktemp -d)
 # The stand-in directory is written to HARNESS_STUB_DIRS_LOG when that is set (tests/strace-hermetic.sh sets it), and so
 # is every directory a suite names with harness_stub_dir (its own stubs of a listed client): the strace job counts a
 # listed client's exec from a directory on that list as a stand-in's or a stub's, from anywhere else as the REAL client —
-# a listed directory counting only under the run's own temp root (the job points TMPDIR there: every mktemp of the run
-# lands under it; a directory listed from anywhere else is red), so name only a directory made under mktemp.
+# a listed directory counting only under the run's own temp root (the job points TMPDIR there: every mktemp of run_all,
+# the harness and the suites lands under it — none names an absolute template; a directory listed from anywhere else is
+# red), so name only a directory made under $TMPDIR (a mktemp with no template, or with one under "${TMPDIR:-/tmp}").
 harness_stub_dir() {   # harness_stub_dir <dir> — <dir> holds this suite's own stub of a listed network client (curl …)
     [[ -z "${HARNESS_STUB_DIRS_LOG:-}" ]] || printf '%s\n' "$1" >> "$HARNESS_STUB_DIRS_LOG"
 }
@@ -342,7 +343,8 @@ dump_freshness() {
 # -c — which the lexer cannot read as code: the (0d) census flags eval anywhere and pins every trap / mapfile /
 # readarray, and (7g) and (1a) flag a shell run as a command by its word, whatever wraps it (bpshell below: a literal
 # shell word followed by anything but only --version / --help; an env -S string read as words; sudo -s / -i) — no census
-# flags a shell whose word is assembled at run time, a tool running a shell it picks itself (flock -c, su, script -c …),
+# flags a shell whose word is assembled at run time or that goes by a name not on bpshell's list, a tool running a shell
+# it picks itself (flock -c, su, script -c …),
 # or code an interpreter runs from a string (awk's system(), perl -e, python3 -c); a
 # here-document opened inside a here-document body's $( ) (read as that body's text); a nested backtick inside
 # backticks; and aliases (expand_aliases is off in a script; the (0d) census flags alias and shopt by name).
@@ -631,12 +633,16 @@ END { NLINES = NR; for (LNR = 1; LNR <= NLINES; LNR++) lexline(LINES[LNR])
 #                     precede it (timeout, env, nice --adjustment N, xargs --max-args N, stdbuf, sudo, find -exec …), UNLESS
 #                     the only words after it are --version or --help (at least one): followed by nothing it reads its
 #                     stdin, and any option (-s -e -x -i -l - -- --norc --posix …), -c string or script word runs code this
-#                     census cannot walk; a redirection is not a word, so `bash -e < file` is one too. Behind env, a -S /
-#                     --split-string string (separate or attached) is read as the words env splits it into, so `env -S
-#                     'bash -s'` is one; and sudo with -s / -i / --shell / --login among its own options runs the user's
-#                     shell (the index of sudo then). 0 when none, and for a lookup (`command -v bash`). LIMIT: a tool that
-#                     runs a shell it picks itself — su, chroot without a command, runuser, script -c, flock -c,
-#                     machinectl shell — and a shell whose word is assembled at run time
+#                     census cannot walk; a redirection is not a word, so `bash -e < file` is one too. Behind env, the
+#                     string of a -S — alone or in a cluster of short options (-iS, -vS'…') — or of --split-string or any
+#                     abbreviation of it down to --s (separate, attached or after =) is read as the words env splits it
+#                     into (its \_ a blank, as env reads it), so `env -S 'bash -s'` is one; and sudo with -s or -i among
+#                     its own options (alone or in a cluster), --login, or --shell or any abbreviation of it down to --sh
+#                     runs the user's shell (the index of sudo then) — sudo's own options read as its getopt reads them, a
+#                     long option that takes the next word matched by any abbreviation (--us root). 0 when none, and for a
+#                     lookup (`command -v bash`). LIMIT: a tool that runs a shell it picks itself — su, chroot without a
+#                     command, runuser, script -c, flock -c, machinectl shell — a shell under a name not on the list above
+#                     (ksh2020, bash5.2), and a shell whose word is assembled at run time
 BP_AWK_LIB='
 function bpq(w) { sub(/\035.*/, "", w); return substr(w, 2) }
 function bpr(w) { sub(/^[^\035]*\035/, "", w); return w }
@@ -665,12 +671,12 @@ function bpshell(n, W,   k, j, a, b, m, x, y, i, e) {
     m = 0; e = 0                                  # V[1..m]: the words, an env -S string as its words (VI: the W it came from)
     for (k = 1; k <= n; k++) {
         if (!bplit(W[k])) { m++; V[m] = W[k]; VI[m] = k; continue }
-        a = bpq(W[k]); b = a; sub(/.*\//, "", b); x = ""
+        a = bpq(W[k]); b = a; sub(/.*\//, "", b); x = ""; y = a; sub(/=.*/, "", y)
         if (b == "env") e = 1
-        if (e && (a == "-S" || a == "--split-string") && k < n) { k++; x = " " bpq(W[k]) }
-        else if (e && a ~ /^-S./) x = " " substr(a, 3)
-        else if (e && a ~ /^--split-string=/) x = " " substr(a, 16)
+        if (e && a ~ /^-[^-]*S/) { x = a; sub(/^-[^S]*S/, "", x); if (x == "" && k < n) { k++; x = bpq(W[k]) } if (x != "") x = " " x }   # -S, in a cluster too
+        else if (e && length(y) >= 3 && index("--split-string", y) == 1) { if (y != a) x = " " substr(a, length(y) + 2); else if (k < n) { k++; x = " " bpq(W[k]) } }   # --s … --split-string
         if (x == "") { m++; V[m] = W[k]; VI[m] = k; continue }
+        gsub(/\\_/, " ", x)                       # env -S reads \_ as a blank
         i = split(x, BPY, /[ \t]+/)
         for (j = 1; j <= i; j++) { y = BPY[j]; gsub(/["\\]/, "", y); gsub("\047", "", y); if (y != "") { m++; V[m] = "L" y "\035" y; VI[m] = k } }
     }
@@ -680,8 +686,8 @@ function bpshell(n, W,   k, j, a, b, m, x, y, i, e) {
         if (b == "sudo") {                         # its own options, up to the command it runs: -s / -i run a login or user shell
             for (j = k + 1; j <= m && bpq(V[j]) ~ /^-./ && bpq(V[j]) != "--"; j++) {
                 a = bpq(V[j])
-                if (a == "--shell" || a == "--login") return VI[k]
-                if (a ~ /^--/) { if (a ~ /^--(user|group|host|prompt|role|type|other-user|close-from|chdir|chroot|command-timeout)$/) j++; continue }
+                if (a == "--login" || (length(a) >= 4 && index("--shell", a) == 1)) return VI[k]   # --sh … --shell: getopt_long abbreviations
+                if (a ~ /^--/) { if (a !~ /=/ && length(a) >= 3 && index(" --user --group --host --prompt --role --type --other-user --close-from --chdir --chroot --command-timeout --auth-type --login-class", " " a) > 0) j++; continue }   # an option that takes the next word, abbreviated or not
                 x = substr(a, 2)
                 while (x != "") { y = substr(x, 1, 1); x = substr(x, 2); if (y == "s" || y == "i") return VI[k]; if (y ~ /[CDghpRrtTUu]/) { if (x == "") j++; break } }
             }

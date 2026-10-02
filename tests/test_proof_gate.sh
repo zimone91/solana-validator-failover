@@ -31,9 +31,11 @@
 #        commands (raise spare delay / re-arm holder tighter)
 #   (1d) fence=page-only → arm PROCEEDS + elapsed-attestation-REFUSED line + loud summary
 #   (1e) no token → arm PROCEEDS + §2.7 unpaired posture + end-of-summary UNPAIRED warning
-#        (1d) and (1e) each also with G2 configured (1d-g2, 1e-g2); every K4 message the suite reads — the arm's
-#        four, the daemon's four (4d, 6a–6d), the standby wizard's ATTESTATION NOTE (1o) — is checked for the K4
-#        negatives (k4_neg below): the claims K4 removed are ABSENT, not only the new text present
+#        (1d) and (1e) each also with G2 configured (1d-g2, 1e-g2); every K4 message the suite reads — every line the
+#        arm prints but its P6 section and its G2 vantage summary (its four K4 messages among them; (1e) holds the read
+#        range's control: a removed claim on the ARMED line is flagged), the daemon's four (4d, 6a–6d), the standby
+#        wizard's ATTESTATION NOTE (1o) — is checked for the K4 negatives (k4_neg below): the claims K4 removed are
+#        ABSENT, not only the new text present
 #   (1f) directory at the store path → REFUSE[P5-store] (the A10 mv-swallow discipline)
 #   (1g) primary-role arm + stray ARM_PAIRING_TOKEN → announced IGNORED (holder generates)
 #   (1n) (Block 6.3.1 D5) a SYMLINKED state directory → REFUSE[STATE-dir-symlink] before the token is
@@ -302,14 +304,11 @@ k4_neg() {
     [[ -n "${2:-}" ]] && printf '%s\n' "$t" | grep -qi 'verified-demote' && v="$v g2-named"
     printf '%s' "$v"
 }
-# the arm's K4 lines in $MOCK_DIR/out: EVERY line the arm prints in its P5 section — from the line after the §2.3
-# "precondition 5:" announcement to the first line of the next section (P6, the G2 vantage ceremony, or the probe) — and
-# every line after its "ARMED (…)" completion line but the G2 vantage summary (the pairing-summary section). P6 and the G2
-# summary, between and beside them, name verified-demote and its proof provider by design: not K4 sites
-k4_arm_lines() { awk '/^\[failover-arm\] precondition 5: / { s = 1; next }
-                      s == 1 && /^\[failover-arm\] (WARN: )?(precondition P6|probe|install|verify)/ { s = 0 }
-                      /^\[failover-arm\] ARMED \(/ { s = 3; next }
-                      s == 1 || (s == 3 && !/G2 vantage summary/)' "$MOCK_DIR/out"; }
+# the arm's K4 lines in $MOCK_DIR/out: EVERY line the arm prints — its header, preconditions 0–5, the P5 lines, the probe,
+# install and verify output, the pairing token, the "ARMED (…)" completion line and the pairing summary — but its P6
+# section (the lines that begin "precondition P6" or "WARN: precondition P6") and its G2 vantage summary, which name
+# verified-demote and its proof provider by design: not K4 sites
+k4_arm_lines() { awk '/^\[failover-arm\] (WARN: )?precondition P6/ || /^\[failover-arm\] WARN: G2 vantage summary/ { next } { print }' "$MOCK_DIR/out"; }
 token_line() { grep '^v0\.7|gen=' "$MOCK_DIR/out" | tail -1; }
 
 # the arm's OWN crc mechanics, extracted and eval'd (input-crafting uses the runner's actual
@@ -474,15 +473,22 @@ for _w in plain g2; do
        && [[ $(printf '%s\n' "$k4l" | grep -c 'This release has no relinquish-proof gate') -eq 2 && $(printf '%s\n' "$k4l" | grep -c "from the release that wires the gate, its silence-based take is disabled") -eq 2 ]] \
        && out_has 'the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold' && [[ -z "$k4v" ]] && { [[ -z "$_g2" ]] || out_has 'precondition P6'; }; then
         if [[ -z "$_g2" ]]; then
-            ok "(1d) fence=page-only → arm PROCEEDS (token stored) + elapsed attestation REFUSED + loud §2.7 posture in the P5 line and the summary, each saying this release has no relinquish-proof gate (the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold) and that its silence-based take is disabled from the release that wires the gate; neither line claims a take disabled now, 'verified-demote only' (or -only) or 'proof provider(s)' (k4_neg)"
+            ok "(1d) fence=page-only → arm PROCEEDS (token stored) + elapsed attestation REFUSED + loud §2.7 posture in the P5 line and the summary, each saying this release has no relinquish-proof gate (the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold) and that its silence-based take is disabled from the release that wires the gate; no line the arm prints but its P6 section and its G2 vantage summary (k4_arm_lines: the header, preconditions 0–5, P5, the probe, install and verify output, the pairing token, the ARMED line, the pairing summary) claims a take disabled now, 'verified-demote only' (or -only) or 'proof provider(s)' (k4_neg)"
         else
-            ok "(1d-g2) the same page-only pairing with G2 configured (P6 ran): the two K4 lines hold every K4 negative and name no provider (no 'verified-demote')"
+            ok "(1d-g2) the same page-only pairing with G2 configured (P6 ran): every arm line but its P6 section and its G2 vantage summary holds every K4 negative and names no provider (no 'verified-demote')"
         fi
     else
         bad "$_id rc=$RC k4-violations=[$k4v] k4-lines=$(printf '%s\n' "$k4l" | grep -c .) tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
     fi
 done
 
+# k4_arm_lines' read range, its control (the delta panel 9's K14): an arm copy — beside a copy of the systemd/ skeletons,
+# so its ceremony completes — whose "ARMED (…)" completion line carries a removed claim; k4_neg must flag that line
+mkdir -p "$WORK/k4c" && cp -R "$HARNESS_DIR/systemd" "$WORK/k4c/"
+mutate "$ARM" 's/(re-pair is ceremony, not advice)\."$/(re-pair is ceremony, not advice); proof providers: verified-demote ONLY."/' "$WORK/k4c/failover-arm.sh"
+new_mock standby
+ARM_OVERRIDE="$WORK/k4c/failover-arm.sh" run_arm
+k4c_rc=$RC; k4c_v=$(k4_neg "$(k4_arm_lines)")
 for _w in plain g2; do
     new_mock standby
     _id="(1e)"; _g2=""
@@ -491,14 +497,15 @@ for _w in plain g2; do
     k4l=$(k4_arm_lines); k4v=$(k4_neg "$k4l" $_g2)
     if [[ "$RC" == "0" ]] && out_has 'precondition P5: NO pairing token' && out_has 'pairing summary: UNPAIRED SPARE' && [[ ! -e "$MOCK_DIR/state/pairing-token" ]] \
        && [[ $(printf '%s\n' "$k4l" | grep -c "This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not") -eq 2 ]] \
-       && [[ $(printf '%s\n' "$k4l" | grep -c "from the release that wires the gate, an unpaired spare's silence-based take is disabled") -eq 2 ]] && [[ -z "$k4v" ]] && { [[ -z "$_g2" ]] || out_has 'precondition P6'; }; then
+       && [[ $(printf '%s\n' "$k4l" | grep -c "from the release that wires the gate, an unpaired spare's silence-based take is disabled") -eq 2 ]] && [[ -z "$k4v" ]] && { [[ -z "$_g2" ]] || out_has 'precondition P6'; } \
+       && { [[ -n "$_g2" ]] || [[ "$k4c_rc" == "0" && "$k4c_v" == *vdonly* && "$k4c_v" == *providers* ]]; }; then
         if [[ -z "$_g2" ]]; then
-            ok "(1e) no token → arm PROCEEDS into the §2.7 unpaired posture + end-of-summary UNPAIRED warning (never silent); the P5 line and the summary each say this release has no relinquish-proof gate (no provider's verdict conditions any take, armed or not) and that an unpaired spare's silence-based take is disabled from the release that wires the gate; neither claims a take disabled now, 'verified-demote only' (or -only) or 'proof provider(s)' (k4_neg)"
+            ok "(1e) no token → arm PROCEEDS into the §2.7 unpaired posture + end-of-summary UNPAIRED warning (never silent); the P5 line and the summary each say this release has no relinquish-proof gate (no provider's verdict conditions any take, armed or not) and that an unpaired spare's silence-based take is disabled from the release that wires the gate; no line the arm prints but its P6 section and its G2 vantage summary (k4_arm_lines: the header, preconditions 0–5, P5, the probe, install and verify output, the pairing token, the ARMED line, the pairing summary) claims a take disabled now, 'verified-demote only' (or -only) or 'proof provider(s)' (k4_neg); the read range's control — an arm copy whose ARMED line carries 'proof providers: verified-demote ONLY.' — is flagged (${k4c_v# })"
         else
-            ok "(1e-g2) the same unpaired arm with G2 configured (P6 ran): the two K4 lines hold every K4 negative and name no provider (no 'verified-demote')"
+            ok "(1e-g2) the same unpaired arm with G2 configured (P6 ran): every arm line but its P6 section and its G2 vantage summary holds every K4 negative and names no provider (no 'verified-demote')"
         fi
     else
-        bad "$_id rc=$RC k4-violations=[$k4v] k4-lines=$(printf '%s\n' "$k4l" | grep -c .) tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
+        bad "$_id rc=$RC k4-violations=[$k4v] k4-lines=$(printf '%s\n' "$k4l" | grep -c .) read-range control (ARMED-line claim): rc=$k4c_rc flagged=[$k4c_v] tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
     fi
 done
 

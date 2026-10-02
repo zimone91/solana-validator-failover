@@ -54,7 +54,7 @@ command -v strace > /dev/null 2>&1 || { echo "strace-hermetic: strace is not ins
 clients=$(sed -n 's/^HARNESS_NET_CLIENTS="\(.*\)"$/\1/p' "$T/lib/harness.sh")
 [[ -n "$clients" ]] || { echo "strace-hermetic: cannot read HARNESS_NET_CLIENTS from tests/lib/harness.sh"; exit 2; }
 bound="${STRACE_HERMETIC_BOUND:-0}"
-case "$bound" in ''|*[!0-9]*|0?*) echo "strace-hermetic: STRACE_HERMETIC_BOUND must be a whole number of seconds, base 10, without a leading zero (0: no bound) — got '$bound'"; exit 2 ;; esac
+case "$bound" in ''|*[!0-9]*|0?*|???????????????????*) echo "strace-hermetic: STRACE_HERMETIC_BOUND must be a whole number of seconds, base 10, without a leading zero, at most 18 digits (0: no bound) — got '$bound'"; exit 2 ;; esac
 GRACE=30   # seconds strace may still trace after run_all itself has exited (its last processes ending)
 nsuites=$(ls "$T"/test_*.sh | wc -l | tr -d ' ')
 echo "strace-hermetic: $(strace -V | head -1); bash $("${BASH:-bash}" --version | head -1 | sed 's/^GNU bash, version //'); awk $(readlink -f "$(command -v awk)" 2>/dev/null || command -v awk); out $OUT; bound ${bound} s (0: none)"

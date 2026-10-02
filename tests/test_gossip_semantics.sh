@@ -31,8 +31,8 @@ log_info()  { echo "      [INFO] $*"; }
 log_warn()  { echo "      [WARN] $*"; }
 
 # curl mock keyed by URL.
-MOCKDIR=$(mktemp -d /tmp/gossip-test-XXXXXX)
-trap "rm -rf $MOCKDIR" EXIT
+MOCKDIR=$(mktemp -d "${TMPDIR:-/tmp}/gossip-test-XXXXXX")
+trap 'rm -rf "$MOCKDIR"' EXIT
 curl() {
     local url=""
     for arg in "$@"; do

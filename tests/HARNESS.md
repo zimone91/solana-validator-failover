@@ -64,9 +64,12 @@ offending lines are printed for diagnosis. Two consequences:
   census flags or pins them) and a shell's `-c` string, script or stdin ((1a) and (7g) flag a shell run as a command by
   its word, whatever wraps it: a literal shell word — `sh`, `bash`, `rbash`, `dash`, `ash`, `hush`, `zsh`, `ksh`,
   `ksh93`, `mksh` and the others `bpshell`'s header lists — or busybox's shell applet, followed by anything but only
-  `--version` / `--help` — nothing (stdin), any option, a script; an `env -S` / `--split-string` string read as its
-  words; `sudo -s` / `-i` — not a shell whose word is assembled at run time, a tool running a shell it picks itself
-  (`flock -c`, `su`, `script -c`), nor code an interpreter runs from a string, such as awk's `system()`); a
+  `--version` / `--help` — nothing (stdin), any option, a script; an `env -S` string (in a cluster too: `-iS`) or a
+  `--split-string` string (or an abbreviation down to `--s`) read as its words; `sudo -s` / `-i` (in a cluster too),
+  `--login`, `--shell` (or an abbreviation down to `--sh`), sudo's own options read as its getopt reads them — not a
+  shell whose word is assembled at run time or that goes by a name not on `bpshell`'s list (`ksh2020`), a tool running a
+  shell it picks itself (`flock -c`, `su`, `script -c`), nor code an interpreter runs from a string, such as awk's
+  `system()`); a
   here-document opened inside a here-document body's `$( )`; a backtick nested in backticks; aliases. bash 5.2 prints
   an if-condition's here-document after the then-branch's first statement, which the lexer would read as body text:
   `bp_parse` refuses such a print (every parse census red; the daemons use none).
@@ -114,8 +117,10 @@ suite's own stub of a listed client (`test_act_then_alert`, `test_proof_gate`, `
 `test_installer_guardrails`) — is written to `HARNESS_STUB_DIRS_LOG` when the strace job sets it: the job counts an exec
 of a listed client from a directory on that list as a stand-in's or a stub's, from anywhere else as the REAL client. A
 listed directory counts only under the run's own temp root — the job points `TMPDIR` at a fresh directory for the run,
-so every `mktemp` lands under it — and one listed from anywhere else (`/etc/alternatives`, `/usr/bin`) is red. A suite
-whose world runs a daemon path that reaches a client stubs the client in that world (the precedent:
+so every `mktemp` of run_all, the harness and the suites lands under it (none names an absolute template; a suite makes
+its directories with `mktemp` and no template, or one under `"${TMPDIR:-/tmp}"`) — and one listed from anywhere else
+(`/etc/alternatives`, `/usr/bin`) is red. A suite whose world runs a daemon path that reaches a client stubs the client
+in that world (the precedent:
 `test_elapsed_provider`'s m5 world stubs `ping`; before fix round 6 that world — the primary's real `check_internet`
 and heartbeat summary — ran the host's `ping` 126–135 times a run).
 
@@ -140,9 +145,9 @@ family than AF_UNIX and AF_NETLINK):
   failure, above).
 
 The per-suite TIME CAP: `run_all.sh` runs each suite in its own process group under a watchdog; a suite still running
-`RUN_ALL_SUITE_CAP` seconds after it started (a whole number, base 10; default 3600 — the slowest suite on the slowest
-gate leg measured 1,858 s; CI sizes it per job, in `.github/workflows/ci.yml`) gets SIGTERM and FAILS the run gate,
-named. When a suite's main process has ended — by itself or by that TERM — whatever is still in its process group gets
+`RUN_ALL_SUITE_CAP` seconds after it started (a whole number, base 10, at most 18 digits; default 3600 — the slowest
+suite on the slowest gate leg measured 1,858 s; CI sizes it per job, in `.github/workflows/ci.yml`) gets SIGTERM and
+FAILS the run gate, named. When a suite's main process has ended — by itself or by that TERM — whatever is still in its process group gets
 SIGTERM and, 5 s later, SIGKILL, and the run names the suite (`LEFT RUNNING`): no process left in the group outlives
 its suite. A process that left the group (its own `set -m`, `setsid`) is not stopped; under the strace job, one that
 holds strace past run_all's end is named and stopped by `tests/strace-hermetic.sh`. Each run prints every suite's wall

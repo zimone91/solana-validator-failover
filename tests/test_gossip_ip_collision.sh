@@ -28,8 +28,8 @@ TIER3_RPC="http://mock-tier3:9999"
 log_info()  { echo "      [INFO] $*"; }
 log_warn()  { echo "      [WARN] $*"; }
 
-MOCKDIR=$(mktemp -d /tmp/gossip-coll-XXXXXX)
-trap "rm -rf $MOCKDIR" EXIT
+MOCKDIR=$(mktemp -d "${TMPDIR:-/tmp}/gossip-coll-XXXXXX")
+trap 'rm -rf "$MOCKDIR"' EXIT
 curl() {
     local url=""
     for arg in "$@"; do case "$arg" in http*) url="$arg"; break ;; esac; done
