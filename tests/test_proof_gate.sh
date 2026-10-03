@@ -31,8 +31,15 @@
 #        commands (raise spare delay / re-arm holder tighter)
 #   (1d) fence=page-only → arm PROCEEDS + elapsed-attestation-REFUSED line + loud summary
 #   (1e) no token → arm PROCEEDS + §2.7 unpaired posture + end-of-summary UNPAIRED warning
+#        (1d) and (1e) each also with G2 configured (1d-g2, 1e-g2); every K4 message the suite reads — every line the
+#        arm prints but its P6 section and its G2 vantage summary (its four K4 messages among them; (1e) holds the read
+#        range's control: a removed claim on the ARMED line is flagged), the daemon's four (4d, 6a–6d), the standby
+#        wizard's ATTESTATION NOTE (1o) — is checked for the K4 negatives (k4_neg below): the claims K4 removed are
+#        ABSENT, not only the new text present
 #   (1f) directory at the store path → REFUSE[P5-store] (the A10 mv-swallow discipline)
 #   (1g) primary-role arm + stray ARM_PAIRING_TOKEN → announced IGNORED (holder generates)
+#   (1n) (Block 6.3.1 D5) a SYMLINKED state directory → REFUSE[STATE-dir-symlink] before the token is
+#        stored (the daemon's R-SYM rule mirrored at the arm; the full P0 matrix is test_arm_ceremony (16))
 #   (2)  zero-stake (§2.4, per entry, N-is-all): (2a) all entries zero/absent → green with a
 #        VERIFIED line PER entry (live census = list length); (2b) one staked among clean →
 #        REFUSE[P5-staked-unstaked] with the ~48 h CRDS extended_timeout reason + MEASURED
@@ -47,9 +54,9 @@
 #        round-trips through the SHIPPED spare intake (green + stored); (3c) same payload →
 #        same crc through the DAEMON's own helper (emission↔daemon-parse mechanical tie)
 # DAEMON SIDE ([proof-gate] twin block, source-to-MAIN-LOOP seam, clock-stubbed):
-#   (4)  armed + valid token → _derive_proof_floors: elapsed_floor=100, N_HEAD=25,
-#        MARGIN_ELAPSED=10 (values read from the SAME shell that derived them)
-#   (5)  COUPLING [6.0-COND-3]: MARGIN_ELAPSED 10→20 mutant → elapsed_floor=110 AND N_HEAD=50
+#   (4)  armed + valid token → _derive_proof_floors: elapsed_floor=100, N_HEAD=22 (6.3.1: τ budgeted —
+#        (MARGIN_ELAPSED − 1) × 5 / 2; 25 before), MARGIN_ELAPSED=10 (values read from the SAME shell)
+#   (5)  COUPLING [6.0-COND-3]: MARGIN_ELAPSED 10→20 mutant → elapsed_floor=110 AND N_HEAD=47
 #        move TOGETHER; control (5b): coupling additionally broken (static N_HEAD) → the
 #        together-assertion goes RED (observed on the double mutant)
 #   (6)  §2.7 loud unpaired [6.0-COND-4]: armed+no token → (a) CRITICAL page at EVERY start
@@ -74,9 +81,11 @@
 #        passes (control red observed); the D4 arithmetic comment (R_worst = 36 s, = 50 s)
 #        present at the check in BOTH daemons
 #   (11) constants census (N-is-all for constants, allowlist style): elapsed_floor /
-#        MARGIN_ELAPSED / N_HEAD / PROOF_MAX_AGE assigned ONLY at the derivation sites (4
-#        allowlisted lines per daemon; zero assignments in any other shipped script); (11b)
-#        injection control: appended stray N_HEAD=7 → census red observed
+#        MARGIN_ELAPSED / N_HEAD / PROOF_MAX_AGE / ELAPSED_HEAD_GAP_MAX (the fifth: 6.3 fix round 2,
+#        R3) / ELAPSED_RATE_MIN_SPAN and OWN_HEAD_H (the sixth and seventh: Block 6.3.1, D4) assigned
+#        ONLY at the derivation sites (7 allowlisted lines per daemon; zero assignments in any other
+#        shipped script); (11b) injection control: every evading spelling, the new names included →
+#        census red observed
 #   (12) twin: [proof-gate] extract+cmp BYTE-IDENTICAL across both daemons (the [fence-rot]
 #        ritual)
 #
@@ -174,6 +183,7 @@ cat "$MOCK_DIR/dns.$2"
 exit 0
 STUB
 chmod 755 "$STUB_DIR"/*
+harness_stub_dir "$STUB_DIR"   # its curl and getent: stubs of listed clients (the strace job counts their execs as stubs')
 
 # TOOLDIR: symlinks to the REAL host binaries for the arm's non-actuator externals (the
 # test_arm_ceremony N-is-all list + jq for the P5 zero-stake parse). PATH = STUB:TOOLDIR only.
@@ -190,6 +200,10 @@ for _t in $PG_REAL_TOOLS; do
 done
 
 MOCK_PARENT=$(mktemp -d "${TMPDIR:-/tmp}/pg61-mocks.XXXXXX")
+# v0.7 (Block 6.3.1 D5): the arm now REFUSES a state directory that is not its own resolved path
+# (P0, the daemon's R-SYM rule mirrored) — so every mock root is spelled RESOLVED: macOS's TMPDIR sits
+# under the /var -> /private/var symlink and ends in '/' (a '//' in the joined path)
+MOCK_PARENT=$(CDPATH='' cd -P -- "$MOCK_PARENT" && pwd -P)
 write_daemon() {   # v0.7-shaped daemon fixture (P1: patsub guard + watchdog capability)
     {
         echo '#!/bin/bash'
@@ -270,6 +284,31 @@ run_arm() {   # [VAR=val …] — subprocess, clean env, stub PATH, every root a
     RC=$?
 }
 out_has()  { grep -q "$1" "$MOCK_DIR/out"; }
+# K4's negatives (6.3.1 fix round 8 — the delta panel 7's CHK7-K4-TESTS-PARTIAL-REGRESSION: the K4 rows checked that the
+# new text was present, not that the removed claims were absent, so the false present-tense claims could return beside
+# it). k4_neg <text> [g2] prints each negative the text violates (empty = all hold); every match ignores case:
+#   tense      a "disabled" outside the scoped clause K4_SCOPED, the clause counting only where it ENDS its sentence (a
+#              . ; or : next, or the end of the text) — the present-tense "silence-based take disabled", "take disabled.",
+#              "stays DISABLED", and a claim tacked onto the clause (", as it is in this release", " (and is today)") (this
+#              release has no gate, so nothing is disabled yet)
+#   vdonly     "verified-demote only" or "verified-demote-only"
+#   providers  "proof provider" or "proof providers" (the PAIRED spare's "registered now" line is not a K4 message)
+#   g2-named   with g2 (a world with G2 configured, verified-demote registered; and the wizard's static NOTE): "verified-demote"
+#              at all — no provider is named as able to prove
+K4_SCOPED="[Ff]rom the release that wires the gate, (its|an unpaired spare's|an invalidly paired spare's) silence-based take is disabled"
+k4_neg() {
+    local t="$1" v=""
+    printf '%s\n' "$t" | sed -E "s/$K4_SCOPED([.;:]|\$)/\2/g" | grep -qi 'disabled' && v="$v tense"
+    printf '%s\n' "$t" | grep -qiE 'verified-demote[- ]only' && v="$v vdonly"
+    printf '%s\n' "$t" | grep -qi 'proof provider' && v="$v providers"
+    [[ -n "${2:-}" ]] && printf '%s\n' "$t" | grep -qi 'verified-demote' && v="$v g2-named"
+    printf '%s' "$v"
+}
+# the arm's K4 lines in $MOCK_DIR/out: EVERY line the arm prints — its header, preconditions 0–5, the P5 lines, the probe,
+# install and verify output, the pairing token, the "ARMED (…)" completion line and the pairing summary — but its P6
+# section (the lines that begin "precondition P6" or "WARN: precondition P6") and its G2 vantage summary, which name
+# verified-demote and its proof provider by design: not K4 sites
+k4_arm_lines() { awk '/^\[failover-arm\] (WARN: )?precondition P6/ || /^\[failover-arm\] WARN: G2 vantage summary/ { next } { print }' "$MOCK_DIR/out"; }
 token_line() { grep '^v0\.7|gen=' "$MOCK_DIR/out" | tail -1; }
 
 # the arm's OWN crc mechanics, extracted and eval'd (input-crafting uses the runner's actual
@@ -424,20 +463,65 @@ else
 fi
 
 TOK_PO=$(mk_token 9 30 60 page-only holder1)
-new_mock standby
-run_arm ARM_PAIRING_TOKEN="$TOK_PO"
-if [[ "$RC" == "0" && "$(cat "$MOCK_DIR/state/pairing-token" 2>/dev/null)" == "$TOK_PO" ]] && out_has 'fence=page-only RELINQUISHES NOTHING' && out_has 'attestation is REFUSED' && out_has 'pairing summary: token stored but fence=page-only'; then
-    ok "(1d) fence=page-only → arm PROCEEDS (token stored) + elapsed attestation REFUSED + loud §2.7 posture in the summary"
-else
-    bad "(1d) rc=$RC tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
-fi
+for _w in plain g2; do
+    new_mock standby
+    _id="(1d)"; _g2=""
+    if [[ "$_w" == "g2" ]]; then _id="(1d-g2)"; _g2=g2; write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"'; fi   # G2 configured: P6 measures its vantages
+    run_arm ARM_PAIRING_TOKEN="$TOK_PO"
+    k4l=$(k4_arm_lines); k4v=$(k4_neg "$k4l" $_g2)
+    if [[ "$RC" == "0" && "$(cat "$MOCK_DIR/state/pairing-token" 2>/dev/null)" == "$TOK_PO" ]] && out_has 'fence=page-only RELINQUISHES NOTHING' && out_has 'attestation is REFUSED' && out_has 'pairing summary: token stored but fence=page-only' \
+       && [[ $(printf '%s\n' "$k4l" | grep -c 'This release has no relinquish-proof gate') -eq 2 && $(printf '%s\n' "$k4l" | grep -c "from the release that wires the gate, its silence-based take is disabled") -eq 2 ]] \
+       && out_has 'the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold' && [[ -z "$k4v" ]] && { [[ -z "$_g2" ]] || out_has 'precondition P6'; }; then
+        if [[ -z "$_g2" ]]; then
+            ok "(1d) fence=page-only → arm PROCEEDS (token stored) + elapsed attestation REFUSED + loud §2.7 posture in the P5 line and the summary, each saying this release has no relinquish-proof gate (the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold) and that its silence-based take is disabled from the release that wires the gate; no line the arm prints but its P6 section and its G2 vantage summary (k4_arm_lines: the header, preconditions 0–5, P5, the probe, install and verify output, the pairing token, the ARMED line, the pairing summary) claims a take disabled now, 'verified-demote only' (or -only) or 'proof provider(s)' (k4_neg)"
+        else
+            ok "(1d-g2) the same page-only pairing with G2 configured (P6 ran): every arm line but its P6 section and its G2 vantage summary holds every K4 negative and names no provider (no 'verified-demote')"
+        fi
+    else
+        bad "$_id rc=$RC k4-violations=[$k4v] k4-lines=$(printf '%s\n' "$k4l" | grep -c .) tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
+    fi
+done
 
+# k4_arm_lines' read range, its control (the delta panel 9's K14): an arm copy — beside a copy of the systemd/ skeletons,
+# so its ceremony completes — whose "ARMED (…)" completion line carries a removed claim; k4_neg must flag that line
+mkdir -p "$WORK/k4c" && cp -R "$HARNESS_DIR/systemd" "$WORK/k4c/"
+mutate "$ARM" 's/(re-pair is ceremony, not advice)\."$/(re-pair is ceremony, not advice); proof providers: verified-demote ONLY."/' "$WORK/k4c/failover-arm.sh"
 new_mock standby
-run_arm
-if [[ "$RC" == "0" ]] && out_has 'precondition P5: NO pairing token' && out_has 'pairing summary: UNPAIRED SPARE' && out_has 'verified-demote ONLY' && [[ ! -e "$MOCK_DIR/state/pairing-token" ]]; then
-    ok "(1e) no token → arm PROCEEDS into the §2.7 unpaired posture + end-of-summary UNPAIRED warning (never silent)"
+ARM_OVERRIDE="$WORK/k4c/failover-arm.sh" run_arm
+k4c_rc=$RC; k4c_v=$(k4_neg "$(k4_arm_lines)")
+for _w in plain g2; do
+    new_mock standby
+    _id="(1e)"; _g2=""
+    if [[ "$_w" == "g2" ]]; then _id="(1e-g2)"; _g2=g2; write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"'; fi
+    run_arm
+    k4l=$(k4_arm_lines); k4v=$(k4_neg "$k4l" $_g2)
+    if [[ "$RC" == "0" ]] && out_has 'precondition P5: NO pairing token' && out_has 'pairing summary: UNPAIRED SPARE' && [[ ! -e "$MOCK_DIR/state/pairing-token" ]] \
+       && [[ $(printf '%s\n' "$k4l" | grep -c "This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not") -eq 2 ]] \
+       && [[ $(printf '%s\n' "$k4l" | grep -c "from the release that wires the gate, an unpaired spare's silence-based take is disabled") -eq 2 ]] && [[ -z "$k4v" ]] && { [[ -z "$_g2" ]] || out_has 'precondition P6'; } \
+       && { [[ -n "$_g2" ]] || [[ "$k4c_rc" == "0" && "$k4c_v" == *vdonly* && "$k4c_v" == *providers* ]]; }; then
+        if [[ -z "$_g2" ]]; then
+            ok "(1e) no token → arm PROCEEDS into the §2.7 unpaired posture + end-of-summary UNPAIRED warning (never silent); the P5 line and the summary each say this release has no relinquish-proof gate (no provider's verdict conditions any take, armed or not) and that an unpaired spare's silence-based take is disabled from the release that wires the gate; no line the arm prints but its P6 section and its G2 vantage summary (k4_arm_lines: the header, preconditions 0–5, P5, the probe, install and verify output, the pairing token, the ARMED line, the pairing summary) claims a take disabled now, 'verified-demote only' (or -only) or 'proof provider(s)' (k4_neg); the read range's control — an arm copy whose ARMED line carries 'proof providers: verified-demote ONLY.' — is flagged (${k4c_v# })"
+        else
+            ok "(1e-g2) the same unpaired arm with G2 configured (P6 ran): every arm line but its P6 section and its G2 vantage summary holds every K4 negative and names no provider (no 'verified-demote')"
+        fi
+    else
+        bad "$_id rc=$RC k4-violations=[$k4v] k4-lines=$(printf '%s\n' "$k4l" | grep -c .) read-range control (ARMED-line claim): rc=$k4c_rc flagged=[$k4c_v] tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
+    fi
+done
+
+# (1o) the standby wizard's ATTESTATION NOTE (a K4 site): its text as the wizard prints it — the non-blank lines from the
+# NOTE's title to the wizard's next `sleep 2`, each an echo -e read as its string with the colour variables removed,
+# joined — says this release has no relinquish-proof gate (v0.6.x semantics, which the re-check and the veto can only
+# hold) and holds every K4 negative. Every such line must be a one-string echo (any other line: red, unread)
+wz_lines=$(awk '/ATTESTATION NOTE \(v0\.7\)/ { on = 1 } on && /^sleep 2$/ { exit } on && NF' "$HARNESS_DIR/deploy-failover-standby.sh")
+wz_bad=$(printf '%s\n' "$wz_lines" | grep -vc '^echo -e "[^"]*"$')
+wz_text=$(printf '%s\n' "$wz_lines" | sed -E 's/^echo -e "//; s/"$//; s/\$\{(DIM|NC|BOLD|YELLOW)\}//g' | tr '\n' ' ' | tr -s ' ')
+wz_v=$(k4_neg "$wz_text" g2)   # the NOTE is static: no G2 world can hold it, so "verified-demote" at all is a violation here
+if [[ $(printf '%s\n' "$wz_lines" | grep -c .) -ge 8 && "$wz_bad" == "0" && -z "$wz_v" ]] \
+   && [[ "$wz_text" == *"This release has no relinquish-proof gate: armed or not, the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold; from the release that wires the gate, an unpaired spare's silence-based take is disabled."* ]]; then
+    ok "(1o) the standby wizard's ATTESTATION NOTE ($(printf '%s\n' "$wz_lines" | grep -c .) echo lines, read as printed): no relinquish-proof gate in this release (v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold), an unpaired spare's silence-based take disabled from the release that wires the gate; no take claimed disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)', no 'verified-demote' at all (k4_neg with the G2 negative)"
 else
-    bad "(1e) rc=$RC tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
+    bad "(1o) wizard NOTE: lines=$(printf '%s\n' "$wz_lines" | grep -c .) non-echo=$wz_bad k4-violations=[$wz_v] text=${wz_text:0:300}"
 fi
 
 new_mock standby
@@ -455,6 +539,18 @@ if [[ "$RC" == "0" ]] && out_has "ARM_PAIRING_TOKEN is set on a 'primary' arm �
     ok "(1g) primary-role arm + stray ARM_PAIRING_TOKEN → announced IGNORED (the holder GENERATES tokens); nothing stored"
 else
     bad "(1g) rc=$RC tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+
+# (1n) Block 6.3.1 D5 — the arm REFUSES a symlinked state directory BEFORE the token is stored (the
+# daemon's R-SYM rule mirrored: a token stored through a symlinked directory never proves on this
+# spare). Pre-fix red (the 6.3 build): the token was accepted and stored THROUGH the link — PAIRED.
+new_mock standby
+mkdir -p "$MOCK_DIR/real-state"; rm -rf "$MOCK_DIR/state"; ln -s "$MOCK_DIR/real-state" "$MOCK_DIR/state"
+run_arm ARM_PAIRING_TOKEN="$TOK_OK"
+if [[ "$RC" == "1" ]] && out_has 'REFUSE\[STATE-dir-symlink\]' && out_has 'NEVER proves on the spare' && [[ ! -e "$MOCK_DIR/real-state/pairing-token" ]] && ! out_has 'pairing summary: PAIRED' && ! out_has 'ceremony complete'; then
+    ok "(1n) spare arm, valid token, SYMLINKED state directory → REFUSE[STATE-dir-symlink] (a token stored through it never proves — the daemon's R-SYM rule); nothing stored through the link, no PAIRED summary"
+else
+    bad "(1n) rc=$RC stored=$([[ -e "$MOCK_DIR/real-state/pairing-token" ]] && echo yes || echo no) tail: $(tail -3 "$MOCK_DIR/out" | tr '\n' ' ')"
 fi
 
 # ── (2) zero-stake verification (§2.4 arm condition; per entry, N-is-all) ───────────────────────
@@ -629,8 +725,9 @@ if [[ "$RC" == "0" ]] && out_has 'WARN: precondition P6 — DEGRADED, NOT REFUSE
    && out_has 'G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition' \
    && out_has "additivity does NOT hold" && out_has 'residual 2' \
    && out_has 'THIRD endpoint in a SEPARATE FAILURE DOMAIN' && out_has 'G2_VANTAGE_A and/or G2_VANTAGE_B' \
+   && out_has "That restores additivity for verified-demote ONLY: watchdog-elapsed's silence and the vote-FROZEN observation stay one TIER2/TIER3 input on every host" \
    && ! out_has 'REFUSE\[P6'; then
-    ok "(2n) DEFAULT config (vantages derived from the tiers) → a LOUD, MEASURED degradation: each matching pair named with the comparison that matched ('by identical URL'), the comparisons this host could make named ('resolved-address compares via getent on every pair'), the consequence stated (one compromised vantage supplies BOTH halves; additivity does NOT hold; SAFETY residual 2), and the way back named with the env keys and the file — and the arm still COMPLETES (rc 0, no REFUSE)"
+    ok "(2n) DEFAULT config (vantages derived from the tiers) → a LOUD, MEASURED degradation: each matching pair named with the comparison that matched ('by identical URL'), the comparisons this host could make named ('resolved-address compares via getent on every pair'), the consequence stated (one compromised vantage supplies BOTH halves; additivity does NOT hold; SAFETY residual 2), and the way back named with the env keys and the file, SCOPED to verified-demote (6.3 fix round, X2: watchdog-elapsed's silence stays one TIER2/TIER3 input on every host) — and the arm still COMPLETES (rc 0, no REFUSE)"
 else
     bad "(2n) rc=$RC tail: $(grep -c 'precondition P6' "$MOCK_DIR/out") P6 lines; $(tail -4 "$MOCK_DIR/out" | tr '\n' ' ')"
 fi
@@ -640,8 +737,10 @@ armed_ln=$(grep -n 'ARMED (' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
 g2sum_ln=$(grep -n 'G2 vantage summary — G2 and vote-liveness SHARE VANTAGES' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
 pair_ln=$(grep -n 'pairing summary:' "$MOCK_DIR/out" | tail -1 | cut -d: -f1)
 if [[ -n "$armed_ln" && -n "$g2sum_ln" && -n "$pair_ln" ]] && [[ "$armed_ln" -lt "$g2sum_ln" && "$g2sum_ln" -lt "$pair_ln" ]] \
-   && out_has 'G2 vantage summary — G2 and vote-liveness SHARE VANTAGES' && out_has 'separate failure domain'; then
-    ok "(2o) the degradation is re-stated in the END-OF-SUMMARY, in order: ARMED (line $armed_ln) → G2 vantage summary (line $g2sum_ln) → pairing posture (line $pair_ln, still LAST per §2.7 (c)) — it cannot scroll away with the rest of the ceremony"
+   && out_has 'G2 vantage summary — G2 and vote-liveness SHARE VANTAGES' && out_has 'separate failure domain' \
+   && out_has "This spare is armed; the proof gate is not wired into any take path in this build" \
+   && out_has "that restores additivity for verified-demote ONLY: watchdog-elapsed's silence and the vote-FROZEN observation stay one TIER2/TIER3 input on every host"; then
+    ok "(2o) the degradation is re-stated in the END-OF-SUMMARY, in order: ARMED (line $armed_ln) → G2 vantage summary (line $g2sum_ln) → pairing posture (line $pair_ln, still LAST per §2.7 (c)) — it cannot scroll away with the rest of the ceremony; its remedy SCOPED to verified-demote and the gate stated as NOT wired (6.3 fix round, X2/X4)"
 else
     bad "(2o) summary ordering: armed=$armed_ln g2=$g2sum_ln pairing=$pair_ln"
 fi
@@ -655,9 +754,10 @@ write_env_standby 'PRIMARY_UNSTAKED_PUBKEY="PKCLEAN"' 'G2_VANTAGE_A="http://t4.m
 run_arm
 if [[ "$RC" == "0" ]] && out_has 'G2 vantages are SEPARATE from the vote-liveness tiers' \
    && out_has "no G2 vantage matched TIER2_RPC (host 't2.mock') or TIER3_RPC (host 't3.mock')" \
-   && out_has "additivity HOLDS on this host" \
+   && out_has "additivity HOLDS on this host for verified-demote" \
+   && out_has "It does NOT extend to watchdog-elapsed, on any host: its silence and the vote-FROZEN observation are the same TIER2/TIER3 input" \
    && ! out_has 'DEGRADED, NOT REFUSED' && ! out_has 'G2 vantage summary'; then
-    ok "(2p) CONTROL: vantages pinned off both tiers (t4.mock/t5.mock vs TIER2 t2.mock / TIER3 t3.mock) → the MEASURED no-overlap line naming both tiers, 'additivity HOLDS', and ZERO degradation output (no P6 warn, no end-of-summary line) — (2n) observes the vantage-vs-tier compare, not an unconditional warning"
+    ok "(2p) CONTROL: vantages pinned off both tiers (t4.mock/t5.mock vs TIER2 t2.mock / TIER3 t3.mock) → the MEASURED no-overlap line naming both tiers, 'additivity HOLDS' SCOPED to verified-demote with watchdog-elapsed named as the path it does NOT cover on any host (Block 6.3: its silence and the vote-FROZEN observation are one TIER2/TIER3 input — docs/SAFETY.md 'Shared vantages'), and ZERO degradation output (no P6 warn, no end-of-summary line) — (2n) observes the vantage-vs-tier compare, not an unconditional warning"
 else
     bad "(2p) rc=$RC tail: $(tail -5 "$MOCK_DIR/out" | tr '\n' ' ')"
 fi
@@ -762,7 +862,7 @@ drive_gate() {
         alert_warn() { WARNCT=$((WARNCT+1)); }
         alert_info() { :; }
         log_warn() { LASTWARN="$*"; WARNCT=$((WARNCT+1)); }
-        log_info() { LASTINFO="$*"; INFOCT=$((INFOCT+1)); case "$*" in "[proof-gate] proof providers:"*) SLINES=$((SLINES+1)) ;; esac; }
+        log_info() { LASTINFO="$*"; INFOCT=$((INFOCT+1)); case "$*" in "[proof-gate] holder not attested ("*) SLINES=$((SLINES+1)) ;; esac; }
         log_error() { :; }
         "$fn"
     )
@@ -776,8 +876,8 @@ case_floors() {
     echo "rc=$rc|floor=${elapsed_floor:-unset}|nhead=${N_HEAD:-unset}|margin=${MARGIN_ELAPSED:-unset}|gen=${_proof_token_gen:-unset}"
 }
 r=$(drive_gate "$STANDBY" 1 "" ok case_floors | tail -1)
-if [[ "$(field "$r" rc)" == "0" && "$(field "$r" floor)" == "100" && "$(field "$r" nhead)" == "25" && "$(field "$r" margin)" == "10" && "$(field "$r" gen)" == "7" ]]; then
-    ok "(4) armed + valid token → elapsed_floor=100 (W30+B60+MARGIN10), N_HEAD=25, MARGIN_ELAPSED=10 — read from the deriving shell"
+if [[ "$(field "$r" rc)" == "0" && "$(field "$r" floor)" == "100" && "$(field "$r" nhead)" == "22" && "$(field "$r" margin)" == "10" && "$(field "$r" gen)" == "7" ]]; then
+    ok "(4) armed + valid token → elapsed_floor=100 (W30+B60+MARGIN10), N_HEAD=22 ((MARGIN−1)×5/2 — τ budgeted, 6.3.1), MARGIN_ELAPSED=10 — read from the deriving shell"
 else
     bad "(4) $r"
 fi
@@ -804,16 +904,24 @@ case_floors_and_start() {
     _derive_proof_floors; local rc=$?
     local floor="${elapsed_floor:-unset}"
     _proof_startup_check
-    echo "drc=$rc|floor=$floor|pages=$PAGES|titles=$PAGE_TITLES|lastpage=$LASTPAGE|lastinfo=$LASTINFO"
+    echo "drc=$rc|floor=$floor|pages=$PAGES|titles=$PAGE_TITLES|lastpage=$LASTPAGE|lastinfo=$LASTINFO|labels=${_proof_provider_labels:-}"
+}
+case_floors_and_start_g2() {   # the same WITH G2 configured (its unstaked pubkey + the default vantages): verified-demote registers
+    PRIMARY_UNSTAKED_PUBKEY=UPK1; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"
+    case_floors_and_start
 }
 r=$(drive_gate "$STANDBY" 1 "" wrapw case_floors_and_start | tail -1)
+rg=$(drive_gate "$STANDBY" 1 "" wrapw case_floors_and_start_g2 | tail -1)
 if [[ "$(field "$r" drc)" == "1" && "$(field "$r" floor)" == -* ]] \
    && [[ "$(field "$r" pages)" == "1" && "$(field "$r" titles)" == *"ARMED SPARE NOT ATTESTED 🚨"* ]] \
-   && [[ "$(field "$r" lastpage)" == *"did not converge"* ]] \
-   && [[ "$(field "$r" lastinfo)" != *"armed spare PAIRED"* ]]; then
-    ok "(4d) planted wrapping-W token (bypasses intake) → _derive_proof_floors INVALID (rc 1, floor=$(field "$r" floor)) + §2.7 CRITICAL page naming the non-converging floor; NO PAIRED line (the on-disk backstop, independent of the arm ceiling)"
+   && [[ "$(field "$r" lastpage)" == "armed spare pairing INVALID — re-arm the holder first and re-pair this spare with the fresh token it prints ("*"did not converge"* ]] \
+   && [[ "$(field "$r" lastpage)" == *"This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold."* \
+         && "$(field "$r" lastpage)" == *"From the release that wires the gate, an invalidly paired spare's silence-based take is disabled."* && -z "$(k4_neg "$(field "$r" lastpage)")" ]] \
+   && [[ "$(field "$r" lastinfo)" != *"armed spare PAIRED"* ]] \
+   && [[ "$(field "$rg" drc)" == "1" && "$(field "$rg" pages)" == "1" && " $(field "$rg" labels) " == *" verified-demote "* && "$(field "$rg" lastpage)" == *"did not converge"* && -z "$(k4_neg "$(field "$rg" lastpage)" g2)" ]]; then
+    ok "(4d) planted wrapping-W token (bypasses intake) → _derive_proof_floors INVALID (rc 1, floor=$(field "$r" floor)) + §2.7 CRITICAL page that opens with the verdict and the fix (INVALID — re-arm the holder first and re-pair: a lock-screen preview's ~80 characters), names the non-converging floor and says this release has no relinquish-proof gate (v0.6.x take semantics; an invalidly paired spare's silence-based take disabled from the release that wires the gate); NO PAIRED line (the on-disk backstop, independent of the arm ceiling); the page claims no take disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)' (k4_neg), and with G2 configured (registered: $(field "$rg" labels)) names no provider"
 else
-    bad "(4d) $r"
+    bad "(4d) $r :: g2: $rg"
 fi
 
 # (4f) floor-vs-timer MINIMUM backstop (6.1 reviewer condition; defense in depth like (4d)): a
@@ -849,16 +957,16 @@ fi
 # (5) coupling: MARGIN_ELAPSED 10→20 mutant → floor AND N_HEAD move TOGETHER
 mutate "$STANDBY" 's/^    MARGIN_ELAPSED=10$/    MARGIN_ELAPSED=20/' "$WORK/margin20.sh"
 r=$(drive_gate "$WORK/margin20.sh" 1 "" ok case_floors | tail -1)
-if [[ "$(field "$r" floor)" == "110" && "$(field "$r" nhead)" == "50" ]]; then
-    ok "(5) MARGIN_ELAPSED 10→20 → elapsed_floor 110 AND N_HEAD 50 move TOGETHER (coupled at the derivation site, [6.0-COND-3])"
+if [[ "$(field "$r" floor)" == "110" && "$(field "$r" nhead)" == "47" ]]; then
+    ok "(5) MARGIN_ELAPSED 10→20 → elapsed_floor 110 AND N_HEAD 47 move TOGETHER (coupled at the derivation site, [6.0-COND-3])"
 else
     bad "(5) $r (a static N_HEAD is exactly the red this asserts against)"
 fi
 # (5b) control: coupling ADDITIONALLY broken (N_HEAD static) → the together-assertion goes red
-mutate "$WORK/margin20.sh" 's|MARGIN_ELAPSED \* 5 / 2|25|' "$WORK/coupling-broken.sh"
+mutate "$WORK/margin20.sh" 's|(MARGIN_ELAPSED - 1) \* 5 / 2|22|' "$WORK/coupling-broken.sh"
 r=$(drive_gate "$WORK/coupling-broken.sh" 1 "" ok case_floors | tail -1)
-if [[ "$(field "$r" floor)" == "110" && "$(field "$r" nhead)" == "25" ]]; then
-    ok "(5b) coupling broken (static N_HEAD) → floor 110 with N_HEAD 25: (5)'s together-assertion observed RED on the mutant"
+if [[ "$(field "$r" floor)" == "110" && "$(field "$r" nhead)" == "22" ]]; then
+    ok "(5b) coupling broken (static N_HEAD) → floor 110 with N_HEAD 22: (5)'s together-assertion observed RED on the mutant"
 else
     bad "(5b) double mutant gave: $r — the coupling control cannot be trusted"
 fi
@@ -915,41 +1023,68 @@ echo ""; echo "─── (6) loud unpaired: every-start CRITICAL page + standing
 case_two_starts() {
     _proof_startup_check
     _proof_startup_check
-    echo "pages=$PAGES|titles=$PAGE_TITLES|lastpage=$LASTPAGE"
+    echo "pages=$PAGES|titles=$PAGE_TITLES|labels=${_proof_provider_labels:-}|lastpage=$LASTPAGE"
 }
 r=$(drive_gate "$STANDBY" 1 "" none case_two_starts | tail -1)
 tt=$(field "$r" titles)
 lp=$(field "$r" lastpage)
-if [[ "$(field "$r" pages)" == "2" ]] && [[ "$tt" == ";ARMED SPARE NOT ATTESTED 🚨;ARMED SPARE NOT ATTESTED 🚨" ]] && [[ "$lp" == *"verified-demote ONLY"* && "$lp" == *"holder not attested"* && "$lp" == *"silence-based take disabled"* && "$lp" == *"arm prints the token"* ]]; then
-    ok "(6a) armed spare, no token → CRITICAL page at EVERY start (2 drives → 2 pages, unthrottled) with the §2.7 wording"
+PG_TRUTH="This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold."
+if [[ "$(field "$r" pages)" == "2" ]] && [[ "$tt" == ";ARMED SPARE NOT ATTESTED 🚨;ARMED SPARE NOT ATTESTED 🚨" ]] && [[ "$lp" == "holder not attested — pair it: arm the holder first and copy the token it prints (no pairing token stored). "* && "$lp" == *"$PG_TRUTH"* \
+      && "$lp" == *"From the release that wires the gate, an unpaired spare's silence-based take is disabled."* && -z "$(k4_neg "$lp")" ]]; then
+    ok "(6a) armed spare, no token → CRITICAL page at EVERY start (2 drives → 2 pages, unthrottled): FIRST, inside a lock-screen preview's ~80 characters, the verdict and the action (holder not attested — pair it: arm the holder first, copy its token), then why (no pairing token stored), the truth of this release (no relinquish-proof gate: no provider's verdict conditions any take, armed or not; the take follows v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold) and what pairing will change (from the release that wires the gate, an unpaired spare's silence-based take is disabled); no take claimed disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)' (k4_neg)"
 else
     bad "(6a) $r"
 fi
+case_two_starts_g2() {   # the same unpaired spare WITH G2 configured (its unstaked pubkey + the default vantages)
+    PRIMARY_UNSTAKED_PUBKEY=UPK1; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"
+    case_two_starts
+}
+r=$(drive_gate "$STANDBY" 1 "" none case_two_starts_g2 | tail -1)
+if [[ "$(field "$r" pages)" == "2" && " $(field "$r" labels) " == *" verified-demote "* && "$(field "$r" lastpage)" == "holder not attested — pair it: arm the holder first and copy the token it prints (no pairing token stored). "* && "$(field "$r" lastpage)" == *"$PG_TRUTH"* \
+      && -z "$(k4_neg "$(field "$r" lastpage)" g2)" ]]; then
+    ok "(6a-g2) the same unpaired spare with G2 configured (verified-demote registered: $(field "$r" labels)) → the same page, holding every K4 negative: no provider named as able to prove (no 'verified-demote') — no provider's verdict conditions a take in this release"
+else
+    bad "(6a-g2) $r"
+fi
 r=$(drive_gate "$STANDBY" 1 "" invalid case_two_starts | tail -1)
-if [[ "$(field "$r" pages)" == "2" && "$(field "$r" lastpage)" == *"invalid (crc/shape)"* ]]; then
-    ok "(6b) invalid stored token → same every-start scream, reason named (crc/shape)"
+if [[ "$(field "$r" pages)" == "2" && "$(field "$r" lastpage)" == *"invalid (crc/shape)"* && "$(field "$r" lastpage)" == *"$PG_TRUTH"* && -z "$(k4_neg "$(field "$r" lastpage)")" ]]; then
+    ok "(6b) invalid stored token → same every-start scream, reason named (crc/shape), the same truth of this release, every K4 negative held"
 else
     bad "(6b) $r"
 fi
 r=$(drive_gate "$STANDBY" 1 "" page-only case_two_starts | tail -1)
-if [[ "$(field "$r" pages)" == "2" && "$(field "$r" lastpage)" == *"page-only relinquishes nothing"* ]]; then
-    ok "(6c) fence=page-only token → SAME posture for the time path (page-only relinquishes nothing), screamed at every start"
+if [[ "$(field "$r" pages)" == "2" && "$(field "$r" lastpage)" == *"page-only relinquishes nothing"* && "$(field "$r" lastpage)" == *"$PG_TRUTH"* && -z "$(k4_neg "$(field "$r" lastpage)")" ]]; then
+    ok "(6c) fence=page-only token → SAME posture for the time path (page-only relinquishes nothing), screamed at every start, the same truth of this release, every K4 negative held"
 else
     bad "(6c) $r"
 fi
 case_status_lines() {
     _proof_status_line
     _proof_status_line
-    echo "slines=$SLINES|last=$LASTINFO"
+    echo "slines=$SLINES|last=$LASTINFO|labels=${_proof_provider_labels:-}"
 }
+case_status_lines_g2() {   # the same WITH G2 configured, registered at startup first (the daemon's order: startup_checks, then
+    PRIMARY_UNSTAKED_PUBKEY=UPK1; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"   # the ♥ Heartbeat surface)
+    _proof_startup_check
+    SLINES=0; LASTINFO=""
+    case_status_lines
+}
+SL_HEAD="[proof-gate] holder not attested (no pairing token stored) — this release has no relinquish-proof gate: no provider's verdict conditions any take; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold."
 r=$(drive_gate "$STANDBY" 1 "" none case_status_lines | tail -1)
-if [[ "$(field "$r" slines)" == "2" && "$(field "$r" last)" == *"verified-demote ONLY — holder not attested"* && "$(field "$r" last)" == *"silence-based take disabled"* ]]; then
-    ok "(6d) standing line at every interval (2 calls → 2 identical §2.7 lines on the status surface)"
+if [[ "$(field "$r" slines)" == "2" && "$(field "$r" last)" == "$SL_HEAD"* \
+      && "$(field "$r" last)" == *"from the release that wires the gate, an unpaired spare's silence-based take is disabled" && -z "$(k4_neg "$(field "$r" last)")" ]]; then
+    ok "(6d) standing line at every interval (2 calls → 2 identical §2.7 lines on the status surface): holder not attested, no relinquish-proof gate in this release (v0.6.x take semantics, which the 6.3 re-check and the own-view veto can only hold), an unpaired spare's silence-based take disabled from the release that wires the gate; no take claimed disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)' (k4_neg)"
 else
     bad "(6d) $r"
 fi
+r=$(drive_gate "$STANDBY" 1 "" none case_status_lines_g2 | tail -1)
+if [[ "$(field "$r" slines)" == "2" && " $(field "$r" labels) " == *" verified-demote "* && "$(field "$r" last)" == "$SL_HEAD"* && -z "$(k4_neg "$(field "$r" last)" g2)" ]]; then
+    ok "(6d-g2) the same standing line with G2 configured (verified-demote registered at startup: $(field "$r" labels)): every K4 negative held, no provider named (no 'verified-demote')"
+else
+    bad "(6d-g2) $r"
+fi
 # (6e) control: the startup scream neutered → zero pages (red observed on the mutant)
-mutate "$STANDBY" '/alert "proof providers: verified-demote ONLY/d' "$WORK/noscream.sh"
+mutate "$STANDBY" '/alert "holder not attested — pair it: arm the holder first and copy the token it prints (\${_proof_unpaired_why})\. This release has no relinquish-proof gate/d' "$WORK/noscream.sh"
 r=$(drive_gate "$WORK/noscream.sh" 1 "" none case_two_starts | tail -1)
 if [[ "$(field "$r" pages)" == "0" ]]; then
     ok "(6e) scream-neutered mutant → 0 pages: (6a) is green because the page line exists (control red observed)"
@@ -1016,8 +1151,8 @@ r=$(drive_gate "$STANDBY" 1 "" none case_gate_refuse | tail -1)
 wv=$(field "$r" warn)
 if [[ "$(field "$r" rc)" == "1" && "$(field "$r" v_proven)" == "no" && "$(field "$r" v_prov)" == "none" && "$(field "$r" v_obs)" == "0" ]] \
    && [[ "$(field "$r" v_vant)" == "$(field "$r" s_vant)" && "$(field "$r" v_since)" == "$(field "$r" s_since)" && "$(field "$r" v_blind)" == "$(field "$r" s_blind)" && "$(field "$r" v_since)" == "424242" ]] \
-   && [[ "$wv" == *"MEASURED: providers registered=0"* && "$wv" == *"verified-demote ONLY — holder not attested"* ]]; then
-    ok "(8) zero providers → REFUSE rc 1 (MEASURED registered=0, §2.7 posture); the minted verdict carries the Block-3 triple EQUAL to dump_freshness's seam values, observed_at=0"
+   && [[ "$wv" == *"MEASURED: providers registered=0"* && "$wv" == *"proof providers: NONE — no provider can prove here — holder not attested"* ]]; then
+    ok "(8) zero providers → REFUSE rc 1 (MEASURED registered=0; the §2.7 posture prints the MEASURED registry — NONE here); the minted verdict carries the Block-3 triple EQUAL to dump_freshness's seam values, observed_at=0"
 else
     bad "(8) $r"
 fi
@@ -1129,9 +1264,9 @@ else
 fi
 
 # ── (11) constants census: N-is-all for the derived names, allowlist style ──────────────────────
-echo ""; echo "─── (11) constants census: elapsed_floor/MARGIN_ELAPSED/N_HEAD/PROOF_MAX_AGE only at the derivation sites ───"
+echo ""; echo "─── (11) constants census: elapsed_floor/MARGIN_ELAPSED/N_HEAD/PROOF_MAX_AGE/ELAPSED_HEAD_GAP_MAX/ELAPSED_RATE_MIN_SPAN/OWN_HEAD_H only at the derivation sites ───"
 
-census_constants() {   # $1=file → rc 0 iff EXACTLY the 4 allowlisted assignment lines exist
+census_constants() {   # $1=file → rc 0 iff EXACTLY the 7 allowlisted assignment lines exist
     local f="$1" lines n
     # (panel FND-1) BROADENED beyond the bare '^\s*NAME=' form: also catch the prefixed spellings
     # (local|declare|export|readonly, including attribute flags like `declare -i`) and arithmetic-
@@ -1140,29 +1275,33 @@ census_constants() {   # $1=file → rc 0 iff EXACTLY the 4 allowlisted assignme
     # the old regex missed (6-of-8 spellings evaded, panel-executed). The string-context occurrence
     # in the PAIRED log line (→ elapsed_floor=${elapsed_floor}s, N_HEAD=…) is deliberately NOT
     # matched: it is neither at a line-start assignment position, nor keyword-prefixed, nor inside
-    # (( — so honest daemons still count EXACTLY 4 (asserted below), while every evading spelling
-    # now goes RED (11b widened to match this breadth).
-    lines=$(grep -nE '(^[[:space:]]*((local|declare|export|readonly)[[:space:]]+([-][[:alnum:]]+[[:space:]]+)*)?(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE)=)|(\(\([[:space:]]*(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE)[[:space:]]*=)' "$f")
+    # (( — so honest daemons still count EXACTLY 7 (asserted below; 4 before 6.3 fix round 2 added
+    # ELAPSED_HEAD_GAP_MAX, R3; 5 before Block 6.3.1 added ELAPSED_RATE_MIN_SPAN and OWN_HEAD_H, D4),
+    # while every evading spelling now goes RED (11b widened to match).
+    lines=$(grep -nE '(^[[:space:]]*((local|declare|export|readonly)[[:space:]]+([-][[:alnum:]]+[[:space:]]+)*)?(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX|ELAPSED_RATE_MIN_SPAN|OWN_HEAD_H)=)|(\(\([[:space:]]*(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX|ELAPSED_RATE_MIN_SPAN|OWN_HEAD_H)[[:space:]]*=)' "$f")
     n=$(printf '%s\n' "$lines" | grep -c .)
-    [[ "$n" == "4" ]] || { CENSUS_FAIL="count=$n: $(printf '%s' "$lines" | tr '\n' ' ')"; return 1; }
+    [[ "$n" == "7" ]] || { CENSUS_FAIL="count=$n: $(printf '%s' "$lines" | tr '\n' ' ')"; return 1; }
     printf '%s\n' "$lines" | grep -q 'MARGIN_ELAPSED=10$'                                            || { CENSUS_FAIL="margin line"; return 1; }
     printf '%s\n' "$lines" | grep -q 'elapsed_floor=\$(( _proof_token_w + _proof_token_b + MARGIN_ELAPSED ))' || { CENSUS_FAIL="floor line"; return 1; }
-    printf '%s\n' "$lines" | grep -q 'N_HEAD=\$(( MARGIN_ELAPSED \* 5 / 2 ))'                        || { CENSUS_FAIL="nhead line"; return 1; }
+    printf '%s\n' "$lines" | grep -q 'N_HEAD=\$(( (MARGIN_ELAPSED - 1) \* 5 / 2 ))'                  || { CENSUS_FAIL="nhead line"; return 1; }
     printf '%s\n' "$lines" | grep -q 'PROOF_MAX_AGE=50$'                                             || { CENSUS_FAIL="age line"; return 1; }
+    printf '%s\n' "$lines" | grep -q 'ELAPSED_HEAD_GAP_MAX=1$'                                       || { CENSUS_FAIL="head-gap line"; return 1; }
+    printf '%s\n' "$lines" | grep -q 'ELAPSED_RATE_MIN_SPAN=24$'                                     || { CENSUS_FAIL="rate-span line"; return 1; }
+    printf '%s\n' "$lines" | grep -qE 'OWN_HEAD_H=16[[:space:]]'                                     || { CENSUS_FAIL="own-head line"; return 1; }
     return 0
 }
 c_ok=1
 for d in "$STANDBY" "$PRIMARY"; do
     census_constants "$d" || { c_ok=0; bad "(11) census failed on $(basename "$d"): $CENSUS_FAIL"; }
 done
-# no OTHER shipped script assigns any of the four names (the whole shipped set)
+# no OTHER shipped script assigns any of the census's names (the whole shipped set)
 others=0
 for f in "$HARNESS_DIR/install.sh" "$HARNESS_DIR/failover-arm.sh" "$HARNESS_DIR/deploy-failover.sh" "$HARNESS_DIR/deploy-failover-standby.sh" "$HARNESS_DIR/systemd/failover-fence.sh" "$HARNESS_DIR/systemd/failover-fence-page-only.sh"; do
-    n=$(grep -cE '(^[[:space:]]*((local|declare|export|readonly)[[:space:]]+([-][[:alnum:]]+[[:space:]]+)*)?(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE)=)|(\(\([[:space:]]*(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE)[[:space:]]*=)' "$f" 2>/dev/null)
+    n=$(grep -cE '(^[[:space:]]*((local|declare|export|readonly)[[:space:]]+([-][[:alnum:]]+[[:space:]]+)*)?(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX|ELAPSED_RATE_MIN_SPAN|OWN_HEAD_H)=)|(\(\([[:space:]]*(elapsed_floor|MARGIN_ELAPSED|N_HEAD|PROOF_MAX_AGE|ELAPSED_HEAD_GAP_MAX|ELAPSED_RATE_MIN_SPAN|OWN_HEAD_H)[[:space:]]*=)' "$f" 2>/dev/null)
     [[ "$n" == "0" ]] || { others=1; bad "(11) $(basename "$f") re-declares a derived constant ($n sites)"; }
 done
 if [[ $c_ok -eq 1 && $others -eq 0 ]]; then
-    ok "(11) census: the 4 names are assigned EXACTLY at the derivation-site allowlist in each daemon; zero assignments anywhere else in the shipped set"
+    ok "(11) census: the 7 names are assigned EXACTLY at the derivation-site allowlist in each daemon (ELAPSED_HEAD_GAP_MAX=1 — 6.3 fix round 2, R3; ELAPSED_RATE_MIN_SPAN=24 and OWN_HEAD_H=16 — 6.3.1, D4); zero assignments anywhere else in the shipped set"
 fi
 # (11b) injection control: a stray re-declaration must be census-visible in EVERY spelling the
 # (11) label claims to cover (panel FND-1 — the old control exercised ONLY the bare top-level
@@ -1170,7 +1309,7 @@ fi
 # fresh copy and must drive the census RED; the bare form is kept and the prefixed/arithmetic
 # forms (which evaded the old regex, panel-executed) are added.
 inj_ct=0; inj_red=0; inj_miss=""
-for spell in 'N_HEAD=7' 'local N_HEAD=7' 'declare -i N_HEAD=7' 'export PROOF_MAX_AGE=9' 'readonly elapsed_floor=5' ': $(( N_HEAD=7 ))' '(( PROOF_MAX_AGE = 9 ))'; do
+for spell in 'N_HEAD=7' 'local N_HEAD=7' 'declare -i N_HEAD=7' 'export PROOF_MAX_AGE=9' 'readonly elapsed_floor=5' ': $(( N_HEAD=7 ))' '(( PROOF_MAX_AGE = 9 ))' 'ELAPSED_HEAD_GAP_MAX=12' 'local ELAPSED_HEAD_GAP_MAX=12' '(( ELAPSED_HEAD_GAP_MAX = 12 ))' 'ELAPSED_RATE_MIN_SPAN=5' 'local ELAPSED_RATE_MIN_SPAN=5' 'OWN_HEAD_H=99' '(( OWN_HEAD_H = 99 ))'; do
     inj_ct=$((inj_ct + 1))
     cp "$STANDBY" "$WORK/inject.sh"; printf '\n%s\n' "$spell" >> "$WORK/inject.sh"
     if census_constants "$WORK/inject.sh"; then
@@ -1180,7 +1319,7 @@ for spell in 'N_HEAD=7' 'local N_HEAD=7' 'declare -i N_HEAD=7' 'export PROOF_MAX
     fi
 done
 if [[ "$inj_red" == "$inj_ct" ]]; then
-    ok "(11b) census RED on ALL $inj_ct evading spellings (bare + local + declare -i + export + readonly + two arithmetic forms): the control's red-capability now matches the (11) claim's breadth"
+    ok "(11b) census RED on ALL $inj_ct evading spellings (bare + local + declare -i + export + readonly + two arithmetic forms, the fifth name bare / local / arithmetic, and the 6.3.1 names bare / local / arithmetic): the control's red-capability matches the (11) claim's breadth"
 else
     bad "(11b) $((inj_ct - inj_red))/$inj_ct spellings EVADED the broadened census:$inj_miss"
 fi

@@ -4,18 +4,26 @@
 #   sh -c "$(curl -sSfL https://zim.one/failover/v0.6.10)"   # pinned (recommended)
 #   sh -c "$(curl -sSfL https://zim.one/failover)"          # latest
 #
-# Downloads the deploy wizard + its daemon for the requested version, verifies them against the
-# version's SHA256SUMS manifest, then runs the wizard. The wizard is interactive and starts in
-# DRY_RUN — it changes nothing until you review the logs and arm it.
+# Downloads the deploy wizard + its daemon for the requested version, verifies them (by SYNTAX only
+# for v0.6.9/v0.6.10, which predate the SHA256SUMS manifest; against the version's manifest,
+# fail-closed, from the first release that ships one — see below), then runs the wizard. The
+# wizard is interactive and starts in DRY_RUN — it changes nothing until you review the logs and
+# arm it.
 # Non-interactive: set FAILOVER_ROLE=primary|standby (+ optional FAILOVER_VERSION=vX.Y.Z).
 #
-# WHAT THE CHECKSUM VERIFICATION DOES AND DOES NOT GIVE YOU (honestly):
-#   It protects against a corrupted or truncated download, a tampering mirror/CDN, and a partially
-#   applied tag. It does NOT protect against a compromise of the repository itself or of zim.one —
-#   the manifest travels through the same channel as the files. The anchor outside that channel is
-#   the signed release tag: verify it with `git tag -v` against the maintainer key published at
-#   zim.one (see SECURITY.md). Verification failure ABORTS the install — there is no
-#   continue-without-verification path.
+# WHAT VERIFICATION THIS SCRIPT DOES — AND DOES NOT — GIVE YOU (honestly, per version):
+#   v0.6.9 and v0.6.10 PREDATE the SHA256SUMS manifest (no manifest exists at those tags): for them
+#   this script checks SYNTAX ONLY (bash -n) and prints a warning saying so. There is no checksum
+#   verification for them, and none can be added — published tags are not rewritten.
+#   From the first manifest-bearing release on, downloads are checked against that tag's
+#   SHA256SUMS, fail-closed: a mismatch, a missing entry, or a missing manifest ABORTS the install.
+#   Checksums catch a corrupted or truncated download and a partially applied tag. They do NOT
+#   catch an intermediary on the delivery path that rewrites the files AND the manifest together — a
+#   compromised mirror/CDN, the repository itself, or zim.one: the manifest travels through the same
+#   channel as the files.
+#   There is NO anchor outside that channel for v0.6.x: the v0.6.9 and v0.6.10 tags are NOT signed
+#   and never will be, and this script verifies no signature. Tag signing starts with v0.7, after
+#   the maintainer key is published outside GitHub (see SECURITY.md).
 #
 # This tool hot-swaps your validator's STAKED identity between machines. Read it before you run it:
 #   https://github.com/zimone91/solana-validator-failover
@@ -91,7 +99,7 @@ else
   case " $PRECHECKSUM_VERSIONS " in
     *" $VERSION "*)
       printf '\n  WARNING: %s predates the SHA256SUMS manifest — downloads verified by syntax only.\n' "$VERSION"
-      printf '  Newer releases are checksum-verified; consider installing the latest version.\n\n' ;;
+      printf '  Checksum verification starts with the first release that ships a SHA256SUMS manifest (v0.7).\n\n' ;;
     *) die "no SHA256SUMS manifest found for $VERSION — refusing to install unverified files" ;;
   esac
 fi

@@ -289,8 +289,6 @@ for scr in "$STANDBY" "$PRIMARY"; do
         || bad "(14:$name) companion-gate decision missing from the code (reviewer: a tripwire watching one of two sibling gates must say why)"
 done
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+# the harness's banner (6.3.1 fix round 7 — the delta panel 6's H4): the same RESULTS lines, and a network client the
+# net guard failed makes this suite FAIL standalone too, not only under run_all's stage (4)
+results_banner

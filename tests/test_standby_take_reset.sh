@@ -51,6 +51,12 @@ run_b1() {   # $1=script
     _SIM_NOW=1700000000
     date(){ [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
     mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
+    # v0.7 (Block 6.3.1): take_staked_identity now runs the own-view veto (ONE bounded LOCAL batch read)
+    # right after the fresh re-check. The veto is test_own_view's subject; this suite drives the take's
+    # set-identity mechanics BEHIND it, so the veto is shadowed to "no veto" (return 0) — labeled, not
+    # stubbed at the curl level. The veto is VETO-ONLY: the shadow can only let MORE takes through
+    # here, never fewer, so no assertion below is weakened by it.
+    _own_view_veto(){ return 0; }
     # admin-socket mock: set-identity applies the matching pubkey (take → S1, give-back → U1) so the
     # demote's REAL give_back_identity can complete when the (control) misfire path exercises it.
     timeout(){
@@ -139,7 +145,7 @@ if [[ -f "$V068" ]]; then
     [[ $v8 -eq 0 ]] && ok "(R-d) v0.6.8 take had 0 _selffence_reset (no promoted-holder self-fence yet) → B1 genuinely new" \
                     || bad "(R-d) v0.6.8 take unexpectedly resets ($v8)"
 else
-    ok "(R-d) v0.6.8 baseline not present to compare (skipped)"
+    echo "  ⏭ SKIP: (R-d) v0.6.8 baseline not present to compare"
 fi
 
 results_banner

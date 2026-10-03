@@ -5,6 +5,85 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **Block 6.3.1 — the spare's own view: detection on the slow reliable view (finalized), a veto on the fast one
+  (confirmed).** The spare's own node (`LOCAL_RPC`, the one input no `TIER2`/`TIER3` intermediary can splice)
+  now testifies at every take, and every piece is veto-only: it can turn a take into a hold, never the reverse.
+  Every residual and number lives in `docs/SAFETY.md`: [the spare's own view](docs/SAFETY.md#the-spares-own-view-v07-block-631) and,
+  every crossing of the holder's fence and the spare's earliest take, [the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
+  - **Explicit commitments:** every `getVoteAccounts`/`getSlot` body in both daemons names its commitment
+    (detection reads `finalized`, agave's default — behavior-neutral); a census parses every body with jq.
+  - **The own bank restarts the countdown:** the own bank's holder-voting evidence (a not-delinquent own-bank read with
+    a positive basis, a `lastVote` advance, or a VOTING veto) is a fourth takeover-anchor input; watchdog-elapsed's
+    silence restarts with it (`[elapsed-own]`); reset at every episode close; the witness fast path never skips it.
+  - **One bounded local veto read before the switch**, on every take path (the standby's `take_staked_identity`, the
+    primary's `switch_to_staked`): one `LOCAL_RPC` batch (`curl -m 2`) after the fresh re-check and before the `DRY_RUN`
+    branch. A failed read vetoes, a voting holder re-anchors, and the spare's own confirmed head must have advanced past a
+    sample no older than `OWN_HEAD_H` = 16 s. The act-then-alert rule: **no network, no alerts; one bounded local veto read allowed.**
+  - **The spare's own head:** sampled before every external read of the take cycle (a structural census); watchdog-elapsed's
+    `[elapsed-rate]` layer abstains below an average of 2.5 slots/s; `N_HEAD` = (`MARGIN_ELAPSED` − 1) × 5/2 = 22 slots.
+    This narrows the slow-cluster residual; it does not retire it.
+  - **Small calls:** Tier 1 is the node's own health verdict (`LOCAL_HEALTH_MAX_BEHIND` enters no decision); a failed
+    latency reference is no longer holder-voting evidence; the holder's opt-in latency demote reads its payload first
+    (not part of the cross-node invariant); `failover arm` refuses a symlinked or non-canonical state directory before
+    creating anything, unless a symlink is raced onto the path mid-arm (a local root's race, named in SAFETY).
+  - **The fresh re-check is the 6.3 build's, unchanged** (two changes tried in review opened take-while-voting paths and
+    were reverted). Residuals, named in SAFETY: the mirror world (6), the 6.3 build's own; the starvation (7), introduced
+    by this block's own-view veto (Block 6.3 has none and takes these holders): a `TIER2` failing slowly (a timeout, an
+    error answered late) with a slow `TIER3` leaves the veto no fresh baseline — a dead holder is never taken over, loudly
+    (`⚠️ Take VETOED by this spare's own view (it could not testify): …`, then `⚠️ TAKEOVER STARVATION: …`); availability.
+  - **No relinquish-proof gate in this release** (6.4 wires it; the attestation pages say so): the take follows v0.6.x semantics, which
+    the re-check and the veto can only hold. CI: every page sent has an entry in `docs/NOTIFICATIONS.md` (a status — an `alert`'s, a
+    direct `send_webhook`'s title — as a whole code span, a heading as a whole span or the opening of one followed by "…" or a blank and "…").
+  - Tests: `test_own_view`, `test_d6_holder` (new). `PATH` clients: `run_all.sh`'s stage (4), every leg; inet sockets: `tests/strace-hermetic.sh`.
+    A check that cannot run here (a control whose earlier-release baseline this repository does not ship, a host without
+    `shellcheck` or `flock`) prints `⏭ SKIP`, never ✅. The two attestation pages open with the verdict and the fix.
+
+- **Block 6.3 — the watchdog-elapsed proof provider (attested time), the spare's observation surface
+  as a standing property, and the holder-side hardening of five review rounds.** Every residual and
+  every number lives in `docs/SAFETY.md`, linked here.
+  - **The provider** (the second behind the 6.1 proof gate; `[elapsed-provider]`, byte-identical in
+    both daemons; armed + spare + registered only — zero reads and zero events anywhere else): it
+    registers at startup only over a pairing token that classifies ok at the one derivation site, and
+    answers PROVEN only when the silence observed on the spare's monotonic clock (restarting at every
+    stamped blindness, counted from the adoption of the token in force) reaches `elapsed_floor` =
+    W + B + `MARGIN_ELAPSED`, one fresh same-vantage read still shows the episode baseline, and the
+    payload's cluster-max is within ±`N_HEAD` of this spare's own head read right after it. A verdict
+    is withdrawn — never extended — past `PROOF_MAX_AGE`, when the seam moves under it, or when the
+    stored token (keyed on its full line and file identity) no longer licenses it; a symlinked token or
+    token directory never proves. Unwired (6.4). Its numbers:
+    [slot time](docs/SAFETY.md#shared-vantages--the-spares-observation-surface-a-standing-property-v07)
+    and the head cross-check, its own cost and age, in the same section.
+  - **The spare's observation surface (D0)** — [Shared vantages](docs/SAFETY.md#shared-vantages--the-spares-observation-surface-a-standing-property-v07):
+    on every configuration watchdog-elapsed's silence and the vote-FROZEN observation are one
+    `TIER2`/`TIER3` input; the own bank's scope, the partitioned and lagging spare, forged G2 on shared
+    vantages — measured on the real loop (`test_elapsed_provider` §11), most of them flipped by 6.3.1.
+  - **The spare's take path:** span starts stamped after the read that establishes them; one
+    canonical-integer validator (`_canon_uint`) for every external integer; an aborted main loop exits
+    1; the Tier-1 and reference reads petted; the own-bank reference read first; `TIER2` re-reads the
+    holder's `lastVote` after its reference.
+  - **The holder's self-fence:** non-canonical input fails toward the fence; `load_state` decides per
+    value; the restore floor (`SELFFENCE_RESTORE_CONFIRM_SECS`); the differential bar and the seven
+    named residuals — [Holder self-fence](docs/SAFETY.md#holder-self-fence-the-differential-bar-and-its-named-residuals-v07-block-63).
+  - **The heredoc guard (27)** in `test_installer_guardrails`; the standby deploy script's env heredoc
+    ran `failover arm` as a command substitution (bare backticks in a comment) — escaped.
+
+- **Install-verification claims aligned to the mechanism (docs, comments and one runtime output
+  line; no logic change).** `install.sh`'s header, `SECURITY.md` ("Verifying what you install") and the README
+  install paragraph promised more than exists: a signed release tag verified with `git tag -v`
+  against a maintainer key at zim.one, and fail-closed `SHA256SUMS` verification with "no
+  continue-without-verification path". The facts, checked against the tags themselves: `v0.6.9`
+  and `v0.6.10` carry NO signature (annotated tags, zero signature blocks) and NO `SHA256SUMS`
+  (neither tag contains a manifest), so for both — including the installer's default version —
+  downloads are checked by SYNTAX ONLY, and the installer's own code already says so aloud
+  (`PRECHECKSUM_VERSIONS` warning); the script verifies no signature at all. The texts now say
+  exactly that: v0.6.x tags are unsigned and will stay so (published tags are never rewritten);
+  checksum verification is fail-closed from the first manifest-bearing release on; tag signing
+  starts with v0.7, after the maintainer key is published outside GitHub. The one line every
+  install prints was wrong too: "Newer releases are checksum-verified; consider installing the
+  latest version" — no release is checksum-verified today, and the latest IS v0.6.10, so the
+  advice led nowhere. It now reads "Checksum verification starts with the first release that
+  ships a SHA256SUMS manifest (v0.7)" — true now and after v0.7 (output text only, no logic).
+
 - **Ratification follow-ups (Block 6.2).** The shared-vantage STANDING CONDITION now reads
   word-identically at every site an operator can meet it — `failover arm` precondition P6, the
   arm's end-of-summary, the armed spare daemon's startup WARN, and `docs/SAFETY.md` — so the
@@ -549,8 +628,9 @@ All notable changes are documented here. Versions follow the project's internal 
   by the dead-man's switch. Immediately before `set-identity`, a **fresh-proof
   re-check** (one fresh sample compared against the episode's pinned baseline — sound because the
   frozen path never re-bases the pin, so the pair interval is pin→now) must re-confirm FROZEN:
-  VOTING or cannot-determine **aborts** the take, and **zero network calls** sit between the
-  re-check and `set-identity`. An abort is a withdrawn verdict, not a failed take: **no cooldown is
+  VOTING or cannot-determine **aborts** the take, and **zero network calls** sat between the
+  re-check and `set-identity` (amended by Block 6.3.1 — the rule now reads: no network, no alerts;
+  one bounded local veto read allowed — the own-view veto). An abort is a withdrawn verdict, not a failed take: **no cooldown is
   set**, no episode state is dropped — the re-check leaves exactly the state the normal fence paths
   would, and pacing comes from the normal re-anchor/re-pin (on the PRIMARY a VOTING abort is paced
   by the observed-span floor + recovery ladder — its recovery anchor never read the liveness

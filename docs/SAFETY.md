@@ -20,7 +20,33 @@ Two independent mechanisms enforce this:
    (default **60s** = the holder's ~30s self-fence worst case + a 30s cross-node margin) **and** confirms
    via external RPC that the staked vote account has **stopped advancing** before it takes. Gossip
    presence alone is treated as advisory (a staked identity lingers in gossip for ~48h), so the
-   authoritative signal is vote-liveness, not gossip.
+   authoritative signal is vote-liveness, not gossip. Since v0.7 (Block 6.3.1) the last read before
+   the take is the spare's **own** node: one bounded read (`curl -m 2` + a watchdog pet) of its
+   confirmed view that withdraws the take if the holder shows voting there, if the read fails, or if
+   the spare's own head is not advancing. That read is not the only added cost: the spare also samples
+   its own head (`getSlot` at *confirmed*) — once per cycle of an open episode, before each external
+   read of the take cycle, and at the head of the take — so a take cycle carries five to twelve bounded
+   LOCAL reads at the defaults (each `curl -m 2` + a pet; five with prompt tiers and `GOSSIP_VERIFY` off,
+   seven on, twelve with `TIER2` failing at the probe and the fence and taking the confirm's latency path;
+   an armed unit's watchdog-elapsed evaluation adds one, the opt-in witness fast path up to four), plus
+   up to one take cycle of re-phasing: milliseconds on a healthy loopback; measured against the 6.3 build,
+   **+15 s** (`MAX_DELINQUENT_SLOTS`=0) / **+14 s** (=15; +9 s at the wizard preset) when every LOCAL read
+   takes 1 s with prompt tiers; with a slow tier as well, where the take lands, up to **+40 s** in the
+   measured cells (the probe's sample can push the first frozen verdict under the span floor — a whole take
+   cycle; phase-dependent: a measured maximum, not a bound). **With `TIER2` failing late and a slow `TIER3`
+   the spare never takes a dead holder** (residual 7 — introduced by 6.3.1's own-view veto, an availability
+   regression: the 6.3 build has no veto and takes these holders; the spare pages the veto page
+   `⚠️ Take VETOED by this spare's own view (it could not testify): …` and then the starvation page
+   `⚠️ TAKEOVER STARVATION: …`): the veto's own-head baseline must span `TIER2`'s time to
+   failure (a timeout at its 10 s bound, or any unusable answer — an error body, garbage, a refusal — that
+   arrives late), `TIER3`'s answer and two LOCAL reads within 16 s — after `TIER2`'s timeout, `TIER3` 7 s
+   late or more with prompt LOCAL reads, 5 s or more when every LOCAL read takes 1 s; a `TIER2` error after
+   8 s with `TIER3` at 9 s alike (the tests' whole-second clock; a real host stamps whole seconds too, and
+   there one second less is vetoed BLIND at some sub-second phases). **As a LOCAL read approaches its 2 s bound the take slides later, and at 2 s or more the
+   spare never takes** — the veto's own read times out, every veto is BLIND; loudly: the veto page, then
+   the takeover starvation page. (A harness world with EVERY read at its bound, +28 / +32 s, is an
+   idealization — it lets LOCAL reads answer at their bound; it is not a real world.)
+   ([the spare's own view](#the-spares-own-view-v07-block-631), *What it costs, measured*).
 
 ```
 t0        PRIMARY isolated
@@ -33,6 +59,131 @@ A hand-edited `TAKEOVER_DELAY` below the safe floor **refuses to start** (opt-ou
 `ALLOW_UNSAFE_TIMING=true`, for labs). For a 3-node setup the BACKUP floor is stricter still — it must
 also outwait the STANDBY's takeover becoming externally visible.
 
+**The invariant, measured (v0.7, Block 6.3.1 — D6; re-measured in its fix round 1).** The two timers
+above are designed against each other; this table measures them against each other, per failure class.
+**t = 0 is the holder's last landed vote.** The holder column is the moment its own monitor demotes it
+(for a wedged demote: the moment its validator process stops), measured on the REAL primary startup
+path (`load_state`, the tier tests, the identity wait, `STARTUP_GRACE`) and main loop over a physical
+model of the holder's node, at the **latest** read phase per `CHECK_INTERVAL` 1 / 3 / 5 and, for every row
+whose I/O includes a slow collision-check read, over the collision check's whole 60 s phase too (6.3.1 fix
+round 2 — before it those rows were measured at the read phases only and missed their worst phase by up to
+44 s) — the holder's latest fence is what faces the spare's earliest take (`tests/test_d6_holder.sh` pins
+every row except N7, from real-systemd container runs below, and the internet-lost demote, by reading). The
+model has an **integer-second clock and zero per-cycle overhead**: a real cycle costs a few hundred ms more
+(the measured 3.12–3.33 s cycles at `CHECK_INTERVAL` 3), and a millisecond model of the same loop lands the
+frozen fence at 30.3–36.1 s (`CHECK_INTERVAL` 3) / 32.0–37.0 s (5) against the 30–32 / 30–34 below (the 6.3.1
+delta review's executed model) — a margin under ~4 s below is not a margin. The
+spare columns are the **earliest** moment a spare can take (the un-armed timer path) or the
+watchdog-elapsed provider can **mint** (armed — the proof gate is wired only in 6.4, so this is the
+earliest proof, labelled as such): the minimum over the read phase and the spare's `CHECK_INTERVAL`
+1 / 3 / 5, measured on the real standby main loop (`tests/test_own_view.sh` (6)) with a dead holder
+behind tiers that show it frozen, at the assumed 2.5 slots/s and the measured mainnet 3.7. **Every row
+assumes prompt I/O** — every read answers at once — unless it says otherwise; the worst-case I/O column
+below drops that assumption.
+
+| Spare (earliest, from the last vote) | `MAX_DELINQUENT_SLOTS=15` (the wizard's) | `MAX_DELINQUENT_SLOTS=0` (daemon/template default) |
+|---|---|---|
+| un-armed timer path — take | **79 s** at 2.5 slots/s, **73 s** at 3.7 | **125 s** at 2.5, **104 s** at 3.7 |
+| armed watchdog-elapsed — earliest mint | **119 s** at 3.7; **125 s** at 2.525; at exactly 2.5 none while the own confirmed head is smooth (the rate layer abstains), but the confirmed head held 12 slots behind processed (10 more than usual) around its anchor sample mints at **126 s** (one read phase measured — the slow-cluster residual, *Slot time*) | **150 s** at 3.7; **170 s** at 2.525; at exactly 2.5 with the anchor hold **171 s** |
+| armed verified-demote (G2) — earliest PROVEN; not wired to a take until 6.4 | on **separately pinned** vantages (another operator's RPC): only after the holder's unstaked identity is live at its endpoint for 60 s — at least the holder's fence + 60 s; never for a holder that does not fence. On the **default** vantages (= `TIER2`/`TIER3`) one splicing intermediary forges the flip: measured PROVEN and gate-accepted at t132 with the holder voting since t90 — only the own-view veto (BLIND: the spare is cut off) holds the take (*Shared vantages*) | same |
+
+| Holder failure class | Holder fence (from the last vote; the latest phase at `CHECK_INTERVAL` 1 / 3 / 5) | Against the fastest spare (73 s at 3.7; 79 s at 2.5) | Against `MAX_DELINQUENT_SLOTS=0` (104 / 125 s) | Against the armed mint (119 / 150 s at 3.7) |
+|---|---|---|---|---|
+| dead local RPC, refusing (the no-answer clock) | 31 / 31–33 / 31–35 s | margin ≥ 38 s | margin ≥ 69 s | margin ≥ 84 s |
+| dead local RPC, every LOCAL read at its `-m` bound (over the collision check's phase: its LOCAL read at the bound too; at the read phases only 38 / 42–44 / 46–50) | 38–43 / 42–49 / 46–55 s | margin ≥ 18 s | margin ≥ 49 s | margin ≥ 64 s |
+| frozen slot | 30 / 30–32 / 30–34 s | margin ≥ 39 s | margin ≥ 70 s | margin ≥ 85 s |
+| egress-only (own votes not landing, N6: `SELF_FENCE_VOTE_LAG_SLOTS` / rate to cross its lag, then its 20 s clock) | 34 / 35–37 / 34–38 s at 2.5; 29 / 30–32 / 29–33 s at 3.7 | margin ≥ 41 s (2.5) / ≥ 40 s (3.7) | margin ≥ 71 s | margin ≥ 86 s |
+| garbage answers (non-canonical slot) | 30 / 28–30 / 26–30 s | margin ≥ 43 s | margin ≥ 74 s | margin ≥ 89 s |
+| `getHealth` reporting behind (a minority-gossip partition); the internet-lost demote | never later than the frozen / no-answer rows: `getHealth`'s own path (150 slots, past agave's 128) needs ~60 s at 2.5 slots/s; the internet-lost demote fires after `CONNECTIVITY_RETRIES` failed rounds — not crossings | as frozen | as frozen | as frozen |
+| **wedged demote → hard stop**, every daemon term (6.3.1 fix rounds 2–3): the stop lands at trigger + the demote (remove-all to `SETIDENTITY_TIMEOUT`, + its `-k 5`; or remove-all ANSWERING after r s and then the set-identity to unstaked to its bound, + 5) + `systemctl stop` (15 s, + 5) + — only after a failed stop — `systemctl mask --runtime` (15 s, + 5) + SIGTERM, 2 s, SIGKILL; at `SETIDENTITY_TIMEOUT` = 15 (the default; the daemon only lower-bounds it, at 8 — a larger value moves every cell by the difference, the other wedge order's by up to twice it: the timeout enters that order twice, as remove-all's answer time and as the set-identity's bound); `CHECK_INTERVAL` 3 / 5 | prompt `systemctl stop`: 45–47 / 45–49 s; the CLI needing its `-k 5`: 50–52 / 50–54 s; the `systemctl` client timing out with SIGTERM ignored (the daemon's SIGKILL), a prompt mask: 67–69 / 67–71 s; **with the mask at its 15 s bound** 82–84 / 82–86 s (remove-all at its plain bound: 77–79 / 77–81 s; PID 1 slow, the validator honouring SIGTERM: 75–77 / 75–79 s); **every op at its `-k` bound** 92–94 / 92–96 s; **the other wedge order** (remove-all answering in 7 / 14 s, then the set-identity hanging to its bound + 5; SIGTERM ignored): 74–76 / 74–78 and 81–83 / 81–85 s, with the mask at its bound 89–91 / 89–93 s, **and with the stop and the mask at their `-k` bounds too (remove-all answering in 14 s — the latest answer on this integer clock; on a host up to ~15 s, about +1 s on these cells) 106–108 / 106–110 s — the row's latest at prompt RPC I/O with a prompt admin socket** (6.3.1 fix round 3 — the delta review of fix round 2, CKB-1: fix round 2's row stopped at 92–96 s) — all at prompt RPC I/O; **the admin socket at 7 s** (the worst-case column's admin latency; the tiers and LOCAL reads prompt): every op at `-k` 92–101 / 98–109 s, the other order at `-k` 106–115 / 112–123 s; + the tiers at their bounds, over the collision check's phase: 67–89 / 67–91 s (with the mask 82–104 / 82–106, every op at `-k` 92–114 / 92–116, the other order at `-k` 106–128 / 106–130); + every LOCAL read at 4 s: 80–106 / 84–135 s (with the mask 95–121 / 99–150, every op at `-k` 105–131 / 109–160, the other order at `-k` 119–145 / 123–174); + every LOCAL read 1 s inside its own `-m` bound instead: every op at `-k` 98–169 / 97–175, the other order at `-k` 112–183 / 111–189; **the worst-case column's own mixes** (the tiers at their bounds and the admin socket at 7 s): with every LOCAL read at 4 s every op at `-k` 100–175 / 102–181, **the other order at `-k` 114–189 / 116–195 s — the row's latest over the measured mixes** (not a maximum over every mix: the frozen trigger is not monotonic in latency); with every LOCAL read 1 s inside its bound 105–135 / 107–139 and 119–149 / 121–153 | **CROSSING on the SIGKILL path even at prompt RPC I/O**: the mask at its bound crosses the 73 / 79 s spares by up to 13 / 7 s, every op at `-k` by 23 / 17 s, the other wedge order the 73 s spare by up to 5 s with remove-all answering in 7 s (the 79 s spare holds by 1 s — not a margin) and both by 12 / 6 s at 14 s, **with the stop and the mask at `-k` too by 37 / 31 s** (the admin socket at 7 s: 123 s, by 50 / 44 s); with the tiers at their bounds by up to 57 / 51 s; with slow LOCAL reads as well by up to 116 / 110 s (189 s), and under the worst-case column's own mix by up to **122 / 116 s** (195 s) (the prompt-stop rows, measured at prompt I/O only, hold: 49 / 54 s at the latest) | **CROSSING even at prompt RPC I/O**: the other wedge order with every op at `-k`, 110 s — by 6 s (the admin socket at 7 s: the first order at `-k` 109 s by 5 s, the other order 123 s by 19 s — the 125 s spare holds by 2 s, not a margin); with the tiers at their bounds (the mask: 106 s, by 2 s; every op at `-k` by 12 s; the other order at `-k` 130 s: by 26 / 5 s — the 125 s spare too), with slow LOCAL reads (135 s by 31 / 10 s; 174 s by 70 / 49 s; 189 s by 85 / 64 s) and under the worst-case column's own mix (181 s by 77 / 56 s; up to 195 s: by **91 / 70 s**) | **CROSSING already with the admin socket at 7 s** (the tiers and LOCAL reads prompt): the other wedge order at `-k` 123 s crosses 119 by 4 s (the first order at `-k`: 109 s, 10 s short). With the tiers at their bounds: the other wedge order at `-k` 130 s crosses 119 by 11 s (the first order at `-k`: 116 s, 3 s short of 119 — not a margin); with slow LOCAL reads: 135 s crosses 119 by 16 s; with the mask 150 s crosses 119 by 31 s and ties 150; every op at `-k` 160 s crosses 119 / 150 by 41 / 10 s (175 s with every LOCAL read 1 s inside its bound: by 56 / 25 s); the other order at `-k` 174 s by 55 / 24 s, 189 s by 70 / 39 s; under the worst-case column's own mix every op at `-k` 181 s by 62 / 31 s and the other order up to 195 s by **76 / 45 s** |
+| **(1)** still-frozen restore over a corrupted slot — the monitor restarted 30 / 45 / 63 s after the last vote | grace 30: 75 / 90 / 108 s; grace 0: 45–60 / 60 / 78 s (45 only when the persisted stall stamp is ≥ 30 s old at the restore, else 60) | **CROSSING**: grace 30 — 75 s lands 2 s after the 73 s spare (4 s before the 79 s one), 90 and 108 s 11–35 s after the spare can take; grace 0 — 78 s lands 5 s after the 73 s spare | grace 30: 108 s lands **4 s after** the 104 s spare (crossing); the rest hold | holds (108 < 119) |
+| **the plain restart** — a canonical state file, the monitor restarted +30 / +45 / +63 during the stall (the startup blind window: restart + the tier tests + `STARTUP_GRACE`) | 60 / 75 / 93 s; with the startup tier tests at their `-m` bounds, over the collision check's phase, 80–97 / 95–97 / 113 s (at the read phases only 83–85 / 95 / 113) | **CROSSING**: 75 s by 2 s, 93 s by 20 / 14 s; with slow tier tests every row (by up to 40 / 34 s) | with slow tier tests 113 s crosses by 9 s; the rest hold | holds (113 < 119) |
+| **the un-armed unit's own crash** (`Restart=always`, `RestartSec=10`) 1 s before the fence would land | 70 / 30–72 / 30–74 s; with the tier tests at their bounds, over the collision check's phase, 90–100 / 30–102 / 30–104 s (at the read phases only 90 / 92 / 31–94) | **CROSSING**: 74 s by 1 s; with slow tier tests by up to 31 / 25 s | with slow tier tests 104 s TIES the 104 s spare (`CHECK_INTERVAL` 5) — not a margin | holds |
+| **(1)'s restart member** — a second restart 1 or 4 cycles into the first restarted instance, after a 0 or 20 s stop (`CHECK_INTERVAL` 3) | first restart at +30: **93–122 s**; at +63: **126–155 s** | **CROSSING on every row** (by 20–82 s) | **CROSSING**: the +30 rows cross 104 (by up to 18 s), the +63 rows 104 and 125 (by up to 51 / 30 s) | **CROSSING**: the +30 rows cross 119 (by up to 3 s), the +63 rows 119 and 150 (by up to 36 / 5 s) |
+| **a fully wedged validator with the monitor RUNNING** (the admin socket unreadable) | **never**, armed or not: the loop takes the unreachable path and pages, and never evaluates the self-fence; armed, it keeps petting, so `OnFailure` never fires | **CROSSING** | **CROSSING** | **CROSSING** |
+| **N7** fresh-start silent gap (RPC silent from a (re)start at R; garbage before any canonical answer) | **never** by the self-fence (un-armed: never, every class — executed, below); ARMED: never while the admin socket answers (class A), **R + 90 s** when it is silent too (class B, below) | **CROSSING** (never fenced; class B lands 17 s after the 73 s spare even at R = 0) | **CROSSING** for the never-fenced forms; class B crosses once R > 14 s (R > 35 s against 125) | class A crosses; class B crosses once R > 29 s (R > 60 s against 150) |
+
+**The worst-case I/O column.** The self-fence decides on LOCAL signals only, but it is evaluated once per
+main-loop cycle, and that cycle also carries the identity read (the admin socket, 8 s bound),
+`tier1_check_delinquency` (`-m 10`) and, every 60 s, the collision check (LOCAL `getClusterNodes`
+`-m 5`, `TIER2`/`TIER3` `-m 10` each) — and every (re)start first runs the external tier tests. Measured
+at `CHECK_INTERVAL` 3 with the tiers at their `-m` bounds and the admin socket at 7 s, over the collision
+check's whole 60 s phase (6.3.1 fix round 2 — the first fix round sampled 8 phases 10 s apart and missed
+the worst of four of the seven rows: frozen 76–120, dead-refusing 52–66, dead-at-bound 57–106, tiers-only 31–47;
+its garbage and both N6 rows already held theirs — fix round 2's text said "every row's"), in TWO I/O
+mixes — every LOCAL read at 4 s, and every LOCAL read 1 s inside its own `-m` bound (the `-m 10` reads at
+9 s): frozen slot **52–127 s** / 57–87 s (frozen is not monotonic in latency: a slower LOCAL read can reach the
+frozen read sooner), dead local RPC refusing 52–74 / 52–74 s, dead local RPC with every read at its bound
+57–114 s, garbage answers 26–78 / 26–83 s, egress-only (N6) 60–86 / 65–96 s at 2.5 slots/s and 60–84 /
+65–94 s at 3.7; with only the tiers at their bounds (prompt LOCAL and admin reads) frozen 30–52 s. These are
+two sample mixes, not the maximum over every mix. **CROSSINGS at the worst case:** frozen crosses the 73 / 79
+s spares (by up to 54 / 48 s), the 104 and 125 s spares (by 23 / 2 s) and the 119 s mint (by 8 s);
+dead-at-its-bound the 73 / 79 s spares (by 41 / 35 s) and the 104 s one (by 10 s); dead-refusing the 73 s
+spare (by 1 s); garbage the 73 / 79 s spares (by 10 / 4 s); N6 the 79 s spare at 2.5 (by 17 s) and the 73 s
+one at 3.7 (by 21 s); the tiers-only frozen row holds (by 21 s). A slow holder host fences later than a spare
+with prompt I/O can take.
+
+**Every CROSSING above is a double-sign exposure of this build, named here, not a margin.** Most of
+them share the holder's **startup blind window** — after a (re)start no self-fence runs until the
+identity wait, the external tier tests and `STARTUP_GRACE` have passed, whatever the persisted baseline
+(a canonical one included: the plain-restart row) — and three are not restarts: a wedged demote whose
+hard stop waits out every bound, a fully wedged validator whose running monitor never evaluates the
+self-fence, and slow I/O stretching the loop. (The text of the first 6.3.1 build said the crossings
+"share one shape … a corrupted or empty baseline": false — a canonical-baseline restart crosses too. Fix
+round 1's text said every crossing found was named: false — its wedged-demote row modelled the hard stop's
+`systemctl mask --runtime` as instant and had no set-identity-hang order, and its slow-I/O rows missed the
+collision check's worst phase; the delta review measured both, and fix round 2 names them above. Fix round 2's text said its
+wedged-demote row stated every daemon term: false — the other wedge order with the stop and the mask at their `-k` bounds
+lands 14 s after the first order's latest: 106–110 s at prompt RPC I/O, crossing the 104 s spare; 130 s with the tiers at
+their bounds, crossing the 119 s mint and the 125 s spare; 174 s with every LOCAL read at 4 s (195 s under the worst-case
+column's own mix, the admin socket at 7 s too — the row states it) — the delta review of fix round 2 measured it, and fix
+round 3 names it in the row.)
+The floor rule behind (1) (`SELFFENCE_RESTORE_CONFIRM_SECS`) trades exactly this against never fencing a
+paused healthy holder ([the holder's residuals](#holder-self-fence-the-differential-bar-and-its-named-residuals-v07-block-63),
+(1)). No holder-side mechanism changed in fix rounds 1–2; the options the reviews found — one self-fence
+evaluation before the tier tests and the grace when `load_state` restores a pending stall from a STAKED save;
+an upper bound on `SETIDENTITY_TIMEOUT` and going straight to the kill once remove-all (or the set-identity
+after it) has timed out — before the stop and the mask, which add up to 40 s to the SIGKILL path; the mask-failed
+`Restart=always` resurrect path; the collision check's external reads off the self-fence's critical path —
+are the reviewer's.
+**The reviewer's framing for (1)'s restart member, checked:** "holder fences 45 s – ~95 s after the
+restart vs an un-armed fast-detect spare taking ~65 s after the holder stopped voting" — the direction
+is confirmed (every restart-member row crosses the fast-detect spare), the numbers corrected: the holder
+fences **63–92 s after the FIRST restart** at `CHECK_INTERVAL` 3 (93–155 s after the last vote), and the
+fast-detect spare takes at **79 s / 73 s** (2.5 / 3.7 slots/s) after the last vote at its earliest
+read phase — its episode opens when the finalized bank shows the holder 15 slots late (32 + 15 = 47
+slots: 18.8 s at 2.5, 12.7 s at 3.7), then the 60 s delay. From the same t = 0 the restart member fences
+20–82 s after that spare can take. The `MAX_DELINQUENT_SLOTS=0` default and the armed provider keep more
+of the ordering, not all of it (the table).
+
+**The silent-restart residual, by execution (armed and un-armed).** An armed holder's monitor sends READY
+only after its first identity read (the admin socket), and extends its start only on positive startup
+evidence. Executed in throwaway real-systemd containers — systemd **249** (Ubuntu 22.04, the fleet
+floor) and **255** (Ubuntu 24.04) — with this build's primary daemon under the shipped monitor unit
+(`Type=notify`, `WatchdogSec=30`, `TimeoutStartSec=90s`, `Restart=no`,
+`OnFailure=solana-failover-fence.service …`) and a marker fence unit, from a fresh start (no persisted
+state) with the local JSON-RPC silent (nothing listening), identical timelines on both versions:
+
+- **class A — RPC silent, admin socket ANSWERING** (the holder's identity readable): READY at t+1
+  (`active/running`), **no fence dispatch in 150 s**, no identity mutation — **the residual survives
+  arming**: the monitor runs, its self-fence never gets a canonical baseline (N7), and nothing fences;
+- **class B — both silent, the validator process present and wedged** (the admin calls hang to their
+  timeouts): no READY; the start times out at **t+90** → `failed` → `OnFailure` dispatches the fence at
+  t+90;
+- **class B′ — both silent, the validator process gone**: the same, the fence at **t+90**.
+
+**Un-armed**, the same three classes under the unit the primary wizard installs (`Type=simple`,
+`Restart=always`, no watchdog, no `OnFailure`), same containers and versions: **nothing fences any of
+them** — class A runs its loop (every cycle's self-fence read logs "no answer — treating as
+validator-unreachable, NOT isolation"), classes B and B′ wait in startup for the validator; no fence,
+no restart, no identity mutation in 150 s.
+
+So arming closes N7 only at a (re)start, and only where the admin socket is silent too: class B is
+fenced at R + 90 s for a (re)start at R — after the 73 s spare for every R, after the 104 s one once
+R > 14 s. An RPC-silent holder whose admin socket answers is fenced by neither the self-fence nor systemd;
+a validator that wedges fully while its monitor RUNS is never fenced, armed or not (the table's
+fully-wedged row); and un-armed no silent class is fenced at all.
+
 ## Failure directions
 
 | Situation | Resolves toward |
@@ -43,21 +194,26 @@ also outwait the STANDBY's takeover becoming externally visible.
 | A demote (`set-identity`) wedges | escalate to stop the validator + page |
 | Timing config unsafe | refuse to start |
 | Both external RPCs unreachable | cannot confirm → **hold**, do not take |
+| The spare's own node shows the holder voting, cannot answer its bounded read, or its own head is not advancing — at the take (v0.7, 6.3.1) | the take is **withdrawn** (the own-view veto) and the countdown re-anchors; no cooldown |
 | External RPCs stay down or flap | the hold is **indefinite** while blindness/flapping persists — a real, measured outcome (externals blinking one cycle per <60s starve the takeover for the whole outage) — and **paged** via `TAKEOVER_STARVATION_ALERT_SECS=300`, with a resolution notice at episode close |
 
 ## Detection
 
-- **Local delinquency** via a sliding window (DDoS-flicker resistant), confirmed on an external tier.
+- **Local delinquency** via a sliding window (DDoS-flicker resistant), confirmed on an external tier —
+  read at the *finalized* commitment (the slow, reliable view triggers); since v0.7 (Block 6.3.1) a
+  not-delinquent own-bank answer inside an open episode restarts the countdown, and the take itself is
+  vetoed on the spare's *confirmed* own view (the fast view vetoes) — [the spare's own view](#the-spares-own-view-v07-block-631).
 - **Frozen slot / dead RPC** (isolation the node can see).
 - **Egress-only partition** — the node still reaches the internet and its RPC answers, but its *own*
   votes stop landing on-chain; detected by comparing its own last vote against the cluster max.
 
 ## What has been tested
 
-Beyond the 36 automated suites, the release was validated by **live failovers on a real two-node
-testnet stack** (agave, systemd, real `set-identity`), with a 1 Hz on-chain observer recording the
-vote account throughout. Each scenario below was run end to end and the observer confirmed **no
-overlap** — at no point did two nodes hold the staked identity:
+Beyond the automated suites (`tests/run_all.sh` — its manifest pins the count, and CI checks the
+README's), the release was validated by **live failovers on a real two-node testnet stack** (agave,
+systemd, real `set-identity`), with a 1 Hz on-chain observer recording the vote account throughout.
+Each scenario below was run end to end and the observer confirmed **no overlap** — at no point did
+two nodes hold the staked identity:
 
 | Scenario | What was induced | Observed |
 |---|---|---|
@@ -78,8 +234,11 @@ per cycle at `CHECK_INTERVAL=3` — mainnet load does not inflate the loop (per-
 
 Automated suites additionally drive the real decision functions (self-fence, takeover gating,
 cross-node timing) with mocked I/O, and every safety fix ships with a control that fails when the fix
-is reverted. **Known limit:** these are function-level — they do not prove cross-process ordering
-between two live systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
+is reverted. Network clients reached through `PATH` are caught by `run_all.sh`'s stage (4) on every
+leg; at the syscall level, `tests/strace-hermetic.sh` (CI's strace job, ubuntu-24.04) fails on any inet socket in
+the whole run.
+**Known limit:** these are function-level — they do not prove cross-process ordering between two live
+systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
 
 ## Residual risks (be honest with yourself)
 
@@ -128,14 +287,20 @@ under this escalation contract:
    validator faster than a human can read a page. A healed fence closes the window; a later
    re-rot starts a fresh one.
 3. **Graceful self-demote** only if the rot persists past the grace *and* the node still verifiably
-   holds the staked identity: the standard set-identity-to-unstaked path, which the spare consumes
-   as a verified-demote proof — an automatic failover to the healthy side. An unreadable identity
-   at expiry demotes nothing (that would be a guess); paging continues.
+   holds the staked identity: the standard set-identity-to-unstaked path (a PRIMARY's
+   `switch_to_unstaked`, a promoted STANDBY's `give_back_identity`). In this release the spare then takes
+   on its timer path — the v0.6.x semantics, with or without G2: the demoted holder stops voting and the
+   spare's detection runs its course; once Block 6.4 wires the relinquish-proof gate, it takes via the
+   verified-demote proof. That is an automatic failover to the healthy side where a spare watches the
+   demoting node: behind a PRIMARY, the STANDBY; behind a promoted STANDBY, a BACKUP if there is one (the
+   old PRIMARY re-takes only with `RECOVERY_MODE=rpc`; at the default `manual` it does not). An unreadable
+   identity at expiry demotes nothing (that would be a guess); paging continues.
 
 The availability tradeoff is accepted and bounded: a broken-but-loud fence costs (at worst) one
 graceful failover to the healthy spare after ≥30 minutes of CRITICAL paging — against the
-alternative of a spare consuming `watchdog-elapsed` over a holder whose fence silently no longer
-exists, which is the double-sign class this tool exists to prevent. During the grace the holder is
+alternative of a spare taking on the holder's silence (its timer path in this release, `watchdog-elapsed`
+once the gate is wired) over a holder whose fence silently no longer exists, which is the double-sign
+class this tool exists to prevent. During the grace the holder is
 voting and paging, so the spare's silence-based path cannot fire against it: the window itself adds
 no double-sign exposure.
 
@@ -212,42 +377,16 @@ guarantee; anyone relaxing the advance layer is removing that, not a redundant c
 
 Layered refusal is still the posture — every layer above has its own red *and* a neuter control
 proving the attack falls through to a named surviving layer, plus an all-layers-neutered control
-that restores the forged acceptance (`tests/test_g2_provider.sh` §4/§5). And in v0.7 the gate is
-not yet wired into any take path at all (wiring is a later, separately reviewed step).
+that restores the forged acceptance (`tests/test_g2_provider.sh` §4/§5). And until Block 6.4 the gate is
+not wired into any take path at all (wiring is a later, separately reviewed step).
 
-**Severity of a false G2 proof, stated exactly.** The proof gate is an *additional* requirement in
+**Severity of a false G2 proof, stated exactly.** Once Block 6.4 wires it, the gate is an *additional* requirement in
 front of the staked mutation, never a trigger for one: the pre-existing, live-tested v0.6.x path
 (delinquency detection, the vote-frozen observation, `_fresh_proof_recheck`) must still pass on its
 own. A false PROVEN therefore cannot by itself cause a take — it can only fail to *block* a take
 that logic already authorized. A double-sign needs **both** a false G2 proof **and** a false-frozen
-vote observation of a holder that is in fact alive and voting. **Read the next section before
-relying on that sentence: on the default configuration it is true and empty.**
-
-**Shared vantages — where the additivity argument stops holding (the default config).** The
-standing condition, in the words the ceremony and the daemon log print verbatim: *G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host.* Mechanically: G2 defaults
-`G2_VANTAGE_A`/`G2_VANTAGE_B` to `TIER2_RPC`/`TIER3_RPC`, and every vote-liveness reader in the
-daemons iterates exactly those two endpoints (`for rpc in "$TIER2_RPC" "$TIER3_RPC"`). On such a
-host the two halves named above are **not independent**: the same active, protocol-aware
-intermediary that splices `getSlot`/`getClusterNodes` into a false G2 proof can equally proxy the
-tip live while freezing the staked account's `lastVote` into a false-frozen vote observation. One
-capability supplies both halves, so the composition adds nothing and residual 2 above is
-**unbounded by it**. (A *naive* freeze is still caught by the tip-guard; an active one is the same
-"passive closed, active open" boundary G2 draws everywhere else.)
-
-This is **not** refused, deliberately: most operators run exactly two RPCs, and refusing to arm
-would trade a named residual for no spare at all. It is **measured and stated**: `failover arm`
-compares each vantage against each tier — by normalized URL, by host, and by resolved address set
-where a resolver exists — and prints which vantage matched which tier by which comparison, the
-consequence, and the fix, both at precondition P6 and again in the end-of-summary; the armed
-daemon repeats a URL-level version of the same statement as a startup `WARN` (it does no DNS — the
-arm owns resolution, so a shared vantage hiding behind two hostnames is visible at the arm and
-invisible to the daemon).
-
-**The way back is a third endpoint in a separate failure domain:** point `G2_VANTAGE_A` and/or
-`G2_VANTAGE_B` in `failover-standby.env` at an RPC run by a *different operator* — not another
-hostname or another API key for one you already use — and re-run `failover arm`. The arm then
-prints the measured "vantages are SEPARATE from the vote-liveness tiers" line, and the additivity
-statement above becomes load-bearing again.
+vote observation of a holder that is in fact alive and voting. **Read *Shared vantages* below
+before relying on that sentence: on the default configuration it is true and empty.**
 
 **Deployed constants, and why the number moved twice.** This build deploys `G2_DELTA = 60 s` and
 `G2_CLOCK_BUDGET = 25 s` (and `G2_SLOT_ADVANCE_FLOOR = G2_DELTA` slots), derived at one site as
@@ -288,6 +427,925 @@ holder re-arm and the next spare re-pair, the spare's elapsed floor rests on sta
 - **Failure handling** (v0.7): escalate on *any* unverified demote postcondition, not only on
   command timeouts; atomic state writes; monotonic (boot-time) safety timers.
 
+### Shared vantages — the spare's observation surface (a standing property, v0.7)
+
+A claim that two checks are independent is a claim about their **inputs**. This section states it
+for the spare's whole take path — a standing property of the spare, not a residual of one proof
+provider; each provider's section points here. Read from the code, and confirmed by execution
+against the real main loop (`tests/test_elapsed_provider.sh` §11–§12, a file-backed clock so reads
+take time).
+
+**The premise under test is what `TIER2`/`TIER3` serve, in three forms** — each a measured case, not
+an assumption about who is lying:
+
+1. an **active intermediary** in front of both tiers: the tip proxied live, the staked account's
+   `lastVote` frozen;
+2. an **honest tier lagging but advancing**: the true chain, some seconds late — no adversary at all;
+3. the spare **partitioned together with its tiers after the episode's pin** (co-frozen): on a side
+   holding less than 2/3 of the stake the tower fails its depth-8 2/3 threshold within ~8 votes, so
+   the spare's *processed* bank — the tower's last votable bank — stops, and the co-partitioned
+   tiers' view (its max `lastVote`) stops with it.
+
+(An earlier text had "tiers partitioned together with the spare, honestly serving a live tip". That
+is not a physical state: a side under 2/3 stops voting within ~8 votes, and a side at or above 2/3
+is the canonical chain, where the spare's own bank sees exactly the holder votes the tiers see.)
+
+**Slot time.** Every seconds figure below was measured at **2.5 slots/s** (400 ms slots — the rate
+the code's derivations assume, e.g. `N_HEAD = (MARGIN_ELAPSED − 1) × 5/2`). Mainnet **measured ≈ 3.7
+slots/s** on 2026-09-26 (265–283 ms per slot: `getRecentPerformanceSamples` on the public
+mainnet RPC, ten 60 s samples of 212–226 slots — re-run it to check), so the slot boundaries are the stable facts: the own
+bank's delinquency rule is 128 slots (≈ 51 s at 2.5/s, ≈ 35 s at 3.7/s); *finalized* trails
+*processed* by 32 slots (≈ 13 s / ≈ 9 s); `getHealth`'s distance is 128 slots; `N_HEAD` is 22 slots
+since 6.3.1 (25 before: the mono clock's < 1 s truncation is now budgeted out of `MARGIN_ELAPSED`) —
+8.8 s at its assumed rate, ≈ 5.9 s on today's mainnet: **stricter** than its derivation (more blind
+reads — availability, never a take). A count of slots is only as many seconds as the cluster's rate
+makes it. Since 6.3.1 watchdog-elapsed's `[elapsed-rate]` layer measures **one** head — the spare's own
+confirmed head, sampled on the take path — at two **times** across its silence span, and abstains
+(blind) when that head **averaged** less than 2.5 slots/s over the span (`2·Δslot ≥ 5·(Δt + 1)` over
+at least 24 s — the truncating clock makes Δt uncertain by 1 s). (The two heads of one evaluation — the
+payload's cluster-max and the own processed head, ≤ 1 s apart — give a lag, not a rate.) That narrows
+the slow-cluster residual; it does **not** retire it (6.3.1 fix round 1 retracts "at a mint `N_HEAD`'s
+slots are never more than `MARGIN_ELAPSED − 1` seconds of chain" and "the slow-cluster residual is
+retired"). The layer does not bound: a **slowdown late in the span** (`N_HEAD`'s slots are counted at
+the rate of the last ~22 slots, which a ≥ 100 s average does not bound); a **shrinking own lag** (a
+spare catching up adds the lag it sheds to Δslot); a **confirmation hold at the anchor sample** (the
+held slots add to Δslot — the `ELAPSED_RATE_MIN_SPAN` derivation budgets the 22-slot hold at the latest
+end, the abstaining direction, and never at the anchor end). **The slow-cluster residual, named** —
+executed on this build's real loop (the review panel's worlds, re-run), a dead holder unless said:
+
+- 2.0 slots/s, the spare 30 s (60 slots) behind and catching up over t115–t175: PROVEN, and the 6.4
+  gate emulation's take, at t221 ("254 slots in 100 s"); the same chain with a smooth head reads SLOW
+  OWN HEAD from t191 and never mints; a constant lag reads STALE REFERENCE and never mints;
+- 1.5 slots/s, 80 s behind, catching up over t190–t270: PROVEN at t296; smooth: SLOW from t216, never;
+- 2.35 slots/s with the confirmed head held 24 slots behind processed over t66–t90 (the anchor
+  sample): PROVEN at t176; smooth: never;
+- exactly 2.5 slots/s with the confirmed head held 12 slots behind processed (10 more than usual) around
+  the anchor sample: PROVEN at t171 (`MAX_DELINQUENT_SLOTS` 0) / t126 (15) — the 6.3 build's times;
+  smooth: SLOW OWN HEAD, never;
+- 3.7 slots/s, then from t120 1.0 (or 1.7) slots/s, honest tiers 20 s (12 s) late, the holder resuming
+  at t146: PROVEN and gate-accepted at t151 ("287 slots in 100 s" / "308"), the holder voting 5 s —
+  **only the own-view veto holds the take** (VOTING at t151); with the veto neutered it is taken at
+  t151; the 6.3 build mints and takes at t151; at a constant 3.7 slots/s the same view never mints;
+- 3.7 slots/s, then from t140 1.25 slots/s, honest tiers 16 s late, the holder resuming at t142: PROVEN
+  and gate-accepted at t157 ("351 slots in 106 s" — 21 slots are 16.8 s of lag at the current rate,
+  against the 9 s budget), the holder voting 15 s — only the veto holds (VOTING at t157; the own
+  finalized bank first shows the holder at t168); the veto neutered → taken at t157;
+- 3.7 slots/s until t85, then 0.6 slots/s, honest tiers 34 s late, `MAX_DELINQUENT_SLOTS` 15, the holder
+  voting again from t89: watchdog-elapsed mints at t121, 32 s into the renewed voting; the gate
+  emulation's take is withdrawn by the veto (VOTING at t121).
+
+At 1.5 slots/s `N_HEAD` is 14.7 s of chain against the 9 s budget: measured silence can overstate true
+silence by ~15.7 s, so the 100 s floor admits a proof at a true silence of ~84 s < W + B = 90 s (by
+arithmetic; no live-holder mint was built at that rate). The layer's own cost, named: a **smooth** own
+head at exactly the assumed 2.5 slots/s is not certified — the provider abstains there (the 6.3 build
+minted at t171; 2.525 slots/s t171 → t181; 3.7 slots/s t151 → t151; `test_own_view` (4e)). The 2.5 bound
+is itself 0.2 s stricter than `N_HEAD`'s derivation needs (22 slots in 9 s is ≈ 2.44 slots/s); the review's
+derived-bound alternative, which mints there, inherits the late-slowdown gap too — the reviewer's call.
+Measured at 3.7 slots/s, the timing race below opens its episode at t45 instead of t65 and takes at
+t105 instead of t125; since 6.3.1 its veto boundary is the confirmed view's (t104 vetoed, t105 — the
+take's own second — taken), where the 6.3 build's was the finalized lag's 32 slots (t96 vetoed, t97
+taken after 8 s).
+
+| Input | What reads it on the take path |
+|---|---|
+| **the spare's own node** (`LOCAL_RPC`) | Tier-1 health (`getHealth`); the own-bank delinquency check that opens the episode and fills the 7-of-10 window (`getVoteAccounts` at *finalized* — agave's default commitment, spelled out in every request body since 6.3.1 — and, when `MAX_DELINQUENT_SLOTS` > 0, a separate `getSlot` reference, also finalized, read FIRST (6.3 fix round 2): any gap between the two answers — a pet, a stall, a slow read — can only make the holder look MORE current, failing toward NOT opening an episode. Read after the payload, as before, the gap pushed a current holder toward "delinquent": a 3 s reference + a 7 s pet read a holder voting every slot as "Latency 25 > 15", and an armed spare took that live holder at t577, measured); since 6.3.1 a not-delinquent answer of that check inside an open episode restarts the takeover countdown and watchdog-elapsed's silence — on POSITIVE evidence only since its fix round 1: the holder in agave's `current` list, a canonical reference with the holder within the threshold, or its `lastVote` advancing above the episode's maximum; a failed or non-canonical reference is not evidence; the **own-head samples** (`getSlot`, *confirmed* — one per cycle of an open episode, one before each external read of the take cycle (fix round 1) and one at the head of each take function); the **own-view veto** at every take (one `[getSlot, getVoteAccounts{votePubkey}]` batch at *confirmed*, `curl -m 2`, after the fresh re-check); watchdog-elapsed's head cross-check (`getSlot`, *processed* = the tower's vote bank) and its rate layer (the own-head samples); the local identity that selects the take branch (the admin socket's contact info; `getIdentity` on frankendancer) |
+| **`TIER2_RPC` / `TIER3_RPC`** | external confirm (`TIER2`'s `MAX_DELINQUENT_SLOTS` latency verdict re-reads the holder's `lastVote` AFTER its reference before it can confirm — 6.3 fix round 2); the vote-FROZEN observation, its pinned first sample and the freshness seam they write; the mutation-edge re-check; the gossip advisory (logged, never a gate); the fast-path timer skip (`peer_has_relinquished`, `getClusterNodes` — only with `WITNESS_FASTPATH=true`, default off: it skips the remaining delay, never Gate 2 or 3); watchdog-elapsed's silence — on **every** configuration; G2's two vantages **on the default configuration** |
+| **`G2_VANTAGE_A` / `G2_VANTAGE_B`** pinned elsewhere | G2 only |
+| **the pairing token** | the proof-gate posture; the derived floors (`elapsed_floor`, `N_HEAD`); watchdog-elapsed's registration, and its re-classification at every evaluation and every serve of a standing verdict |
+| **the spare's monotonic clock** | the re-take lockout, the cooldown, the takeover delay and its anchor, the observation-span floor, `VOTE_LIVENESS_MIN_INTERVAL`, `EXTERNAL_CONFIRM_THROTTLE`, the fast-path stagger floor, G2's hold, the silence floor, the proof age edge |
+| **the state file** (`STATE_FILE`, stamped with `BOOT_ID`) | the re-take lockout and the cooldown across a monitor restart (a mono stamp is honored only within the boot that wrote it) |
+| **the spare's wall clock** | G2's cluster-time freshness compare (±25 s) — no other gate on the take path (alert throttles aside) |
+
+**Where composition adds nothing: any two checks in the `TIER2`/`TIER3` row.** An active,
+protocol-aware intermediary in front of those two endpoints — one that proxies the tip live while
+freezing the staked account's `lastVote` — supplies, in one capability, the external confirm, the
+vote-FROZEN observation and a clean mutation-edge re-check. The tip guard does not stand in its way:
+it compares the reference tip against the **pinned first sample's** tip and the frozen path never
+re-bases it, so it catches a freeze only **at or before** that pinned sample — a naive, whole-body
+freeze that begins after the pin passes it too (measured with tiers frozen together with the spare:
+frozen before the pin → held on both paths; after it → taken). Two instances matter for the proof gate.
+
+**The G2 instance — on the default configuration.**
+The standing condition, in the words the ceremony and the daemon log print verbatim: *G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host.* Mechanically: G2 defaults
+`G2_VANTAGE_A`/`G2_VANTAGE_B` to `TIER2_RPC`/`TIER3_RPC`, and every vote-liveness reader in the
+daemons iterates exactly those two endpoints (`for rpc in "$TIER2_RPC" "$TIER3_RPC"`). On such a
+host the two halves named above are **not independent**: the same active, protocol-aware
+intermediary that splices `getSlot`/`getClusterNodes` into a false G2 proof can equally proxy the
+tip live while freezing the staked account's `lastVote` into a false-frozen vote observation. One
+capability supplies both halves, so the composition adds nothing and the G2 section's residual 2 is
+**unbounded by it**. Measured, on a spare cut off after the episode opened (P1b below) with G2 on the
+default vantages: the forged flip proves verified-demote and the gate accepts it at t132, the holder
+voting for 42 s — since 6.3.1 the own-view veto reads the cut-off spare's own head not advancing (BLIND)
+and withdraws the take; the 6.3 build mutated at t132 and the promoted spare's own H1 self-fence (its
+local confirmed slot frozen ≥ 30 s) gave the identity back at t168, 36 s after the take. The proof and
+its acceptance still happen: on shared vantages only the veto stands between them and the take.
+
+This is **not** refused, deliberately: most operators run exactly two RPCs, and refusing to arm
+would trade a named residual for no spare at all. It is **measured and stated**: `failover arm`
+compares each vantage against each tier — by normalized URL, by host, and by resolved address set
+where a resolver exists — and prints which vantage matched which tier by which comparison, the
+consequence, and the fix, both at precondition P6 and again in the end-of-summary; the armed
+daemon repeats a URL-level version of the same statement as a startup `WARN` (it does no DNS — the
+arm owns resolution, so a shared vantage hiding behind two hostnames is visible at the arm and
+invisible to the daemon).
+
+**The way back is a third endpoint in a separate failure domain:** point `G2_VANTAGE_A` and/or
+`G2_VANTAGE_B` in `failover-standby.env` at an RPC run by a *different operator* — not another
+hostname or another API key for one you already use — and re-run `failover arm`. The arm then
+prints the measured "vantages are SEPARATE from the vote-liveness tiers" line, and the additivity
+statement of the G2 section becomes load-bearing again — **for G2's path only** (every runtime
+remedy text says so). It does not do that for watchdog-elapsed, next.
+
+**The watchdog-elapsed instance — on every configuration.** watchdog-elapsed has no vantage of its
+own: it measures the holder's silence through the same liveness sampler the take path reads, so its
+silence and the take path's vote-FROZEN observation are **one observation, read twice** — coupled
+more directly than G2's default case, and with no configuration that separates them. The
+intermediary above supplies the elapsed floor's silence and the FROZEN verdict together; the
+provider's head cross-check does not change that (the intermediary proxies the head live, and lag is
+what that check measures — splicing is not). What watchdog-elapsed adds is attested **time** — the
+pairing token's bound (W + B) on how long a holder whose fence works keeps signing once it is in a
+failure that fence covers — never a second **witness** that the holder is silent. So on a host with
+separately pinned G2 vantages the gate's additivity holds for G2's path and **not** for the elapsed
+path: through watchdog-elapsed the false-frozen view, held for `elapsed_floor` (100 s at the shipped
+token bounds — longer than the un-armed timer's 60 s, by the floor's own minimum), is the whole
+forgery. Its silence clock starts at the episode's first observation and restarts at every
+**stamped** blindness — a cycle in which the take path tried to observe the holder and could not.
+Stretches nobody tried to observe are not stamped (with `[elapsed-rate]` neutered at the worlds' 2.5
+slots/s: both tiers down t80–t120, inside the delay → the proof still mints at t171; outages overlapping
+take-path cycles restart it — mint at the outage's end + 100 s; the shipped provider at 3.7 slots/s, the
+same rule: t60–t100, inside that rate's delay → t151 as with no outage, t100–t150 / t140–t170 → t250 /
+t270 — `test_elapsed_provider` (12h)); `lastVote`'s on-chain monotonicity and the final same-vantage
+read cover them. A host
+suspend or VM pause that the uptime clock counts (`/proc/uptime` includes suspended time) likewise
+meets the floor with no observation in between and ends on one post-resume read. The standing
+verdict is served only while the stored token still licenses it — re-classified at every serve; a
+token removed, rotted, turned page-only or re-paired withdraws it at once, and a token adopted
+mid-episode restarts the silence — and never after `PROOF_MAX_AGE`. "Adopted" means ANY change to the
+stored token FILE (6.3 fix round 2): the adoption is keyed on its full classified line (gen, bounds,
+fence, host, crc) and on the stored file's identity (inode, size, change time), so a new gen, a same-gen
+re-pair with other bounds, another host's token with the same bounds, and a rewrite back to the same
+bytes that no evaluation saw are all new adoptions (measured: a same-gen re-pair to a lower floor at
++121 s proves no earlier than +221 s; before, it proved at +121 s). A **symlinked** token never proves
+(6.3 fix round 4): the provider answers *cannot* — "the pairing token is a symlink — store it as a
+regular file, as `failover arm` does" — and the startup posture and the status line say so every
+interval. No single file identity covers a link: keyed on the link itself, every rewrite of its target
+is invisible (a flap proved at +100 s before fix round 3); keyed on its target (`stat -L`, fix round 3),
+a link re-pointed away and back is invisible at any spacing (it proved at +100 s there). `failover arm`
+always stores a regular file (tmp + `mv -f`, which replaces a link). A dangling link or a link loop at the
+token path never proves either: it fails the token classification first ("no pairing token stored" at
+startup; after registration, the step's "token no longer classifies ok"). The same holds one level up (6.3
+fix round 5): a **symlinked state directory** re-pointed away and back leaves the token file under it
+untouched — it proved at +100 s on every earlier tree — so a token whose directory does not canonicalize
+to itself (`PROOF_STATE_DIR` reached through a symlink anywhere on its path, or spelled other than its
+resolved path) never proves either: *cannot*, "the pairing token's directory is reached through a
+symlink — point PROOF_STATE_DIR at the resolved path", on the same three surfaces (the provider's
+reason, the startup posture, the status line). The availability cost, by design: **a symlinked state
+directory disables watchdog-elapsed until `PROOF_STATE_DIR` is pointed at the resolved path** (and the
+monitor restarted to read it; `failover arm` writes through the link into that same directory, so the
+stored token does not move). Not visible, for the regular file: a rewrite back to identical bytes
+within one ctime granule — a kernel tick on ns-timestamp filesystems, 1 s on ext4 with 128-byte inodes,
+ext3 or HFS+ (the inode number does not help: ext4 recycles it across a tmp+mv); and the state
+directory's contents swapped away and back between two steps — by a rename, a transient symlink or a
+mount: the key sees only the token file's identity, and it proves at +100 s on every tree, this one
+included (a documented residual, `test_elapsed_provider` (3l-R5a)).
+
+**Where composition does add an independent input — and how much.**
+
+1. **G2 on separately pinned vantages** (the way back above): a different operator's RPC is an
+   input the `TIER2`/`TIER3` intermediary does not control.
+2. **The spare's own bank.** `LOCAL_RPC` does not traverse `TIER2`/`TIER3`, so no intermediary
+   there can splice it. Since 6.3.1 it is used twice, on two commitments — **the slow reliable view
+   triggers, the fast one vetoes**:
+   - the **finalized** bank is the per-cycle entry gate (the own-bank delinquency check that opens
+     the episode), and inside an open episode its "current" verdict now **re-anchors the countdown**
+     (a full `TAKEOVER_DELAY` after the last such cycle) and restarts watchdog-elapsed's silence;
+   - the **confirmed** view is a **mutation-edge condition**: the last read before `set-identity` on
+     every take path is the own-view veto (one bounded `LOCAL_RPC` read after the fresh re-check —
+     [the spare's own view](#the-spares-own-view-v07-block-631)).
+
+   **Finding 1 (6.3) — the own bank did not bound the exposure; since 6.3.1 it does.** In 6.3 the own
+   bank was read once, at the take cycle's start, at finalized, and a "current" verdict vetoed that
+   cycle only: a holder that resumed voting was taken over unless its votes reached the finalized bank
+   before that read, and the exposure was the finalized lag (32 slots) PLUS every tier read (and, armed,
+   every pet) between that read and `set-identity` — Σ. Measured then, the tiers as the intermediary
+   (the D0 worlds, `test_elapsed_provider` §11): resumed at t113 → taken at t125 after **12 s**; the
+   intermediary also controlling latency → taken at t147 after **34 s** (`GOSSIP_VERIFY=true`: t175 /
+   62 s; `TIER2` blackholed: t182 / 69 s); armed with every pet 7 s → Σ = **50 s** (22 s of reads +
+   28 s of pets), a holder resumed at t477 taken 62 s into its voting; an HONEST tier 40 s / 10 s
+   behind reproduced the race (taken after 12 / 9 s); the armed provider could mature first (t159 →
+   taken at t171 after 12 s); the intermittent holder (one vote at t40 its own bank saw, current
+   t53–t59) was taken at t80 un-armed and at t126 armed — "100 s of silence" overstating the true
+   silence by 14 s. **Measured now, the same worlds:**
+   - zero latency: resumed at t113 → the veto reads it VOTING in the confirmed view at t125 — held;
+     the boundary is the veto's own read: t124 vetoed, t125 (the take's own second) taken, **0 s**;
+   - the intermediary controlling latency: the take still lands at t147, and the veto reads last —
+     t146 vetoed, t147 taken, **0 s** (`GOSSIP_VERIFY=true`: vetoed at t175; `TIER2` blackholed: the
+     re-check — the 6.3 build's one sequential call — waits out `TIER2`'s 10 s timeout and then reads
+     `TIER3` (9 s here), and no own-head sample may sit inside that span, so none is younger than 19 s at
+     the veto: vetoed BLIND at t182, and a dead holder behind that latency is **never taken** — residual 7
+     of the own view, introduced by 6.3.1's own-view veto (the 6.3 build, with no veto, takes it; a
+     re-check that reads the pinned `TIER3` alone, or both tiers at once, takes it too — at t172 / t173 —
+     and takes a voting holder elsewhere: neither is in this build);
+   - **armed, the exposure left is the veto's own pet** — the one op between the veto's snapshot and
+     `set-identity`: with every pet 7 s and prompt tiers the veto reads at t609 and the take lands at
+     t616 (fix round 1: t602 / t609; t574 / t581 in the first 6.3.1 build: the take cycle's added
+     own-head samples cost a 7 s pet each at this bound-counting); resumed at t608 → vetoed, at t609 →
+     taken after **7 s**. The 6.3 Σ
+     world itself (the splicer at `curl -m` − 1 s AND 7 s pets) never takes now, not even a dead
+     holder: every veto is BLIND (the pre-take sample is 23 s old by the veto read: its pet, the
+     re-check's 9 s read and its pet) — availability at the house bound-counting, where a real pet is a
+     datagram;
+   - honest tiers 40 s / 10 s behind: t113 / t116 vetoed VOTING (were taken after 12 / 9 s);
+   - armed (with `[elapsed-rate]` neutered — it abstains at the worlds' 2.5 slots/s): the proof
+     matures at t171 and the veto reads the t159 resumption VOTING — held;
+   - the intermittent holder: the take waits a full delay from the last own-bank "current" cycle —
+     **t119 = t59 + 60** (was t80); armed (rate layer neutered) the mint waits a full floor —
+     **t159 = t59 + 100** (was t126); the shipped provider abstains there at the worlds' smooth
+     2.5 slots/s (*Slot time*).
+
+**Cadence residual (documented, 6.3 fix round 2).** The episode window opens, triggers and closes on
+a COUNT of cycles (7-of-10; "mostly clear"), while the own bank's view of a holder vote is a matter of
+TIME (a vote reaches the finalized bank 32 slots after it lands — ≈ 13 s at 2.5 slots/s). So any change
+in how long a cycle takes — a pet that costs time, `CHECK_INTERVAL`, read latency — re-phases vetoes
+and window closes, both ways, on every tree (the first 6.3 build included). The proof's re-mint cycle
+(`PROOF_MAX_AGE` from `observed_at`) is phase too. Measured over a 1,115-world sweep against the
+build before fix round 2: the own-bank reference read that round moved to before the payload (at
+`MAX_DELINQUENT_SLOTS` > 0) re-phased 18 takes 1–8 s sooner and 49 later; moving `observed_at` back
+10 s re-phased 43 takes sooner and 55 later — 22 of them takes where the previous build vetoed, as
+that build takes the same family's holders at other resume instants.
+That reference read is **moved on every check that reaches the latency compare, and ADDED only on the
+checks the payload ends early** — the holder listed delinquent, the RPC unreachable, or no `.result`
+— not "added to every check": measured, a healthy live holder's steady-state read multiset is
+identical to the previous build's (80 = 80 `getSlot` over 40 cycles; only the getSlot/getVoteAccounts
+order changes). The detection cost of a dead holder is **0 s at loopback latency** (the episode opens
+on the same cycle as before) and **up to one cycle later when the LOCAL reads cost ~2 s each**
+(one extra loopback read, plus a pet on armed units, per listed-delinquent or unreachable cycle). The
+`TIER2` latency re-read adds an **external** `getVoteAccounts` only when TIER2's latency verdict fires
+on a not-yet-listed holder (alive-but-lagging or intermittent); for a holder already delinquent since
+the episode start `TIER2` lists it and never re-reads. Measured in one world (the
+holder's one vote at t141, `TIER2` 10 s late during t73–t118, `MAX_DELINQUENT_SLOTS`=0, an armed
+spare on the shipped timer path): pets that cost nothing take at t125, 1 s pets at t271, 2 s pets at t274
+(fix round 1: t270 / t272 — fix round 2's take-cycle samples re-phased it, and fix round 3's restored re-check
+leaves it there; the first 6.3.1 build: t272 / t268 — its fix round's per-read take-cycle samples re-phased it; 6.3:
+t254 / t218; the first 6.3 build: t152 / t284); with free pets, `CHECK_INTERVAL` 4 / 5 / 6 takes at
+t138 / t125 / t126 on every tree. On a real host a pet costs
+milliseconds, far below RPC jitter: the class is the phase, not the pet. It flips when the
+episode-close rule becomes time-based (the "mostly clear" window spanning at least the own bank's
+visibility period for a vote) — a reviewed change, not in this build (`test_elapsed_provider` (13f)).
+
+**A partitioned or lagging spare.** Agave's `getHealth` (v4.2.1, `rpc/src/rpc_health.rs`) compares
+the node's own optimistically confirmed slot with the latest optimistic slot its **own blockstore**
+has observed (through replay and gossip), at a 128-slot distance; it never consults `TIER2`/`TIER3`,
+and neither does Tier-1 (its `getSlot` is logged, never compared). Measured:
+
+- **Finding 2 (6.3) — partitioned AFTER the episode opened** (cut off, or on a minority fork): the
+  frozen bank keeps its delinquent verdict and `getHealth` stays ok (the blockstore learns nothing
+  new). In 6.3 **no spare-side gate held on the timer path** — taken at t125 with the holder voting
+  since t90 (P1b); armed, watchdog-elapsed refused only against a LIVE view, and with **co-frozen
+  tiers** (partitioned together, after the pin) it MINTED and the proof-gated take mutated at t171,
+  81 s into the holder's voting; forged G2 on the default vantages was accepted and taken at t132.
+  **Since 6.3.1 each is held**: the veto reads the spare's own confirmed head NOT advancing past its
+  sample of at most `OWN_HEAD_H` (16 s) ago → BLIND (P1b at t125; the co-frozen spare at t125; the
+  forged-G2 take at t132 after the gate accepted it); armed, `[elapsed-rate]` reads the frozen own head
+  at 0 slots/s → no mint (SLOW OWN HEAD from t171), and with that layer neutered the veto still refuses
+  the minted proof's take — two refusals on ONE input (the spare's own confirmed head), not two
+  independent ones: the review's catch-up world passes both together (*Slot time*). A **dead** holder behind such a partition is not
+  taken either (availability, correctly: a partitioned spare cannot testify). What is left is the
+  exposure below `OWN_HEAD_H` — a spare cut off within ~15 s of the veto read still passes ([the
+  spare's own view](#the-spares-own-view-v07-block-631)). A spare cut off *before* any episode opened
+  (P1a) never opens one, even for a dead holder: a silent availability loss, no page (unchanged);
+- **on a minority fork that PRECEDES the episode**: held — the own bank's finalized read shows the
+  holder current (a minority fork does not finalize), and so would a read at *processed* (the vote
+  bank freezes within ~8 votes of the fork) or *confirmed* (optimistic confirmation needs 2/3). If
+  the supermajority's gossip still reaches the spare, `getHealth` reports it behind and Tier-1 holds
+  as well. A fork that begins after the episode opened is Finding 2;
+- **replaying behind**: up to 128 slots behind reads ok, and every own-view read lags with the spare's
+  replay — including the veto's. 40 s (100 slots) behind: a holder resumed at t95 is held by the
+  finalized own bank; t115 (the 6.3 build: taken at t165 after 50 s of voting) and t124 are vetoed
+  VOTING at t165; **t125 is taken at t165 after 40 s** — the veto testifies about the chain as of the
+  spare's own replay lag, up to the 128 slots `getHealth` admits at the take cycle's Tier-1 check (≈ 51 s
+  at 2.5 slots/s, ≈ 35 s at 3.7) — a named residual of the veto. Armed, watchdog-elapsed refuses such a spare (stale reference):
+  it cannot prove by time while its own bank lags a live view by more than `N_HEAD`.
+  **Tier-1 is the node's own health verdict (6.3.1, tightened in its fix round 1).** Agave's `getHealth`
+  reports "behind" only when the node is MORE than its own `--health-check-slot-distance` behind
+  (default 128), so every "behind" report means the node is already past that distance: Tier-1 treats
+  EVERY such report as not ready: Tier-1 is ready iff `getHealth` answers ok, and `LOCAL_HEALTH_MAX_BEHIND`
+  enters no decision (fix round 2 — the first texts' "effective = min(configured, the distance)" named the
+  clamped variable, which nothing reads: below the distance the threshold is the distance). A configured
+  value above the distance (read from the validator's command line, `--health-check-slot-distance`, else
+  agave's 128) is clamped at startup with a loud WARN; one at or below it has no effect (an info line below
+  it; silence at it — the default 128 at agave's default distance) — it
+  cannot tighten Tier-1, because `getHealth` reports no lag inside the distance. The lagging-spare exposure
+  (the own view's residual 2) is bounded only by the validator's own `--health-check-slot-distance`, at the
+  take cycle's Tier-1 check (a lag that grows during a slow take cycle is not bounded by it). Measured:
+  unclamped, 200 widened Tier-1
+  (a spare 150 slots behind took over at t185, 35 s into the holder's renewed voting — now not ready from
+  t0, no take); the first 6.3.1 build's clamp to 128 still let a node run at distance 64 through — a
+  spare 44 s (110 slots) behind took a holder resuming at t130 at t170, 40 s into its voting (t140: 30 s)
+  — now held (the 6.3 build, whose default tolerance was 100 slots, held this world too; the rule now
+  is never looser than it at any distance: a "behind" report is never ready).
+
+**What the elapsed head cross-check does and does not see.** It is two-sided against the spare's own
+bank (`getSlot`, *processed* — the tower's vote bank): a view more than `N_HEAD` slots behind that
+bank reads blind (a lagged fleet), and that bank more than `N_HEAD` behind a live view reads blind (a
+stale reference — the cut-off or lagging spare above). Both cost availability, never a take. It does
+not see the bank and the view lagging or frozen **together** (Finding 2's co-frozen form — since 6.3.1
+the frozen case is refused by `[elapsed-rate]`, which reads a frozen own head at 0 slots/s, and by the
+veto; a bank and view lagging together but advancing still pass it), a bank at
+the same height on another fork (the compare is on slot numbers), or an intermediary that proxies the
+head live (it passes by construction). The head is read after the payload, and the bank moves while
+the time between the two answers runs: that time deflates the bank-behind side, so a bank lagging a
+live view by up to `N_HEAD` + (slot rate × that time) still passes — the hidden lag. Since 6.3 fix
+round 2 the provider stamps the sampler's return and the head read's completion and answers BLIND
+when the head landed more than `ELAPSED_HEAD_GAP_MAX` = 1 s (measured on the truncating monotonic
+clock; < 2 s true) after the payload. Not stamped: the payload read's own pet and the sampler's parse
+(~0.11 s measured on the test box, a 2,001-account payload). The time between the answers is
+therefore under 2.2 s on a healthy host (a pet is one datagram — 4 ms measured) — a hidden lag under 6 slots at
+2.5 slots/s and under 9 at 3.7 — and under 9.2 s with the payload's pet stalled at its full 7 s:
+under 23 slots at 2.5/s, under 35 at 3.7. (The text before this round said "≤ 7 s, ~17 slots"; it
+missed the head read's own `curl -m 5` + pet, which nothing bounded: with every read at its bound and
+every pet 7 s, the pre-fix tree minted with the spare's bank 50–55 slots behind the view — twice
+`N_HEAD` (25 then). That world now reads blind.) The stamps bound only the part **after the payload's
+delivery**. The sampler's answer is computed at the server at request time and arrives up to its
+own `curl -m 10` later, so the view it reports is a snapshot up to that much older than the arrival
+the stamp records: a hidden lag of the slot rate × (the payload's snapshot → its delivery), up to
+25 slots at 2.5/s and 37 at 3.7. This is only reachable when the view itself is stale-on-arrival —
+a slow or early-snapshot external provider — which is exactly the **bank and view lagging together**
+residual above; a live-and-current view carries a snapshot within its transfer time. It is a
+**documented residual**, not bounded by `ELAPSED_HEAD_GAP_MAX` (that stamp is taken at the answer's
+arrival, not its snapshot): a provider that snapshots getVoteAccounts at request and delivers 9 s
+later, with instant free pets, mints with the bank 44 slots (≈ 18 s) behind the live chain — `N_HEAD`
+(22 since 6.3.1; 47 = 25 + 22 before) plus 22 hidden at 2.5 slots/s (measured; pinned as a DOCUMENTED
+RESIDUAL in `test_elapsed_provider` (5l), with the snapshot-at-delivery control minting only up to
+`N_HEAD`). Bounding it would need the sampler to stamp before its own call and treat (head answer −
+payload request) as the gap, which fails toward blind on every slow tier; deferred with the gate's
+wiring (6.4).
+
+**watchdog-elapsed's own cost, and its verdict's age.** The provider reads nothing below its floor and
+nothing while a minted verdict stands (only the token's re-classification per step: a local file read +
+cksum, ~20 ms measured), and runs at most one paced evaluation per cycle — its worst added gap is 57 s
+at the house bound-counting (the sampler's two reads at their `curl -m 10` bound with a 7 s pet each,
+the own-head sample fix round 2 puts between them — `curl -m 2` + a 7 s pet — the head read and its
+pet, parse glue), every read petted. Its verdict carries `observed_at` = the evaluation's START, so its
+worst MINTING evaluation is 44 s old at the mint and 83 s at the mutation edge by 6.1's
+acceptance→mutation arithmetic (93 s with 6.3.1's veto read in that span; 35 / 74 / 84 s before fix
+round 2's sample): it does not
+converge under `PROOF_MAX_AGE` (50 s) — the edge refuses it (availability, never a take), and 6.4
+decides (per-provider ages). The healthy path is ≈ 8 s at the edge.
+
+### The spare's own view (v0.7, Block 6.3.1)
+
+The reviewer's principle for this slice: **trigger on the slow reliable view (finalized), veto on the
+fast one (confirmed).** The spare's own node (`LOCAL_RPC`) is the one input no `TIER2`/`TIER3`
+intermediary can splice (*Shared vantages* above); 6.3.1 makes it testify at every take, and every
+piece is **veto-only** — it can turn a take into a hold, never the reverse.
+
+- **The detection reads say `finalized`, spelled out.** Every `getVoteAccounts`/`getSlot` request body
+  in both daemons now carries an explicit commitment in `params[0]` (a census test parses every RPC body
+  and fails on any that does not). The detection reads — the standby's own-bank check and its reference,
+  the `TIER2`/`TIER3` confirm — say `finalized`, which is agave's default when a request carries none, so
+  the change is behavior-neutral **by D0.1 (the agave source)**: agave v4.2.1 `rpc.rs` resolves a missing
+  commitment with `unwrap_or_default()`, and the `CommitmentConfig` default is `Finalized`. (The census
+  test's commitment-aware stub is built on that reading, so it restates it rather than measuring it.)
+- **The own bank's "holder voting" restarts the countdown (D2).** Inside an open episode a LOCAL own-bank
+  read with **positive** evidence of the holder voting — the holder in agave's `current` list (at
+  `MAX_DELINQUENT_SLOTS`=0; at 15 the own-bank check applies its latency threshold, so a holder 20 slots
+  behind in `current` is not this evidence — fix round 2, the delta review's CK-7), a canonical
+  `MAX_DELINQUENT_SLOTS` reference with the holder within the threshold, or (fix round 1) its `lastVote`
+  ADVANCING above the highest the own bank showed this episode — re-anchors the takeover countdown (a
+  fourth anchor input of its own, kept apart from the `TIER2`/`TIER3` re-anchor so logs and tests can tell
+  which stream moved it) and restarts watchdog-elapsed's silence; it resets with the episode at every
+  close. No take for a full `TAKEOVER_DELAY`, and no mint for a full floor, after the last such read —
+  the `WITNESS_FASTPATH` skip included (fix round 1: a presented relinquish flip skips the first-delinquent
+  timer, never this one). Measured: the intermittent holder t80 → t119; armed, with `[elapsed-rate]` out
+  of the way, t126 → t159; the fast path's forged-flip world t66 → t119. **Fix round 1's two corrections,
+  red first on the first 6.3.1 build:** (R1) at `MAX_DELINQUENT_SLOTS` > 0 a resumed holder whose votes
+  land more than that many slots behind the finalized reference was folded into the episode maximum with
+  no stamp — the D0 race class taken again (the holder voting over t40–t50, each vote landing 20 slots
+  behind the tip, `MAX_DELINQUENT_SLOTS` 15, 2.5 slots/s: taken at t75, 25 s after its last vote — now
+  held to t123, a full delay after the last advance the own bank saw, t63; at 3.7 slots/s with votes over
+  t40–t61 t70 → t130; armed at 3.7 the mint t117 → t171); an advance now stamps, and the veto also reads the holder VOTING whenever
+  agave's `current` list holds it (the 128-slot rule), whatever `MAX_DELINQUENT_SLOTS` is. **R1's cost
+  with HONEST tiers, named (fix round 2 — the delta review's DAV-3):** a holder that voted into the episode
+  is taken one more `TAKEOVER_DELAY` later than on the 6.3 build and the first 6.3.1 build, which were already safe there — the
+  own bank (finalized) sees the holder's last votes later than the processed tiers, so its advance stamp
+  re-anchors later, and the take cycle after the tiers' own re-anchor finds the fence's pin stale: measured
+  at `MAX_DELINQUENT_SLOTS` 15, each vote landing 20 slots behind, dead afterwards — voting until t149:
+  t255 → **t282 (+27 s)**, 3.7 slots/s t250 → t278 (+28), the wizard preset t252 → t282 (+30) / at 3.7
+  t249 → t278 (+29), armed at 3.7 t290 → t318 (+28); voting until t100: t195 → t233 (+38), 3.7 t190 → t229
+  (+39); the review's L1 (a) world (votes over t40–t50): t135 → t183 (+48), 3.7 t130 → t179 (+49), the
+  wizard preset t132 → t183 (+51); at `MAX_DELINQUENT_SLOTS` 0 none (t270 / t250 on every build) — all
+  with prompt tiers. With a slow tier the take cycle that finds the pin stale is longer and the cost grows
+  (fix round 3 — the delta review of fix round 2, AV2-8): `TIER2` 5 s late, voting until t149, t230 → t307
+  (+77); the L1 (a) world with `TIER2` 5 s late t160 → t208 (+48), with `TIER3` down t135 → t183 (+48; fix
+  round 2's concurrent re-check: t193). No veto fires (the D2 stamps are log lines; armed at 2.5 slots/s
+  the rate layer abstains on every build since 6.3.1, unrelated), but one page does: the armed 3.7 slots/s
+  world pages takeover starvation at t310 before its take at t318 (the 6.3 build, taking at t290, does not
+  — fix round 2's text said no page fires). The anchor's time base is NOT changed; the options are the reviewer's: stamp
+  D2 at a VOTE-TIME estimate — the second the own head reached the advanced `lastVote`'s slot, from the
+  own-head samples — instead of the read time, with its seconds-mapping question (the first sample at or
+  past the slot is never earlier than the vote; interpolating between samples can be, and a lagging own
+  head moves every mapped second later but still earlier than the read); or the review's own: reset the
+  `TIER2`/`TIER3` fence pin when D2 stamps inside an episode (veto-neutral — the own-bank stamp already
+  holds the take). (R2) a FAILED
+  or non-canonical reference with the holder not listed stamped "holder voting" and delayed a dead
+  holder's take silently (measured +15 to +39 s: t80 → t100–t115; the wizard preset t81 → t120; armed at
+  3.7 slots/s t121 → t140); now it stamps
+  nothing — the 7-of-10 window still records it as not-delinquent, as in the 6.3 build — and its log line
+  names the read failure, never "holder voting". **The cost, measured on both presets:** the 7-of-10
+  window existed to tolerate a *flickering* own bank; now every positive answer restarts the countdown,
+  so a DEAD holder behind an own bank that shows it current once every P seconds is taken only after a
+  flicker-free `TAKEOVER_DELAY`: P = 30 s → **never taken** — the hold is loud: the starvation page fires
+  at the episode's start + 300 s (t365 at `MAX_DELINQUENT_SLOTS`=0, t320 at 15); P = 61 s → taken one
+  delay after the last flicker (t182 / t121; the 6.3 build took at t125 / t80 whatever P). And R1's own
+  cost on a slow cluster: at `MAX_DELINQUENT_SLOTS` 15 a dead holder is still inside agave's 128 slots at
+  the first take on a slow cluster, so the `current` rule vetoes it — 1.2 slots/s: t100 → t160; 1.0:
+  t110 → t170; the threshold depends on the cadence (fix round 2 — the delta review's CK-7: the text said
+  "1.35 slots/s and faster: unchanged"): 1.35 slots/s at `CHECK_INTERVAL` 1 or 3 (the wizard preset
+  included) t96 → t156, at 5 t100 unchanged; 1.37 slots/s and faster unchanged at every cadence (the
+  holder's last vote at the spare's first cycle phase).
+- **One bounded local veto read before the switch (D3).** On every take path (the standby's
+  `take_staked_identity`, the primary's `switch_to_staked` — the complete set-identity-to-staked
+  census), right after the fresh re-check returns 0 and before the `DRY_RUN` branch: ONE request to
+  `LOCAL_RPC`, a JSON-RPC batch `[getSlot{confirmed}, getVoteAccounts{confirmed, votePubkey}]` matched by
+  id, `curl -m 2`, then its watchdog pet. It VETOES if the read fails, times out, or answers anything
+  non-canonical or not echoing its ids (BLIND); if the holder is in agave's `current` list of the
+  confirmed view (fix round 1), NOT delinquent there by the same predicate the own-bank check applies,
+  or its confirmed `lastVote` is above the highest the own bank showed this episode (VOTING — the
+  countdown and the silence restart); if the spare's own head is not advancing (below). State is written
+  before the (throttled) alert; no cooldown is set — a withdrawn verdict, not a failed take. **The
+  act-then-alert rule now reads: between the fresh re-check's return-0 and set-identity — no network, no
+  alerts; one bounded local veto read allowed**; the censuses admit exactly this read (by structure: the
+  take segment's statements are pinned and its fall-through calls no network primitive). The 2 s bound
+  is ~400× a healthy loopback read (4–5 ms measured), and every second of it lengthens the
+  verdict→mutation span. **`PROOF_MAX_AGE` (50 s) covers the acceptance→mutation span — 49 s, a margin of
+  1 s** (the re-check's one sampler call at its worst — `TIER2`'s 10 s timeout, then `TIER3`'s 10 s read,
+  each + a 7 s pet, + 2 s of parse: 36 s — then the veto's worst 10 s: 2 s + a 7 s pet + 1 s of parse, after
+  3 s of acceptance slack); 58 s if 6.4's gate is placed before the pre-take own-head sample, which does not
+  converge. Fix rounds 1 and 2 had shrunk it to 32 s (41 s gate-first) by reading one tier's worth; both
+  changes are removed (below), so the first 6.3.1 build's arithmetic stands again. **The re-check is the
+  6.3 build's again (fix round 3 — the delta reviews' DL-1, LB-1 and LB-2, each a safety regression):** ONE
+  call of the liveness sampler — `TIER2`, and `TIER3` only when `TIER2` yields nothing — and the decision on
+  that one answer: an advance (VOTING), a backwards answer, a provider flip or a stale reference aborts; a
+  frozen same-vantage answer carries the take. Its body is byte-identical to the 6.3 build's (pinned by
+  checksum, and by a decision table over every answer pair in both arrival orders against it —
+  `test_act_then_alert` (7)/(7c)). Fix round 1 asked the pinned vantage first, so with the pair pinned on
+  `TIER3` a `TIER2` that recovered before the re-check and showed the holder's vote ADVANCED was never read —
+  taken 21–34 s into the holder's voting (DL-1's four worlds). Fix round 2 read both tiers at once and
+  decided on the pinned vantage's answer: with `TIER2` hanging, that answer was read at the re-check's start
+  and carried a take that landed one `TIER2` timeout later — a holder resuming in between was taken 9 s into
+  its voting where the 6.3 build reads `TIER3` after the timeout and sees the vote (LB-1: t190 / t130 / t205 in
+  its three worlds); and a recovered `TIER2` answering without an advance no longer aborted as a flip —
+  taken 21–29 s into the voting where the 6.3 build re-pins onto `TIER2` and its next verdict sees the vote
+  (LB-2). On the restored re-check every one of those worlds is never taken (`test_own_view` (7f)); **what
+  comes back, named below: residual 6 (the mirror world) — the 6.3 build's own, taken at the same second on
+  both builds — and residual 7 (the re-check's starvation) — introduced by 6.3.1's own-view veto, an
+  availability regression against the 6.3 build, which has no veto and takes those dead holders on time.** On a single-vantage configuration (`TIER2` = `TIER3`) nothing changed: 49 / 58 s, as on every
+  build. Reported, not changed: per-provider ages are 6.4's.
+- **The spare's own head: advancing now, and at a rate (D4).** Own-head samples (`getSlot{confirmed}`
+  + its pet) are taken once per cycle of an open episode, once at the head of each take function, and
+  since fix rounds 1–2 once before EACH external read of the take cycle — the liveness probe, the delay's
+  gossip prefetch and relinquish-flip reads, the external confirm (`TIER2`'s payload, its
+  `MAX_DELINQUENT_SLOTS` reference and re-read, and the `TIER3` fallback), each of the gossip advisory's
+  two reads, the fence's liveness read and its second tier, and armed the watchdog-elapsed evaluation's
+  second tier (N-is-all by structure: `test_own_view` (7g)); on the primary's recovery path before each
+  external read of a recovery pass and every 2 s over the last `OWN_HEAD_H` of its ladder wait. (b) At
+  every take the veto's confirmed head must **exceed** the oldest sample no older than `OWN_HEAD_H` =
+  **16 s**. Derived: a healthy confirmed head holds for at most 22 slots — 5 fully skipped leader windows
+  + 2 slots of confirmation jitter, 8.8 s at the assumed 2.5 slots/s; two snapshots whose stamps are A s
+  apart are at least A − 5 s apart (two 2 s read bounds and 1 s of clock truncation), so A = 14 s
+  guarantees a live head advanced; the + 2 s ASSUMES a sample no more than 2 s apart over the veto's last
+  16 s, which holds where the take cycle's reads are that close. Where an external read is slow no gap
+  holds more than ONE external read — but one read can be long: the gossip advisory's `getClusterNodes` and
+  the external confirm's `TIER3` read are bounded at 15 s (fix round 3 — the delta review of fix round 2,
+  CKB-2: earlier texts said a tier read is 10 s and named only the advisory), every other tier read at 10 s,
+  and the re-check, inside the span where no sample may sit, is one sampler call — `TIER2`'s read, then
+  `TIER3`'s after a `TIER2` failure; the baseline is what that leaves. **Measured at the veto** (`test_own_view` (7c-age); fix round 3's
+  512-cell sweep — `TIER2` answering in 0–10 s, `TIER2` down with `TIER3` in 0–10 s, `TIER3` answering in 10 s
+  with `TIER2` in 0–9 s, over `MAX_DELINQUENT_SLOTS` 0 / 15 × `CHECK_INTERVAL` 5 / 3 × 2.5 / 3.7 slots/s ×
+  `GOSSIP_VERIFY` off / on: every age identical across the first three, `GOSSIP_VERIFY` as noted): `TIER2`
+  answering in x s → 16 s for x ≤ 5 (15 at 5 with `GOSSIP_VERIFY` on), 12 / 14 / 16 / 9 s at 6 / 7 / 8 / 9,
+  10 s at its bound; `TIER2` down (every read timing out), `TIER3` in y s → 10 / 12 / 14 / 16 / 14 / 15 / 16 s
+  at y = 0 … 6, and from y = 7 **no sample in the window at all** (from y = 5 when every LOCAL read takes 1 s)
+  — every veto BLIND, a dead holder never taken (residual 7); `TIER3` answering in 10 s (its `-m 15` reads
+  answer, its `-m 10` reads time out), `TIER2` in x s → 16 s for x ≤ 4 (`GOSSIP_VERIFY` on: x ≤ 3, and **8 s**
+  at 4), then 10 / 12 / 14 / 16 / 9 s at 5 / 6 / 7 / 8 / 9 — **8–16 s where a tier answers, not 14–16 s
+  everywhere**; the cells below 14 s are named in residual 5. A `TIER3` whose reads all time out is residual 5
+  (a)'s class: `TIER2` at 0 / 1 / 2 / 3 / 4 s, `GOSSIP_VERIFY` on → 16 / 2 / 4 / 6 / 8 s (taken t140 / t144 /
+  t148 / t152 / t156); with `TIER2` at 5 s or more the external confirm holds — its `TIER2` read times out
+  under turbo's `-m 5` and `TIER3` is down — no take and no veto, the starvation page at t366–t370
+  (`GOSSIP_VERIFY` off alike), the same on the 6.3 build: pre-existing, not the own view's. Both tiers
+  failing leave no sample and no take (as ever). Below
+  ~9 s a live bank inside its hold budget can read "not advancing" (a BLIND veto, availability — residual
+  5). Red first, the review's worlds on the first 6.3.1 build (its baseline was
+  the pre-take sample alone, whose age at the veto is the re-check plus its own and the veto's LOCAL
+  reads): a healthy hold inside the budget, aligned with the
+  veto, vetoed a dead holder's take for +85 to +93 s (TIER2 5 s and a 6 s hold: t145 → t230; the wizard
+  preset t104 → t195; …), and `TIER2` down with `TIER3` ≥ 7 s late was never taken; fix round 1's build
+  still never took a dead holder when the gossip advisory's `TIER2` read ran to its 15 s bound (every veto
+  BLIND, the starvation page at t374; the wizard preset t330). Now the hold worlds and the advisory world
+  take on time (t142 / t98); `TIER2` down with `TIER3` ≥ 7 s late (≥ 5 s with every LOCAL read at 1 s; on a
+  real host one second less at some phases) is NOT — residual 7, the starvation 6.3.1's own-view veto
+  introduces (the 6.3 build, with no veto, takes these holders). An opening-time
+  baseline would not do: a spare cut off after the episode opened advanced from it up to the cut. (e)
+  watchdog-elapsed's `[elapsed-rate]` layer (see *Slot time* — it bounds the own head's span average only).
+
+**What it costs, measured** (the D0 worlds, `test_own_view`, `test_elapsed_provider` §11–§13; a dead
+holder, the 6.3 build → the first 6.3.1 build → fix round 1 → fix round 2 → **fix round 3**): prompt reads
+t125 / t80 → unchanged; every LOCAL read taking 1 s with prompt tiers t131 → t139 → t145 → t146 →
+**t146** (`MAX_DELINQUENT_SLOTS` 15: t97 → t108 → t110 → t111 → **t111**; the wizard preset t95 → t105 →
+t108 → t104 → **t104**); with a slow tier as well the probe's own-head sample can move the first frozen
+verdict under the span floor and cost a whole take cycle (the delta review of fix round 2, AV2-7 —
+measured against the 6.3 build, every LOCAL read at 1 s, `MAX_DELINQUENT_SLOTS` 0, `CHECK_INTERVAL` 5,
+`GOSSIP_VERIFY` off: `TIER2` 9 s late t151 → t177 (+26), `TIER2` at its bound or down with `TIER3` prompt t154
+→ t184 (+30), `TIER3` answering in 10 s with `TIER2` prompt / 3 s t131 → t146 / t139 → t157 (+15 / +18);
+`GOSSIP_VERIFY` on +6 … +9 s; at `MAX_DELINQUENT_SLOTS` 15 more: `GOSSIP_VERIFY` off, `TIER3` answering in
+10 s with `TIER2` 5 / 7 / 9 s t107 → t141 / t113 → t149 / t119 → t157 (+34 / +36 / +38), on, `TIER2` 8 s
+t114 → t154 (**+40**) and `TIER3` in 10 s with `TIER2` 3 s t105 → t141 (+36), the wizard preset `TIER2` 5 s
+t105 → t139 (+34) — phase-dependent, the maximum of the measured cells, not a bound; and where the starvation
+holds, never: `TIER2` down (timing out) with `TIER3` 5 s or later, at every preset measured — residual 7); a harness world with every read at its `curl -m` bound t215 → t233 →
+t241 → t243 → **t243** (15: t240 → t262 → t270 → t272 → **t272**) — an idealization: a real LOCAL read AT
+its 2 s bound times out (below); pets at the house 7 s t504 → t581 → t609 → t616 → **t616** (a real pet
+is a datagram). With `TIER2` down (timing out) and `TIER3` answering 0 / 4 / 6 / 7 / 9 s late a dead holder is
+taken at t150 / t162 / t168 / never / never — **the 6.3 build at t150 / t162 / t168 / t171 / t177**: the
+never-cells are residual 7, introduced by 6.3.1's own-view veto — an availability regression against the
+6.3 build, which has no veto and takes these holders (`TIER3` 7 s at t193 at the shipped defaults, t173 at 3.7
+slots/s, t149 at the wizard preset, t126 at `MAX_DELINQUENT_SLOTS` 15 — each never here); a re-check that
+read the pinned `TIER3` alone would take them (t140 / t152 / t158 / t161 / t167), and one that read both tiers
+at once (t150 / t158 / t162 / t164 / t168), and each takes a voting holder elsewhere: neither is in this build;
+with `TIER3` down the re-check reads `TIER2` alone (a both-tiers-at-once read waits out the dead tier's 10 s:
++10 … +1 s). On the primary's recovery path (one chain model,
+1.0 slots/s, `RECOVERY_DELAY` 20 / 40): recovered at t129 / t150, as the 6.3 build — the first 6.3.1 build
+read BLIND at every recovery take there (its baseline was older than `OWN_HEAD_H` after the ladder's
+30 s waits) and never recovered by t250. **The recovery-path veto passes only in a band** — its take
+pass must land 128–158 slots after the staked account's last vote (before, agave's `current` list still
+holds the account: VOTING; after, `tier1` reads it delinquent and no pass is eligible): at the shipped
+defaults (`RECOVERY_DELAY` 300, `RECOVERY_CHECKS` 3 × 30 s, the 40 s span floor) and 2.5 slots/s
+`RECOVERY_MODE=rpc` completes in neither measured world (`RECOVERY_CHECKS`=1: recovered at t342, inside
+the ~12 s band), and at 1.0 slots/s a spare that voted the account until t280 reads it VOTING at t408, one
+tick before the band, and never recovers (the 6.3 build recovered at t408). **Named residual: the veto band
+can keep a `RECOVERY_MODE=rpc` recovery from ever completing, quietly** — the daemon logs "Still
+delinquent (Tier 1)" at INFO and stays unstaked, and nothing pages beyond the veto's own throttled page when
+a veto holds the pass (measured at the defaults: at 1.0 slots/s one veto page at t408, then nothing to t800;
+at 2.5 slots/s no page at all). Fix round 2 added a page for this hold (the delta review's DAV-6); the delta
+review of fix round 2 found it firing in recoveries that then complete — `test_act_then_alert` (14d)/(14e)'s
+own worlds — and, in the ordinary failed-over state (the STANDBY holding and voting the identity), 732 s after
+the switch and every `ALERT_THROTTLE` after, forever (AV2-4, AV2-5, CKB-5), and fix round 3 removed it: the
+residual is stated instead. In that failed-over state a PRIMARY whose own bank sees the STANDBY voting the
+identity ends its pass there, before the fence (fix round 1's R1 pass stop), so the 6.3 build's one-shot
+"ACTIVELY VOTING elsewhere" page (t312 in that world) is not sent either: after a failover an `rpc`-mode
+PRIMARY sends no page at all (to t2100 at 2.5 and 1.0 slots/s — `test_act_then_alert` (14f)) and the
+STANDBY's `TOOK STAKED ✅` is the signal; the one-shot page still fires when the PRIMARY's own view misses
+the advance (its own node frozen from t250: t312 — (14f)). Named, not changed (restoring the page on the
+pass stop is the reviewer's). The default `RECOVERY_MODE=manual` is unaffected — it never re-takes on its
+own: the main loop's recovery dispatch runs no pass under it (`test_act_then_alert` (14g)). A spare whose own node
+answers a loopback read in **2 s or more can never take**: the veto's read times out, every veto is BLIND
+(the 6.3 build t156 / t142 / t138 at `MAX_DELINQUENT_SLOTS` 0 / 15 / the wizard preset → never; the R7
+world t197 → never) — loud: the veto page, then the starvation page. **Each BLIND veto costs a full delay
+plus the next take cycle** (the delta review's DAV-5) — it re-anchors the countdown (INVARIANT
+blindness-is-life): 60 s on a STANDBY with prompt tiers, 120 s on the BACKUP preset, 100 s armed once 6.4
+wires the gate (the floor re-elapses); with slow tiers the slow take cycle runs again after it. Measured
+on fix round 3's build (one refused veto read at the first take attempt, a dead holder, `MAX_DELINQUENT_SLOTS`
+0, `CHECK_INTERVAL` 5): +60 s with prompt tiers; `GOSSIP_VERIFY` on (the default) `TIER2` answering in
+5 / 9 s or at its bound +85 / +107 / +106 s, `TIER3` answering in 10 s with `TIER2` 0 / 3 / 7 / 9 s +70 / +86 /
++120 / +122 s, `TIER2` down with `TIER3` 0 / 1 / 2 / 3 / 4 / 5 / 6 s +111 / +122 / +120 / +130 / +140 / **+150**
+/ +142 s — not monotonic in the latency (the overshoot to the next slow probe-cycle boundary is
+phase-dependent) and the same at `CHECK_INTERVAL` 3, at `MAX_DELINQUENT_SLOTS` 15, at the wizard preset and
+at 3.7 slots/s: **up to +150 s** measured; off, +73 … +128 s with a slow tier (that row +102 / +100 / +109 /
++118 / +112 / +120 / +128 s); the advisory residual's world +85 s; `TIER2` down with `TIER3` 7 s or later (5 s
+or later with every LOCAL read at 1 s) is never taken at all (residual 7; on a real host one second less is
+vetoed BLIND at some phases, each such veto costing as above). (Fix round 2's text said +77 to +102 s on its build; the delta
+review of fix round 2 measured up to +157 s there and +156 s on fix round 1's — AV2-2, CKB-3 — in cells
+the restored re-check no longer takes.) Whether a transient LOCAL hiccup should cost that much is the
+reviewer's policy question — the policy is unchanged. Every such hold is loud: the veto page
+`⚠️ Take VETOED by this spare's own view (it could not testify): …` (for a veto that read the holder voting,
+`⚠️ Take VETOED by this spare's own view: …`), and the starvation page `⚠️ TAKEOVER STARVATION: …` covers the rest.
+
+**What it leaves, named (residuals of the own view):**
+
+1. **The exposure below `OWN_HEAD_H`.** A spare cut off (or frozen) within the baseline's age before the
+   veto read (at most `OWN_HEAD_H`; ~15 s measured) advanced from the baseline up to the cut and passes
+   (b): measured, a cut at t110 is taken at t125 and one at t109 is held (`MAX_DELINQUENT_SLOTS`=15: t65
+   taken, t64 held) — `test_own_view` (4b-residual). A shorter `OWN_HEAD_H` would veto a live bank in its
+   longest healthy hold.
+2. **The spare's own replay lag.** The veto testifies about the chain as of the spare's own replay:
+   a spare 40 s behind takes a holder that resumed within those 40 s (up to the node's own health-check
+   distance at the take cycle's Tier-1 check, which Tier-1 now enforces — 128 slots by default: ≈ 51 s at
+   2.5 slots/s, ≈ 35 s at 3.7; a lag that grows during a slow take cycle is not bounded by it). A lower
+   `--health-check-slot-distance` lowers this bound — measured in residual 6's world.
+3. **The instant of the take.** A holder resuming inside the veto's confirmed lag (≈ 1 s) or, armed,
+   inside the veto's own pet (up to 7 s at the house bound-counting; milliseconds on a real host) is
+   taken: measured 0 s un-armed, 7 s armed.
+4. **Only the confirmed view.** A vote the spare's node has not yet optimistically confirmed is
+   invisible to the veto; the finalized trigger and the tiers' processed re-check cover the rest.
+   The `votePubkey` filter narrows the delinquent-by-node leg to the holder's own vote account — fewer
+   "delinquent" verdicts, i.e. only more vetoes.
+5. **A young baseline on a slow take cycle** (fix round 2 — the delta review's DAV-1/CK-2/DAV-2; fix round 3
+   — the delta review of fix round 2's CKB-2, AV2-3, CKB-4). A baseline of A s withdraws a take (BLIND)
+   only on a healthy confirmed-head hold of A s aligned with the veto. (a) **One long read before prompt
+   ones.** Two reads of the take cycle are bounded at 15 s — the gossip advisory's `getClusterNodes`
+   (the default `GOSSIP_VERIFY=true`) and the external confirm's `TIER3` read — and ONE such read followed
+   by prompt fence and re-check reads leaves only the samples after it. The advisory's `TIER3` read at
+   15 s with `TIER2` at 1 / 2 / 3 s → 2 / 4 / 6 s (the same with `TIER2`'s advisory read, or with `TIER2`'s
+   read answering in 14 s with the holder's stale staked entry; with every LOCAL read at 1 s and `TIER2`
+   prompt, 3 s), at both presets and 3.7 slots/s — a 3 / 5 / 7 s hold (5–15 slots at 2.5 slots/s, inside the
+   22-slot budget) → BLIND at t144 / t148 / t152, taken at t224 / t233 / t242 (+80 / +85 / +90 s; the wizard
+   preset t100 → t180). The confirm's `TIER3` read (with `TIER2` refusing the confirm's payload) at 14 s with
+   the other `TIER3` reads at 2 / 3 s → 4 / 6 s, at 12 s with them at 4 s → 8 s, at 14 s with every LOCAL
+   read at 1 s → 4 s, the wizard preset 6 s — a 5 / 7 s hold → BLIND t143 / t145, taken t224 / t229 (+81 /
+   +84 s against the 6.3 build; with LOCAL reads at 1 s t141 → t232, +91). One more op of the same shape:
+   the take cycle's `TIER2`-unreachable page, when both its sends run to their `-m 10` bounds (20 s), leaves
+   the sample taken after it as the baseline — in the harness that sample shares the veto's second, so the
+   veto reads BLIND with no hold at all (t145, taken t205: +60; the wizard preset t101 → t161); on a host its
+   age is the rest of the cycle's reads, ~1–2 s, and a hold that short vetoes (a 10 s page leaves 16 s).
+   Samples cannot split one read; the options — bound the advisory like the prefetch (`-m 5`: it gates
+   nothing, its verdict only picks a log line), skip it on a slow take cycle, or move it out of the take
+   cycle; the confirm's `TIER3` read at the other tier reads' 10 s — are the reviewer's. (b) **The matrix's
+   cells below 14 s** (the sweep above): 12 / 9 / 10 s with `TIER2` at 6 / 9 s or at its bound; 10 / 12 s
+   with `TIER2` down and `TIER3` at 0 / 1 s; 10 / 12 / 9 s with `TIER3` answering in 10 s and `TIER2` at 5 / 6 /
+   9 s; and **8 s** with `TIER3` answering in 10 s and `TIER2` at 4 s under `GOSSIP_VERIFY` on. From 9 s a hold must reach 22.5 slots
+   at 2.5 slots/s to veto — beyond the budget with prompt LOCAL reads (an 11 s hold with `TIER2` down or at
+   its bound: BLIND at t150, taken t252), inside the derivation's 5 s allowance for LOCAL reads at their bound;
+   the **8 s cell vetoes a hold inside the budget even with prompt LOCAL reads**: an 8 s hold (20 slots)
+   aligned with the veto → BLIND at t151, taken t241 (+90 s; a 7 s hold is taken on time, t151; fix round 2's
+   concurrent re-check made that cell 14 s). At 3.7 slots/s the 5.9 s budget fits inside every matrix cell,
+   not inside (a)'s 2 and 4 s. **What fix round 3's restored re-check changed here**, against fix round 2:
+   younger — the `TIER3`-at-10-s row at `TIER2` 4 / 5 / 6 / 9 s under `GOSSIP_VERIFY` on (14 / 15 / 16 / 10 → 8 / 10 /
+   12 / 9 s) and at 5 / 6 / 9 s off (15 / 16 / 10 → 10 / 12 / 9 s), and the `TIER2`-down row from `TIER3` 7 s
+   (10 s → none: residual 7); older — the `TIER2`-down row at `TIER3` 1–3 s (11 / 12 / 13 → 12 / 14 / 16 s),
+   the `TIER3`-at-10-s row at `TIER2` 0–3 s under `GOSSIP_VERIFY` on (10–13 → 16 s) and at 7 / 8 s (10 → 14 / 16 s),
+   and at 4 s off (14 → 16 s). (Fix round 2's text listed four cells its concurrent re-check made younger than
+   fix round 1; the delta review of fix round 2 counted ten per corner, the `TIER3`-at-10-s side included —
+   AV2-3, CKB-4. That read is gone; the matrix above is the one that stands.)
+
+6. **The mirror world (the re-check's one call — the 6.3 build's own, back since fix round 3).** With the
+   fence's pair pinned on `TIER2` while `TIER2` splices or lags (its answer shows the holder frozen) and an
+   honest `TIER3` showing the holder voting again, the re-check never reads `TIER3` — it reads `TIER3` only
+   when `TIER2` yields nothing — so the frozen same-vantage answer carries the take, whenever the spare's own
+   replay lag also hides the resumption from the veto (residual 2's composition: with the spare current the
+   veto reads the holder VOTING and holds). **The exposure is up to that lag**: the take lands at the
+   episode's timer delayed by the lag (to the next cycle), and a resumption inside the lag before it is
+   taken. Measured (`test_own_view` (7f), (7f-r6); the 6.3 build takes each of these at the same second), the
+   holder resuming at t140, at the shipped defaults (`GOSSIP_VERIFY` on, `CHECK_INTERVAL` 5): the
+   spare 40 s behind takes at t165, **25 s into the voting** (a resumption at t125: 40 s into it; the ones at
+   t118–t124 reach the lagging bank and read VOTING at the veto — the 6.3 build takes those too), 50 s behind
+   (125 slots) at t175, 35 s (t125: 50 s), 51 s behind (127.5 slots — the most agave's default
+   health-check distance of 128 slots admits at 2.5 slots/s) at t180, 40 s (t129: 51 s), 52 s behind reads
+   behind and never takes; at 3.7 slots/s 15 s (t120 → t135); at the wizard preset 20 s (t100 → t120), at
+   3.7 slots/s 15 s (t90 → t105); `GOSSIP_VERIFY` off the same; `TIER2` splicing or lagging 40 s, alike. One
+   intermediary on `TIER2` is enough. **The mitigation is the spare's own `--health-check-slot-distance`**:
+   Tier-1 is the node's health verdict since 6.3.1, so a spare lagging past that distance at the take cycle's
+   Tier-1 check never takes (the
+   6.3 build's Tier-1 accepted a node reporting up to `LOCAL_HEALTH_MAX_BEHIND` = 100 slots behind, so a
+   lower distance does not bound it there: it takes at every lag measured, up to 30 s at 64, 38 and 30
+   slots) — measured at the defaults, 2.5 slots/s and a constant lag (in time the bound is the distance ÷
+   the cluster's slot rate — 64 slots are 25.6 s at 2.5 slots/s, 32 s at 2.0 — and it bounds the lag at the
+   take cycle's Tier-1 check, the cycle's start; a lag that grows during a slow take cycle is not bounded by
+   it): at 64 slots the
+   resumption at t140 is taken at most 10 s into the voting (a 25 s lag, t150; 26 s and more never), any
+   resumption at most 25 s into it (t125 → t150); at 38 slots only at the resumption's own instant (a 15 s
+   lag, t140 — residual 3's class), any resumption at most 15 s into it (t125 → t140). A spare that lags
+   more than that distance at the Tier-1 check cannot take at all, so the distance trades this exposure
+   against availability.
+   Pre-existing on the 6.3 build and the first 6.3.1 build; fix round 2's concurrent read closed it and took
+   a voting holder in other worlds (the delta reviews' LB-1 / LB-2), so fix round 3 removed that read and
+   names this instead.
+7. **The re-check's starvation — introduced by 6.3.1's own-view veto: an availability regression against
+   the 6.3 build, which has no veto and takes these holders.** No own-head sample may sit inside the re-check (it is
+   inside the acceptance→mutation span `PROOF_MAX_AGE` counts), so the veto's youngest baseline is the
+   pre-take sample, and its age at the veto is a SUM: the sample's own LOCAL read, `TIER2`'s time to FAILURE
+   (x), `TIER3`'s answer (y), the veto's own LOCAL read and the glue between them. `TIER2`'s term is whatever
+   makes its re-check read unusable, whenever that arrives — the re-check's one sampler call falls to
+   `TIER3` on a timeout at the read's 10 s bound (x = 10, the most it can be) and on a JSON-RPC error body,
+   an HTTP 5xx page, garbage or a non-canonical lastVote, a refusal or a reset after x s. When the sum
+   exceeds `OWN_HEAD_H` (16 s) every veto is BLIND and a
+   dead holder is never taken over, loudly: the veto page
+   `⚠️ Take VETOED by this spare's own view (it could not testify): …` (its reason: "no own-head sample within
+   the last 16 s"; repeats per `ALERT_THROTTLE`), then the starvation page `⚠️ TAKEOVER STARVATION: …` (repeats
+   per `ALERT_THROTTLE`). After `TIER2`'s timeout: with prompt LOCAL reads from `TIER3` 7 s
+   late, with every LOCAL read at 1 s from 5 s (4 s is taken, the baseline exactly 16 s old: t171,
+   `GOSSIP_VERIFY` on t193). `TIER2` answering a non-canonical lastVote after x s, `TIER3` honest after y s,
+   prompt LOCAL reads, at the shipped defaults: x + y = 8 + 9 is never taken (first BLIND veto t190, the
+   starvation page t366) and 8 + 8 is, with the baseline exactly 16 s old (t186); with every LOCAL read at
+   1 s, 8 + 7 is never taken (BLIND t196, page t378) — these three pinned; measured with the same world
+   driver and not pinned: 9 + 8 never (t189 / t382; the wizard preset 8 + 9 / 9 + 8 t146 / t145, pages t322 /
+   t338; `GOSSIP_VERIFY` off t173 / t172, pages t366 / t382), 7 + 9 and 9 + 7 taken at 16 s (t187 / t185; the
+   wizard preset 7 + 9 / 8 + 8 t143 / t142, `GOSSIP_VERIFY` off t171 / t170), 8 + 6 at 1 s LOCAL reads taken
+   (t191, 16 s). The 6.3 build takes every one of these holders (8 + 9 / 9 + 8 t190 / t189, the wizard preset
+   t146 / t145, `GOSSIP_VERIFY` off t173 / t172, 8 + 7 at 1 s t185) — on the tests' whole-second clock. A real host's stamps are whole seconds of
+   uptime too, so there the edge is phase-dependent: one second less is vetoed BLIND when the pre-take
+   sample falls late in its second, and the held share is the fraction of a second the glue between the
+   stamps takes — it grows with the host's load (real time, bash 3.2, the real `take_staked_identity`
+   against a fake `curl` binary, `TIER2` hanging to its `-m 10`, the take started at ten sub-second phases,
+   on an 18-core host at load average 5–7: prompt LOCAL reads — `TIER3` 5 s taken at 10 of 10, 6 s held
+   BLIND at 2 of 10 (phases 0.8 and 0.9), 7 s held at 10 of 10; every LOCAL read at 1 s — 3 s taken at 10
+   of 10, 4 s held at 2 of 10 (0.8, 0.9), 5 s held at 10 of 10; at load average 13–17, 6 s and, at 1 s
+   LOCAL reads, 4 s each held at 4 of 10 (0.6–0.9); `TIER2` REFUSING after x s, one run each: 8 + 9 and 9 + 8
+   held BLIND, 8 + 7 and 9 + 6 taken; 8 + 8, the sum-16 edge, at ten phases: held BLIND at 5 of 10 (0.5–0.9)
+   and taken at the other five, at load average 81–155; the 6.3 build took every run). A BLIND veto re-anchors the countdown, so such a take waits a
+   full countdown more (the per-BLIND-veto cost above). The 6.3 build has no own-view veto and
+   takes every one of these holders — the 6.3 build → this build: `TIER3` 7 / 8 / 9 s late at the shipped
+   defaults t193 / t197 / t201 → never (first BLIND veto t193 / t197 / t201, starvation page t372 / t385 /
+   t368); `GOSSIP_VERIFY` off t171 / t174 / t177 → never (pages t380 / t376 / t370); 3.7 slots/s t173 → never
+   (t352); the wizard preset t149 → never (t328; `TIER3` 9 s t157 → never, t324); `MAX_DELINQUENT_SLOTS` 15
+   t126 → never (t335); `TIER2` answering at its bound (its `-m 10` reads timing out) with `TIER3` 7 s,
+   alike (t188 → never, t380); every LOCAL read at 1 s, `TIER3` 5 / 6 s: t170 / t170 → never (BLIND t175 /
+   t179, pages t380 / t371; `GOSSIP_VERIFY` on t188 / t193 → never, t384 / t397). On the test clock `TIER3`
+   6 s late with prompt LOCAL reads is taken (t189 at the defaults). A `TIER2` that REFUSES at once — the x ≈ 0
+   end — does not starve the take (`TIER3` 7 / 9 s at the defaults: t153 / t161). **What an operator can do:** repair a `TIER2` that
+   fails slowly (times out, or answers an error late), or while it is broken leave `TIER2_RPC` empty — the
+   confirm, the fence and the re-check then read `TIER3` alone (at the shipped defaults `TIER3` 7 / 9 s taken
+   t153 / t161, every LOCAL read at 1 s and `TIER3` 6 s t159; `GOSSIP_VERIFY` off t146 / t152 / t170) and the
+   witness fast path, which needs two tiers, is off; on an armed spare with `PRIMARY_UNSTAKED_PUBKEY` set,
+   G2's vantage A defaults to `TIER2_RPC`, so G2 is left one vantage — the daemon pages CRITICAL "G2
+   VANTAGES NOT DISTINCT" at every start (verified-demote cannot prove for the run once the gate is wired, and
+   conditions no take in this release) and `failover arm`'s P6 warns that the spare arms without verified-demote, unless
+   `G2_VANTAGE_A` names another provider (with `PRIMARY_UNSTAKED_PUBKEY` empty no G2 is registered: no page,
+   no P6 warning) — or use a `TIER3` that answers the full `getVoteAccounts` well under ~5 s (about 3 s when
+   every LOCAL read takes 1 s; `TIER2`'s time to failure is at most its 10 s bound, so that holds whatever the
+   failure). A re-check that reads the pinned `TIER3` alone (t161) or both tiers at once (t164) takes these
+   holders, and each takes a voting holder in other worlds: neither is in this build. Availability only — the
+   failure is toward not taking — and one
+   intermediary that makes `TIER2`'s read fail late (a blackhole, or an error answer after a delay) with a slow
+   `TIER3` is enough. This build's world cells are pinned cell by cell — all of them above but the late-error
+   cells named as not pinned: `test_own_view` (7c), (7c-age), (7c-r7).
+
+### Holder self-fence: the differential bar and its named residuals (v0.7, Block 6.3)
+
+Block 6.3's five review rounds hardened the holder's self-fence against non-canonical and corrupted
+input; the rules and the residuals they leave are stated here (the rounds are named by number — the
+first 6.3 build, then fix rounds 1–5). Rows (1) and (4) are measured against the spare in *The
+cross-node invariant*: (1), its restart member and (4) (N7) are among the table's crossings — with the
+plain restart, the un-armed crash, the wedged demote, the fully wedged validator and the worst-case I/O
+column that 6.3.1's fix round added.
+
+**The holder's self-fence (both daemons, identical decision logic; the demote action differs by
+role).** (Not byte-identical twins: `check_self_fence_isolation` / `load_state` / `save_state` differ by
+36 / 27 / 6 code-only lines between the daemons — the demote call, log and alert texts, `LAST_SWITCH`
+vs `LAST_TAKEOVER`, the standby's `SELF_FENCE_DEMOTE` restore.) A present non-canonical LOCAL slot /
+`numSlotsBehind` / own or cluster `lastVote` counts as frozen / behind / lagging — never healthy, never
+the no-answer path's early return (`SELF_FENCE_NOANSWER_SECS=0` still fences through the frozen clock).
+A non-canonical slot is also no CANONICAL answer: it keeps (or starts, or backdates from the persisted
+start) the no-answer clock exactly as silence does, and only a canonical answer clears that clock and
+its restored backdate. A garbage-slot cycle ADDS own-vote-lag (N6) evidence and never removes it: its
+lagging (or garbage) vote reading counts and applies the restored backdate as ever, while its healthy
+vote reading neither counts toward the B2 hysteresis reset nor consumes the restored backdate.
+`load_state` reads every persisted number through `_canon_uint` and decides PER VALUE (never arithmetic
+on a raw value; the rest of a fresh save restores): a non-canonical lockout/cooldown re-holds IN FULL
+from now (a leading-zero value had been read as octal — "0777" silently expired the lockout); a
+non-canonical `SAVE_TS` makes the whole save stale; a non-canonical stall / silence / lag STAMP — and a
+same-boot one LATER than now, which can only be corruption where `/proc/uptime` and `boot_id` belong to
+one kernel boot (the documented deployment; (5) names the container case) — restores as ANCIENT, applied
+only if the first read after the restore still shows the condition (a healthy first read drops it); a
+non-canonical SLOT restores as 0 (a baseline existed: the no-answer gate stays armed), the first
+canonical answer after the restore is only a REFERENCE, and the stall backdate stays pending until a
+later answer shows the slot not past that reference with the reference at least
+`SELFFENCE_RESTORE_CONFIRM_SECS` = 15 s old (applied), or past it (dropped); a non-canonical answer
+applies it; over a YOUNG stall stamp (under one window) the anchor is the restore instant, never
+earlier, behind the same floor. The floor is a constant at ONE derivation site, byte-identical in both
+daemons: above the longest hold a HEALTHY confirmed slot shows (assumed, not measured here: 5
+consecutive fully-skipped leader windows + 2 slots of confirmation jitter = 22 slots = 8.8 s at 2.5
+slots/s, 5.9 s at 3.7) plus the read-timing term (the reference's own `curl -m 5` + 1 s of `mono_now`
+truncation), and below `SELF_FENCE_ISOLATION_SECS` (30); 15 s = 37 / 55 slots — a healthy hold longer
+than 9 s right after such a restart can be fenced (availability; a corrupted slot and a restart needed).
+The vote-lag baseline latch restores SET for any present value but 0 (`save_state` writes only 0 or 1);
+a non-canonical hysteresis streak is not restored.
+
+**The differential bar and the named residuals.** Every holder-fence change is proven by DIFFERENTIAL
+runs of the review panels' grids — the real `load_state`, startup tail and `check_self_fence_isolation`,
+both daemons: 8,656 restart / `load_state` rows per tree (a fresh bash per daemon instance), a 288-row
+still-frozen grid at the turbo cadences, and the in-loop sweep (8,942 sequences per daemon and garbage
+class) — against the first 6.3 build and fix rounds 1, 2 and 3. The bar: never later than fix round 2 or fix round 3
+for any input; never later than the first 6.3 build / fix round 1 except where their fence came from misreading a
+leading-zero value (a misread that fenced HEALTHY holders too) or from an aborted startup (no READY,
+no grace) — each such row named here for the reviewer, with two further named exceptions: the floor's
+own cost against fix round 3 (1), and the fresh-start rows where the first 6.3 build fenced only because it adopted
+garbage as its baseline (4):
+
+1. *The floor's cost (later than fix round 3, never later than fix round 2).* A still-frozen holder with a
+corrupted slot over a stall a window old fences at the first read at or after reference + 15 s — up to
+one LOOP CYCLE past it (the interval plus the cycle's reads and pets); in the free-read harness, grace
+30 / 0: 45 / 15 s at `CHECK_INTERVAL` 1, 3 and 5, 51 / 21 s at 7 (a cadence that does not divide 15),
+both daemons — where fix round 3 decided at the very next answer (35 / 5 s
+at `CHECK_INTERVAL` 5, 33 / 3 s at 3, 31 / 1 s at 1, 37 / 7 s at 7): the decision that also fenced a
+PAUSED HEALTHY holder (C F C, C D C, C S F C — 35 / 35 / 40 s at grace 30, 5 / 5 / 10 s at grace 0,
+one cycle after the reference at the turbo cadences; never now). fix round 2: 60 / 30 s (65 / 35 s at 7);
+the first 6.3 build / fix round 1: the same for a non-numeric slot (30 at grace 30 for the slots of (2)). Its restart
+member: a monitor restart inside that ~15 s window (one check cycle on fix round 3, whose second read had
+already fenced) defers the fence to the next instance, which fences at its first read if the reference
+stamp is already `SELF_FENCE_ISOLATION_SECS` old at its restore, else at its first read at or after
+restore + `SELF_FENCE_ISOLATION_SECS` — measured +25..+59 s later than fix round 3 for stops of 0–20 s,
+equal to fix round 2 (7).
+2. *The leading-zero misread (later than the first 6.3 build / fix round 1 only).* A persisted slot with a leading
+zero and an 8 or 9 ("0999", "0400000009"): both references fence at 30 s (grace 30) in EVERY world,
+the healthy holder included (their `[[ ]]` octal misread). Here, as on fix rounds 2 and 3, a healthy
+holder is never fenced, and a frozen one at 45 s (a stall stamp a window old or young; fix round 3 33 / 35
+or 60, fix round 2 60); a garbage decision read at 33 / 35 s (fix round 3 the same or 60, fix round 2 60); a
+lagging one at 50 / 51 s, a silent one at 63 / 65 s, one across a boot at 60 s, one restarted between the
+reference and the decision at 65 / 70 / 100 s — each equal to fix rounds 2 and 3. In the loop,
+the first 6.3 build misread a LIVE "0400000129" (before any canonical answer) the same way and fenced at
+30–60 s whatever followed, the healthy G C holder included: those 2,997 in-loop rows (both daemons)
+are identical to fix round 3's here.
+3. *The aborted startup (later than the first 6.3 build / fix round 1 only).* A `SAVE_TS` or `SF_ADVANCE_MONO` in
+that leading-zero class: the references' `$(( ))` error discarded the rest of `startup_checks` (no
+READY, no `STARTUP_GRACE`) and their loop fenced at 30 / 33 / 35 s; here the startup completes and
+the holder fences after the grace, at 60 / 65 s — equal to fix rounds 2 and 3.
+4. *The fresh-start gap (N7; not changed).* The no-answer gate needs a canonical baseline and silent
+reads do not run the frozen clock, so a holder silent from a fresh start is fenced by neither: a
+non-canonical `SAVE_TS` makes the whole save stale — a holder silent across that restart is never
+fenced by the daemon's self-fence, on every tree (on an ARMED unit of the first 6.3 build or fix round 1 the leading-zero
+`SAVE_TS` of (3) aborted the startup before READY, so the unit plausibly reached `failed` at its start
+timeout and OnFailure fenced it; this build completes its startup, so that path is gone — and the
+armed silent-restart classes were EXECUTED in 6.3.1 in real systemd: an answering admin socket sends
+READY and nothing fences, a silent one reaches the start timeout and OnFailure fences at restart + 90 s —
+[the cross-node invariant](#the-cross-node-invariant)); and garbage before any canonical answer, then silence (H4-N7-GARBAGE-FIRST) —
+never on fix rounds 1, 2, 3 and here, where the first 6.3 build fenced such sequences at 33–60 s because it
+adopted the digit garbage as its baseline ("0400000123" read as octal; 2^64+100, or a value just past
+2^63−1, wrapped): 59 of the in-loop sweep's standby rows and 58 of its primary rows. Letting a present
+answer arm the gate is an N7 change, not made (`docs/SPLIT-BRAIN-RESIDUAL.md`, no-answer sub-check).
+5. *Corrupted-stamp blips (availability; a corrupted stamp or slot needed — or a container's
+virtualized uptime, below).* A stamp restored as ANCIENT turns ONE first-read blip into an immediate
+fence: a silent, non-canonical or lagging first read — or, at `STARTUP_GRACE=0`, a 3–5 s pause —
+fences at that read (grace 30: 30 s; grace 0: 0 s) where the same holder with canonical stamps arms
+nothing; the future-dated stamps now share it; the references had the same exposure for octal-valid
+stamps. Over a corrupted slot (canonical stamps, a window old or young) a garbage DECISION read applies
+the pending: C G C fences at 35 / 5 s (33 / 31 s at the faster cadences, grace 30), as on fix round 3 —
+the first 6.3 build, fix round 1 and fix round 2 never fenced it (a non-numeric slot; the leading-zero slots are (2)) — and
+now also over a young stall stamp (never → 35 s at grace 30). The future-stamp rule assumes
+`/proc/uptime` and `boot_id` belong to one kernel boot, as on the documented deployment (the monitor
+on the validator host; `docs/DEPLOYMENT-MANUAL.md`, Prerequisites): in a container that virtualizes
+`/proc/uptime` but not `boot_id` (lxcfs-style) a container restart makes the self-fence stall /
+silence / lag stamps "future" → ANCIENT (a future lockout / cooldown stamp restores verbatim and holds
+until the uptime passes it), so there — once the container's uptime at that read is at least
+`SELF_FENCE_ISOLATION_SECS` — a first-read blip fences with nothing corrupted — measured by the final
+panel: a validator still catching up 10–25 s after such a restart, at grace 0, fenced at its first
+read, where fix round 3 and the same restart on a normal host never fence (0 future stamps in 2,000
+real-clock save → load round trips on a normal Linux host). Named, not changed.
+6. *An absent vote-lag latch (every tree; not changed).* A fresh save without
+`SF_VOTELAG_BASELINE` keeps N6's fresh-start rule (no healthy baseline → not armed): a holder lagging
+continuously across such a restore is never fenced through N6.
+7. *A restart between the reference and the decision.* The pending is not persisted: the next
+instance restores the reference slot as its canonical baseline, with the reference's stamp as its stall
+stamp, and fences as for a canonical slot — at its first read if that stamp is already
+`SELF_FENCE_ISOLATION_SECS` old at its restore, else at its first read at or after restore +
+`SELF_FENCE_ISOLATION_SECS`. For a restart right after the reference that is every tree's timing (65 /
+70 / 100 s in the panel's rows; 45 s without the restart); a restart later inside the floor's ~15 s
+window is (1)'s restart member: +25..+59 s later than fix round 3, equal to fix round 2.
+
+The phase residuals, ratified phase-only by the three-lens panel: the revert of `observed_at` to the
+evaluation start, the reference-first own-bank read and the head-gap bound re-phase takes (1,115-world
+sweep against fix round 1, the build before fix round 2: 62 sooner, 119 later, 28 veto-only — of the 62
+sooner, 22 were in worlds fix round 1 vetoed (18 on a holder voting again 0–45 s before the take), takes
+the first 6.3 build also made; ratified phase-only because the acceptance predicate is the first 6.3 build's); REG-C — the
+episode window closes on cycle COUNT while the own bank sees a vote in TIME, so any cadence change
+re-phases vetoes both ways, on every tree (documented and pinned; flips when the close rule becomes
+time-based). The PRIMARY's opt-in latency demote (`MAX_VOTE_LATENCY` > 0, off by default) read its reference first
+in 6.3, so a stall or pet between its two reads made the holder look more current: whenever the
+threshold crossing fell inside that ≤ 27 s snapshot gap (both reads at their `curl -m 10` bound + a 7 s
+pet), the demote came up to ONE FULL STAKED LOOP CYCLE later (`DELINQUENCY_RETRIES` consecutive
+over-limit reads are needed) — 37 s measured in a latency-only cycle at `CHECK_INTERVAL` 3 and 64 s in
+one at `CHECK_INTERVAL` 30; a full default STAKED cycle with every per-cycle read and pet is ~103 s —
+and a holder lagging within rate × that gap of the limit never demoted on that path. **Since 6.3.1 it
+reads its payload FIRST**, then the reference: a stall between the two can only make the holder look
+LESS current — the demote comes sooner, never later (the holder's side of the cost model); the price is
+a live holder whose two reads straddle a long stall reading over-limit on that cycle (a demote still
+needs `DELINQUENCY_RETRIES` such reads and `TIER2`'s own verdict). This path is **not** part of the
+cross-node invariant: it may fire after a spare's take — the relinquish bound B bounds the self-fence
+only.
+
+### Local-host threat model — named, not defended (v0.7)
+
+This tool defends against failures, and against the external RPC surface (the *Shared vantages*
+premise). It does **not** defend against root on the spare or the holder: root can edit the env, stop
+the monitor or set the identity by hand. Two local cases are named because the mechanisms above might
+suggest otherwise:
+
+- **The state directory's contents swapped away and back between two provider steps** — by a RENAME of
+  the directory, a transient symlink or a mount. watchdog-elapsed's token key sees only the token
+  FILE's identity, so such a swap is invisible: it proves at +100 s on every tree (a documented
+  residual, `test_elapsed_provider` (3l-R5a)). What is closed: a symlinked token and a token directory
+  reached through a symlink never prove (6.3 fix rounds 4–5), and since 6.3.1 `failover arm` refuses to
+  store the token in such a directory (`REFUSE[STATE-dir-symlink]`, `REFUSE[STATE-dir-spelling]` for a
+  spelling that is not the resolved path — a trailing `/`, `//`, `.`, `..`, a relative path — and
+  `REFUSE[STATE-dir-missing]` for one it cannot create or enter) — the daemon's rule mirrored, a refusal
+  by the spelling or by the nearest existing ancestor coming before anything is created (since its fix
+  round 1: the spelling is checked first and the nearest existing ancestor canonicalized; before, the arm
+  created the missing directories — through a symlinked ancestor too — and then refused). A path whose own `mkdir -p` fails PARTWAY (a component too long, a permission,
+  a full disk) is refused `REFUSE[STATE-dir-missing]`, naming the path, and the part of it that mkdir
+  created before failing **may remain on disk** — nothing is removed (the 6.3.1 delta review's CK-8: the
+  text said "never left created"; fix round 2 then removed the created tail with `rmdir`, and the delta
+  review of fix round 2 found that cleanup following a symlink raced onto an intermediate component —
+  removing empty directories in the link's target, a pre-existing one included, in the very case this text
+  said nothing was removed through (LB-3); fix round 3 removed the cleanup). What remains is a live swap
+  by a local root: a symlink raced onto an intermediate component between that ancestor check and `mkdir
+  -p` makes `mkdir -p` create the missing tail INSIDE the link's target before the whole-path check refuses
+  (`REFUSE[STATE-dir-symlink]`, whose FIX line then says: if you did not create that link, stop and
+  investigate) — not defended, named.
+- **A container's virtualized uptime** (lxcfs-style: `/proc/uptime` virtualized, `boot_id` not): a
+  container restart makes the holder's persisted self-fence stamps "future" → restored as ANCIENT → a
+  first-read blip fences with nothing corrupted (availability, the holder side — *Holder self-fence*,
+  (5)). The documented deployment runs the monitor on the validator host; not changed.
+
 ### Availability-side starvation (blind or flapping externals)
 
 While the external RPCs are unobservable — hard-down or blinking — the takeover holds
@@ -303,6 +1361,25 @@ the daemon pages rather than guesses (`TAKEOVER_STARVATION_ALERT_SECS`, default 
   takeover delay. That is intentional.
 - The gossip **fast-path** (Option A, off by default) is a conservative, fail-closed optimization that
   in practice rarely fires; the proven path is the timer + vote-liveness fence.
+- **No lazy provider registration** (v0.7): watchdog-elapsed registers only at the monitor's startup,
+  over a token that classifies ok; a spare paired while its monitor runs says so every heartbeat
+  ("paired, but watchdog-elapsed is NOT registered — restart the monitor"), and the unpaired posture —
+  the `ARMED SPARE NOT ATTESTED 🚨` page at every start and its heartbeat line — names no provider: it says
+  the holder is not attested and that this release has no relinquish-proof gate (no provider's verdict
+  conditions any take, armed or not; the take follows the v0.6.x semantics, which the 6.3 re-check and the
+  own-view veto can only hold), and that from the release that wires the gate an unpaired or invalidly
+  paired spare's silence-based take is disabled. By design, not changed.
+- **Span starts are stamped after the read that establishes them** (6.3): a silence start can no longer
+  predate its evidence. The price, named: the observation-span floor can bind LATER — +19 to +53 s
+  measured, pinned t167 → t197 (`test_elapsed_provider` (13e)).
+- **The pet gap** (6.3): Tier-1's and the `MAX_DELINQUENT_SLOTS` `getSlot` reads are petted, so the gap
+  between consecutive pets through the watchdog-elapsed evaluation went 20 → 17 s; the loop-wide bound
+  stays one op + one pet, 22 s (`test_elapsed_provider` (12f) — since 6.3.1 the own-head sample and its pet
+  join every open-episode cycle and the measured maximum stays 17 s).
+- **The installers' heredoc guard** (6.3) is proven only against the forms its controls execute (an
+  absolute-path command, an output redirection, `history -w`, `kill`, a per-command `CANARY_LOG=`) — not
+  as a general sandbox, and nothing about any other file or heredoc spelling
+  (`tests/test_installer_guardrails.sh`).
 - Tests are function-level with mocked I/O: they exercise the real decision functions, but do **not**
   prove cross-process ordering between two live systemd services. A chaos/E2E gate on real nodes is
   required before unattended operation.

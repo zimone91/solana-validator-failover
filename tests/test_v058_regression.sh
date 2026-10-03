@@ -12,8 +12,8 @@ TIER3_RPC="http://mock-tier3:9999"
 
 PASS=0; FAIL=0
 
-MOCKDIR=$(mktemp -d /tmp/gossip-old-XXXXXX)
-trap "rm -rf $MOCKDIR" EXIT
+MOCKDIR=$(mktemp -d "${TMPDIR:-/tmp}/gossip-old-XXXXXX")
+trap 'rm -rf "$MOCKDIR"' EXIT
 
 log_info()  { echo "      [INFO] $*"; }
 log_warn()  { echo "      [WARN] $*"; }

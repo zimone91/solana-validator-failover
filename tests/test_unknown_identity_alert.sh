@@ -12,8 +12,8 @@
 # Non-vacuous: revert the branch to the old `log_warn "Unknown identity: …"` one-liner → the seam
 # anchor vanishes → (0) fails; the alert counts also collapse.
 
-# harness: tests/lib/harness.sh — ok/bad + paths ONLY (map hazard 13: this suite's comment-anchor
-# seams migrate LAST or never; banners, RESULTS tail and the seam extractions stay untouched).
+# harness: tests/lib/harness.sh — ok/bad + paths, and results_banner as the closing RESULTS (map hazard 13: this
+# suite's comment-anchor seams migrate LAST or never; its title banner and the seam extractions stay untouched).
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
@@ -136,8 +136,6 @@ source "$P_REC"
 rm -f "$P_UNK" "$P_REC"
 unset -f date
 
-echo ""
-echo "============================================="
-echo "  RESULTS: $PASS passed, $FAIL failed"
-echo "============================================="
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+# the harness's banner (6.3.1 fix round 7 — the delta panel 6's H4): the same RESULTS lines, and a network client the
+# net guard failed makes this suite FAIL standalone too, not only under run_all's stage (4)
+results_banner

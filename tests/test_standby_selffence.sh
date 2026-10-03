@@ -16,6 +16,12 @@
 #          "hold forever unfenced" behavior returns — no demote, still staked
 #   (H1-g) structural: the shipped MAIN LOOP STAKED branch dispatches check_self_fence_isolation
 #          under STANDBY_SELF_FENCE (v0.6.8 baseline had zero check_self_fence references)
+#   (H1-h) 6.3 fix round 2, R6: a PRESENT but non-canonical LOCAL slot / numSlotsBehind / own lastVote
+#          fails toward the fencing condition (frozen / behind / lagging), never healthy, never the
+#          no-answer path's returns; (H1-h4/h5) fix round 3, S1: a garbage slot is no canonical answer —
+#          it keeps the no-answer clock (and a restored backdate) running, in the loop and across a restore;
+#          (H1-h6/h7) fix round 4, W1: a garbage-slot cycle adds own-vote-lag (N6) evidence, never removes
+#          it — its healthy vote reading neither counts toward the B2 reset nor consumes the restored backdate
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
@@ -73,7 +79,7 @@ curl(){
     local data=""; while [[ $# -gt 0 ]]; do [[ "$1" == "-d" ]] && { data="$2"; shift 2; continue; }; shift; done
     case "$data" in
         *getSlot*)   [[ "$_MODE" == "noanswer" ]] && return 7; printf '{"jsonrpc":"2.0","result":%s,"id":1}' "$_LOCAL_SLOT"; return 0 ;;
-        *getHealth*) printf '{"jsonrpc":"2.0","result":"ok","id":1}'; return 0 ;;
+        *getHealth*) if [[ -n "${_BEHIND:-}" ]]; then printf '{"jsonrpc":"2.0","error":{"code":-32005,"message":"Node is behind","data":{"numSlotsBehind":%s}},"id":1}' "$_BEHIND"; else printf '{"jsonrpc":"2.0","result":"ok","id":1}'; fi; return 0 ;;   # _BEHIND: (R6) only when a case sets it
         *getVoteAccounts*)
             printf '{"jsonrpc":"2.0","result":{"current":[{"votePubkey":"Cluster111","lastVote":%s},{"votePubkey":"%s","lastVote":%s}],"delinquent":[]},"id":1}' \
                 "$_CLUSTER_MAX" "$VOTE_PUBKEY" "$_OWN_LV"; return 0 ;;
@@ -83,7 +89,7 @@ curl(){
 
 reset_all(){
     echo "$STAKED_PUBKEY" > "$_ID_FILE"; CURRENT_IDENTITY="$STAKED_PUBKEY"
-    _alert_log=""; _RC_SETID=0; _RC_REMOVE=0; _MODE="slot"
+    _alert_log=""; _RC_SETID=0; _RC_REMOVE=0; _MODE="slot"; _BEHIND=""; _LOCAL_SLOT=100000; _OWN_LV=99995; _CLUSTER_MAX=100000
     SELF_FENCE_DEMOTE_TIME=0; _last_lockout_log=0
     _selffence_reset; _delinq_window=""
     STANDBY_SELF_FENCE=true
@@ -195,6 +201,137 @@ _SIM_NOW=$(( 1700050000 + 120 )); check_self_fence_isolation >/dev/null; rc_ctl=
     && ok "(H1-f) 120s frozen with the knobs zeroed → still staked, no page (proves H1-a/b/c bite)" \
     || bad "(H1-f) control fenced anyway (rc=$rc_ctl alerts='$_alert_log')"
 
+# ── (H1-h) 6.3 fix round 2, R6 (REG-D): a PRESENT but non-canonical LOCAL value fails toward the fence ─
+# Garbage from the holder's own node fails toward "nobody holds the stake": the fencing condition (frozen
+# / behind / lagging) — never healthy, never the no-answer path that SELF_FENCE_NOANSWER_SECS=0 disables.
+# Pre-fix red (f22d492, M4 "unusable" = no answer): NO fence in all three (the no-answer path at 0; the
+# count ignored; "cannot determine" HOLD). Canonical inputs: unchanged (the controls).
+echo ""; echo "─── (H1-h) R6: non-canonical LOCAL values → frozen / behind / lagging (never healthy, never no-answer) ───"
+reset_all; _SIM_NOW=1700060000; SELF_FENCE_NOANSWER_SECS=0
+check_self_fence_isolation >/dev/null                                   # canonical baseline: tracking 100000
+_LOCAL_SLOT='"0100000"'                                                 # the JSON string — non-canonical
+_SIM_NOW=$(( 1700060000 + 25 )); check_self_fence_isolation >/dev/null; rc1=$?; tr1="$_last_confirmed_slot"
+_SIM_NOW=$(( 1700060000 + 30 )); check_self_fence_isolation >/dev/null; rc2=$?
+if [[ $rc1 -eq 1 && "$tr1" == "100000" && $rc2 -eq 0 && "$(cat "$_ID_FILE")" == "$UNSTAKED_PUBKEY" && "$_alert_log" == *"SELF-FENCE"* ]]; then
+    ok "(H1-h1) a NON-CANONICAL confirmed slot (the JSON string \"0100000\") at SELF_FENCE_NOANSWER_SECS=0 counts as NOT advancing: +25 s no fence (the tracker stays 100000), +30 s → REAL demote (identity flipped, page). Pre-fix: the no-answer path, disabled at 0 — NO fence"
+else
+    bad "(H1-h1) +25 rc=$rc1 tracker=$tr1 :: +30 rc=$rc2 id=$(cat "$_ID_FILE") alerts='$_alert_log'"
+fi
+reset_all; _SIM_NOW=1700070000; SELF_FENCE_MAX_BEHIND=150; adv; _BEHIND='"0000300"'
+check_self_fence_isolation >/dev/null; rc1=$?; id1=$(cat "$_ID_FILE")
+reset_all; _SIM_NOW=1700070000; SELF_FENCE_MAX_BEHIND=150; adv; _BEHIND=100
+check_self_fence_isolation >/dev/null; rc2=$?
+if [[ $rc1 -eq 0 && "$id1" == "$UNSTAKED_PUBKEY" && $rc2 -eq 1 && "$(cat "$_ID_FILE")" == "$STAKED_PUBKEY" ]]; then
+    ok "(H1-h2) a NON-CANONICAL numSlotsBehind (\"0000300\") counts as BEHIND → REAL demote at once; the canonical control (100 <= 150) → still staked. Pre-fix: ignored — NO fence"
+else
+    bad "(H1-h2) garbage rc=$rc1 id=$id1 :: canonical-100 rc=$rc2 id=$(cat "$_ID_FILE")"
+fi
+reset_all; _SIM_NOW=1700080000
+adv; check_self_fence_isolation >/dev/null                               # healthy N6 baseline (lag 5)
+_OWN_LV='"abc"'
+adv; _SIM_NOW=$(( 1700080000 + 5 )); check_self_fence_isolation >/dev/null; rc1=$?
+adv; _SIM_NOW=$(( 1700080000 + 25 )); check_self_fence_isolation >/dev/null; rc2=$?
+if [[ $rc1 -eq 1 && $rc2 -eq 0 && "$(cat "$_ID_FILE")" == "$UNSTAKED_PUBKEY" ]]; then
+    ok "(H1-h3) a NON-CANONICAL own lastVote (\"abc\") after a healthy baseline counts as LAGGING: the N6 sustain timer runs from +5 and the REAL demote fires at +25 (>= SELF_FENCE_VOTE_LAG_SECS 20). Pre-fix: cannot determine (HOLD) — NO fence"
+else
+    bad "(H1-h3) +5 rc=$rc1 :: +25 rc=$rc2 id=$(cat "$_ID_FILE")"
+fi
+
+# ── (H1-h4/h5) 6.3 fix round 3, S1 (H-R6-SILENCE): a garbage slot is NOT a canonical answer ───────────
+# It keeps (or starts, or backdates from the restored start) the no-answer clock and fences when that
+# clock is due, while its frozen clock runs too; only a canonical answer clears either. 5 s cycles,
+# NOANSWER 30, ISOLATION 30; a canonical advancing baseline from t0 (C), garbage (G), silence (S; the
+# last letter repeats). Pre-fix red (e917c04): garbage CLEARED the no-answer clock and the restored
+# backdate — 1..5 garbage cycles then silence fenced at 55/60/65/70/75 s where f22d492 fences at 50
+# (de21927: 50 for the text class, 55..75 for the digit class); restored silence 20 s + 1 / 3 garbage
+# reads fenced at 35 / 45 s where f22d492 and de21927 fence at 10.
+s1_run() {   # $1 = letters, $2 = the garbage JSON token → the fence second from t0, or never
+    local seq="$1" i L t0=$_SIM_NOW
+    for (( i = 0; i < 40; i++ )); do
+        L=${seq:$(( i < ${#seq} ? i : ${#seq} - 1 )):1}
+        case "$L" in C) _MODE="slot"; _LOCAL_SLOT=$(( 100000 + i * 12 )) ;; G) _MODE="slot"; _LOCAL_SLOT="$2" ;; S) _MODE="noanswer" ;; esac
+        check_self_fence_isolation >/dev/null
+        [[ "$(cat "$_ID_FILE")" == "$UNSTAKED_PUBKEY" ]] && { echo $(( _SIM_NOW - t0 )); return; }
+        _SIM_NOW=$(( _SIM_NOW + 5 ))
+    done
+    echo never
+}
+echo ""; echo "─── (H1-h4/h5) S1: garbage keeps the no-answer clock (in the loop and across a restore) ───"
+s1_ok=1; s1_rows=""
+for tok in '"abc"' '"0400000123"'; do
+    for n in 1 2 3 4 5; do
+        _SIM_NOW=1700090000; reset_all
+        g=$(printf "%${n}s" | tr ' ' G)
+        got=$(s1_run "CCCC${g}S" "$tok")
+        [[ "$got" == "50" ]] || { s1_ok=0; bad "(H1-h4) CCCC${g}S $tok: fence at $got, want 50"; }
+    done
+    s1_rows="$s1_rows ${tok}→50;"
+done
+[[ $s1_ok -eq 1 ]] && ok "(H1-h4) 1..5 garbage cycles then silence fence at t50 —$s1_rows the no-answer clock starts at the first garbage read (= f22d492; de21927 50 / 55..75). Pre-fix: 55/60/65/70/75"
+s1_ok=1
+for n in 1 3; do
+    _SIM_NOW=1700100000; reset_all; _last_confirmed_slot=100000                  # a restored baseline, restart at t0
+    _selffence_noanswer_restore_pending=1; _selffence_restored_noanswer_since=$(( _SIM_NOW - 20 ))   # load_state: staked and silent 20 s at the save
+    g=$(printf "%${n}s" | tr ' ' G)
+    got=$(s1_run "${g}S" '"abc"')
+    [[ "$got" == "10" ]] || { s1_ok=0; bad "(H1-h5) restored silence 20 s + ${n} garbage read(s) then silence: fence at $got, want 10"; }
+done
+_SIM_NOW=1700110000; reset_all; _last_confirmed_slot=100000
+_selffence_noanswer_restore_pending=1; _selffence_restored_noanswer_since=$(( _SIM_NOW - 25 ))   # silent 25 s at the save; the stall younger than a window (no advance backdate)
+got_steady=$(s1_run "G" '"abc"')
+if [[ $s1_ok -eq 1 && "$got_steady" == "5" ]]; then
+    ok "(H1-h5) across a restore: persisted silence 20 s + 1 / 3 garbage reads then silence → fence at t10 (= f22d492 and de21927; pre-fix 35 / 45: the garbage dropped the restored backdate); persisted silence 25 s + STEADY garbage → fence at t5, the restored clock due on a garbage read (f22d492: t5; pre-fix and the panel's one-hunk mutant: t30, via the fresh frozen clock)"
+else
+    [[ "$got_steady" == "5" ]] || bad "(H1-h5) restored silence 25 s + steady garbage: fence at $got_steady, want 5"
+fi
+
+# ── (H1-h6/h7) 6.3 fix round 4, W1 (H4-R6-VOTELAG): a garbage-slot cycle ADDS N6 evidence, never removes it ──
+# Per-cycle letters (5 s cycles; the last repeats): C the slot advances and the own vote is current; L the
+# slot advances and the own vote lags the same-payload cluster-max by 100 slots; G a garbage slot with the
+# own vote current; H a garbage slot with the own vote lagging. N6 at the shipped 32 slots / 20 s /
+# RESET_CYCLES 3; ISOLATION and NOANSWER 30. On a G cycle the healthy vote reading must neither count toward
+# the B2 reset nor consume the restored backdate. Pre-fix red (7ab7eca; the same on e917c04, whose R6
+# fall-through opened it): CCCCLGGGL 60, CCCCLGGGGL 65, CCCCLGGGLGGGL 80, CCCCLLLGGGL 70, (LLLGGG)x5 then L
+# 190 (N6 never fired while the alternation lasted) where de21927 and f22d492 fence at 40 / 45 / 40 / 50 /
+# 50; restored lag 100 s + GL / GGL / GGGL at grace 0 → 25 / 30 / 35 where they fence at 5 / 10 / 15.
+# Controls, identical on every tree: CCCCLHHHL 40; the canonical alternation (LLLCCC)x4 then L 160.
+w1_run() {   # $1 = letters, $2 = the garbage JSON token → the fence second from t0, or never
+    local seq="$1" i L t0=$_SIM_NOW
+    for (( i = 0; i < 60; i++ )); do
+        L=${seq:$(( i < ${#seq} ? i : ${#seq} - 1 )):1}
+        _MODE="slot"; _CLUSTER_MAX=$(( 200000 + i * 12 )); _OWN_LV=$(( _CLUSTER_MAX - 1 ))
+        case "$L" in
+            C) _LOCAL_SLOT=$(( 100000 + i * 12 )) ;;
+            L) _LOCAL_SLOT=$(( 100000 + i * 12 )); _OWN_LV=$(( _CLUSTER_MAX - 100 )) ;;
+            G) _LOCAL_SLOT="$2" ;;
+            H) _LOCAL_SLOT="$2"; _OWN_LV=$(( _CLUSTER_MAX - 100 )) ;;
+        esac
+        check_self_fence_isolation >/dev/null
+        [[ "$(cat "$_ID_FILE")" == "$UNSTAKED_PUBKEY" ]] && { echo $(( _SIM_NOW - t0 )); return; }
+        _SIM_NOW=$(( _SIM_NOW + 5 ))
+    done
+    echo never
+}
+echo ""; echo "─── (H1-h6/h7) W1: a garbage-slot cycle adds N6 evidence, never removes it (in the loop and across a restore) ───"
+w1_ok=1; w1_rows=""
+for tok in '"abc"' '"0400000123"'; do
+    for row in CCCCLGGGL:40 CCCCLGGGGL:45 CCCCLGGGLGGGL:40 CCCCLLLGGGL:50 CCCCLLLGGGLLLGGGLLLGGGLLLGGGLLLGGGL:50 CCCCLHHHL:40 CCCCLLLCCCLLLCCCLLLCCCLLLCCCL:160; do
+        _SIM_NOW=1700120000; reset_all
+        got=$(w1_run "${row%%:*}" "$tok")
+        [[ "$got" == "${row##*:}" ]] || { w1_ok=0; bad "(H1-h6) ${row%%:*} $tok: fence at $got, want ${row##*:}"; }
+    done
+done
+[[ $w1_ok -eq 1 ]] && ok "(H1-h6) in the loop, garbage \"abc\" and \"0400000123\": CCCCLGGGL → 40, CCCCLGGGGL → 45, CCCCLGGGLGGGL → 40, CCCCLLLGGGL → 50, (LLLGGG)x5 then L → 50 (= de21927 and f22d492; pre-fix 60 / 65 / 80 / 70 / 190 — the G cycles' healthy vote readings reset the sustain timer), controls CCCCLHHHL → 40 and the canonical (LLLCCC)x4 then L → 160 (every tree)"
+w1_ok=1
+for row in GL:5 GGL:10 GGGL:15 HL:0; do
+    _SIM_NOW=1700130000; reset_all; _last_confirmed_slot=100000   # a restored baseline, restart at t0 (grace 0)
+    _selffence_votelag_baseline=1; _selffence_votelag_healthy=0   # load_state: staked, lagging 100 s at the save
+    _selffence_votelag_restore_pending=1; _selffence_restored_votelag_since=$(( _SIM_NOW - 100 ))
+    got=$(w1_run "${row%%:*}" '"abc"')
+    [[ "$got" == "${row##*:}" ]] || { w1_ok=0; bad "(H1-h7) restored lag 100 s + ${row%%:*}: fence at $got, want ${row##*:}"; }
+done
+[[ $w1_ok -eq 1 ]] && ok "(H1-h7) across a restore (persisted lag 100 s, grace 0): GL → 5, GGL → 10, GGGL → 15 — the garbage cycles' healthy vote readings leave the restored backdate to the first lagging read (= de21927 and f22d492; pre-fix 25 / 30 / 35: the first G consumed and dropped it); control HL → 0 (every tree)"
+
 # ── (H1-g) structural: MAIN LOOP dispatch + v0.6.8 baseline had nothing ───────────────────────
 echo ""; echo "─── (H1-g) shipped STAKED branch dispatches the fence; v0.6.8 had zero ───"
 n_dispatch=$(sed -n '/MAIN LOOP/,$p' "$STANDBY" | grep -c 'check_self_fence_isolation')
@@ -212,7 +349,7 @@ if [[ -f "$V068" ]]; then
     [[ $v8 -eq 0 ]] && ok "(H1-g2) v0.6.8 baseline: 0 check_self_fence references → H1 genuinely new (non-vacuous)" \
                     || bad "(H1-g2) v0.6.8 already had a standby self-fence ($v8)"
 else
-    ok "(H1-g2) v0.6.8 baseline not present to compare (skipped)"
+    echo "  ⏭ SKIP: (H1-g2) v0.6.8 baseline not present to compare"
 fi
 
 results_banner

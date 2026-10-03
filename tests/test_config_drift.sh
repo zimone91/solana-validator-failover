@@ -16,6 +16,12 @@
 #   (f) PRIMARY twin: RECOVERY_DELAY=60 → announced; role separation (each daemon checks only its
 #       own role knobs); the helper + shared table BYTE-IDENTICAL across daemons except the
 #       role-specific knob tables (structural, like test_provider_pinning's (g))
+#   (h) LOCAL_HEALTH_MAX_BEHIND (Block 6.3.1 D5, tightened in its fix round 1 — the panel's L3): the 6.3 M9
+#       announce BECAME a clamp to the node's OWN --health-check-slot-distance (read from the validator's
+#       command line, else agave's 128) — above it WARNs and clamps, at or below it is announced as having no
+#       effect — and Tier-1 treats EVERY getHealth "behind" report as not ready (agave reports it only beyond
+#       that distance): the knob enters no decision (fix round 2, S5); the clamp lives outside the announce-only
+#       section
 #   (g) CONTROL (non-vacuous): neuter the announce path → (a) records ZERO lines (the suite's
 #       assertions genuinely depend on the shipped code); plus the startup call-site exists in both
 #       daemons AFTER validate_numeric_config and BEFORE the main loop
@@ -184,6 +190,117 @@ if [[ "$S_ROLE" == *"SELF_FENCE_RETAKE_COOLDOWN 600 high"* && "$S_ROLE" == *"EXP
     ok "(f8) STANDBY role table carries RETAKE_COOLDOWN/EXPECTED/MARGIN (higher-stricter) + STARVATION_ALERT (lower-stricter, 0 disables)"
 else
     bad "(f8) STANDBY role table incomplete"
+fi
+
+# ── (h) LOCAL_HEALTH_MAX_BEHIND: the 6.3 M9 announce BECAME THE CLAMP (Block 6.3.1 D5; fix round 1, R7 — L3) ─
+# The knob enters NO decision (fix round 2, S5 — the delta panel's DL-2/CK-5: "effective = min(configured, the
+# distance)" was only the clamped variable, which nothing reads): agave reports a node "behind" only when it is
+# MORE than THIS node's own --health-check-slot-distance behind (agave 4.2.1 rpc_health.rs check(); the default
+# distance is DELINQUENT_VALIDATOR_SLOT_DISTANCE = 128 — json_rpc_config.rs) and no lag inside it, and Tier-1
+# refuses EVERY report — the spare is ready iff getHealth answers ok, whatever the value.
+# At startup the cap is the distance read from the validator's command line (get_validator_args), else
+# agave's default 128:
+#   above the cap → ONE loud [config-clamp] WARN naming the value and the cap, the knob set to the cap (h1)
+#   = the cap → silent (h2); below it → one info line: it behaves as the node's own distance (h2)
+# At the comparison (h4)/(h5): 'behind by N' → NOT ready at every configured value, for every N, readable
+# distance or not. Pre-fix reds: the 6.3 build ADMITTED 'behind by 150' at 200 (h4); the 6.3.1 build's 128
+# cap still admitted 'behind by 101..128' at the default (a node run at a SMALLER distance — the panel's L3:
+# a spare 110 slots behind took over 40 s into the holder's voting) where the 6.3 build's default 100 held — (h5).
+# The clamp mutates the knob, so it lives OUTSIDE announce_config_drift (INVARIANT(announce-only)) — (h3).
+echo ""; echo "─── (h) LOCAL_HEALTH_MAX_BEHIND: clamped above the node's own --health-check-slot-distance, no effect at or below it; Tier-1 refuses every 'behind' report (6.3.1 D5 + fix round 1 L3; fix round 2 S5) ───"
+clamp_out() {   # $1=script $2=value [$3=the validator's argv] → the clamp's log lines, then "eff=<value after the clamp>"
+    (
+        SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$1" > "$SRC"
+        # shellcheck disable=SC1090
+        source "$SRC" 2>/dev/null; rm -f "$SRC"
+        log_info(){ printf 'INFO %s\n' "$*"; }; log_error(){ :; }
+        log_warn(){ printf 'WARN %s\n' "$*"; }
+        _ARGV="${3:-}"; get_validator_args(){ printf '%s' "$_ARGV"; }   # the validator's command line as this test sets it ("" = not readable)
+        LOCAL_HEALTH_MAX_BEHIND="$2"
+        if declare -F _clamp_local_health_max_behind >/dev/null; then _clamp_local_health_max_behind; else echo "NO-CLAMP-FUNCTION"; fi
+        echo "eff=$LOCAL_HEALTH_MAX_BEHIND dist=${_lhmb_node_distance:-}"
+    )
+}
+A64="/usr/bin/agave-validator --identity /x/id.json --health-check-slot-distance 64 --ledger /l"
+A200="/usr/bin/agave-validator --health-check-slot-distance=200 --ledger /l"
+out=$(clamp_out "$STANDBY" 200); out64=$(clamp_out "$STANDBY" 200 "$A64")
+if [[ "$(printf '%s\n' "$out" | grep -c '^WARN \[config-clamp\]')" == "1" && "$out" == *"LOCAL_HEALTH_MAX_BEHIND=200 CLAMPED to 128"* && "$out" == *"it cannot take effect"* && "$out" != *"min(configured"* \
+      && "$out" == *"not on its command line"* && "$out" == *"set LOCAL_HEALTH_MAX_BEHIND=128"* && "$out" == *"eff=128 dist=" \
+      && "$(printf '%s\n' "$out64" | grep -c '^WARN \[config-clamp\]')" == "1" && "$out64" == *"CLAMPED to 64"* && "$out64" == *"(64, from its command line)"* && "$out64" == *"eff=64 dist=64" ]]; then
+    ok "(h1) LOCAL_HEALTH_MAX_BEHIND=200 → ONE loud [config-clamp] WARN (the value, the cap, why it cannot take effect, how to align): the cap is the node's own --health-check-slot-distance when its command line shows one (64 → CLAMPED to 64), else agave's default 128"
+else
+    bad "(h1) unreadable: $out :: distance 64: $out64"
+fi
+o128=$(clamp_out "$STANDBY" 128); o100=$(clamp_out "$STANDBY" 100); o129=$(clamp_out "$STANDBY" 129); o0=$(clamp_out "$STANDBY" 0)
+d64=$(clamp_out "$STANDBY" 64 "$A64"); d50=$(clamp_out "$STANDBY" 50 "$A64"); d200=$(clamp_out "$STANDBY" 128 "$A200")
+if [[ "$o128" == "eff=128 dist=" && "$o129" == *"CLAMPED to 128"* && "$o129" == *"eff=128 dist=" \
+      && "$(printf '%s\n' "$o100" | grep -c '^INFO \[config\] LOCAL_HEALTH_MAX_BEHIND=100 behaves as the node.s own health-check distance')" == "1" && "$o100" != *WARN* && "$o100" == *"eff=100 dist=" \
+      && "$o0" == *"LOCAL_HEALTH_MAX_BEHIND=0 behaves as the node's own health-check distance"* && "$o0" == *"eff=0 dist=" \
+      && "$d64" == "eff=64 dist=64" && "$d50" == *"INFO [config] LOCAL_HEALTH_MAX_BEHIND=50 behaves as"* && "$d50" == *"eff=50 dist=64" \
+      && "$d200" == *"INFO [config] LOCAL_HEALTH_MAX_BEHIND=128 behaves as"* && "$d200" == *"(200, from its command line)"* && "$d200" == *"eff=128 dist=200" ]]; then
+    ok "(h2) bands, against the cap (the readable distance, else 128): = the cap → silent (128; 64 at distance 64); above → clamped (129 → 128); below → one INFO line each saying it behaves as the node's own distance (100 and 0 unreadable; 50 at distance 64; the default 128 at distance 200 — the '--flag=value' spelling read too) — no WARN, the knob keeps its value"
+else
+    bad "(h2) 128='$o128' 129='$o129' 100='$o100' 0='$o0' d64='$d64' d50='$d50' d200='$d200'"
+fi
+# (h3) the announce-only invariant: announce_config_drift neither mentions nor mutates the knob; the
+# clamp call sits in startup right after validate_numeric_config, BEFORE announce_config_drift
+outd=$(drift_out "$STANDBY" 'LOCAL_HEALTH_MAX_BEHIND=200')
+acd=$(awk '/^announce_config_drift\(\) \{/,/^\}/' "$STANDBY")
+cl_ln=$(grep -n '^[[:space:]]*_clamp_local_health_max_behind[[:space:]]*#' "$STANDBY" | head -1 | cut -d: -f1)
+vnc_ln=$(grep -n '^[[:space:]]*validate_numeric_config[[:space:]]*#' "$STANDBY" | head -1 | cut -d: -f1)
+acd_ln=$(grep -n '^[[:space:]]*announce_config_drift[[:space:]]*#' "$STANDBY" | head -1 | cut -d: -f1)
+if [[ -z "$outd" && -n "$acd" && "$(printf '%s\n' "$acd" | grep -v '^[[:space:]]*#' | grep -c 'LOCAL_HEALTH_MAX_BEHIND')" == "0" \
+      && -n "$cl_ln" && -n "$vnc_ln" && -n "$acd_ln" && $cl_ln -eq $((vnc_ln + 1)) && $cl_ln -lt $acd_ln ]]; then
+    ok "(h3) announce_config_drift stays announce-only (no LOCAL_HEALTH_MAX_BEHIND code in it; 200 → no [config-drift] line); the clamp is called in startup right after validate_numeric_config (l$vnc_ln → l$cl_ln), before announce_config_drift (l$acd_ln)"
+else
+    bad "(h3) drift='$outd' clamp=$cl_ln validate=$vnc_ln announce=$acd_ln code-mentions=$(printf '%s\n' "$acd" | grep -v '^[[:space:]]*#' | grep -c 'LOCAL_HEALTH_MAX_BEHIND')"
+fi
+# (h4)/(h5) the comparison itself — tier1_check_local_health under a getHealth stub answering
+# 'behind by N' (no startup run: the comparison must refuse on its own)
+t1_out() {   # $1=script $2=LOCAL_HEALTH_MAX_BEHIND $3=numSlotsBehind [$4=the node distance the startup read] → "rc=<0 ready|1 not> | <log>"
+    (
+        SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$1" > "$SRC"
+        # shellcheck disable=SC1090
+        source "$SRC" 2>/dev/null; rm -f "$SRC"
+        _L=""; log_info(){ _L="$_L|$*"; }; log_warn(){ _L="$_L|$*"; }; log_error(){ :; }; _watchdog_pet(){ :; }
+        LOCAL_RPC="http://local.mock"; LOCAL_HEALTH_MAX_BEHIND="$2"; _N="$3"; _lhmb_node_distance="${4:-}"
+        curl(){ printf '{"jsonrpc":"2.0","error":{"code":-32005,"message":"Node is behind by %s slots","data":{"numSlotsBehind":%s}},"id":1}' "$_N" "$_N"; }
+        tier1_check_local_health; echo "rc=$? $_L"
+    )
+}
+r200=$(t1_out "$STANDBY" 200 150); r128=$(t1_out "$STANDBY" 128 150)
+if [[ "$r200" == "rc=1 "* && "$r200" == *"150 slots behind — agave reports 'behind' only beyond this node's own health-check distance"* && "$r200" == *"— not ready"* && "$r128" == "rc=1 "* ]]; then
+    ok "(h4) the comparison refuses on its own: agave 'behind by 150' at LOCAL_HEALTH_MAX_BEHIND=200 → NOT ready, exactly as at 128 — no path widens Tier-1 past the node's own distance (pre-fix, the 6.3 build: ready at 200)"
+else
+    bad "(h4) 200→'$r200' 128→'$r128'"
+fi
+h5_ok=1; h5_bad=""
+for cfg in 0 100 128 200; do
+    for n in 65 100 101 110 128 129; do
+        r=$(t1_out "$STANDBY" "$cfg" "$n"); [[ "$r" == "rc=1 "* ]] || { h5_ok=0; h5_bad="$h5_bad [cfg=$cfg N=$n READY]"; }
+    done
+done
+r64=$(t1_out "$STANDBY" 128 110 64)
+if [[ $h5_ok -eq 1 && "$r64" == "rc=1 "* && "$r64" == *"health-check distance (64)"* ]]; then
+    ok "(h5) RED FIRST (the panel's L3): every 'behind by N' report is NOT ready at every configured value (0 / 100 / 128 / 200 × N = 65 / 100 / 101 / 110 / 128 / 129) — agave reports 'behind' only beyond the node's own distance, and the knob enters no decision. The 6.3.1 build ADMITTED 'behind by 101..128' at its default 128 (a node at a smaller distance: a spare 110 slots behind took over 40 s into the holder's voting — test_own_view (7e)); the 6.3 build admitted 'behind by N <= 100' at its default 100 — never looser than that now, at any distance; the log names the node's distance when the command line shows it (64)"
+else
+    bad "(h5)$h5_bad :: distance-64 log='$r64'"
+fi
+if ! grep -q '_clamp_local_health_max_behind\|LOCAL_HEALTH_MAX_BEHIND' "$PRIMARY"; then
+    ok "(h6) the PRIMARY (no Tier-1 takeover gate) carries neither the knob nor the clamp — the knob is the spare's"
+else
+    bad "(h6) the primary mentions LOCAL_HEALTH_MAX_BEHIND / the clamp"
+fi
+# (h7) every displayed max states the real threshold — the node's own health-check distance: the default
+# (128 = agave's default distance) in the daemon, the env template and the wizard; the startup display names
+# the distance it read, or says the command line does not show it
+if grep -q '^LOCAL_HEALTH_MAX_BEHIND=128$' "$STANDBY" && grep -q '^LOCAL_HEALTH_MAX_BEHIND=128$' "$HARNESS_DIR/failover-standby.env.example" \
+      && grep -q 'LOCAL_HEALTH_MAX_BEHIND:-128}' "$HARNESS_DIR/deploy-failover-standby.sh" \
+      && grep -q "Health max behind: \${_lhmb_node_distance} slots (this node's own --health-check-slot-distance" "$STANDBY" \
+      && grep -q "Health max behind: this node's own health-check distance (not on its command line" "$STANDBY"; then
+    ok "(h7) the default states the real threshold everywhere (daemon, env template and wizard default = 128 = agave's default distance); the startup display prints the node's own distance, or that its command line does not show it — 'getHealth ok within it; every behind report fails'"
+else
+    bad "(h7) a displayed default/max does not state the node's own distance"
 fi
 
 # ── (g) CONTROL (non-vacuous) + the startup call-site ────────────────────────────────────────────

@@ -45,10 +45,48 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
 - The PRIMARY **relinquishes first** (self-fences to unstaked) before any spare can take.
 - The STANDBY takes only after `TAKEOVER_DELAY` (default **60s** = the PRIMARY's ~30s self-fence + a 30s
   cross-node margin) **and** a vote-liveness check that the previous holder's vote account has stopped
-  advancing. A hand-edited delay below the safe floor **refuses to start**.
-- On a v0.7 **armed** spare, a relinquish-proof gate additionally decides *how* the old holder is known
-  to be gone. Its strongest proof is **verified-demote (G2)**: the holder's *unstaked* identity observed
-  in gossip at the staked identity's exact endpoint, and still there ≥60s later on two pinned RPC
+  advancing. A hand-edited delay below the safe floor **refuses to start**. The last read before the
+  take is the spare's **own** node (v0.7): one bounded read (`curl -m 2` + a watchdog pet) that
+  withdraws the take if its own node shows the holder voting, cannot answer, or is not advancing; the
+  spare also samples its own head through the episode and before each external read of the take cycle
+  — five to twelve bounded local reads per take cycle at the defaults (one more on an armed unit, up to
+  four more with the opt-in witness fast path), milliseconds on a healthy node (measured: +9 to
+  +15 s when every local read takes 1 s with prompt tiers, up to +40 s in the measured cells with a slow
+  tier as well; as a local read nears its 2 s bound the take slides later, and at 2 s or more the spare
+  never takes — loudly: the veto page, then the starvation page). How that ordering holds up per failure
+  class, measured, including where it does not:
+  [docs/SAFETY.md — the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
+- Two named residuals of that own view ([docs/SAFETY.md — the spare's own view](docs/SAFETY.md#the-spares-own-view-v07-block-631),
+  residuals 6 and 7). **The mirror world** (Block 6.3's too): with `TIER2` splicing or lagging (showing the
+  holder frozen) while the spare's own node lags as well, a holder that resumed within that lag is taken
+  while it votes — up to the lag the spare's own `--health-check-slot-distance` admits at the take cycle's
+  Tier-1 check (128 slots by default, ≈ 51 s at 2.5 slots/s: the distance ÷ the cluster's slot rate; a lag
+  that grows during a slow take cycle is not bounded by it), so a lower distance on the spare's validator
+  narrows it. **The starvation** — introduced by Block 6.3.1's own-view veto, an availability regression (never a
+  double-sign): Block 6.3 has no veto and takes these holders. A `TIER2` that fails slowly — times out, or answers
+  an error or garbage late — while `TIER3` is slow (`TIER2`'s time to failure + `TIER3`'s answer + both local reads
+  past 16 s: after a timeout, `TIER3` 7 s or more, 5 s when local reads take 1 s) leaves the veto no fresh own-head
+  baseline, so a dead holder is never taken over, loudly — the veto page
+  `⚠️ Take VETOED by this spare's own view (it could not testify): …`, then the starvation page
+  `⚠️ TAKEOVER STARVATION: …` (on a real host one second less is vetoed too, at some phases) — repair that
+  `TIER2`, or while it is broken leave `TIER2_RPC` empty (an armed spare with
+  `PRIMARY_UNSTAKED_PUBKEY` set then pages "G2 VANTAGES NOT DISTINCT" at every start — verified-demote cannot
+  prove for the run once the gate is wired, and conditions no take in this release — unless `G2_VANTAGE_A` names
+  another provider), or use a `TIER3`
+  that answers the full `getVoteAccounts` well under ~5 s (about 3 s when local reads take 1 s); a `TIER2`
+  that refuses at once does not starve the take.
+- **This release has no relinquish-proof gate:** armed or not, the spare's take follows the v0.6.x semantics,
+  which the 6.3 re-check and the own-view veto can only hold — no provider's verdict conditions any take. An armed
+  spare that is not paired (or is paired with an invalid or page-only token) pages `ARMED SPARE NOT ATTESTED 🚨`
+  at every start: arm the holder first and copy its token, because from the release that wires the gate (Block
+  6.4) an unpaired or invalidly paired spare's silence-based take is disabled — and an unpaired spare with no other
+  provider configured (no `PRIMARY_UNSTAKED_PUBKEY`, or G2 disabled by its vantage check) takes nothing at all. A
+  `fence=page-only` token means the holder was armed without its real fence (fix: `DRY_RUN=false` on the holder, then
+  `failover arm` there); a `TAKEOVER_DELAY` raised after pairing makes the pairing INVALID, and re-pairing is refused
+  until the holder's bounds cover it (the arm prints both fixes). That gate will decide *how* the old
+  holder is known to be gone; its providers already run on an armed spare. The strongest proof is
+  **verified-demote (G2)**: the holder's *unstaked* identity observed in gossip at the staked identity's exact
+  endpoint, and still there ≥60s later on two pinned RPC
   vantages from distinct failure domains — a positive "the demoted state is live *now*", not an absence
   guess. Each snapshot is one JSON-RPC batch, so the freshness anchor (the vantage's own confirmed
   slot) rides *inside* the response that carries the proof: cached and replayed vantage data reads as
@@ -72,6 +110,11 @@ PRIMARY ──self-fence ~30s──►  STANDBY ──takes at 60s──►  BAC
 holds staked, steps down       takes staked              (120s, only if STANDBY is also down)
 ```
 
+A spare's take also waits for its own-view reads (milliseconds on a healthy node; measured +9 to +15 s
+when every local read takes 1 s with prompt tiers, up to +40 s in the measured cells with a slow tier as
+well; a spare whose local reads take 2 s or more never takes, and pages — so does one whose `TIER2` fails
+slowly (times out, or answers an error late) while `TIER3` is slow, the starvation above) after the delays
+shown.
 Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Requirements
@@ -84,12 +127,12 @@ Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 ```bash
 sh -c "$(curl -sSfL https://zim.one/failover/v0.6.10)"
 ```
-Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, verifies them against the version's `SHA256SUMS` manifest (fail-closed), and runs the installer (interactive; starts in DRY_RUN). This tool hot-swaps your staked identity — read `install.sh` before running it. The paranoid path (recommended for a root-level tool):
+Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, verifies them (against the version's `SHA256SUMS` manifest, fail-closed, from the first manifest-bearing release on — `v0.6.9`/`v0.6.10` predate the manifest and are syntax-checked only, which the installer says aloud; no v0.6.x tag is signed), and runs the installer (interactive; starts in DRY_RUN). This tool hot-swaps your staked identity — read `install.sh` before running it. The paranoid path (recommended for a root-level tool):
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.6.10/install.sh
 ```
-read it, then run `sh install.sh`. **What checksums honestly buy you:** protection against a corrupted or tampered download — not against a compromise of this repository or zim.one (the manifest travels through the same channel). Details, scope, and disclosure: [SECURITY.md](SECURITY.md).
+read it, then run `sh install.sh`. **What checksums honestly buy you:** detection of a corrupted or truncated download (or a partially applied tag) — not of anyone on the delivery path who rewrites the files and the manifest together: a compromised mirror/CDN, this repository, or zim.one (the manifest travels through the same channel). Details, scope, and disclosure: [SECURITY.md](SECURITY.md).
 
 Or from source:
 ```bash
@@ -129,7 +172,8 @@ properties every `FENCE_ROT_CHECK_SECS` (default 60 s): drift that verifiably ki
 fence) pages CRITICAL immediately with the exact fix command, and only if it persists for
 `FENCE_ROT_GRACE` (default 1800 s, floor max(600, `ALERT_THROTTLE`)) while the node still
 verifiably holds the staked identity does the holder gracefully demote itself to unstaked — the
-spare then takes over via the verified-demote proof. Never instant, never on a guess: a failing
+spare then takes over on its timer path (the v0.6.x semantics, with or without G2; once Block 6.4 wires
+the relinquish-proof gate, via the verified-demote proof). Never instant, never on a guess: a failing
 `systemctl` is treated as cannot-verify (page after a blind streak, no demote clock), and both
 knobs are daemon defaults with validation — no env entry needed. Un-armed hosts (everything
 before the v0.7 rollout) see zero behavior change.
@@ -145,10 +189,15 @@ See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 ```bash
 cd tests && bash run_all.sh
 ```
-51 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
-mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Note the
-limit: these are function-level tests — they do **not** prove cross-process ordering between two live
-systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
+54 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
+mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Seven older controls compare
+against an earlier release's file, which this repository does not ship; they print `⏭ SKIP` instead of passing (Block 6.4
+moves them onto the harness's `mutate()`). Network clients reached
+through `PATH` are caught by `run_all.sh`'s stage (4) on every leg; at the syscall level, `tests/strace-hermetic.sh`
+(CI's strace job, ubuntu-24.04) fails on any inet socket in the whole run. A suite still running at `run_all.sh`'s
+per-suite cap (`RUN_ALL_SUITE_CAP`: an hour by default; CI sizes it per job) is killed, with whatever it left in its
+process group, and fails the run, named. Note the limit: these are function-level tests — they do
+**not** prove cross-process ordering between two live systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
 
 ## ⚠️ Before you point this at a mainnet identity
 

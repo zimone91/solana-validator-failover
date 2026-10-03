@@ -255,9 +255,27 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
     tower rebuilds from the bank.
 - **Delinquency threshold = 128 slots** (`DELINQUENT_VALIDATOR_SLOT_DISTANCE`; `getHealth` uses the
   same 128). A vote account is `current` iff `lastVote > tip − 128`, else `delinquent`. Reason in
-  **slots, not seconds** — mainnet slot time varies and `lastVote` (read at finalized by default)
-  lags and advances in bursts; the daemon samples liveness at `processed` and uses a slot-delta
-  rule, never a wall-clock conversion.
+  **slots, not seconds** — mainnet slot time varies and `lastVote` (the detection reads use
+  `finalized`, spelled out in every request since v0.7 Block 6.3.1 — agave's default) lags and
+  advances in bursts; the daemon samples liveness at `processed` and uses a slot-delta rule, never a
+  wall-clock conversion. At the take, the spare re-reads its **own** node at `confirmed` (the own-view
+  veto, v0.7): the slow reliable view triggers, the fast one vetoes.
+- **`LOCAL_HEALTH_MAX_BEHIND` (STANDBY, Tier-1) — enters no decision; the threshold is the node's own
+  health-check distance.** agave's `getHealth` reports "behind" only beyond the validator's
+  `--health-check-slot-distance` (128 by default) and reports no lag inside it, so since v0.7 (Block
+  6.3.1, tightened in its fix round 1) Tier-1 is ready iff `getHealth` answers ok and treats **every**
+  "behind" report as not ready, whatever this knob says. A value above that distance (read from the
+  validator's command line, else agave's 128) is **clamped** at start with a loud WARN — it could never
+  take effect; a value at or below it has **no effect** (below it an info line says so; at it — the default
+  128 at agave's default distance — the daemon is silent): it cannot tighten Tier-1.
+  To bound how far behind a spare may be when it takes (the own view's residuals 2 and 6 in
+  `docs/SAFETY.md`: a spare lagging L seconds can take a holder that resumed within those L seconds), lower
+  the validator's own `--health-check-slot-distance`. The default is 128 (≈ 51 s at 2.5 slots/s — in time the
+  bound is the distance ÷ the cluster's slot rate: 64 slots are 25.6 s at 2.5 slots/s, 32 s at 2.0); measured
+  at the shipped defaults, 2.5 slots/s and a constant lag, at 64 slots a holder resuming inside the episode is
+  taken at most 25 s into its voting, at 38 slots at most 15 s. The distance bounds the lag at the take
+  cycle's Tier-1 check (the cycle's start) — a lag that grows during a slow take cycle is not bounded by it —
+  and a spare that lags past its distance there cannot take at all.
 
 ### Compatibility & tuning notes
 
@@ -273,6 +291,16 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   delinquent before the cluster marks the node delinquent. It only moves PRIMARY toward
   *unstaked* (the safe direction) and STANDBY still requires external confirmation + the authoritative vote-liveness fence (gossip advisory),
   so it is safe to opt into; left opt-in to avoid false positives on a busy node.
+  - **Payload-first read order (`MAX_VOTE_LATENCY` PRIMARY path — fixed in v0.7 Block 6.3.1):** on
+    this opt-in path `tier1_get_vote_latency` reads its `getVoteAccounts` payload **first**, then its
+    `getSlot` reference, so a stall or pet between the two (up to 27 s: both reads at their
+    `curl -m 10` bound and a 7 s pet) can only make the holder look *less* current — the demote comes
+    sooner, never later. (Until 6.3 the reference came first and the bias could delay the demote by a
+    full STAKED loop cycle; the measured numbers are in `docs/SAFETY.md`.) The price: a live holder
+    whose two reads straddle a long stall reads over-limit on that cycle — a demote still needs
+    `DELINQUENCY_RETRIES` consecutive over-limit reads and Tier-2's own verdict. This path is **not**
+    part of the cross-node invariant: it may fire after a spare's take; the margin `B` bounds the
+    self-fence only (whose own-vote-lag check reads a single same-payload snapshot). Off by default.
 - **Recovery mode (`RECOVERY_MODE`):** `manual` is the **default and recommended** path —
   operator-driven switch-back (see Manual switch-back). `rpc` is an **opt-in** automatic path:
   in v0.6.3 it gets **vote-liveness parity** — PRIMARY re-takes the staked identity only when the
@@ -280,7 +308,17 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   advancing (the STANDBY holds it), recovery is refused. The v0.6.2 full-`ip:port` gossip check
   stays as advisory corroboration (it can still abort recovery — the safe direction). `manual`
   remains recommended because automatic re-take is inherently riskier than a human deciding. The
-  daemon logs a startup notice when `rpc` is selected. `auto` is reserved/disabled.
+  daemon logs a startup notice when `rpc` is selected. `auto` is reserved/disabled. Since v0.7 the
+  `rpc` re-take passes only inside a band of the staked account's age (128–158 slots after its last
+  vote), so at the shipped defaults, at any cluster rate depending on phase (measured at 1.0 and 2.5
+  slots/s), **the veto band can keep an `rpc` recovery from ever completing, and nothing pages but the
+  veto's own throttled page** (`docs/SAFETY.md`, *What it costs, measured*): the daemon logs the held pass
+  at INFO ("Still delinquent (Tier 1)") and stays unstaked — watch for it and switch back manually when
+  the account is safe. After a failover an `rpc`-mode PRIMARY sends no page at all: while its own node
+  sees the STANDBY voting the identity, each recovery pass ends before the fence, so the "Recovery
+  blocked … ACTIVELY VOTING elsewhere" page is not sent — the STANDBY's `TOOK STAKED ✅` is the signal. (An earlier v0.7 build paged such a
+  recovery; that page misfired — in recoveries that complete, and forever in the ordinary failed-over
+  state — and was removed.) The default `RECOVERY_MODE=manual` is unaffected.
 
 - **PRIMARY self-fence / "vote lease" (`PRIMARY_SELF_FENCE`, v0.6.3):** mitigates the residual
   partition case — a PRIMARY that is alive but **isolated from the supermajority** (partition /
@@ -298,7 +336,11 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
     exists**, that silent-but-staked state is itself isolation: the node may be partitioned/wedged yet
     still voting, while STANDBY confirms delinquency + frozen liveness and takes over → heal
     double-sign. The daemon then **demotes to unstaked first, then urgent-alerts** (v0.6.6 N2: the safety action never waits on notification I/O). It never arms on a
-    fresh start (no baseline) and any successful read resets the timer.
+    fresh start — no CANONICAL baseline slot yet. Named members of that gap (a silent LOCAL is then
+    not fenced by this timer, and silent reads do not run the frozen-slot clock): a LOCAL that has so
+    far answered only non-canonical values and then goes silent, and a restart whose saved state is
+    stale or carries a non-canonical `SAVE_TS`. Only a **canonical** answer resets the timer; a present
+    non-canonical answer does not (it keeps the clock running and counts as "not advancing").
   - It can **only ever** lead to `switch_to_unstaked` (the safe direction), respects `DRY_RUN`
     (logs "would self-fence", no swap) and the startup / manual-change grace, and is disabled with
     `PRIMARY_SELF_FENCE=false`.
@@ -442,7 +484,10 @@ timer unchanged). The interactive installers write them; you can also hand-edit 
 
 **What the fast-path does NOT change.** It only skips the *timer wait*. A take still requires the
 external-confirm to say delinquent **and** `staked_is_actively_voting()==frozen` (a fresh ≥`MIN_INTERVAL`
-sample); `voting` and `cannot-determine` both BLOCK exactly as on the timer path. The holder must already
+sample); `voting` and `cannot-determine` both BLOCK exactly as on the timer path. Since v0.7 (Block 6.3.1,
+fix round 1) it never skips the spare's **own-bank** timer either: while its own node showed the holder
+voting within the last `TAKEOVER_DELAY`, a presented flip does not skip the wait (measured on the review's
+forged-flip world: the take moved from t66 to t119 — a full delay after the last own-bank voting read, t59). The holder must already
 be on its unstaked identity (which structurally cannot vote the staked account) for the flip to be visible.
 
 **The flip is anchored to the holder (v0.6.8 F-A).** The fast-path fires only when a watched unstaked
@@ -483,7 +528,7 @@ startup banner prints the live fast-path state (`ARMED` / `DISABLED (fail-closed
 | Knob | Default | Meaning |
 |---|---|---|
 | `G2_VANTAGE_A` | `TIER2_RPC` | First pinned vantage for the verified-demote (G2) proof provider on an **armed** spare: the holder's unstaked identity must be observed at the staked identity's exact endpoint on **both** vantages at T1 and still be there ≥60 s later. Any bank-bearing RPC node works. **Recommended override: a third endpoint in a separate failure domain** — see the note below. |
-| `G2_VANTAGE_B` | `TIER3_RPC` | Second pinned vantage — **must be a distinct provider in a distinct failure domain**. Identical or same-host values page CRITICAL at startup and leave G2 *cannot-determine* for the whole run (fail toward not-taking). |
+| `G2_VANTAGE_B` | `TIER3_RPC` | Second pinned vantage — **must be a distinct provider in a distinct failure domain**. Identical or same-host values page CRITICAL at startup and leave G2 *cannot-determine* for the whole run: in this release no G2 answer conditions any take; from the release that wires the gate, verified-demote cannot prove on that host. |
 
 **Recommended: point at least one vantage at a THIRD endpoint in a separate failure domain.** On
 the defaults, G2's vantages *are* `TIER2_RPC`/`TIER3_RPC` — the same two endpoints every
@@ -493,7 +538,10 @@ the proof gate's additivity does not hold on that host. This is **not** refused 
 run exactly two RPCs — but `failover arm` measures it, names which vantage matched which tier by
 which comparison, and repeats it in the end-of-summary; the armed daemon warns at every start.
 A different *operator* is what separates the failure domain: another hostname or another API key
-for a provider you already use is the same domain. Full statement: `docs/SAFETY.md`.
+for a provider you already use is the same domain. A separate vantage restores that additivity for
+G2 only: the armed spare's other proof, watchdog-elapsed, measures the holder's silence through
+`TIER2_RPC`/`TIER3_RPC` on every configuration, so its proof and the vote-frozen observation stay one
+input. Full statement: `docs/SAFETY.md` (*Shared vantages*).
 
 **Both vantages must support JSON-RPC batching.** Each G2 snapshot is one POST carrying
 `[getSlot, getClusterNodes]`, so the freshness anchor rides in the same response as the proof
@@ -645,6 +693,31 @@ timeline is identical to v0.6.6 (~70s).
 ---
 
 ## Expected timelines
+
+> **v0.7 (Block 6.3.1):** every take below ends with the spare's own-view veto — one bounded read of
+> its own node (`curl -m 2` + a watchdog pet) that withdraws the take if the holder shows voting there,
+> the read fails, or the spare's own head is not advancing — and the spare samples its own head through
+> the episode and before each external read of the take cycle: five to twelve bounded local reads per
+> take cycle at the defaults (one more on an armed unit, up to four more with the opt-in witness fast
+> path), milliseconds on a healthy node; measured +9 to +15 s when every local read takes 1 s with prompt
+> tiers (+9 s at the wizard's preset), up to +40 s in the measured cells with a slow tier as well; as a
+> local read nears its 2 s bound the take slides later, and at 2 s or more the spare never takes (loudly:
+> the veto page, then the starvation page) (`docs/SAFETY.md`, *What it costs, measured*). Nor does a spare
+> whose `TIER2` fails slowly — times out, or answers an error or garbage late — while `TIER3` is slow:
+> `TIER2`'s time to failure + `TIER3`'s answer + both local reads past 16 s (after a timeout, `TIER3` 7 s or
+> later; 5 s when every local read takes 1 s; on a real host one second less is vetoed too, at some
+> phases): the own view's residual 7, introduced by 6.3.1's own-view veto (the 6.3 build has no veto and takes
+> these holders) and paged as `⚠️ Take VETOED by this spare's own view (it could not testify): …`, then
+> `⚠️ TAKEOVER STARVATION: …` — repair that `TIER2`, or while it is broken leave `TIER2_RPC` empty
+> (the witness fast path, which needs two tiers, is then off; on an armed spare with `PRIMARY_UNSTAKED_PUBKEY`
+> set G2's vantage A defaults to `TIER2_RPC`, so the daemon pages CRITICAL "G2 VANTAGES NOT DISTINCT" at every
+> start — verified-demote cannot prove for the run once the gate is wired, and conditions no take in this release — and
+> `failover arm`'s P6 warns, unless
+> `G2_VANTAGE_A` names another provider), or use a `TIER3` that answers the full
+> `getVoteAccounts` well under ~5 s (about 3 s when every local read takes 1 s); a `TIER2` that refuses at
+> once does not starve the take. The per-class measurement of the whole
+> ordering — holder fence vs the spare's earliest take, including the rows where it does not hold — is in
+> `docs/SAFETY.md`, *The cross-node invariant*.
 
 > **Read the cross-node invariant first (v0.6.6 N1).** The spare's `TAKEOVER_DELAY` must be **≥
 > `EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS` (= 60 by default)** so the PRIMARY
@@ -939,6 +1012,16 @@ absence alert tells you *which* node's monitor went silent. Do **not** reuse a s
 ## Prerequisites
 
 - All nodes running agave-validator
+- Each monitor runs on its validator's host (systemd, as root), where `/proc/uptime` and
+  `/proc/sys/kernel/random/boot_id` belong to ONE kernel boot: the persisted safety stamps are
+  monotonic (uptime) values keyed by `boot_id`, and a same-boot self-fence stall / silence / lag stamp later
+  than now is treated as corrupted. Not inside a container that virtualizes `/proc/uptime` but not `boot_id` (lxcfs-style):
+  there a container restart resets the uptime clock under the same `boot_id`: the self-fence stall /
+  silence / lag stamps look "future" and restore ANCIENT (a future lockout or cooldown stamp restores
+  verbatim and simply holds until the uptime passes it), and — once the container's uptime at that
+  read is at least `SELF_FENCE_ISOLATION_SECS` — one first-read blip fences at once — measured by the v0.7
+  review panel: a validator still catching up for 10–25 s after such a restart, at `STARTUP_GRACE=0`,
+  was fenced at its first read, where the same restart on a normal host is never fenced.
 - Each node has its own UNIQUE unstaked keypair
 - Staked keypair present on ALL nodes (same file)
 - Vote account keypair at `/root/solana/vote-account-keypair.json` (for auto-detect)

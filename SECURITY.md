@@ -27,19 +27,29 @@ reads and send your configured notifications, nothing else.
 
 ## Verifying what you install
 
-The bootstrap (`install.sh`) downloads the wizard + daemon for a **pinned tag** and verifies both
-against the tag's `SHA256SUMS` manifest, **failing closed** on any mismatch or missing entry.
+The bootstrap (`install.sh`) downloads the wizard + daemon for a **pinned tag**. What it can verify
+depends on the tag:
+
+- **v0.6.9 and v0.6.10 predate the `SHA256SUMS` manifest** — no manifest exists at those tags, so
+  their downloads are checked **by syntax only** (`bash -n`), and the installer prints a warning
+  saying so. No checksum can be added to them: published tags are never rewritten.
+- **From the first manifest-bearing release on**, both files are verified against the tag's
+  `SHA256SUMS`, **failing closed** on any mismatch, missing entry, or missing manifest.
 
 Be precise about what that buys you:
 
-- **Checksums protect against** a corrupted or truncated download, a tampering mirror/CDN, and a
-  partially applied tag.
-- **Checksums do not protect against** a compromise of this repository or of `zim.one` — the
-  manifest travels through the same channel as the files it describes.
+- **Checksums catch** a corrupted or truncated download and a partially applied tag.
+- **Checksums do not catch** an intermediary on the delivery path that rewrites the files and the
+  manifest together — a compromised mirror or CDN, this repository, or `zim.one`: the manifest
+  travels through the same channel as the files it describes.
 
-The anchor outside the delivery channel is the **signed release tag**, verified against a
-maintainer key published outside GitHub. Until a release ships with a signed tag and the published
-key, do not treat the checksum layer as more than it is — and prefer the paranoid path regardless:
+**There is no anchor outside the delivery channel for v0.6.x.** The `v0.6.9` and `v0.6.10`
+release tags are **not signed**, and they will not be: a published tag is never rewritten, so a
+signature cannot be added after the fact. Tag signing begins with **v0.7**, once the maintainer key
+is published outside GitHub; from that release on, the signed tag — verified against that key — is
+the anchor the checksum layer cannot be. `install.sh` itself verifies no signature. Until a signed
+release exists, do not treat the checksum layer as more than it is — and prefer the paranoid path
+regardless:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/<TAG>/install.sh

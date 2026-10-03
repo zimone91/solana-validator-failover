@@ -318,4 +318,209 @@ ha_junk=$(ha_drive "abc" "10")
   && ok "(26c) non-numeric EXPECTED reset to safe 30; low MARGIN still warned ($ha_junk)" \
   || bad "(26c) non-numeric handling wrong ($ha_junk)"
 
+# ── (27) the generated env's heredocs must never EXECUTE anything but their own value expansions ──
+# ENVEOF is UNQUOTED by design (it expands ${CFG_*} and $(_envq …)), so ANY other expansion in one of its
+# lines — a bare backtick, a $( … ), a $(( … )) or $[ … ], a bare $NAME/${NAME} — is evaluated at deploy
+# time, as root: Block 6.2's G2-vantage comment ran `failover arm` on every standby deploy until Block 6.3
+# escaped it (the house form is the escaped \` / \$). Two layers (6.3 fix round, T4 — panel INT-3; hardened
+# in fix round 2, R9 — panel P2-INERT-1/2; and in fix round 3, S4 — panel CC2-1 / P3-R9-1):
+#   CENSUS  every body of a heredoc whose opener line ENDS in an unquoted `<< TAG`, in BOTH deploy scripts
+#           (today exactly the two ENVEOF bodies — the SERVICEEOF bodies are quoted). First, a line ending
+#           in an ODD run of backslashes is joined with the next one, as bash's unquoted heredoc removes the
+#           backslash-newline — the delimiter line included (a joined line is never the delimiter: the
+#           body goes on). Then the escaped PAIRS are deleted left to right — every \\ pair FIRST (in the
+#           heredoc it is one literal backslash, and the $( after it EXPANDS), then the escaped \$ and \` —
+#           and the ALLOWLIST (the header's $(date -u +"%F %T UTC"); $(_envq "${CFG_X}"); ${CFG_X}). What
+#           remains must carry ZERO $( / $(( / $[ / bare $[A-Za-z_{0-9@*#?!$-] / backticks: parameter,
+#           command and arithmetic expansion — the expansions bash performs in an unquoted heredoc.
+#   RENDER  ONLY a script whose census is 0 is rendered at all (a flagged line is never evaluated), and
+#           then RESTRICTED: `env -i PATH=<canary> TMPDIR=<temp> bash -r`, run with its CWD in the temp dir
+#           and `enable -n history kill ulimit suspend` as its first line — the write/kill-capable builtins
+#           restricted bash still allows (measured on 3.2.57 and 5.2.37: `history -w` writes any path on 3.2
+#           and a bare name into the CWD on 5.2, `kill` signals any process, `ulimit` sets the render's own
+#           limits, and on 5.2 `suspend -f` stops the render's whole process group — the test run with it;
+#           a restricted shell refuses to re-enable one, `builtin` no longer finds it, and the bare name
+#           falls to the canary PATH or is 'not found'). The CANARY PATH: every command it knows RECORDS its argv into a
+#           log whose path is baked into the canary when it is created (never read from the environment);
+#           any other command is 'not found' on stderr. No '/' in a command name, no output redirection
+#           (the OUTER shell captures stdout into the temp file). The only recorded command may be the
+#           header's `date -u +%F %T UTC`, stderr must be empty, and the escaped comment text must survive
+#           literally: a forbidden form FAILS LOUDLY on stderr or is RECORDED instead of executing.
+#           A builtin with no output side effect ($(true), $[1+1]) is invisible to the render — the census
+#           holds it.
+# Scope of the PASS: these two mechanisms over the ENVEOF heredocs of the two deploy scripts. The render
+# is the second layer for a spelling the census would miss, and it is proven only against the forms
+# (27-ctl) / (27-ctl-r) execute — an absolute-path command, an output redirection, `history -w`, `kill`, a
+# per-command `CANARY_LOG=` — not as a general sandbox. Not a proof about any other file, nor about a
+# heredoc opened any other way (`<<-TAG`, or a tag that does not end its line).
+hd_census() {   # $1 = deploy script → prints the count of NON-allowlisted expansions; hits on stderr
+  awk '!inh && /<<[[:space:]]*[A-Za-z_]+[[:space:]]*$/ { tag=$NF; sub(/^<</, "", tag); inh=1; cont=""; next }
+       inh && cont == "" && $0 == tag { inh=0; next }
+       inh {
+         line=cont $0; cont=""
+         t=line; while (t ~ /\\$/) t=substr(t, 1, length(t) - 1)
+         if ((length(line) - length(t)) % 2 == 1) { cont=substr(line, 1, length(line) - 1); next }   # backslash-newline: joins the NEXT line (S4)
+         raw=line
+         gsub(/\\\\/, "", line)                          # escaped PAIRS left to right: every \\ first (R9)
+         gsub(/\\[$]/, "", line); gsub(/\\`/, "", line)
+         gsub(/[$][(]date -u [+]"%F %T UTC"[)]/, "", line)
+         gsub(/[$][(]_envq "[$][{]CFG_[A-Z0-9_]+[}]"[)]/, "", line)
+         gsub(/[$][{]CFG_[A-Z0-9_]+[}]/, "", line)
+         if (line ~ /[$][(A-Za-z_{0-9@*#?!$-]/ || line ~ /[$]\[/ || line ~ /`/) { n++; print "HIT l" NR ": " raw > "/dev/stderr" }
+       }
+       END { if (cont != "") { n++; print "HIT l" NR ": a backslash-newline at the end of the file" > "/dev/stderr" }; print n+0 }' "$1"
+}
+hd_render() {   # $1 = deploy script, $2 = its env path in the opener → "err=<stderr>|rec=<recorded cmds>|out=<rendered file>"
+  local f="$1" envp="$2" d s e
+  d=$(mktemp -d)
+  mkdir -p "$d/canary"
+  # S4 (fix round 3): the rec-log path is BAKED into the canary here — never read from the environment
+  # (a per-command `CANARY_LOG=<path> date` re-pointed it outside the temp dir: measured on 3.2 and 5.2)
+  printf '#!/bin/sh\nn=${0##*/}\nprintf "%%s %%s\\n" "$n" "$*" >> '"'%s'"'\n[ "$n" = date ] && printf "2026-01-01 00:00:00 UTC\\n"\nexit 0\n' "$d/rec.log" > "$d/canary/.rec"
+  chmod +x "$d/canary/.rec"
+  for c in date failover solana agave-validator fdctl systemctl journalctl curl jq cat sed awk grep hostname id whoami uname ls rm env sh bash true false echo printf sleep kill touch mkdir chmod chown tee head tail tr cut sort uniq wc xargs find ssh scp getent nproc timeout install cp mv ln readlink dirname basename stat; do
+    ln -s .rec "$d/canary/$c"
+  done
+  harness_stub_dir "$d/canary"   # canaries named curl, ssh, getent: stubs of listed clients (the strace job counts their execs as stubs')
+  s=$(grep -n "^cat > ${envp} << ENVEOF\$" "$f" | cut -d: -f1)
+  e=""; [[ -n "$s" ]] && e=$(awk -v s="$s" 'NR > s && /^ENVEOF$/ { print NR; exit }' "$f")
+  if [[ -z "$s" || -z "$e" ]]; then echo "err=(no ENVEOF heredoc for ${envp})|rec=|out="; rm -rf "$d"; return; fi
+  {
+    echo 'enable -n history kill ulimit suspend'   # S4: the write/kill-capable builtins rbash still allows; it refuses to re-enable one
+    echo '_envq(){ printf "%q" "$1"; }'
+    echo "while IFS= read -r _l || [[ -n \"\$_l\" ]]; do printf '%s\\n' \"\$_l\"; done << ENVEOF"
+    sed -n "$(( s + 1 )),${e}p" "$f"
+  } > "$d/render.sh"
+  local err rec
+  # RESTRICTED (6.3 fix round 2, R9): a clean env, the canary PATH only, bash -r — no '/' in a command
+  # name, no output redirection; THIS shell captures the render's stdout into the temp file. S4: the
+  # render's CWD is the temp dir too (a bare-name write lands inside it)
+  ( cd "$d" && env -i PATH="$d/canary" TMPDIR="$d" "${BASH:-/bin/bash}" -r "$d/render.sh" ) > "$d/env" 2> "$d/err"
+  err=$(tr '\n' ' ' < "$d/err")
+  rec=$(tr '\n' ';' < "$d/rec.log" 2>/dev/null)
+  cp "$d/env" "$WORKDIR_27/$(basename "$f").env" 2>/dev/null
+  echo "err=${err}|rec=${rec}|out=$WORKDIR_27/$(basename "$f").env"
+  rm -rf "$d"
+}
+hd_guard() {   # $1 = standby deploy, $2 = primary deploy → "ok" or the MEASURED reason it is not
+  local cs cp rs rp why=""
+  cs=$(hd_census "$1" 2>/dev/null); cp=$(hd_census "$2" 2>/dev/null)
+  [[ "$cs" == "0" ]] || why="$why census(standby)=$cs"
+  [[ "$cp" == "0" ]] || why="$why census(primary)=$cp"
+  # R9: a script is rendered ONLY when its census is 0 — a flagged heredoc line is never evaluated
+  if [[ "$cs" == "0" ]]; then
+    rs=$(hd_render "$1" /opt/solana-failover/failover-standby.env)
+    [[ -z "$(field "$rs" err)" ]] || why="$why render-stderr(standby)='$(field "$rs" err | cut -c1-120)'"
+    [[ "$(field "$rs" rec)" == "date -u +%F %T UTC;" ]] || why="$why executed(standby)='$(field "$rs" rec)'"
+    grep -qF -- '`failover arm` probes both' "$(field "$rs" out)" 2>/dev/null || why="$why standby-comment-text-lost"
+  else
+    why="$why render(standby)=NOT-RUN"
+  fi
+  if [[ "$cp" == "0" ]]; then
+    rp=$(hd_render "$2" /opt/solana-failover/failover.env)
+    [[ -z "$(field "$rp" err)" ]] || why="$why render-stderr(primary)='$(field "$rp" err | cut -c1-120)'"
+    [[ "$(field "$rp" rec)" == "date -u +%F %T UTC;" ]] || why="$why executed(primary)='$(field "$rp" rec)'"
+    grep -qF -- 'wraps in `timeout 8`' "$(field "$rp" out)" 2>/dev/null || why="$why primary-comment-text-lost"
+    grep -qF -- 'SOLANA_PATH="$HOME/.local/share/solana/install/active_release/bin"' "$(field "$rp" out)" 2>/dev/null || why="$why primary-SOLANA_PATH-expanded"
+  else
+    why="$why render(primary)=NOT-RUN"
+  fi
+  echo "${why:-ok}"
+}
+WORKDIR_27=$(mktemp -d)
+g=$(hd_guard "$DEPLOY_STANDBY" "$DEPLOY_PRIMARY")
+if [[ "$g" == "ok" ]]; then
+  ok "(27) the ENVEOF heredocs of BOTH deploy scripts: ZERO non-allowlisted \$( / \$(( / \$[ / \$NAME / \${ / backtick in any line, after joining backslash-newline continuations and removing escaped pairs left to right (census) — so no heredoc line expands anything at deploy time beyond the CFG values and the allowlisted header date / _envq; and — rendered only because the census is 0 — both render RESTRICTED (env -i, a canary PATH with a baked log, bash -r, CWD and TMPDIR in the temp dir, history / kill / ulimit / suspend disabled) with ZERO stderr, exactly ONE executed command each (the header's date), the escaped comment text and \\\$HOME intact"
+else
+  bad "(27) heredoc hazard:$g"
+fi
+# (27-ctl) the mutants the guard must each turn RED (panel INT-3: the old guard stayed green on the
+# primary-heredoc and comment-line forms)
+m27_ok=1; m27_rows=""
+m27() {   # $1=label $2=which(s|p) $3=sed expr
+  local ms="$DEPLOY_STANDBY" mp="$DEPLOY_PRIMARY" out
+  if [[ "$2" == "s" ]]; then ms="$WORKDIR_27/mut-s.sh"; mutate "$DEPLOY_STANDBY" "$3" "$ms" || { m27_ok=0; return; }
+  else mp="$WORKDIR_27/mut-p.sh"; mutate "$DEPLOY_PRIMARY" "$3" "$mp" || { m27_ok=0; return; }; fi
+  out=$(hd_guard "$ms" "$mp")
+  if [[ "$out" != "ok" ]]; then m27_rows="$m27_rows $1"; else m27_ok=0; bad "(27-ctl) mutant '$1' stayed GREEN"; fi
+}
+m27f() {   # $1=label $2=which(s|p) ; inserts the lines in $WORKDIR_27/payf after that heredoc's anchor comment (awk, no sed escaping)
+  local label="$1" which="$2" src anchor tmp out
+  if [[ "$which" == "s" ]]; then src="$DEPLOY_STANDBY"; anchor='# address — \`failover arm\` probes both'; else src="$DEPLOY_PRIMARY"; anchor='# wraps in \`timeout 8\`'; fi
+  tmp="$WORKDIR_27/mutf-$which.sh"
+  # anchor + payf via ENVIRON: awk's -v mangles a backslash before a backtick, but ENVIRON values are literal
+  A="$anchor" PAYF="$WORKDIR_27/payf" awk '{ print } index($0, ENVIRON["A"]) == 1 && !done { done=1; while ((getline l < ENVIRON["PAYF"]) > 0) print l }' "$src" > "$tmp"
+  if cmp -s "$src" "$tmp"; then m27_ok=0; bad "(27-ctl) m27f '$label': anchor not found (insert no-op)"; return; fi
+  if [[ "$which" == "s" ]]; then out=$(hd_guard "$tmp" "$DEPLOY_PRIMARY"); else out=$(hd_guard "$DEPLOY_STANDBY" "$tmp"); fi
+  if [[ "$out" != "ok" ]]; then m27_rows="$m27_rows $label"; else m27_ok=0; bad "(27-ctl) mutant '$label' stayed GREEN"; fi
+}
+m27 "p:backtick"        p 's/^# wraps in \\`timeout 8\\`/# wraps in `timeout 8`/'
+m27 "p:\$(true)"        p 's/^# wraps in \\`timeout 8\\`/# wraps in $(true)/'
+m27 "p:\$(failover arm)" p 's/^# wraps in \\`timeout 8\\`/# wraps in $(failover arm)/'
+m27 "s:backtick"        s 's/^# address — \\`failover arm\\` probes both/# address — `failover arm` probes both/'
+m27 "s:\$(true)"        s 's/^# address — \\`failover arm\\` probes both/# address — $(true) probes both/'
+m27 "s:\$(failover arm)" s 's/^# address — \\`failover arm\\` probes both/# address — $(failover arm) probes both/'
+m27 "p:comment \$TIER2_RPC"  p 's/^# wraps in \\`timeout 8\\`/# wraps in $TIER2_RPC \\`timeout 8\\`/'
+m27 "s:comment \${LEDGER}"   s 's/^# address — \\`failover arm\\` probes both/# address ${LEDGER} — \\`failover arm\\` probes both/'
+m27 "p:comment \$((1+1))"    p 's/^# wraps in \\`timeout 8\\`/# wraps in $((1+1)) \\`timeout 8\\`/'
+m27 "s:comment \$HOME"       s 's/^# address — \\`failover arm\\` probes both/# address $HOME — \\`failover arm\\` probes both/'
+m27 "p:value \$HOME unescaped" p 's|^SOLANA_PATH="\\$HOME/|SOLANA_PATH="$HOME/|'
+# 6.3 fix round 2, R9 (panel P2-INERT-1): an escaped BACKSLASH before an expansion — '\\$(…)' is one
+# literal backslash and a LIVE $(…) in the unquoted heredoc; the pre-fix census ate the second backslash
+# as an escaped dollar and stayed GREEN
+m27 "p:comment \\\\\$(true)"  p 's/^\(# wraps in \\`timeout 8\\`.*\)$/\1 \\\\$(true)/'
+m27 "s:comment \\\\\$HOME"    s 's/^\(# address — \\`failover arm\\` probes both.*\)$/\1 \\\\$HOME/'
+# (P2-INERT-2) the render must never execute an absolute path or write outside its temp dir: an
+# absolute-path command and a builtin redirection in a comment line → RED, and neither file exists after
+m27 "p:comment \$(/usr/bin/touch PWNED)"  p "s|^\\(# wraps in \\\\\`timeout 8\\\\\`.*\\)\$|\\1 \$(/usr/bin/touch $WORKDIR_27/PWNED)|"
+m27 "s:comment \$(true > PWNED2)"         s "s|^\\(# address — \\\\\`failover arm\\\\\` probes both.*\\)\$|\\1 \$(true > $WORKDIR_27/PWNED2)|"
+# S4 (fix round 3, panel CC2-1 / P3-R9-1): the two census blind spellings, and the render write/kill
+# primitives. A "$\\"-then-newline continuation the pre-fix census scanned unjoined (its class had no
+# leading backslash) and "$[...]" arithmetic its class omitted are now census-caught (census >= 1 →
+# NOT-RUN); on the pre-fix tree the continuation also RAN its command at deploy time. The render-reachable
+# forms carried in that continuation — a per-command CANARY_LOG= that re-points the recorder, an
+# absolute-path "history -w", "kill" of a sentinel — are RED at the census, and the render (second layer)
+# writes no file outside the temp dir and does not kill the sentinel.
+sleep 600 >/dev/null 2>&1 & M27_SENT=$!
+payf() { printf '%s\n' "$@" > "$WORKDIR_27/payf"; }
+payf '$\' '(true) tl';                                       m27f "p:cont \$(true)"         p
+payf 'costs $[1+1] s';                                         m27f "p:\$[1+1]"               p
+payf '$[ CFG_TAKEOVER_DELAY = 0 ]';                            m27f "p:\$[ CFG rewrite ]"     p
+payf '$\' "(CANARY_LOG=$WORKDIR_27/PWNED_canary date x) tl";  m27f "p:cont CANARY_LOG= date" p
+payf '$\' "(history -w $WORKDIR_27/PWNED_hist) tl";           m27f "p:cont history -w abs"   p
+payf '$\' "(kill -TERM $M27_SENT) tl";                        m27f "s:cont kill sentinel"    s
+kill -0 "$M27_SENT" 2>/dev/null || { m27_ok=0; bad "(27-ctl) the sentinel was KILLED through the guard"; }
+kill "$M27_SENT" 2>/dev/null
+[[ -e "$WORKDIR_27/PWNED" || -e "$WORKDIR_27/PWNED2" || -e "$WORKDIR_27/PWNED_canary" || -e "$WORKDIR_27/PWNED_hist" ]] && { m27_ok=0; bad "(27-ctl) a PWNED file EXISTS after the guard ran: $(ls "$WORKDIR_27" | tr '\n' ' ')"; }
+[[ $m27_ok -eq 1 ]] && ok "(27-ctl) every hazard mutant turns (27) RED —$m27_rows — a backtick / \$(true) / \$(failover arm) in EITHER heredoc, \$TIER2_RPC / \${LEDGER} / \$((1+1)) / \$HOME in a comment line, the escaped \\\$HOME value unescaped, an escaped backslash before \$(true) / \$HOME (pre-fix R9 census: GREEN), an absolute-path command / a builtin redirection in a comment line, and (fix round 3, S4) a \$\\-newline continuation before \$(true) / a re-pointed \$(CANARY_LOG=… date) / \$(history -w …) / \$(kill …), plus \$[1+1] and \$[ CFG rewrite ] (pre-fix census: GREEN, and the continuation RAN its command at deploy time) — with NO PWNED file outside the temp dir and the sentinel still alive (pre-fix guard: green on the primary-heredoc and comment-line forms)"
+# (27-ctl-r) the RENDER layer on its own (the census bypassed — rendered directly): forbidden forms FAIL
+# LOUDLY on stderr / are RECORDED, and create nothing outside the temp dir. Absolute path + redirection
+# (pre-fix R9: both files created); and (fix round 3, S4) an absolute-path `history -w` (3.2 wrote it;
+# blocked now by `enable -n history`), a `CANARY_LOG=<abs>` per-command re-point (both bashes wrote it;
+# blocked now by the baked log path), and `kill` of a sentinel (both bashes killed it; blocked now by
+# `enable -n kill`).
+mutate "$DEPLOY_PRIMARY" "s|^# wraps in \\\\\`timeout 8\\\\\`|# wraps in \$(/usr/bin/touch $WORKDIR_27/PWNED3) \$(true > $WORKDIR_27/PWNED4) \\\\\`timeout 8\\\\\`|" "$WORKDIR_27/mut-r.sh"
+rr=$(hd_render "$WORKDIR_27/mut-r.sh" /opt/solana-failover/failover.env)
+if [[ "$(field "$rr" err)" == *"restricted: cannot specify"* && "$(field "$rr" err)" == *"restricted: cannot redirect output"* && ! -e "$WORKDIR_27/PWNED3" && ! -e "$WORKDIR_27/PWNED4" ]]; then
+  ok "(27-ctl-r) the restricted render ALONE (census bypassed): the two forms it executes — an absolute-path command \$(/usr/bin/touch …) and an output redirection \$(true > …) — fail LOUDLY on stderr ('restricted: cannot specify \`/' in command names', 'restricted: cannot redirect output') and create nothing (pre-fix render: both files CREATED). Scope: those forms only, not a general sandbox (the header's scope sentence)"
+else
+  bad "(27-ctl-r) err='$(field "$rr" err | cut -c1-200)' files=$(ls "$WORKDIR_27" | tr '\n' ' ')"
+fi
+# S4 render-only: the write/kill builtins the pre-fix render allowed. Each carried as a bare `$(…)` the
+# census WOULD flag — but rendered directly here (census bypassed) to prove the render itself now stops it.
+r_ok=1; r_rows=""
+sleep 600 >/dev/null 2>&1 & RR_SENT=$!
+rcheck() {   # $1=label $2=payload-in-a-comment $3=path-that-must-not-appear ("" = none)
+  mutate "$DEPLOY_PRIMARY" "s|^# wraps in \\\\\`timeout 8\\\\\`|# wraps in $2 \\\\\`timeout 8\\\\\`|" "$WORKDIR_27/mut-rs.sh" || { r_ok=0; return; }
+  hd_render "$WORKDIR_27/mut-rs.sh" /opt/solana-failover/failover.env >/dev/null
+  if [[ -n "$3" && -e "$3" ]]; then r_ok=0; bad "(27-ctl-r) $1 WROTE $3"; else r_rows="$r_rows $1"; fi
+}
+rcheck "history -w abs"      "\$(history -w $WORKDIR_27/PWNED_r_hist)"                 "$WORKDIR_27/PWNED_r_hist"
+rcheck "CANARY_LOG= repoint" "\$(CANARY_LOG=$WORKDIR_27/PWNED_r_canary date x)"        "$WORKDIR_27/PWNED_r_canary"
+rcheck "kill sentinel"       "\$(kill -TERM $RR_SENT)"                                 ""
+kill -0 "$RR_SENT" 2>/dev/null || { r_ok=0; bad "(27-ctl-r) the render KILLED the sentinel"; }
+kill "$RR_SENT" 2>/dev/null
+[[ $r_ok -eq 1 ]] && ok "(27-ctl-r/S4) the restricted render ALONE also stops the builtin write/kill primitives —$r_rows — with its CWD/TMPDIR inside the temp dir, the rec-log path baked into each canary, and history / kill / ulimit / suspend disabled: no file outside the temp dir, the sentinel alive (pre-fix render: history -w wrote on 3.2, the CANARY_LOG re-point wrote on both bashes, kill killed on both)"
+rm -rf "$WORKDIR_27"
+
 results_banner

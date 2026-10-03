@@ -234,6 +234,12 @@ echo -e "            Use for your main backup server in a different DC."
 echo ""
 echo -e "  ${YELLOW}BACKUP${NC}   — Cold spare. Takes over at 120s, only if BOTH PRIMARY"
 echo -e "            and STANDBY are down. Last line of defense."
+echo -e "  ${DIM}v0.7: either spare's take ends with one bounded read of its OWN node (curl -m 2 plus a watchdog${NC}"
+echo -e "  ${DIM}pet) that withdraws the take if the holder shows voting there; with its own-head samples a take${NC}"
+echo -e "  ${DIM}cycle makes 5-12 bounded local reads (more armed or with the fast path) — milliseconds on a${NC}"
+echo -e "  ${DIM}healthy node, +9-15s when each takes 1s with prompt RPCs; a node whose local reads take 2s or${NC}"
+echo -e "  ${DIM}more never takes over, nor one whose Tier 2 fails slowly (times out, or errors late) while${NC}"
+echo -e "  ${DIM}Tier 3 is slow (it pages instead).${NC}"
 echo ""
 echo -e "  ${BOLD}${CYAN}Recommended 3-node setup:${NC}"
 echo ""
@@ -439,7 +445,8 @@ ask_numeric "Takeover delay (seconds of sustained delinquency)" "${TAKEOVER_DELA
 CFG_TAKEOVER_DELAY="$REPLY"
 warn_if_below_rec_takeover_delay "$CFG_TAKEOVER_DELAY" "$REC_TAKEOVER_DELAY" || true   # nudge only (N1 clamp below enforces the floor)
 
-ask_numeric "Local health max behind (slots; own-node lag tolerance)" "${LOCAL_HEALTH_MAX_BEHIND:-100}" 0
+echo -e "  ${DIM}This value enters no decision: Tier-1 is ready iff getHealth answers ok — within the validator's own --health-check-slot-distance (agave's default 128); every 'behind' report fails Tier-1. Above that distance it is clamped at start (loud WARN); at or below it, it has no effect. To bound how far behind this spare may be at the take cycle's Tier-1 check (a lag that grows during a slow take cycle is not bounded by it), lower the validator's own --health-check-slot-distance.${NC}"
+ask_numeric "Local health max behind (slots; no effect at or below the node's health-check distance, default 128 — clamped above it)" "${LOCAL_HEALTH_MAX_BEHIND:-128}" 0
 CFG_MAX_BEHIND="$REPLY"
 
 echo ""
@@ -867,13 +874,17 @@ WITNESS_FASTPATH_FIRST_SPARE=${CFG_WITNESS_FASTPATH_FIRST_SPARE}
 # --- v0.7 (Block 6.2): G2 verified-demote proof vantages (ARMED spares only; inert otherwise) ---
 # Default A=TIER2_RPC, B=TIER3_RPC (already required distinct). Uncomment ONLY to pin different
 # bank-bearing RPC providers in DISTINCT failure domains; identical/same-host values page CRITICAL
-# and leave G2 cannot-determine for the run (fail toward NOT-taking). BOTH vantages must support
+# and leave G2 cannot-determine for the run (no G2 answer conditions a take in this release; once the
+# gate is wired, verified-demote cannot prove here). BOTH vantages must support
 # JSON-RPC batching ([getSlot, getClusterNodes] in one POST) and must not resolve to the same
-# address — `failover arm` probes both and refuses with REFUSE[P6-batch] / REFUSE[P6-vantage].
+# address — \`failover arm\` probes both and refuses with REFUSE[P6-batch] / REFUSE[P6-vantage].
 # RECOMMENDED: point at least ONE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN (a different
 # OPERATOR). On the defaults these ARE the vote-liveness tiers, so one compromised vantage supplies
 # BOTH halves of the double-sign condition and the proof gate's additivity does not hold; the arm
-# MEASURES and prints this, and the armed daemon warns at every start (docs/SAFETY.md).
+# MEASURES and prints this, and the armed daemon warns at every start. A third endpoint restores that
+# additivity for G2 ONLY: the armed spare's other proof, watchdog-elapsed, measures the holder's
+# silence through TIER2_RPC/TIER3_RPC on EVERY config (one input with the vote-frozen observation).
+# Full statement: docs/SAFETY.md, 'Shared vantages'.
 # G2_VANTAGE_A=""
 # G2_VANTAGE_B=""
 
@@ -1034,10 +1045,12 @@ fi
 echo ""
 echo -e "  ${BOLD}${YELLOW}ATTESTATION NOTE (v0.7)${NC}"
 echo -e "    ${DIM}This config carries NO pairing attestation. Once this spare is ARMED ('failover arm'),${NC}"
-echo -e "    ${DIM}it runs proof providers: verified-demote ONLY — holder not attested; silence-based${NC}"
-echo -e "    ${DIM}take disabled — and pages CRITICAL at every start until paired. Upgrade+arm the${NC}"
-echo -e "    ${DIM}HOLDER first (its arm prints the pairing token), then re-run this spare's arm with${NC}"
-echo -e "    ${DIM}ARM_PAIRING_TOKEN='<token line>'. Un-armed hosts: no behavior change.${NC}"
+echo -e "    ${DIM}it pages CRITICAL at every start until paired (holder not attested). This release has no${NC}"
+echo -e "    ${DIM}relinquish-proof gate: armed or not, the spare takes on v0.6.x semantics, which the 6.3${NC}"
+echo -e "    ${DIM}re-check and the own-view veto can only hold; from the release that wires the gate, an${NC}"
+echo -e "    ${DIM}unpaired spare's silence-based take is disabled. Upgrade+arm the HOLDER first (its arm${NC}"
+echo -e "    ${DIM}prints the pairing token), then re-run this spare's arm with ARM_PAIRING_TOKEN='<token line>'.${NC}"
+echo -e "    ${DIM}Un-armed hosts: no behavior change.${NC}"
 
 sleep 2
 
