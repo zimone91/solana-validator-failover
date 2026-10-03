@@ -914,12 +914,12 @@ r=$(drive_gate "$STANDBY" 1 "" wrapw case_floors_and_start | tail -1)
 rg=$(drive_gate "$STANDBY" 1 "" wrapw case_floors_and_start_g2 | tail -1)
 if [[ "$(field "$r" drc)" == "1" && "$(field "$r" floor)" == -* ]] \
    && [[ "$(field "$r" pages)" == "1" && "$(field "$r" titles)" == *"ARMED SPARE NOT ATTESTED 🚨"* ]] \
-   && [[ "$(field "$r" lastpage)" == *"did not converge"* ]] \
+   && [[ "$(field "$r" lastpage)" == "armed spare pairing INVALID — re-arm the holder first and re-pair this spare with the fresh token it prints ("*"did not converge"* ]] \
    && [[ "$(field "$r" lastpage)" == *"This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold."* \
-         && "$(field "$r" lastpage)" == *"from the release that wires the gate, an invalidly paired spare's silence-based take is disabled."* && -z "$(k4_neg "$(field "$r" lastpage)")" ]] \
+         && "$(field "$r" lastpage)" == *"From the release that wires the gate, an invalidly paired spare's silence-based take is disabled."* && -z "$(k4_neg "$(field "$r" lastpage)")" ]] \
    && [[ "$(field "$r" lastinfo)" != *"armed spare PAIRED"* ]] \
    && [[ "$(field "$rg" drc)" == "1" && "$(field "$rg" pages)" == "1" && " $(field "$rg" labels) " == *" verified-demote "* && "$(field "$rg" lastpage)" == *"did not converge"* && -z "$(k4_neg "$(field "$rg" lastpage)" g2)" ]]; then
-    ok "(4d) planted wrapping-W token (bypasses intake) → _derive_proof_floors INVALID (rc 1, floor=$(field "$r" floor)) + §2.7 CRITICAL page naming the non-converging floor and saying this release has no relinquish-proof gate (v0.6.x take semantics; an invalidly paired spare's silence-based take disabled from the release that wires the gate); NO PAIRED line (the on-disk backstop, independent of the arm ceiling); the page claims no take disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)' (k4_neg), and with G2 configured (registered: $(field "$rg" labels)) names no provider"
+    ok "(4d) planted wrapping-W token (bypasses intake) → _derive_proof_floors INVALID (rc 1, floor=$(field "$r" floor)) + §2.7 CRITICAL page that opens with the verdict and the fix (INVALID — re-arm the holder first and re-pair: a lock-screen preview's ~80 characters), names the non-converging floor and says this release has no relinquish-proof gate (v0.6.x take semantics; an invalidly paired spare's silence-based take disabled from the release that wires the gate); NO PAIRED line (the on-disk backstop, independent of the arm ceiling); the page claims no take disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)' (k4_neg), and with G2 configured (registered: $(field "$rg" labels)) names no provider"
 else
     bad "(4d) $r :: g2: $rg"
 fi
@@ -1029,9 +1029,9 @@ r=$(drive_gate "$STANDBY" 1 "" none case_two_starts | tail -1)
 tt=$(field "$r" titles)
 lp=$(field "$r" lastpage)
 PG_TRUTH="This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold."
-if [[ "$(field "$r" pages)" == "2" ]] && [[ "$tt" == ";ARMED SPARE NOT ATTESTED 🚨;ARMED SPARE NOT ATTESTED 🚨" ]] && [[ "$lp" == "holder not attested (no pairing token stored). "* && "$lp" == *"$PG_TRUTH"* \
-      && "$lp" == *"Pair it: arm the holder first and copy the token it prints. From the release that wires the gate, an unpaired spare's silence-based take is disabled."* && -z "$(k4_neg "$lp")" ]]; then
-    ok "(6a) armed spare, no token → CRITICAL page at EVERY start (2 drives → 2 pages, unthrottled): the attestation state (holder not attested — no pairing token stored), the truth of this release (no relinquish-proof gate: no provider's verdict conditions any take, armed or not; the take follows v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold), the action (arm the holder first, copy its token) and why (from the release that wires the gate, an unpaired spare's silence-based take is disabled); no take claimed disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)' (k4_neg)"
+if [[ "$(field "$r" pages)" == "2" ]] && [[ "$tt" == ";ARMED SPARE NOT ATTESTED 🚨;ARMED SPARE NOT ATTESTED 🚨" ]] && [[ "$lp" == "holder not attested — pair it: arm the holder first and copy the token it prints (no pairing token stored). "* && "$lp" == *"$PG_TRUTH"* \
+      && "$lp" == *"From the release that wires the gate, an unpaired spare's silence-based take is disabled."* && -z "$(k4_neg "$lp")" ]]; then
+    ok "(6a) armed spare, no token → CRITICAL page at EVERY start (2 drives → 2 pages, unthrottled): FIRST, inside a lock-screen preview's ~80 characters, the verdict and the action (holder not attested — pair it: arm the holder first, copy its token), then why (no pairing token stored), the truth of this release (no relinquish-proof gate: no provider's verdict conditions any take, armed or not; the take follows v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold) and what pairing will change (from the release that wires the gate, an unpaired spare's silence-based take is disabled); no take claimed disabled now, no 'verified-demote only' (or -only), no 'proof provider(s)' (k4_neg)"
 else
     bad "(6a) $r"
 fi
@@ -1040,7 +1040,7 @@ case_two_starts_g2() {   # the same unpaired spare WITH G2 configured (its unsta
     case_two_starts
 }
 r=$(drive_gate "$STANDBY" 1 "" none case_two_starts_g2 | tail -1)
-if [[ "$(field "$r" pages)" == "2" && " $(field "$r" labels) " == *" verified-demote "* && "$(field "$r" lastpage)" == "holder not attested (no pairing token stored). "* && "$(field "$r" lastpage)" == *"$PG_TRUTH"* \
+if [[ "$(field "$r" pages)" == "2" && " $(field "$r" labels) " == *" verified-demote "* && "$(field "$r" lastpage)" == "holder not attested — pair it: arm the holder first and copy the token it prints (no pairing token stored). "* && "$(field "$r" lastpage)" == *"$PG_TRUTH"* \
       && -z "$(k4_neg "$(field "$r" lastpage)" g2)" ]]; then
     ok "(6a-g2) the same unpaired spare with G2 configured (verified-demote registered: $(field "$r" labels)) → the same page, holding every K4 negative: no provider named as able to prove (no 'verified-demote') — no provider's verdict conditions a take in this release"
 else
@@ -1084,7 +1084,7 @@ else
     bad "(6d-g2) $r"
 fi
 # (6e) control: the startup scream neutered → zero pages (red observed on the mutant)
-mutate "$STANDBY" '/alert "holder not attested (\${_proof_unpaired_why})\. This release has no relinquish-proof gate/d' "$WORK/noscream.sh"
+mutate "$STANDBY" '/alert "holder not attested — pair it: arm the holder first and copy the token it prints (\${_proof_unpaired_why})\. This release has no relinquish-proof gate/d' "$WORK/noscream.sh"
 r=$(drive_gate "$WORK/noscream.sh" 1 "" none case_two_starts | tail -1)
 if [[ "$(field "$r" pages)" == "0" ]]; then
     ok "(6e) scream-neutered mutant → 0 pages: (6a) is green because the page line exists (control red observed)"

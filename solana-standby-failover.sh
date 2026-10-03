@@ -3891,11 +3891,12 @@ _proof_startup_check() {
         fi
         # a VALID-shape fence=real token whose floor did NOT converge (the overflow/wrap backstop
         # above): an INVALID pairing, not a healthy PAIRED spare — the §2.7 CRITICAL page, naming
-        # the non-converging floor, NEVER the PAIRED line (fail toward NOT-TAKING).
-        alert "armed spare pairing INVALID — ${_proof_floor_why}; a corrupted/forged, overflowing, or mis-bounded token is NOT a healthy pairing. This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold. Re-arm the holder first and re-pair this spare with the fresh token it prints: from the release that wires the gate, an invalidly paired spare's silence-based take is disabled." "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
+        # the non-converging floor, NEVER the PAIRED line (fail toward NOT-TAKING). Both §2.7 pages here put the verdict and the
+        # fix first: a phone's lock-screen preview shows only the first ~80 characters.
+        alert "armed spare pairing INVALID — re-arm the holder first and re-pair this spare with the fresh token it prints (${_proof_floor_why}); a corrupted/forged, overflowing, or mis-bounded token is NOT a healthy pairing. This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold. From the release that wires the gate, an invalidly paired spare's silence-based take is disabled." "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
         return 0
     fi
-    alert "holder not attested (${_proof_unpaired_why}). This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold. Pair it: arm the holder first and copy the token it prints. From the release that wires the gate, an unpaired spare's silence-based take is disabled." "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
+    alert "holder not attested — pair it: arm the holder first and copy the token it prints (${_proof_unpaired_why}). This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not; this spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold. From the release that wires the gate, an unpaired spare's silence-based take is disabled." "${STAKED_PUBKEY:-unknown}" "ARMED SPARE NOT ATTESTED 🚨"
     return 0
 }
 # (6.3 fix round, M8 — INT-5) the PAIRED-but-UNREGISTERED posture: registration happens at startup

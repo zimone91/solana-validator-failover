@@ -168,7 +168,7 @@ if [[ -f "$V068" ]]; then
     [[ $v8 -eq 0 ]] && ok "(T-g) v0.6.8 take/give-back had 0 'timeout' bounds → H4 genuinely new" \
                     || bad "(T-g) v0.6.8 already bounded ($v8)"
 else
-    ok "(T-g) v0.6.8 baseline not present to compare (skipped)"
+    echo "  ⏭ SKIP: (T-g) v0.6.8 baseline not present to compare"
 fi
 
 results_banner

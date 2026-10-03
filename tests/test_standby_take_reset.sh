@@ -145,7 +145,7 @@ if [[ -f "$V068" ]]; then
     [[ $v8 -eq 0 ]] && ok "(R-d) v0.6.8 take had 0 _selffence_reset (no promoted-holder self-fence yet) → B1 genuinely new" \
                     || bad "(R-d) v0.6.8 take unexpectedly resets ($v8)"
 else
-    ok "(R-d) v0.6.8 baseline not present to compare (skipped)"
+    echo "  ⏭ SKIP: (R-d) v0.6.8 baseline not present to compare"
 fi
 
 results_banner

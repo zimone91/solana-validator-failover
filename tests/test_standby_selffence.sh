@@ -349,7 +349,7 @@ if [[ -f "$V068" ]]; then
     [[ $v8 -eq 0 ]] && ok "(H1-g2) v0.6.8 baseline: 0 check_self_fence references → H1 genuinely new (non-vacuous)" \
                     || bad "(H1-g2) v0.6.8 already had a standby self-fence ($v8)"
 else
-    ok "(H1-g2) v0.6.8 baseline not present to compare (skipped)"
+    echo "  ⏭ SKIP: (H1-g2) v0.6.8 baseline not present to compare"
 fi
 
 results_banner

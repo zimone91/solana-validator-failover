@@ -190,7 +190,9 @@ See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 cd tests && bash run_all.sh
 ```
 54 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
-mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Network clients reached
+mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Seven older controls compare
+against an earlier release's file, which this repository does not ship; they print `⏭ SKIP` instead of passing (Block 6.4
+moves them onto the harness's `mutate()`). Network clients reached
 through `PATH` are caught by `run_all.sh`'s stage (4) on every leg; at the syscall level, `tests/strace-hermetic.sh`
 (CI's strace job, ubuntu-24.04) fails on any inet socket in the whole run. A suite still running at `run_all.sh`'s
 per-suite cap (`RUN_ALL_SUITE_CAP`: an hour by default; CI sizes it per job) is killed, with whatever it left in its

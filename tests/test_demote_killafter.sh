@@ -40,7 +40,7 @@ if [[ -f "$V067" ]]; then
     v7k=$(grep -cE 'timeout -k' "$V067")
     [[ $v7k -eq 0 ]] && ok "(K-control) v0.6.7 baseline has ZERO 'timeout -k' → v0.6.8 added it (non-vacuous)" || bad "(K-control) v0.6.7 already had -k ($v7k) — fix is not new"
 else
-    ok "(K-control) v0.6.7 baseline not present to compare (skipped)"
+    echo "  ⏭ SKIP: (K-control) v0.6.7 baseline not present to compare"
 fi
 
 results_banner

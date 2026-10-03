@@ -110,7 +110,7 @@ if [[ -f "$V068P" && -f "$V068S" ]]; then
         && ok "(S-f) v0.6.8: both defaulted to '$v8p' → M10 genuinely changes behavior" \
         || bad "(S-f) v0.6.8 defaults unexpected (p='$v8p' s='$v8s')"
 else
-    ok "(S-f) v0.6.8 baseline not present to compare (skipped)"
+    echo "  ⏭ SKIP: (S-f) v0.6.8 baseline not present to compare"
 fi
 
 results_banner

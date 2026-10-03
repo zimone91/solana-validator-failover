@@ -85,7 +85,7 @@ below drops that assumption.
 |---|---|---|
 | un-armed timer path — take | **79 s** at 2.5 slots/s, **73 s** at 3.7 | **125 s** at 2.5, **104 s** at 3.7 |
 | armed watchdog-elapsed — earliest mint | **119 s** at 3.7; **125 s** at 2.525; at exactly 2.5 none while the own confirmed head is smooth (the rate layer abstains), but the confirmed head held 12 slots behind processed (10 more than usual) around its anchor sample mints at **126 s** (one read phase measured — the slow-cluster residual, *Slot time*) | **150 s** at 3.7; **170 s** at 2.525; at exactly 2.5 with the anchor hold **171 s** |
-| armed verified-demote (G2) | on **separately pinned** vantages (another operator's RPC): only after the holder's unstaked identity is live at its endpoint for 60 s — at least the holder's fence + 60 s; never for a holder that does not fence. On the **default** vantages (= `TIER2`/`TIER3`) one splicing intermediary forges the flip: measured PROVEN and gate-accepted at t132 with the holder voting since t90 — only the own-view veto (BLIND: the spare is cut off) holds the take (*Shared vantages*) | same |
+| armed verified-demote (G2) — earliest PROVEN; not wired to a take until 6.4 | on **separately pinned** vantages (another operator's RPC): only after the holder's unstaked identity is live at its endpoint for 60 s — at least the holder's fence + 60 s; never for a holder that does not fence. On the **default** vantages (= `TIER2`/`TIER3`) one splicing intermediary forges the flip: measured PROVEN and gate-accepted at t132 with the holder voting since t90 — only the own-view veto (BLIND: the spare is cut off) holds the take (*Shared vantages*) | same |
 
 | Holder failure class | Holder fence (from the last vote; the latest phase at `CHECK_INTERVAL` 1 / 3 / 5) | Against the fastest spare (73 s at 3.7; 79 s at 2.5) | Against `MAX_DELINQUENT_SLOTS=0` (104 / 125 s) | Against the armed mint (119 / 150 s at 3.7) |
 |---|---|---|---|---|
@@ -377,10 +377,10 @@ guarantee; anyone relaxing the advance layer is removing that, not a redundant c
 
 Layered refusal is still the posture — every layer above has its own red *and* a neuter control
 proving the attack falls through to a named surviving layer, plus an all-layers-neutered control
-that restores the forged acceptance (`tests/test_g2_provider.sh` §4/§5). And in v0.7 the gate is
-not yet wired into any take path at all (wiring is a later, separately reviewed step).
+that restores the forged acceptance (`tests/test_g2_provider.sh` §4/§5). And until Block 6.4 the gate is
+not wired into any take path at all (wiring is a later, separately reviewed step).
 
-**Severity of a false G2 proof, stated exactly.** The proof gate is an *additional* requirement in
+**Severity of a false G2 proof, stated exactly.** Once Block 6.4 wires it, the gate is an *additional* requirement in
 front of the staked mutation, never a trigger for one: the pre-existing, live-tested v0.6.x path
 (delinquency detection, the vote-frozen observation, `_fresh_proof_recheck`) must still pass on its
 own. A false PROVEN therefore cannot by itself cause a take — it can only fail to *block* a take
