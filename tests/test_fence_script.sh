@@ -444,7 +444,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         bad "(11b) shellcheck -S error found issues"
     fi
 else
-    ok "(11b) shellcheck not installed here — the shellcheck job of .github/workflows/ci.yml covers it (skipped)"
+    echo "  ⏭ SKIP: (11b) shellcheck not installed here — the shellcheck job of .github/workflows/ci.yml covers it"
 fi
 
 # ── (12) B1: STALE fenced-stopped (pre-boot mtime) → breaker ignored, fences normally ──────────
@@ -679,7 +679,7 @@ if command -v flock >/dev/null 2>&1; then
         bad "(23b) rc=$RC trace=$t out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
     fi
 else
-    ok "(23) flock not installed here (macOS harness) — skipped; the Linux jobs of .github/workflows/ci.yml run it (every Linux deploy host has flock)"
+    echo "  ⏭ SKIP: (23) flock not installed here (macOS harness) — the Linux jobs of .github/workflows/ci.yml run it (every Linux deploy host has flock)"
 fi
 
 # ── (31) structural: the stopped-marker/breaker liveness COUPLING is named at the WRITE site ───

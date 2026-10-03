@@ -81,9 +81,11 @@ jobs:
     # up to 2x.
     # RUN_ALL_SUITE_CAP (on the suite step): 3600 s, 1.81x the slowest suite at the model (2 x 996 = 1,992 s).
     # timeout-minutes: the run at the model plus ONE suite killed at the cap (+5 s for its SIGKILL), so a single hang still
-    # ends as a named red inside this job: 2 x 1,897 + 3,600 + 5 = 7,399 s, rounded up to the next 15 min. A second hang
-    # can reach the timeout; every KILLED line is in the step log by then (run_all prints it as it happens).
-    timeout-minutes: 135
+    # ends as a named red inside this job: 2 x 1,897 + 3,600 + 5 = 7,399 s (124 min). Set CONSERVATIVELY to 180 until
+    # this job is measured on GitHub (then about 2x the measured job time): a false red on the first public run costs more
+    # than the minutes. A second hang can reach the timeout; every KILLED line is in the step log by then (run_all prints
+    # it as it happens).
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v5
       - name: interpreter fingerprint
@@ -148,10 +150,11 @@ jobs:
     #   STRACE_HERMETIC_BOUND 10645 s — where the script ends the run itself, a named red listing every process still
     #   traced: the run at the model plus ONE suite killed at the cap, 2 x 2,620 + 5,400 + 5 = 10,645 s (2,620 s: the
     #   larger run, summed over its suites; its 2,627 s start to end gives 10,659 s, inside the 10 min below);
-    #   timeout-minutes: the bound plus 10 min for the steps around it (11,245 s), rounded up to the next 15 min.
+    #   timeout-minutes: at least the bound plus 10 min for the steps around it (11,245 s, 188 min); set CONSERVATIVELY
+    #   to 270 until this job is measured on GitHub (then about 2x the measured job time).
     # So a hang ends as a named red before GitHub's timeout: run_all's KILLED line streams into the step log as it happens,
     # a process that outlives run_all is named and stopped 30 s after run_all's end, and anything else at the bound.
-    timeout-minutes: 195
+    timeout-minutes: 270
     steps:
       - uses: actions/checkout@v5
       - name: interpreter fingerprint

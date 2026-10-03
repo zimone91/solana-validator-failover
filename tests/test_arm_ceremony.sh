@@ -1344,7 +1344,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         bad "(14b) shellcheck -S error found issues"
     fi
 else
-    ok "(14b) shellcheck not installed here — the shellcheck job of .github/workflows/ci.yml covers it (skipped)"
+    echo "  ⏭ SKIP: (14b) shellcheck not installed here — the shellcheck job of .github/workflows/ci.yml covers it"
 fi
 
 # ── (B) boundary grep-proof (the HARD BOUNDARY, doubled for this slice) ─────────────────────────

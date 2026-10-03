@@ -35,6 +35,8 @@ All notable changes are documented here. Versions follow the project's internal 
     the re-check and the veto can only hold. CI: every page sent has an entry in `docs/NOTIFICATIONS.md` (a status — an `alert`'s, a
     direct `send_webhook`'s title — as a whole code span, a heading as a whole span or the opening of one followed by "…" or a blank and "…").
   - Tests: `test_own_view`, `test_d6_holder` (new). `PATH` clients: `run_all.sh`'s stage (4), every leg; inet sockets: `tests/strace-hermetic.sh`.
+    A check that cannot run here (a control whose earlier-release baseline this repository does not ship, a host without
+    `shellcheck` or `flock`) prints `⏭ SKIP`, never ✅. The two attestation pages open with the verdict and the fix.
 
 - **Block 6.3 — the watchdog-elapsed proof provider (attested time), the spare's observation surface
   as a standing property, and the holder-side hardening of five review rounds.** Every residual and
