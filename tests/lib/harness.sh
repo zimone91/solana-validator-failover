@@ -721,7 +721,7 @@ bp_parse() {   # bp_parse <file> <outdir> → <outdir>/print (bash's print of th
         printf 'bp_parse: an if-condition here-document as bash %s prints it — its then-branch statement would read as body text: %s\n' "$("${BASH:-bash}" -c 'echo "${BASH_VERSION%%(*}"')" "$(printf '%s' "$_h" | tr '\n' ' ')" >> "$_o/print.err"
         : > "$_o/lex"; : > "$_o/names"; return 1
     fi
-    awk -v wrap=1 "$BP_LEX_AWK" "$_o/print" > "$_o/lex"
+    LC_ALL=C awk -v wrap=1 "$BP_LEX_AWK" "$_o/print" > "$_o/lex"   # C locale: the lexer works in bytes; in a UTF-8 locale the one-true-awk 20231127 loses the closing quote of a word holding a non-ASCII character (measured with 2-, 3- and 4-byte characters; the mechanism is not isolated)
     awk -F'\t' '$1 == "D" && $3 == 1 && $6 == "(top)" { print $2 }' "$_o/lex" > "$_o/names"
 }
 bp_exec() {    # bp_exec <file> <outdir> → <outdir>/xnames + <outdir>/xbodies: `declare -F` / `declare -f` after `env -i bash`
