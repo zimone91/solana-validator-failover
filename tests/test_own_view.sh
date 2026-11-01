@@ -695,8 +695,8 @@ RPC_JQ='(if type == "array" then . elif type == "object" then [.] else error("no
   | [ $rs[] | select(.method == "getVoteAccounts" or .method == "getSlot")
       | (if (.params | type) == "array" and (.params[0] | type) == "object" then (.params[0].commitment // "NONE") else "NONE" end)
       | if . == "__VAR__" then error("the commitment is not a literal") elif type != "string" then "NONE" else . end ] as $cs
-  | (if ($rs | length) > 1 then "batch[" + ([$rs[].method] | join(",")) + "]" else $rs[0].method end) as $label
-  | "\($fn) \($label) \(if ($cs | length) == 0 then "-" elif ($cs | unique | length) == 1 then $cs[0] else "MIXED" end)"'
+  | (if ($rs | length) > 1 then "batch[" + ([$rs[].method] | join(",")) + "]" else $rs[0].method end) as $lbl
+  | "\($fn) \($lbl) \(if ($cs | length) == 0 then "-" elif ($cs | unique | length) == 1 then $cs[0] else "MIXED" end)"'
 # (1a)/(1b) read every curl COMMAND in bash's own parse of the daemon (bp_parse): a word whose quotes and backslashes
 # removed read curl (or …/curl), in any function, the file level or after the marker — a command substitution, a
 # $((cmd) ) and an unquoted here-document's $( ) / backticks included (bp_parse lexes them as the code bash runs); its
