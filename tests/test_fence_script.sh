@@ -667,7 +667,7 @@ if command -v flock >/dev/null 2>&1; then
     #       fence + exit 1 even though the demote SUCCEEDED (visibility over tidiness).
     new_mock
     printf 'S1\nU1\nU1\nU1\nU1\nU1\nU1\n' > "$MOCK_DIR/identity.seq"
-    ( exec 8>"$MOCK_DIR/markers/.fence.lock"; flock -n 8; sleep 60 ) &
+    ( exec 8>"$MOCK_DIR/markers/.fence.lock"; flock -n 8; exec sleep 60 ) &   # exec: bash < 5.2 forks a plain last command, so the kill below would end the subshell and leave the sleep
     _holder=$!
     sleep 0.2
     run_script "$FENCE" VALIDATOR_UNIT=sol-test.service FENCE_LOCK_WAIT=1 FENCE_REPOLL_SECS=3
