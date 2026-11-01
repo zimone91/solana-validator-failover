@@ -165,7 +165,7 @@ time and its three slowest against the cap.
   and the closing `results_banner` come from the lib.
 - `test_required_fence.sh` — keeps its awk extraction: the region must EXCLUDE its end line (a
   sed range would source-execute `load_state`); it gained the loud-empty check instead.
-- `test_alpenglow_tripwire.sh` case (8) parity — keeps its own `-n` guard (already loud).
+- `test_alpenglow_tripwire.sh` case (9) parity — keeps its own `-n` guard (already loud).
 - `test_demote_killafter.sh` / `test_tower_handling.sh` — structural-only suites; local
   assert_absent/assert_present kept.
 - Clock/sink shims that are near-verbatim VARIANTS (not byte-identical) stay suite-local — the
