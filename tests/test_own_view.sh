@@ -1730,8 +1730,8 @@ ep_open_closes() {   # $1=file → the CLOSE writes that do not reach _own_view_
 }
 EP_TABLE_P="(global):_liveness_obs_since:zero (global):_ep_blind_cycles:zero staked_is_actively_voting:_liveness_obs_since:set _note_blind_cycle:_liveness_obs_since:zero _note_blind_cycle:_ep_blind_cycles:set _note_observation:_liveness_obs_since:set _fresh_proof_recheck:_liveness_obs_since:set switch_to_unstaked:_liveness_obs_since:zero switch_to_unstaked:_ep_blind_cycles:zero switch_to_staked:_liveness_obs_since:zero switch_to_staked:_ep_blind_cycles:zero (top):_liveness_obs_since:zero (top):_ep_blind_cycles:zero "
 EP_TABLE_S="(global):FIRST_DELINQUENT_TIME:zero (global):_liveness_obs_since:zero (global):_ep_blind_cycles:zero window_reset:FIRST_DELINQUENT_TIME:zero window_reset:_liveness_obs_since:zero window_reset:_ep_blind_cycles:zero _note_blind_cycle:_liveness_obs_since:zero _note_blind_cycle:_ep_blind_cycles:set _note_observation:_liveness_obs_since:set _fresh_proof_recheck:_liveness_obs_since:set staked_is_actively_voting:_liveness_obs_since:set (top):FIRST_DELINQUENT_TIME:set (top):FIRST_DELINQUENT_TIME:zero (top):_liveness_obs_since:zero (top):_ep_blind_cycles:zero "
-staked_close() {   # $1=file → 1 if the STAKED-tenure close is followed by _own_view_reset at its indentation (the standby only)
-    code_of "$1" | awk '/_elapsed_reset "spare is STAKED/ { i = match($0, /[^[:space:]]/); getline nx; if (nx ~ "^[[:space:]]{" i - 1 "}_own_view_reset[[:space:]]*$") ok = 1 } END { print ok + 0 }'
+staked_close() {   # $1=file → 1 if the STAKED-tenure close is followed by _own_view_reset at its indentation (the standby only); the indentation is the next line's first non-blank column — no regex interval, mawk 20200120 has none
+    code_of "$1" | awk '/_elapsed_reset "spare is STAKED/ { i = match($0, /[^[:space:]]/); getline nx; j = match(nx, /[^[:space:]]/); if (j == i && substr(nx, j) ~ /^_own_view_reset[[:space:]]*$/) ok = 1 } END { print ok + 0 }'
 }
 ep_verdict() {   # $1=primary $2=standby → "table-<green|red>/close-<green|red>" + the evidence
     local t=green c=green oc
