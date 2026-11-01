@@ -2199,10 +2199,18 @@ rd1=$(HOSTILE=lv0 MDS=0 HORIZON=200 world | tail -1)
 rd2=$(SLOT_NUM=37 SLOT_DEN=10 HOSTILE=headwrap ARMED=1 GATE=1 MDS=0 HORIZON=200 world | tail -1)
 mutate "$STANDBY" 's/^    if ! _canon_uint "\$_es_head"; then   # M4/    if false; then   # M4/' "$WORK/m4-head.sh"
 rd2m=$(WSCRIPT="$WORK/m4-head.sh" SLOT_NUM=37 SLOT_DEN=10 HOSTILE=headwrap ARMED=1 GATE=1 MDS=0 HORIZON=200 world | tail -1)
+# The CONTROL (the validator removed → the wrapped head mints) needs the attack itself: a 20-digit JSON number the daemon's jq hands on verbatim. jq < 1.7 turns it into a double
+# (18446744073710453000): after the wrap the head is off by up to ~2,500 slots (1,384 for this literal), far outside ±N_HEAD, and the mutant mints nothing — there the control cannot show the attack. LIMIT (named):
+# the control ALONE is skipped on such a jq, with a SKIP line; both assertions on the shipped code (rd1, rd2) run on every jq. The probe is the daemon's own head path (JSON in, jq -r out).
+_12d_big=$(printf '{"result":18446744073710451616}' | jq -r '.result // empty' 2>/dev/null)
+_12d_ctl=0; [[ "$_12d_big" == "18446744073710451616" ]] && _12d_ctl=1
+_12d_ctl_txt="; CONTROL SKIPPED on this jq (see the SKIP line)"
+[[ $_12d_ctl -eq 0 ]] || _12d_ctl_txt="; CONTROL: the M4 head validator removed → the wrapped head mints and takes at t151 (at 2.5 the rate layer's abstention hid it: no mint either way)"
 if [[ "$(field "$rd1" end)" == "horizon" && "$(field "$rd1" mutation)" == "none" && "$(field "$rd1" E)" == "65" ]] \
    && [[ "$(field "$rd2" end)" == "horizon" && "$(field "$rd2" emint)" == "none" && "$(field "$rd2" mutation)" == "none" ]] \
-   && [[ "$(field "$rd2m" emint)" == "151" && "$(field "$rd2m" mutation)" == "151" ]]; then
-    ok "(12d) M4 through the REAL loop: TIER2/TIER3 serving the holder's lastVote as the string \"0009999\" → the loop runs to the horizon (every sample unusable → blind, no take — fails toward NOT taking); the spare's own processed head served as 2^64 + head → the provider never mints (no usable head), no proof-gated take — at a certified 3.7 slots/s, where the rate layer passes; CONTROL: the M4 head validator removed → the wrapped head mints and takes at t151 (at 2.5 the rate layer's abstention hid it: no mint either way). Pre-fix: the loop ABORTED at t125; the wrapped head minted and took at t171"
+   && { [[ $_12d_ctl -eq 0 ]] || [[ "$(field "$rd2m" emint)" == "151" && "$(field "$rd2m" mutation)" == "151" ]]; }; then
+    ok "(12d) M4 through the REAL loop: TIER2/TIER3 serving the holder's lastVote as the string \"0009999\" → the loop runs to the horizon (every sample unusable → blind, no take — fails toward NOT taking); the spare's own processed head served as 2^64 + head → the provider never mints (no usable head), no proof-gated take — at a certified 3.7 slots/s, where the rate layer passes${_12d_ctl_txt}. Pre-fix: the loop ABORTED at t125; the wrapped head minted and took at t171"
+    [[ $_12d_ctl -eq 1 ]] || echo "  ⏭ SKIP: (12d) the CONTROL alone — this jq ($(jq --version 2>&1)) prints the 20-digit head as a rounded double ($_12d_big), so the validator-removed mutant cannot show the wrap; the assertions above ran on the shipped code"
 else
     bad "(12d) lv0=$rd1 :: headwrap-3.7=$rd2 :: M4-removed-3.7=$rd2m"
 fi
