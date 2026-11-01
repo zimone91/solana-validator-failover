@@ -47,7 +47,6 @@ send_telegram() { return 0; }
 send_webhook()  { :; }
 save_state() { :; }
 sleep() { :; }                                   # skip the real 1s post-switch sleep
-get_tower_path() { echo "/nonexistent-tower-$$"; }   # so the [[ -f ]] rm is skipped
 
 # alert capture
 _alert_status=""; _alert_calls=0

@@ -519,7 +519,7 @@ command_not_found_handle() { return 0; }
     log_info "rotate #1"; _own_view_veto() { return 0; }
 @p1 p head:log SD
     \source /dev/stdin <<< '_own_view_veto() { return 0; }'
-@p2 p head:detect_tower_base SD
+@p2 p head:detect_ledger_path SD
     \source /dev/stdin <<< '_own_view_veto() { return 0; }'
 @tpsrc s head:rotate_log S
     time -p source /dev/stdin <<< '_own_view_veto() { return 0; }' 2>/dev/null

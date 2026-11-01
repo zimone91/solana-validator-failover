@@ -902,11 +902,16 @@ s_pets=$(grep -cE '^[[:space:]]*_watchdog_pet[[:space:]]+# §5 end-of-cycle pet'
 # (2 + 7 = 9 s), inside the 22 s worst case (SETIDENTITY_TIMEOUT 15 + kill-grace 5 still governs); the
 # veto's pet now separates the re-check's last sampler pet from set-identity (one op + one pet on either
 # side). Totals 42 / 46 → 44 / 48.
+# +1 per daemon at AG-1.3 (the pin MOVED, deliberately, in that diff): _vh_class's ONE bounded hash of the vote-history file
+# (_sha256_of: `timeout -k 2 10` sha256sum / shasum, petted post-op). It runs in the log line after a CONFIRMED demote only
+# (_vh_log_after_demote) - never on a take path, and the demote's own admin calls are petted per op before it. A3 re-derived:
+# one bounded op (10 s + its 2 s kill grace) + its pet, inside the 22 s worst case (SETIDENTITY_TIMEOUT 15 + kill-grace 5 still
+# governs). Totals 44 / 48 -> 45 / 49.
 p_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$PRIMARY")
 s_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$STANDBY")
-[[ "$p_total" == "44" && "$s_total" == "48" ]] \
-    && ok "(14b) total pet call-site pins: primary 43 calls (+def=44), standby 47 calls (+def=48) — deletion of any pet line trips this" \
-    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 44, standby=$s_total pinned 48) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
+[[ "$p_total" == "45" && "$s_total" == "49" ]] \
+    && ok "(14b) total pet call-site pins: primary 44 calls (+def=45), standby 48 calls (+def=49) — deletion of any pet line trips this" \
+    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 45, standby=$s_total pinned 49) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
 if ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$PRIMARY" && ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$STANDBY" && ! grep -qE '^[[:space:]]*sleep "\$RECOVERY_CHECK_INTERVAL"' "$PRIMARY"; then
     ok "(14c) the >=15s sleeps (STARTUP_GRACE x3, RECOVERY_CHECK_INTERVAL, hard-stop re-verify) go through _watchdog_sleep"
 else
@@ -952,7 +957,6 @@ out=$( (
     # admin ops wedge (rc 124); the _sd_notify socat pipeline passes through to the sd: logger
     timeout() { case "$*" in (*socat*) if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@" ;; (*) echo "op:wedge" >> "$EV"; return 124 ;; esac; }
     _selffence_hard_stop() { echo "op:hardstop" >> "$EV"; return 1; }
-    get_tower_path() { echo "$MOCK_DIR/tower"; }
     switch_to_unstaked "FF-B1 probe"
     w=$(ev_line 'op:wedge'); h=$(ev_line 'op:hardstop'); p=$(ev_line '^sd:WATCHDOG=1')
     okr=0; [[ -n "$p" && -n "$w" && -n "$h" && $p -gt $w && $p -lt $h ]] && okr=1

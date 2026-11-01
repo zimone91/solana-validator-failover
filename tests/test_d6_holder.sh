@@ -110,7 +110,7 @@ $region
     flush_pending_alerts() { :; }; _sd_notify() { :; }
     display_status() { echo "cycle t=$(_t) status=$1" >> "$EV"; }
     check_internet() { return 0; }
-    detect_ledger_path() { :; }; detect_tower_base() { :; }; get_validator_args() { echo ""; }
+    detect_ledger_path() { :; }; get_validator_args() { echo ""; }
     validate_keypair_file() { case "$1" in *unstaked*) echo U1 ;; *) echo S1 ;; esac; }
     _enforce_one_arm_state() { :; }; _rot_capture_intent() { :; }
     get_local_identity() {

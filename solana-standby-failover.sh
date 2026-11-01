@@ -2066,6 +2066,56 @@ _alpenglow_status_line() {
 # (AG-1.2). The non-AG take path stays in the code as the base for AG-3 and is reachable only by tests, which shadow
 # this function to return 1 after sourcing a daemon (the seam idiom: tests/lib/harness.sh `harness_ag_off`).
 _ag_mode() { return 0; }
+
+# ── the vote-history file: CLASSIFIED and LOGGED, never touched (AG-1.3; G1 support, G6) ────────────────────────
+# Alpenglow's set-identity needs <ledger>/vote_history-<node pubkey>.bin (D0.4: agave validator/src/commands/run/execute.rs:582-584,
+# jito :590-592 — the file lives in the ledger directory whatever --tower says; no flag moves it). A WARM swap copies that file from the
+# old holder to the new one (docs/SAFETY.md, Alpenglow); a cold take is an operator decision, never FO's. So FO only ever LOOKS at it:
+# `stat` for the mtime and the size, one bounded read for the sha256. It never deletes, moves, copies, truncates or rewrites the file
+# (and the tower deletion of the v0.6 primary demote is gone): tests/test_tower_handling.sh pins that by bash's own parse.
+# _sha256_of <file> — the file's sha256 (hex) on stdout; rc 1 when no hashing tool exists or the bounded read failed.
+# `timeout` bounds the read where it exists (every deploy host); a macOS test box without it still hashes.
+_sha256_of() {
+    local _h _tb=""
+    command -v timeout >/dev/null 2>&1 && _tb="timeout -k 2 10"
+    # shellcheck disable=SC2086
+    if command -v sha256sum >/dev/null 2>&1; then _h=$($_tb sha256sum "$1" 2>/dev/null) || return 1
+    elif command -v shasum >/dev/null 2>&1; then _h=$($_tb shasum -a 256 "$1" 2>/dev/null) || return 1
+    else return 1; fi
+    _h="${_h%% *}"
+    [[ "$_h" =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf '%s' "$_h"
+}
+# _vh_class [<episode-start, epoch seconds>] — the class of THIS node's vote-history file for the STAKED identity, one line, rc 0:
+#   absent
+#   present (mtime=<epoch s> size=<bytes> sha256=<hex>)
+#   present-and-older-than-episode (…same fields…, episode-start=<epoch s>)  — its mtime is before the episode's first sample (wall time)
+#   unavailable (<why>)                                                      — LEDGER_PATH empty, no staked pubkey, not a regular file
+# A field that cannot be read inside `present` prints `unreadable` and the line still goes out; the caller pages or logs it as it is.
+_vh_class() {
+    local _vp _m _s _h _ep="${1:-}" _cls="present" _tail=""
+    [[ -n "${LEDGER_PATH:-}" ]] || { printf 'unavailable (LEDGER_PATH empty)'; return 0; }
+    [[ -n "${STAKED_PUBKEY:-}" ]] || { printf 'unavailable (staked pubkey unknown)'; return 0; }
+    _vp="${LEDGER_PATH}/vote_history-${STAKED_PUBKEY}.bin"
+    [[ -e "$_vp" ]] || { printf 'absent'; return 0; }
+    [[ -f "$_vp" ]] || { printf 'unavailable (not a regular file)'; return 0; }
+    _m=$(stat -c %Y "$_vp" 2>/dev/null); case "$_m" in ''|*[!0-9]*) _m=$(stat -f %m "$_vp" 2>/dev/null) ;; esac   # GNU/busybox stat, then BSD stat (macOS harness)
+    case "$_m" in ''|*[!0-9]*) _m="unreadable" ;; esac
+    _s=$(stat -c %s "$_vp" 2>/dev/null); case "$_s" in ''|*[!0-9]*) _s=$(stat -f %z "$_vp" 2>/dev/null) ;; esac
+    case "$_s" in ''|*[!0-9]*) _s="unreadable" ;; esac
+    _h=$(_sha256_of "$_vp") || _h="unreadable"
+    _watchdog_pet   # §5 per-op pet: the bounded read completed — no-op outside the armed unit
+    if [[ "$_ep" =~ ^[0-9]+$ && "$_m" =~ ^[0-9]+$ ]]; then
+        _tail=" episode-start=$_ep"
+        [[ $((10#$_m)) -lt $((10#$_ep)) ]] && _cls="present-and-older-than-episode"
+    fi
+    printf '%s (mtime=%s size=%s sha256=%s%s)' "$_cls" "$_m" "$_s" "$_h" "$_tail"
+}
+# _vh_log_after_demote <what> — after a CONFIRMED demote (the primary's switch_to_unstaked, the standby's give_back_identity):
+# the class and sha256 of the file a warm swap would copy to the next holder. A log line only; nothing is read twice.
+_vh_log_after_demote() {
+    log_info "[vote-history] after ${1:-the demote}: ${LEDGER_PATH:-<LEDGER_PATH empty>}/vote_history-${STAKED_PUBKEY:-<staked pubkey unknown>}.bin is $(_vh_class) — the file a warm swap copies to the next holder; FO never deletes, moves or rewrites it"
+}
 # ── [ag] end shared block ──
 
 # ── v0.7 (Block 3, slice-4 rework) — TAKEOVER STARVATION PAGE (STANDBY ONLY; page-only) ────────
@@ -3031,6 +3081,7 @@ give_back_identity() {
     sleep 1    # v0.5.9: reduced from 2s
     CURRENT_IDENTITY=$(get_local_identity) || true
     if [[ "$CURRENT_IDENTITY" == "$UNSTAKED_PUBKEY" ]]; then
+        _vh_log_after_demote "giving back the staked identity"   # v0.7 (AG-1.3): the class and sha256 of the history file a warm swap would copy; never touched
         window_reset
         alert "$reason" "$UNSTAKED_PUBKEY" "GAVE BACK — unstaked ✅"; return 0
     else
