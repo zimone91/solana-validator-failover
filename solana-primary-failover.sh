@@ -155,6 +155,9 @@ HEARTBEAT_PING_INTERVAL=""                # ping cadence (s); empty → defaults
 # the first cut pinned names no account on any cluster.)
 ALPENGLOW_FEATURE_ID="A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS"
 ALPENGLOW_GATE_CHECK_HOURS=6              # probe cadence (hours); 0 = off (drift-announced)
+# The lowest validator version the AG page calls ready (semantic version; getVersion solana-core on LOCAL_RPC; pre-release orders
+# before release). Default = the line this release is written and tested for; a lower value is drift-announced.
+MIN_VALIDATOR_VERSION="4.4.0"
 
 # --- Safety ---
 # v0.5.9: DRY_RUN=true is the safe default. Live mode requires explicit DRY_RUN=false in env.
@@ -2152,6 +2155,138 @@ _vh_class() {
 # the class and sha256 of the file a warm swap would copy to the next holder. A log line only; nothing is read twice.
 _vh_log_after_demote() {
     log_info "[vote-history] after ${1:-the demote}: ${LEDGER_PATH:-<LEDGER_PATH empty>}/vote_history-${STAKED_PUBKEY:-<staked pubkey unknown>}.bin is $(_vh_class) — the file a warm swap copies to the next holder; FO never deletes, moves or rewrites it"
+}
+
+# ── the validator's version against the minimum, and the class of a getHealth answer (AG-1.5; G8, G9) ───────────────
+# MIN_VALIDATOR_VERSION (default 4.4.0): the AG page calls a spare below it NOT READY and one startup page says so. The running
+# version is what the node ANSWERS: getVersion on LOCAL_RPC, field solana-core (D0.7, F6) - agave and jito both read "4.4.0", there is
+# no client id in that answer; the executable's own --version is not used and its `src:` is never parsed. Pre-release orders BEFORE
+# release (semver precedence), so 4.4.0-rc.1 < 4.4.0 and a release candidate reads NOT READY (the conservative side).
+# _numcmp <digits> <digits> - -1, 0 or 1 by value, with no arithmetic (no overflow): leading zeros dropped, then the length, then the strings.
+_numcmp() {
+    local _a="$1" _b="$2"
+    _a="${_a#"${_a%%[!0]*}"}"; _b="${_b#"${_b%%[!0]*}"}"
+    if [[ ${#_a} -ne ${#_b} ]]; then [[ ${#_a} -lt ${#_b} ]] && echo -1 || echo 1; return 0; fi
+    if [[ "$_a" == "$_b" ]]; then echo 0; elif [[ "$_a" < "$_b" ]]; then echo -1; else echo 1; fi
+}
+# _semver_parse <s> - rc 0 with _sv_maj / _sv_min / _sv_pat / _sv_pre set when <s> is MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]
+# (digits only in the first three, 1-9 each; dot-separated non-empty pre-release identifiers); rc 1 otherwise. Build metadata is dropped.
+_semver_parse() {
+    local _re='^([0-9]{1,9})\.([0-9]{1,9})\.([0-9]{1,9})(-([0-9A-Za-z.-]+))?(\+[0-9A-Za-z.-]+)?$'
+    [[ "$1" =~ $_re ]] || return 1
+    _sv_maj="${BASH_REMATCH[1]}"; _sv_min="${BASH_REMATCH[2]}"; _sv_pat="${BASH_REMATCH[3]}"; _sv_pre="${BASH_REMATCH[5]}"
+    [[ "$_sv_pre" == *..* || "$_sv_pre" == .* || "$_sv_pre" == *. ]] && return 1
+    return 0
+}
+# _semver_cmp <a> <b> - prints -1, 0 or 1 (semver 2.0.0 precedence, section 11); rc 1 and nothing printed when either is not a version.
+_semver_cmp() {
+    local _am _an _ap _ar _c _i _x _y _first
+    local -a _pa _pb
+    _semver_parse "$1" || return 1
+    _am="$_sv_maj"; _an="$_sv_min"; _ap="$_sv_pat"; _ar="$_sv_pre"
+    _semver_parse "$2" || return 1
+    for _c in "$(_numcmp "$_am" "$_sv_maj")" "$(_numcmp "$_an" "$_sv_min")" "$(_numcmp "$_ap" "$_sv_pat")"; do
+        [[ "$_c" != "0" ]] && { echo "$_c"; return 0; }
+    done
+    [[ -z "$_ar" && -z "$_sv_pre" ]] && { echo 0; return 0; }
+    [[ -z "$_ar" ]] && { echo 1; return 0; }        # a release orders after its own pre-releases
+    [[ -z "$_sv_pre" ]] && { echo -1; return 0; }
+    IFS=. read -r -a _pa <<< "$_ar"
+    IFS=. read -r -a _pb <<< "$_sv_pre"
+    for ((_i = 0; ; _i++)); do
+        [[ $_i -ge ${#_pa[@]} && $_i -ge ${#_pb[@]} ]] && { echo 0; return 0; }
+        [[ $_i -ge ${#_pa[@]} ]] && { echo -1; return 0; }     # the shorter list of identifiers orders first
+        [[ $_i -ge ${#_pb[@]} ]] && { echo 1; return 0; }
+        _x="${_pa[$_i]}"; _y="${_pb[$_i]}"
+        [[ "$_x" == "$_y" ]] && continue
+        if [[ "$_x" =~ ^[0-9]+$ && "$_y" =~ ^[0-9]+$ ]]; then
+            _c=$(_numcmp "$_x" "$_y"); [[ "$_c" == "0" ]] && continue
+            echo "$_c"; return 0
+        fi
+        [[ "$_x" =~ ^[0-9]+$ ]] && { echo -1; return 0; }     # a numeric identifier orders before an alphanumeric one
+        [[ "$_y" =~ ^[0-9]+$ ]] && { echo 1; return 0; }
+        _first=$(printf '%s\n%s\n' "$_x" "$_y" | LC_ALL=C sort | head -n 1)   # ASCII order whatever the locale
+        [[ "$_first" == "$_x" ]] && echo -1 || echo 1
+        return 0
+    done
+}
+# _validate_semver NAME - startup refusal for a minimum that is not a version (the _validate_numeric idiom).
+_validate_semver() {
+    local name="$1" val="${!1}"
+    _semver_parse "$val" || { log_error "Bad ${name}: require a semantic version like 4.4.0 (got '${val}')"; exit 1; }
+}
+# _local_version - the LOCAL node's solana-core string on stdout; rc 1 and nothing printed when there is no usable answer.
+_local_version() {
+    local _b _rc _v
+    _b=$(curl -s -m 3 "$LOCAL_RPC" -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getVersion"}' 2>/dev/null)
+    _rc=$?
+    _watchdog_pet   # §5 per-op pet: bounded op completed (rc captured above) - no-op outside the armed unit
+    [[ $_rc -eq 0 && -n "$_b" ]] || return 1
+    _v=$(printf '%s' "$_b" | jq -r 'if (.result | type) == "object" and (.result["solana-core"] | type) == "string" then .result["solana-core"] else empty end' 2>/dev/null) || return 1
+    [[ -n "$_v" ]] || return 1
+    printf '%s' "$_v"
+}
+# _version_eval - sets _ver_state (ok | below | unreadable | skip) and _ver_text (the words the AG page and the startup page carry).
+# Frankendancer: not checked - a named LIMIT (D0.7: fdctl prints another version string, and nothing here reads it), no page.
+_ver_state=""; _ver_text=""
+_version_eval() {
+    local _v _min="${MIN_VALIDATOR_VERSION:-4.4.0}" _c
+    if [[ "${VALIDATOR_TYPE:-agave}" == "frankendancer" ]]; then _ver_state="skip"; _ver_text="not checked (frankendancer)"; return 0; fi
+    _v=$(_local_version) || { _ver_state="unreadable"; _ver_text="not ready (the version is unreadable: LOCAL_RPC gave no usable getVersion answer)"; return 0; }
+    if ! _semver_parse "$_v"; then _ver_state="unreadable"; _ver_text="not ready (the version is unreadable: '${_v:0:40}' is not a semantic version)"; return 0; fi
+    _c=$(_semver_cmp "$_v" "$_min")
+    case "$_c" in
+        -1)  _ver_state="below"; _ver_text="not ready (version ${_v} is below the minimum ${_min})" ;;
+        0|1) _ver_state="ok"; _ver_text="ok (version ${_v}, minimum ${_min})" ;;
+        *)   _ver_state="unreadable"; _ver_text="not ready (the minimum '${_min}' is not a semantic version)" ;;
+    esac
+    return 0
+}
+# _version_class - the words of _version_eval, for a caller that wants a line.
+_version_class() { _version_eval; printf '%s' "$_ver_text"; }
+# _version_startup_check - ONE startup page per run, from the top of the main loop (never inside a take path): below the minimum pages at the
+# first determination; an unreadable version pages once after 15 minutes of retries (LOCAL_RPC may still be starting); ok / frankendancer is a log line.
+# Retries every 60 s until decided, then never reads again - the AG page reads the version fresh when it goes out.
+_ver_done=0; _ver_first=0; _ver_last=0
+_version_startup_check() {
+    [[ ${_ver_done:-0} -eq 1 ]] && return 0
+    local _now; _now=$(mono_now)
+    [[ ${_ver_last:-0} -gt 0 && $(( _now - _ver_last )) -lt 60 ]] && return 0
+    _ver_last=$_now; [[ ${_ver_first:-0} -eq 0 ]] && _ver_first=$_now
+    _version_eval
+    case "$_ver_state" in
+        ok|skip) _ver_done=1; log_info "[version] ${_ver_text}" ;;
+        below)   _ver_done=1; log_warn "[version] ${_ver_text}"
+                 alert_warn "⚠️ VALIDATOR VERSION NOT READY: ${_ver_text}. Alpenglow readiness needs MIN_VALIDATOR_VERSION or newer (the warm swap, docs/SAFETY.md); upgrade this node. The AG page will say not ready." ;;
+        *)       if [[ $(( _now - _ver_first )) -ge 900 ]]; then
+                     _ver_done=1; log_warn "[version] ${_ver_text} (unreadable for $(( _now - _ver_first ))s)"
+                     alert_warn "⚠️ VALIDATOR VERSION NOT READY: ${_ver_text} for $(( _now - _ver_first ))s. Check that LOCAL_RPC serves getVersion; the AG page will say not ready until it does."
+                 else
+                     log_info "[version] ${_ver_text} — retrying (LOCAL_RPC may still be starting)"
+                 fi ;;
+    esac
+    return 0
+}
+# _health_class <getHealth JSON body> - names a LOCAL getHealth answer, one of (rc 0, stdout):
+#   ok            result == "ok"
+#   behind <N>    error.code == -32005 and error.data.numSlotsBehind a canonical unsigned integer
+#   unknown       error.code == -32005 and error.data.numSlotsBehind null: agave answers Unknown while votor has seen no finalized slot
+#                 (rpc/src/rpc_health.rs:94-103; rpc-client-api/src/custom_error.rs:16, :158-167; D0.6)
+#   unreadable    anything else: no body, not JSON, another error, a garbage count
+# It names an answer and decides nothing: Tier-1 and the two self-fence sites keep their own decisions (AG-1 changes none of them).
+_health_class_seen=""
+_health_class() {
+    local _r _n _p
+    [[ -n "${1:-}" ]] || { printf 'unreadable'; return 0; }
+    _p='if type != "object" then "bad" elif .result == "ok" then "ok"'
+    _p+=' elif (.error | type) == "object" and .error.code == -32005 and (.error.data | type) == "object" and (.error.data | has("numSlotsBehind")) then'
+    _p+=' (.error.data.numSlotsBehind | if . == null then "unknown" elif type == "number" then "behind " + tostring else "bad" end) else "bad" end'
+    _r=$(printf '%s' "$1" | jq -r "$_p" 2>/dev/null) || { printf 'unreadable'; return 0; }
+    case "$_r" in
+        ok|unknown) printf '%s' "$_r" ;;
+        "behind "*) _n="${_r#behind }"; if _canon_uint "$_n"; then printf 'behind %s' "$_n"; else printf 'unreadable'; fi ;;
+        *)          printf 'unreadable' ;;
+    esac
 }
 # ── [ag] end shared block ──
 
@@ -5270,7 +5405,7 @@ switch_to_staked() {
 _selffence_reset() { _last_confirmed_slot=""; _last_confirmed_advance_ts=$(mono_now); _selffence_noanswer_since=0; _selffence_votelag_since=0; _selffence_votelag_baseline=""; _selffence_votelag_healthy=0; _selffence_restore_pending=0; _selffence_restore_ref_ts=0; _selffence_noanswer_restore_pending=0; _selffence_votelag_restore_pending=0; _collision_strikes=0; _last_collision_check=0; }   # v0.6.7 (N6) + v0.6.8 (B2): re-arm the own-vote-lag tracker incl. the hysteresis counter; v0.6.9 (S-6): also clear the collision-detector flap streak per staked tenure
 
 check_self_fence_isolation() {
-    local now slot frozen health_result behind silent own_sample own_lv cluster_max vlag vlsust
+    local now slot frozen health_result behind silent own_sample own_lv cluster_max vlag vlsust _sf_hc
     now=$(mono_now)   # v0.7 (Block 3): SAFETY clock — a backward wall step must not disarm the fence timers
 
     # (1) LOCAL confirmed-slot advancement — the authoritative isolation signal.
@@ -5431,6 +5566,15 @@ check_self_fence_isolation() {
             -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' 2>/dev/null)
         _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
         if [[ -n "$health_result" ]]; then
+            _sf_hc=$(_health_class "$health_result")   # v0.7 (AG-1.5): names the answer; LOGGED when it changes, it decides nothing in this check
+            if [[ "$_sf_hc" != "${_health_class_seen:-}" ]]; then
+                _health_class_seen="$_sf_hc"
+                if [[ "$_sf_hc" == "unknown" ]]; then
+                    log_warn "[self-fence] LOCAL getHealth now reads UNKNOWN (Alpenglow: votor has seen no finalized slot yet) — this check does not act on it: it demotes only on a canonical numSlotsBehind above SELF_FENCE_MAX_BEHIND (${SELF_FENCE_MAX_BEHIND}) or on a garbage count"
+                else
+                    log_info "[self-fence] LOCAL getHealth now reads ${_sf_hc}"
+                fi
+            fi
             behind=$(echo "$health_result" | jq -r '.error.data.numSlotsBehind // empty' 2>/dev/null)
             # R6 (fix round 2): an EMPTY count is no count (ignored, as ever — a healthy "ok" has none); a
             # PRESENT but non-canonical count from our own node counts as BEHIND (fail toward the fence),
@@ -5688,6 +5832,7 @@ validate_numeric_config() {
     _validate_numeric STATE_MAX_AGE_SECS 0                     # v0.6.9 (H3): baseline-restore freshness gate (0 = never restore)
     _validate_numeric STARTUP_STAKED_UNREACHABLE_ALERT_SECS 1  # v0.6.9 (H3): startup staked-unreachable page threshold
     _validate_numeric ALPENGLOW_GATE_CHECK_HOURS 0             # v0.7 (pre-Block-4, №9): tripwire probe cadence in hours (0 = off, drift-announced)
+    _validate_semver MIN_VALIDATOR_VERSION                 # v0.7 (AG-1.5): the AG readiness minimum must be a semantic version
     _validate_numeric FENCE_ROT_CHECK_SECS 10                  # v0.7 (Block 5.4): armed fence-rot sweep cadence (floor 10; drift-announced)
     _validate_numeric FENCE_ROT_GRACE 0                         # v0.7 (Block 5.4): numeric shape first; the REAL floor is dynamic, just below
     # v0.7 (Block 5.4): FENCE_ROT_GRACE floor = max(600, ALERT_THROTTLE) — two reasons, both
@@ -5749,6 +5894,9 @@ _drift_check() {
     local name="$1" def="$2" dir="$3" why="$4" val="${!1}" lax=0
     if [[ "$dir" == "bool" ]]; then
         [[ -n "$val" && "$val" != "true" ]] && lax=1
+    elif [[ "$dir" == "semver" ]]; then
+        # v0.7 (AG-1.5): a MINIMUM version is laxer the LOWER it is (a value that is no version is the validator's to refuse at startup)
+        [[ "$(_semver_cmp "$val" "$def" 2>/dev/null)" == "-1" ]] && lax=1
     elif [[ "$dir" == "boolf" ]]; then
         # v0.7 (Block 5.2, №8): false-is-stricter twin of bool — laxer ONLY when explicitly
         # "true" (the runtime gates read ${KNOB:-false}, so empty/absent behaves as false =
@@ -5788,6 +5936,7 @@ announce_config_drift() {
     _drift_check SELF_FENCE_MAX_BEHIND 150 low0 "a far-behind holder keeps its staked identity longer before the getHealth demote fires"
     _drift_check SELF_FENCE_HARD_STOP true bool "a wedged demote becomes alert-only — the staked identity can keep voting through it (the exact double-sign gap the hard-stop closes)"
     _drift_check ALPENGLOW_GATE_CHECK_HOURS 6 low0 "the Alpenglow tripwire reports less often — or never — whether the configured RPC serves the cluster this node validates (it is a report only: AG mode does not depend on it, so a quiet tripwire hides an RPC that answers for the wrong cluster)"
+    _drift_check MIN_VALIDATOR_VERSION 4.4.0 semver "the AG page calls an older validator ready - one that may not carry the Alpenglow vote-history handling a warm swap relies on"
     _drift_check FENCE_ROT_CHECK_SECS 60 low "fence rot on an armed holder is detected later — the sweep re-verifies the effective fence properties on this cadence (§2.1-rev2.1 №2)"
     _drift_check FENCE_ROT_GRACE 1800 low "an armed+staked holder with a verifiably broken fence keeps voting longer before the graceful self-demote — the spare's watchdog-elapsed soundness rests on this holder-side self-enforcement (§2.1)"
     # ── [config-drift] end shared table ──
@@ -6073,12 +6222,14 @@ if [[ "${ALPENGLOW_GATE_CHECK_HOURS:-0}" =~ ^[0-9]+$ && $((10#$ALPENGLOW_GATE_CH
 else
     log_info "[alpenglow] tripwire DISABLED (ALPENGLOW_GATE_CHECK_HOURS=0)"
 fi
+log_info "[version] minimum validator version ${MIN_VALIDATOR_VERSION} (read from LOCAL_RPC getVersion once the validator answers; the AG page reads it fresh)"
 
 while $_running; do
     STAT_CHECKS=$((STAT_CHECKS + 1))
     rotate_log
     heartbeat_ping   # v0.6.4: external watchdog ping — top of loop, before any `continue`
     _alpenglow_gate_check   # v0.7 (pre-Block-4, №9): read-only Alpenglow gate probe — self-gates on cadence; top of loop, NEVER inside a takeover/recovery/verdict path (act-then-alert untouched: this network read is nowhere near a mutation)
+    _version_startup_check   # v0.7 (AG-1.5): ONE startup page when the validator is below MIN_VALIDATOR_VERSION or its version stays unreadable; self-gates (60 s retries until decided); top of loop, NEVER inside a take path
     _fence_rot_check   # v0.7 (Block 5.4, §2.1-rev2.1 №2): armed holder-side fence re-verification — self-gates on _watchdog_active + cadence; bounded property reads + paging only, EXCEPT the grace-expiry graceful demote, which reuses the existing demote path (safety action first — act-then-alert holds inside it)
     _g2_step   # v0.7 (Block 6.2): the verified-demote (G2) per-cycle state-machine advance — a permanent no-op on this HOLDER daemon (_proof_role_is_spare returns 1, and _g2_incident_active never answers active); kept at the loop-top surface so the call sites stay symmetric with the standby (the _proof_status_line precedent)
     _elapsed_step   # v0.7 (Block 6.3): the watchdog-elapsed per-cycle evaluation — a permanent no-op on this HOLDER daemon (_proof_role_is_spare returns 1, and _elapsed_incident_active never answers active); kept at the loop-top surface beside _g2_step so the call sites stay symmetric with the standby (the _proof_status_line precedent)

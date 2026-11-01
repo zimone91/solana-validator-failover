@@ -232,7 +232,7 @@ drive_cycle() {
         eval "run_cycle() {
 $region
 }"
-        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _fence_rot_check() { :; }   # 5.4: the rot sweep is its own suite (test_fence_rot); unstubbed it would hit real systemctl on systemd-bearing runners
+        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _fence_rot_check() { :; }   # 5.4: the rot sweep is its own suite (test_fence_rot); unstubbed it would hit real systemctl on systemd-bearing runners
         flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }
         window_push() { :; }; window_mostly_clear() { return 1; }
         get_local_identity() { echo "U1"; }
@@ -297,7 +297,7 @@ drive_cycle_primary() {
         eval "run_cycle() {
 $region
 }"
-        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _fence_rot_check() { :; }   # 5.4: same stub as drive_cycle
+        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _fence_rot_check() { :; }   # 5.4: same stub as drive_cycle
         flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }
         window_push() { :; }; window_mostly_clear() { return 1; }
         check_internet() { echo "op:inet" >> "$EV"; return 0; }
@@ -907,11 +907,15 @@ s_pets=$(grep -cE '^[[:space:]]*_watchdog_pet[[:space:]]+# §5 end-of-cycle pet'
 # (_vh_log_after_demote) - never on a take path, and the demote's own admin calls are petted per op before it. A3 re-derived:
 # one bounded op (10 s + its 2 s kill grace) + its pet, inside the 22 s worst case (SETIDENTITY_TIMEOUT 15 + kill-grace 5 still
 # governs). Totals 44 / 48 -> 45 / 49.
+# +1 per daemon at AG-1.5 (the pin MOVED, deliberately, in that diff): _local_version's ONE LOCAL getVersion read (curl -m 3),
+# petted post-op; it runs from the top of the main loop (_version_startup_check, ONE read per 60 s until the version is
+# determined, then none) and never on a take path. _health_class reads nothing: it names an answer its caller already has.
+# A3 re-derived: one bounded op + its pet (3 + 7 = 10 s), inside the 22 s worst case. Totals 45 / 49 -> 46 / 50.
 p_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$PRIMARY")
 s_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$STANDBY")
-[[ "$p_total" == "45" && "$s_total" == "49" ]] \
-    && ok "(14b) total pet call-site pins: primary 44 calls (+def=45), standby 48 calls (+def=49) — deletion of any pet line trips this" \
-    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 45, standby=$s_total pinned 49) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
+[[ "$p_total" == "46" && "$s_total" == "50" ]] \
+    && ok "(14b) total pet call-site pins: primary 45 calls (+def=46), standby 49 calls (+def=50) — deletion of any pet line trips this" \
+    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 46, standby=$s_total pinned 50) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
 if ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$PRIMARY" && ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$STANDBY" && ! grep -qE '^[[:space:]]*sleep "\$RECOVERY_CHECK_INTERVAL"' "$PRIMARY"; then
     ok "(14c) the >=15s sleeps (STARTUP_GRACE x3, RECOVERY_CHECK_INTERVAL, hard-stop re-verify) go through _watchdog_sleep"
 else

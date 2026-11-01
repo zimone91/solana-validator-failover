@@ -312,6 +312,25 @@ jobs:
           rm -rf "$w"
           [ "$bad" = 0 ] || { echo "RED: the Alpenglow feature id or the unconditional AG-mode predicate moved (rule: this step's comment)"; exit 1; }
           echo "ALPENGLOW_FEATURE_ID is one id in both daemons and the id both agave v4.4.0 and jito v4.4.0-jito declare; _ag_mode is the unconditional 'return 0', once per daemon"
+      - name: MIN_VALIDATOR_VERSION defaults to 4.4.0 everywhere it is written (v0.7 AG-1.5)
+        # RULE: the minimum validator version the AG page calls ready is ONE value, the release line of the two tags the step above
+        # reads (agave v4.4.0, jito v4.4.0-jito): both daemons assign MIN_VALIDATOR_VERSION="4.4.0" once and announce drift against
+        # 4.4.0 once (the shared safety-knob table), and both env templates carry MIN_VALIDATOR_VERSION=4.4.0 once. A default moved in
+        # one place only would let one role call a validator ready that the other calls not ready. A legitimate change updates all of
+        # them and this step in the same diff.
+        run: |
+          bad=0
+          for f in solana-primary-failover.sh solana-standby-failover.sh; do
+            n=$(grep -c '^MIN_VALIDATOR_VERSION="4\.4\.0"$' "$f" || true)
+            d=$(grep -c '^    _drift_check MIN_VALIDATOR_VERSION 4\.4\.0 semver ' "$f" || true)
+            [ "$n" = 1 ] && [ "$d" = 1 ] || { echo "$f: MIN_VALIDATOR_VERSION default lines=$n, drift-table lines=$d (want 1 and 1, both 4.4.0)"; bad=1; }
+          done
+          for f in failover.env.example failover-standby.env.example; do
+            n=$(grep -c '^MIN_VALIDATOR_VERSION=4\.4\.0 ' "$f" || true)
+            [ "$n" = 1 ] || { echo "$f: $n MIN_VALIDATOR_VERSION=4.4.0 line(s) (want 1)"; bad=1; }
+          done
+          [ "$bad" = 0 ] || { echo "RED: the MIN_VALIDATOR_VERSION default moved in one place (rule: this step's comment)"; exit 1; }
+          echo "MIN_VALIDATOR_VERSION is 4.4.0 in both daemons, their drift tables and both env templates"
       - name: SHA256SUMS manifest matches the tree (regen — sha256sum <files> > SHA256SUMS)
         run: sha256sum -c SHA256SUMS
       - name: bash's /dev/tcp and /dev/udp redirections — the A5 test fixture only (v0.7 Block 6.3.1)
