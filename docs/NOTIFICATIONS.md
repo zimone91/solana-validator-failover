@@ -143,7 +143,6 @@ Sent by the PRIMARY and by the STANDBY/BACKUP daemon alike. The fence pages need
 | Status | Trigger |
 |--------|---------|
 | `🚨 PROTECTION OFFLINE` | UNKNOWN IDENTITY: the validator's identity is neither this node's unstaked key nor the staked key — the daemon's protection is inert (the STANDBY: no takeover, no self-fence; the PRIMARY: no self-fence, no recovery); paged on entry, re-paged per `ALERT_THROTTLE` while it lasts (ℹ️ `✅ Identity classified again after …` when it clears) |
-| `🚨 ALPENGLOW ACTIVE — RE-AUDIT REQUIRED` | the Alpenglow feature-gate probe (every `ALPENGLOW_GATE_CHECK_HOURS`, 6 h; 0 = off) saw the gate turn ACTIVE — `set-identity` then needs a vote-history file by default, so the promote path can start failing; re-run the 4.2 audit (once per transition) |
 | `ONE ARM-STATE VIOLATION — REFUSING TO START 🚨` | v0.7 (Block 5): `DRY_RUN=true` with the REAL fence unit installed — the fence could stop a live validator the operator believes inert; the daemon refuses to start until the arm-states align (re-run `failover arm` for the page-only fence, or `DRY_RUN=false`) |
 | `FENCED (stopped) — MONITOR IN HOLD 🚨` | v0.7 (Block 5.2): the fence stopped this validator this boot (`fenced-stopped` marker in `FENCE_MARKER_DIR`) — the monitor runs no monitoring logic, pages on entry and re-pages per `ALERT_THROTTLE` until the operator clears the marker (ℹ️ `✅ fenced-stopped marker cleared — …`; restart the monitor) |
 | `FENCE ROT — ARMED HOLDER 🚨` | v0.7 (Block 5.4): on a host armed with the real fence (or armed with no fence unit left at all), the armed fence sweep (every `FENCE_ROT_CHECK_SECS`, 60 s) verified rot that kills the fence — the fence unit's file gone, masked or mis-set, the monitor's `Restart` not `no`, or its `OnFailure` not naming the fence; paged immediately, re-paged per `ALERT_THROTTLE`; a staked node self-demotes gracefully once the rot has lasted `FENCE_ROT_GRACE` (1800 s) — `SWITCHED TO UNSTAKED ✅` on a PRIMARY, `GAVE BACK — unstaked ✅` on a promoted STANDBY — and in this release a spare then takes on its timer path (ℹ️ `✅ fence rot resolved after …` when fixed) |
@@ -157,8 +156,8 @@ Sent by the PRIMARY and by the STANDBY/BACKUP daemon alike. The fence pages need
   - `⚠️ Take ABORTED at the final re-check: inconsistent external view (lastVote went backwards). No action taken.`
   - `⚠️ Take ABORTED at the final re-check: the answering RPC vantage flipped (…→…); the frozen reading is not same-vantage comparable. No action taken.`
   - `⚠️ Take ABORTED at the final re-check: the external view is stale (cluster reference frozen since the pin). No action taken.`
-- `🚨 ALPENGLOW FEATURE GATE is now pending (was …). …` — the probe saw the gate turn pending (there is epoch-boundary slack before activation); re-run the 4.2 audit
-- `⚠️ ALPENGLOW TRIPWIRE BLIND: … consecutive feature-gate probe failures — …` — 4 failed probes in a row (retried every 900 s), then per `ALERT_THROTTLE`
+- `⚠️ ALPENGLOW TRIPWIRE reads … via …` — the tripwire (AG-1.1; every `ALPENGLOW_GATE_CHECK_HOURS`, 6 h; 0 = off) read the alpenglow feature account as pending or absent, or saw it leave active: the RPC this node is configured with may not serve the cluster the node validates (check `TIER2_RPC`/`TIER3_RPC` and `LOCAL_RPC` against the cluster). REPORT ONLY — AG mode does not depend on it and stays on; once per daemon run, never re-paged. A first reading of `active`, or a later change into it, is a log line and the heartbeat's `[alpenglow]` status line, no page
+- `⚠️ ALPENGLOW TRIPWIRE BLIND: … consecutive feature-gate probe failures — …` — 4 failed probes in a row (retried every 900 s), then per `ALERT_THROTTLE`; the tripwire is report-only, so a blind probe costs the RPC-mismatch warning, never the protection
 - `⚠️ FENCE-ROT SWEEP BLIND: … consecutive sweeps could not verify the fence properties (systemctl failing/timing out). …` — armed; 4 blind sweeps in a row, then per `ALERT_THROTTLE`; not rot, no demote clock
 - `⚠️ stale fenced-stopped marker from a previous boot under … — clearing it is safe; monitoring normally` — at startup, once
 - `⚠️ validator still in startup after …s — monitor pre-READY: failover protection NOT yet active …` — armed; the monitor has waited `ALERT_THROTTLE` for the validator at startup, then per `ALERT_THROTTLE`
@@ -211,7 +210,7 @@ Repeating conditions are throttled by `ALERT_THROTTLE` (default 600s = 10 min): 
 is immediate, repeats wait the throttle. The rows above say where it applies — among them
 local-validator-unreachable (both roles), switch-to-unstaked-failed (PRIMARY),
 Tier2-unreachable-during-confirmation and node-too-far-behind (STANDBY), the re-check aborts, the
-own-view vetoes, the starvation page, the G2 environment pages, and the fence and Alpenglow re-pages.
+own-view vetoes, the starvation page, the G2 environment pages, and the fence and tripwire-blind re-pages.
 The every-start pages (`ARMED SPARE NOT ATTESTED 🚨`, `PROOF GATE BYPASS ARMED 🚨`,
 `G2 VANTAGES NOT DISTINCT 🚨`) are deliberately not throttled across restarts.
 

@@ -275,6 +275,43 @@ jobs:
           [ "$d_sby" = "22" ] || { echo "standby 'date +%s' lines: $d_sby != pinned 22 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$p_pri" = "4" ]  || { echo "primary patsub \${var//} lines: $p_pri != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$p_sby" = "4" ]  || { echo "standby patsub \${var//} lines: $p_sby != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
+      - name: the Alpenglow feature id matches the agave and jito sources; AG mode is unconditional (v0.7 AG-1.1)
+        # RULE 1: ALPENGLOW_FEATURE_ID is assigned once per daemon, to the same value in both, and that value is the id the
+        # agave v4.4.0 and jito v4.4.0-jito sources declare for `pub mod alpenglow` (feature-set/src/lib.rs; D0.3 — the file is
+        # byte-identical in the two tags). The id of 6ce2d93 was a stale one (a probe on it reads `absent` for ever). This is
+        # the one facts step that reads the network (raw.githubusercontent.com, pinned tags, 5 retries): it is RED when a
+        # source cannot be read — a pin that passes on a failed fetch would be vacuous. A planted-source control runs first:
+        # the extractor must read the declared id of `pub mod alpenglow`, not its neighbour `alpenglow_fast_leader_handover`,
+        # and a source that declares another id must read as that other id (so the comparison can go red).
+        # RULE 2: `_ag_mode() { return 0; }` is defined exactly once per daemon, as that line: AG mode is unconditional in a
+        # shipped script (no knob, no state file and no RPC answer can turn it off; tests shadow it after sourcing a daemon).
+        # LIMIT: a definition in another shape (eval, a nested one) is the function census's to catch (tests/test_own_view.sh (0d)).
+        run: |
+          w=$(mktemp -d); bad=0
+          src_id() { awk '/^pub mod alpenglow \{/ { f = 1; next } f && /declare_id!\("/ { s = $0; sub(/^.*declare_id!\("/, "", s); sub(/".*$/, "", s); print s; exit }'; }
+          ctl=$(printf 'pub mod alpenglow_fast_leader_handover {\n    solana_pubkey::declare_id!("FastLeaderHandover11111111111111111111111111");\n}\npub mod alpenglow {\n    solana_pubkey::declare_id!("A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJT");\n}\n' | src_id)
+          [ "$ctl" = "A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJT" ] || { echo "control: the extractor read '$ctl' from a planted source"; exit 1; }
+          ids=""
+          for f in solana-primary-failover.sh solana-standby-failover.sh; do
+            n=$(grep -c '^ALPENGLOW_FEATURE_ID=' "$f" || true)
+            id=$(sed -n 's/^ALPENGLOW_FEATURE_ID="\([^"]*\)".*$/\1/p' "$f")
+            if [ "$n" != 1 ] || [ -z "$id" ]; then echo "$f: $n ALPENGLOW_FEATURE_ID assignment(s), id='$id' — want exactly one, quoted"; bad=1; continue; fi
+            ids="$ids $id"
+            a=$(grep -c '^_ag_mode()' "$f" || true); b=$(grep -c '^_ag_mode() { return 0; }$' "$f" || true)
+            [ "$a" = 1 ] && [ "$b" = 1 ] || { echo "$f: _ag_mode defined $a time(s), $b of them as the unconditional 'return 0' — AG mode must be unconditional in a shipped script"; bad=1; }
+          done
+          [ "$(printf '%s\n' $ids | sort -u | wc -l | tr -d ' ')" = 1 ] || { echo "the two daemons name different Alpenglow feature ids:$ids"; bad=1; }
+          want=$(printf '%s\n' $ids | sort -u | head -1)
+          for t in anza-xyz/agave/v4.4.0 jito-foundation/jito-solana/v4.4.0-jito; do
+            u="https://raw.githubusercontent.com/$t/feature-set/src/lib.rs"
+            if ! curl -fsS -m 30 --retry 5 --retry-delay 4 --retry-all-errors -o "$w/lib.rs" "$u"; then echo "cannot read $u — the pin is not checked, and is RED rather than vacuous"; bad=1; continue; fi
+            up=$(src_id < "$w/lib.rs")
+            [ -n "$up" ] || { echo "no 'pub mod alpenglow' declare_id in $u"; bad=1; continue; }
+            [ "$up" = "$want" ] && echo "$t declares $up — the daemons' id" || { echo "$t declares $up but the daemons carry '$want'"; bad=1; }
+          done
+          rm -rf "$w"
+          [ "$bad" = 0 ] || { echo "RED: the Alpenglow feature id or the unconditional AG-mode predicate moved (rule: this step's comment)"; exit 1; }
+          echo "ALPENGLOW_FEATURE_ID is one id in both daemons and the id both agave v4.4.0 and jito v4.4.0-jito declare; _ag_mode is the unconditional 'return 0', once per daemon"
       - name: SHA256SUMS manifest matches the tree (regen — sha256sum <files> > SHA256SUMS)
         run: sha256sum -c SHA256SUMS
       - name: bash's /dev/tcp and /dev/udp redirections — the A5 test fixture only (v0.7 Block 6.3.1)

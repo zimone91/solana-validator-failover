@@ -336,10 +336,11 @@ HEARTBEAT_INTERVAL=600                    # periodic status log (seconds, 600 = 
 HEARTBEAT_URL=""
 HEARTBEAT_PING_INTERVAL=""                # ping cadence (s); empty → defaults to HEARTBEAT_INTERVAL
 
-# --- Alpenglow feature-gate tripwire (v0.7 pre-Block-4, №9) ---
-# v0.7 (pre-Block-4, №9): the on-chain feature gate that flips agave to Alpenglow/votor voting.
-# Pubkey from agave v4.2.1 feature-set/src/lib.rs (`pub mod alpenglow`), verified 2026-08.
-ALPENGLOW_FEATURE_ID="a1penGLz8Vm2QHYB3JPefBiU4BY3Z6JkW2k3Scw5GWP"
+# --- Alpenglow feature-gate tripwire (v0.7 AG-1.1; report only) ---
+# The on-chain feature gate that flips agave to Alpenglow/votor voting. Pubkey from agave v4.4.0 and jito v4.4.0-jito
+# feature-set/src/lib.rs:1286 (`pub mod alpenglow`); the facts job compares it with both tags. (The 4.2.1 id
+# the first cut pinned names no account on any cluster.)
+ALPENGLOW_FEATURE_ID="A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS"
 ALPENGLOW_GATE_CHECK_HOURS=6              # probe cadence (hours); 0 = off (drift-announced)
 
 # --- Telegram ---
@@ -453,7 +454,7 @@ _ep_floor_holds=0
 # storm guard for _recheck_abort_alert — not episode state, never reset with the episode.
 _recheck_abort_alert_ts=0
 # v0.7 (pre-Block-4, №9): Alpenglow feature-gate tripwire state. _alpenglow_gate_state = last
-# KNOWN on-chain gate state (inactive|pending|active; empty = never determined) — persisted by
+# KNOWN on-chain gate state (absent|pending|active; empty = never determined) — persisted by
 # save_state, restored by load_state. _last_alpenglow_check = mono time of the last probe
 # (0 = never → the FIRST check runs immediately, whatever the host uptime).
 _alpenglow_gate_state=""
@@ -910,8 +911,9 @@ load_state() {
     # restores VERBATIM: no *_MONO twin (nothing does clock arithmetic on it — the boot-id rules
     # above are about mono stamps) and no freshness gate (a stale value at worst logs one already-
     # seen transition as unchanged; a garbled/absent line restores nothing). _state_get is
-    # numeric-only, hence the enumerated grep (the ROLE_AT_SAVE idiom).
-    v=$(grep -E '^ALPENGLOW_GATE_STATE=(inactive|pending|active)$' "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2)
+    # numeric-only, hence the enumerated grep (the ROLE_AT_SAVE idiom). AG-1.1: the 4.2.1-era value `inactive` restores
+    # nothing — this run's first determination is then the first one.
+    v=$(grep -E '^ALPENGLOW_GATE_STATE=(absent|pending|active)$' "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2)
     [[ -n "$v" ]] && _alpenglow_gate_state="$v"
 
     # v0.6.9 (H3): promoted-holder self-fence baseline continuity across a monitor restart. Freshness-
@@ -1924,56 +1926,72 @@ _own_view_veto() {
 }
 # ── [own-view] end shared block ──
 
-# ── v0.7 (pre-Block-4, №9) — ALPENGLOW FEATURE-GATE TRIPWIRE (BOTH daemons, BYTE-IDENTICAL) ────
-# READ-ONLY observability; page-only (addendum §0b). agave 4.2.1 ships the votor/BLS machinery
-# dormant behind the on-chain `alpenglow` feature: on activation set-identity demands a
-# vote-history file by default and the whole lastVote observation model needs re-derivation — so
-# the moment the gate shows pending/active the operator is paged (re-run the 4.2 audit; Blocks
-# 5–6 constants freeze until it passes). Called once per cycle at the TOP of the main loop and
-# NEVER inside a takeover/recovery/verdict path — the act-then-alert discipline (between the fresh
-# re-check and set-identity: no network, no alerts; one bounded local veto read allowed) is untouched:
-# this network read is nowhere near a mutation.
-# COMPANION GATE deliberately NOT watched — verified against source, not read (reviewer fix C):
-# alpenglow_fast_leader_handover (FLHoAWBDjNh6zwmJ5i1NKK4KyD8otAiv7XxvmnFnVnKH, agave v4.2.1
-# feature-set/src/lib.rs:1557) has exactly ONE usage on the safety-relevant paths —
-# core/src/replay_stage.rs:1611 (alpenglow_handle_newly_frozen_banks), where it gates
-# maybe_notify_of_optimistic_parent, a block-production leader-handover optimization — and it is
-# additionally conditioned on migration_status.should_allow_block_markers(), i.e. it has effect
-# only AFTER the main migration is already underway. It touches neither set-identity semantics
-# nor vote gates nor lastVote observation — both assumptions this tripwire protects hang on the
-# MAIN gate alone.
-# _alpenglow_gate_fetch — the network seam (tests shadow THIS). One word on stdout + rc 0:
-#   inactive (feature account absent), pending (parsed activatedAt null), active (activatedAt a
-#   number). Unparsable/absent data or non-JSON → try the next tier; both tiers unusable → rc 1
-#   (the caller treats that as "unknown").
+# ── v0.7 (AG-1.1) — ALPENGLOW FEATURE-GATE TRIPWIRE (BOTH daemons, BYTE-IDENTICAL) ────────────
+# REPORT ONLY. AG mode (the [ag] block below) does not read it: `_ag_mode` is unconditional in v0.7, because
+# the gate read `active` on mainnet, testnet and devnet on 2026-11-01 (DESIGN-AG §1.2) and a predicate driven by
+# this probe would only add failure classes (a stale id, a state file from an older version, the knob at 0).
+# What the probe is for: it tells the operator when the RPC this node is configured with does NOT serve the
+# cluster the node validates (the account reads pending or absent, or leaves `active`). Called once per cycle at
+# the TOP of the main loop and NEVER inside a takeover/recovery/verdict path — the act-then-alert discipline
+# (between the fresh re-check and set-identity: no network, no alerts; one bounded local veto read allowed) is
+# untouched: this network read is nowhere near a mutation.
+# The account (agave v4.4.0 and jito v4.4.0-jito, feature-set/src/lib.rs:1286 — a `facts` pin compares the id with
+# both tags): owner Feature111111111111111111111111111111111111, 9 bytes, bincode Option<u64> —
+#   tag 0 + eight zero bytes = pending (the activation transaction allocates 9 zero bytes: solana-feature-gate-interface
+#   5.0.0 src/instruction.rs:11-19), tag 1 + the activation slot as u64 little-endian = active (runtime/src/bank.rs:6409).
+# `jsonParsed` has no parser for the Feature program and answers base64 anyway, so the probe asks base64 and decodes the
+# first nine bytes in jq with arithmetic only (no `base64 -d`: its flags differ between GNU and macOS; no `@base64d`: it
+# is lossy for bytes >= 0x80, and the slot has them).
+# COMPANION GATE deliberately NOT watched: alpenglow_fast_leader_handover (id FastLeaderHandover11111111111111111111111111,
+# agave v4.4.0 feature-set/src/lib.rs:1523) is read at four sites — core/src/replay_stage.rs:1651,
+# core/src/replay_stage/dead_slots.rs:157, core/src/replay_stage/update_parent.rs:152 and
+# runtime/src/block_component_processor.rs:422 — all of them in block replay and block-marker processing (update-parent /
+# leader handover). FO's behaviour depends on no gate (AG mode is unconditional), so there is nothing for a second probe to protect.
+# (The 4.2.1 id FLHoAWBDjNh6zwmJ5i1NKK4KyD8otAiv7XxvmnFnVnKH this note used to cite no longer exists in 4.4.0.)
+# _alpenglow_gate_fetch — the network seam (tests shadow THIS, or `curl` under it). One line on stdout + rc 0:
+#   "<state> <slot> <tier>": absent 0 T2 (the account does not exist), pending 0 T2, active <slot> T2; T2/T3 = the vantage
+#   that answered. Anything else — a wrong owner, short data, tag > 1, a JSON-RPC error, non-JSON, a transport failure —
+#   tries the next tier; both tiers unusable → rc 1 (the caller treats that as "unknown").
+_AGF_JQ='def sx: if . >= 65 and . <= 90 then . - 65 elif . >= 97 and . <= 122 then . - 71 elif . >= 48 and . <= 57 then . + 4 elif . == 43 then 62 elif . == 47 then 63 else -1 end;'
+_AGF_JQ+=' if (.result | type) != "object" then "bad" elif .result.value == null then "absent 0" elif (.result.value | type) != "object" then "bad"'
+_AGF_JQ+=' elif .result.value.owner != "Feature111111111111111111111111111111111111" then "bad" elif (.result.value.data | type) != "array" then "bad" elif (.result.value.data[1] != "base64") or ((.result.value.data[0] | type) != "string") then "bad"'
+_AGF_JQ+=' else (.result.value.data[0] | .[0:12] | explode | map(sx)) as $v | if ($v | length) < 12 or ($v | any(. < 0)) then "bad" else'
+_AGF_JQ+=' ([ range(0; 12; 4) as $g | ($v[$g]) as $a | ($v[$g + 1]) as $b | ($v[$g + 2]) as $c | ($v[$g + 3]) as $d | ($a * 4 + ($b / 16 | floor)), (($b % 16) * 16 + ($c / 4 | floor)), (($c % 4) * 64 + $d) ]) as $y'
+_AGF_JQ+=' | if $y[0] == 0 then "pending 0" elif $y[0] == 1 then "active " + (reduce range(8; 0; -1) as $i (0; . * 256 + $y[$i]) | tostring) else "bad" end end end'
 _alpenglow_gate_fetch() {
-    local rpc result activated _agf_rc
-    for rpc in "$TIER2_RPC" "$TIER3_RPC"; do
+    local _agf_i rpc tier result _agf_rc _agf_v
+    for _agf_i in 2 3; do
+        if [[ $_agf_i -eq 2 ]]; then rpc="$TIER2_RPC"; tier="T2"; else rpc="$TIER3_RPC"; tier="T3"; fi
         [[ -z "$rpc" ]] && continue
         # the liveness sampler's curl idiom ("Cache-Control: no-cache" defeats HTTP/CDN caches)
         result=$(curl -s -m 10 "$rpc" -X POST \
             -H "Content-Type: application/json" -H "Cache-Control: no-cache" \
-            -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountInfo\",\"params\":[\"${ALPENGLOW_FEATURE_ID}\",{\"encoding\":\"jsonParsed\"}]}" 2>/dev/null)
+            -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountInfo\",\"params\":[\"${ALPENGLOW_FEATURE_ID}\",{\"encoding\":\"base64\"}]}" 2>/dev/null)
         _agf_rc=$?
         _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1 N-audit): bounded op completed (rc captured above) — post-op placement covers EVERY exit (success return, parse-continue, final loop exit); no-op outside the armed unit
         [[ $_agf_rc -eq 0 ]] || continue
-        echo "$result" | jq -e '.result' &>/dev/null || continue
-        if echo "$result" | jq -e '.result.value == null' &>/dev/null; then echo "inactive"; return 0; fi
-        echo "$result" | jq -e '.result.value.data.parsed.info | type == "object"' &>/dev/null || continue
-        activated=$(echo "$result" | jq -r '.result.value.data.parsed.info.activatedAt' 2>/dev/null)
-        if [[ "$activated" == "null" ]]; then echo "pending"; return 0; fi
-        if [[ "$activated" =~ ^[0-9]+$ ]]; then echo "active"; return 0; fi
+        _agf_v=$(printf '%s' "$result" | jq -r "$_AGF_JQ" 2>/dev/null) || continue
+        case "$_agf_v" in
+            "absent 0"|"pending 0"|"active "[0-9]*) echo "${_agf_v} ${tier}"; return 0 ;;
+        esac
     done
     return 1
 }
 # _alpenglow_gate_check — cadence + state machine around the seam. Self-gates on
 # ALPENGLOW_GATE_CHECK_HOURS (0 = off); the FIRST check runs immediately regardless of host
 # uptime (the 0-sentinel/monotonic lesson — the same first-immediate pattern as
-# _recheck_abort_alert: the cadence gates REPEATS only). UNKNOWN (rc 1) never pages and never
-# overwrites the last KNOWN state.
+# _recheck_abort_alert: the cadence gates REPEATS only). UNKNOWN (rc 1) never pages (but see the
+# blind streak) and never overwrites the last KNOWN state.
+# What it pages (ONE page per process run, `_alpenglow_paged`): a reading of pending or absent, or a change
+# away from active — "the configured RPC may not serve the cluster this node validates; AG mode stays on".
+# What it does not page: the first determination `active` (a log line and the heartbeat status line), nor a later
+# change into active.
+_alpenglow_gate_slot=""
+_alpenglow_gate_tier=""
+_alpenglow_paged=0
 _alpenglow_gate_check() {
     [[ "${ALPENGLOW_GATE_CHECK_HOURS:-0}" =~ ^[0-9]+$ && $((10#$ALPENGLOW_GATE_CHECK_HOURS)) -gt 0 ]] || return 0
-    local now state prev _agc_wait
+    local now out state rest slot tier prev _agc_wait
     now=$(mono_now)
     if [[ ${_last_alpenglow_check:-0} -gt 0 ]]; then
         # v0.7 (№9 fix B): the FULL cadence is earned only by a SUCCESSFUL probe; a failed one
@@ -1985,10 +2003,10 @@ _alpenglow_gate_check() {
         [[ $(( now - _last_alpenglow_check )) -lt $_agc_wait ]] && return 0
     fi
     _last_alpenglow_check=$now
-    if ! state=$(_alpenglow_gate_fetch) || [[ -z "$state" ]]; then
+    if ! out=$(_alpenglow_gate_fetch) || [[ -z "$out" ]]; then
         # v0.7 (№9 fix A) — the slice-4 lesson verbatim: a safety mechanism whose failure mode is
         # SILENCE is a dead gate that looks alive. Persistent fetch failure (provider dropped
-        # getAccountInfo, the jsonParsed shape changed, both vantages rotated) must surface:
+        # getAccountInfo, the answer shape changed, both vantages rotated) must surface:
         # WARN-level on every failure (the operator's warn scan must see it), and a PAGE once the
         # streak says it is not a blip — 4 consecutive failures (~45–60 min at the 900 s retry
         # floor), repeating per ALERT_THROTTLE while the blindness persists; first page immediate
@@ -2005,40 +2023,50 @@ _alpenglow_gate_check() {
     fi
     _alpenglow_fail_streak=0
     _last_alpenglow_blind_alert=0
+    state="${out%% *}"; rest="${out#* }"; slot="${rest%% *}"; tier="${rest##* }"
     prev="$_alpenglow_gate_state"
+    _alpenglow_gate_slot="$slot"; _alpenglow_gate_tier="$tier"
+    if [[ "$state" != "active" ]]; then
+        # pending, absent, or a change away from active: the RPC this node is configured with may not serve its cluster
+        if [[ "$state" == "$prev" ]]; then
+            log_warn "[alpenglow] feature gate: ${state} via ${tier} (unchanged) — AG mode stays on"
+        else
+            log_warn "[alpenglow] feature gate reads ${state} via ${tier} (was ${prev:-undetermined}) — AG mode stays on"
+        fi
+        if [[ ${_alpenglow_paged:-0} -eq 0 ]]; then
+            _alpenglow_paged=1
+            alert_warn "⚠️ ALPENGLOW TRIPWIRE reads ${state} via ${tier}; the configured RPC may not serve the cluster this node validates; AG mode stays on"
+        fi
+        if [[ "$state" != "$prev" ]]; then
+            _alpenglow_gate_state="$state"
+            save_state
+        fi
+        return 0
+    fi
     if [[ "$state" == "$prev" ]]; then
-        log_info "[alpenglow] feature gate: ${state} (unchanged)"
+        log_info "[alpenglow] feature gate: active since slot ${slot} via ${tier} (unchanged)"
         return 0
     fi
-    if [[ "$state" == "pending" ]]; then
-        log_warn "[alpenglow] FEATURE GATE TRANSITION: ${prev:-undetermined} → pending — paging (the 4.2 audit must re-run)"
-        alert_warn "🚨 ALPENGLOW FEATURE GATE is now pending (was ${prev:-undetermined}). On activation set-identity requires a vote-history file by default and vote observation changes — re-run the 4.2 audit; Blocks 5–6 constants are frozen until it passes. See docs/SAFETY.md."
-        _alpenglow_gate_state="pending"
-        save_state
-        return 0
-    fi
-    if [[ "$state" == "active" ]]; then
-        # v0.7 (№9, reviewer): ACTIVE escalates to the CRITICAL channel (alert, queued — the
-        # UNKNOWN-IDENTITY class and channel): set-identity now fails by default without a
-        # vote-history file, i.e. this tool's promote path may be INERT. pending stays
-        # alert_warn — there is epoch-boundary slack before activation.
-        log_warn "[alpenglow] FEATURE GATE TRANSITION: ${prev:-undetermined} → ACTIVE — paging CRITICAL (promote path may be inert)"
-        alert "ALPENGLOW FEATURE GATE ACTIVE (was ${prev:-undetermined}) — set-identity now requires a vote-history file by default: this tool's promote path can start FAILING (protection may be inert, the UNKNOWN-IDENTITY class). Re-run the 4.2 audit; Blocks 5–6 constants are frozen until it passes. See docs/SAFETY.md." "$ALPENGLOW_FEATURE_ID" "🚨 ALPENGLOW ACTIVE — RE-AUDIT REQUIRED"
-        _alpenglow_gate_state="active"
-        save_state
-        return 0
-    fi
-    # → inactive from pending/active should not happen on-chain (a gate does not deactivate):
-    # record it, no page. From empty it is simply the first determination.
-    if [[ -z "$prev" ]]; then
-        log_info "[alpenglow] feature gate: inactive (first determination)"
-    else
-        log_warn "[alpenglow] feature gate went ${prev} → inactive (unexpected reverse) — recorded, no page"
-    fi
-    _alpenglow_gate_state="inactive"
+    log_info "[alpenglow] feature gate: ACTIVE since slot ${slot} via ${tier} (was ${prev:-undetermined}) — AG mode is on regardless of this reading; no page"
+    _alpenglow_gate_state="active"
     save_state
     return 0
 }
+# _alpenglow_status_line — the standing status line, on the ♥ Heartbeat cadence (the _proof_status_line surface)
+_alpenglow_status_line() {
+    local _asl_s="${_alpenglow_gate_state:-undetermined}"
+    [[ "$_asl_s" == "active" && -n "${_alpenglow_gate_slot:-}" ]] && _asl_s="active since slot ${_alpenglow_gate_slot}"
+    log_info "[alpenglow] tripwire: ${_asl_s}${_alpenglow_gate_tier:+ via ${_alpenglow_gate_tier}} | AG mode ON — this node never takes the staked identity automatically"
+}
+
+# ── [ag] shared block — BYTE-IDENTICAL in both daemons (AG-1; pinned by tests/test_alpenglow_tripwire.sh) ──
+# AG mode is the rule of v0.7 (DESIGN-AG §4, TASK-AG1 AG-1.1): FO never takes the staked identity automatically,
+# on any role, on any cluster. `_ag_mode` returns 0 (AG mode) UNCONDITIONALLY. No env knob, no state file and no RPC
+# answer can make it return non-zero in a shipped script; the tripwire above only reports. The take paths ask it
+# (AG-1.2). The non-AG take path stays in the code as the base for AG-3 and is reachable only by tests, which shadow
+# this function to return 1 after sourcing a daemon (the seam idiom: tests/lib/harness.sh `harness_ag_off`).
+_ag_mode() { return 0; }
+# ── [ag] end shared block ──
 
 # ── v0.7 (Block 3, slice-4 rework) — TAKEOVER STARVATION PAGE (STANDBY ONLY; page-only) ────────
 # A starving episode is SILENT: every hold path that moves the anchor (blindness re-anchor,
@@ -6361,7 +6389,7 @@ announce_config_drift() {
     _drift_check SELF_FENCE_VOTE_LAG_SECS 20 low0 "an egress-partitioned holder demotes later and can lose the relinquish-first race against a spare's takeover"
     _drift_check SELF_FENCE_MAX_BEHIND 150 low0 "a far-behind holder keeps its staked identity longer before the getHealth demote fires"
     _drift_check SELF_FENCE_HARD_STOP true bool "a wedged demote becomes alert-only — the staked identity can keep voting through it (the exact double-sign gap the hard-stop closes)"
-    _drift_check ALPENGLOW_GATE_CHECK_HOURS 6 low0 "the Alpenglow activation tripwire probes less often — or never: on activation set-identity requires a vote-history file and the observation model changes; the 4.2 audit must re-run"
+    _drift_check ALPENGLOW_GATE_CHECK_HOURS 6 low0 "the Alpenglow tripwire reports less often — or never — whether the configured RPC serves the cluster this node validates (it is a report only: AG mode does not depend on it, so a quiet tripwire hides an RPC that answers for the wrong cluster)"
     _drift_check FENCE_ROT_CHECK_SECS 60 low "fence rot on an armed holder is detected later — the sweep re-verifies the effective fence properties on this cadence (§2.1-rev2.1 №2)"
     _drift_check FENCE_ROT_GRACE 1800 low "an armed+staked holder with a verifiably broken fence keeps voting longer before the graceful self-demote — the spare's watchdog-elapsed soundness rests on this holder-side self-enforcement (§2.1)"
     # ── [config-drift] end shared table ──
@@ -7090,6 +7118,7 @@ while $_running; do
 
         log_info "♥ Heartbeat: ${id_label} | Checks: $STAT_CHECKS | LOCAL delinq: $STAT_LOCAL_DELINQ | Delinq seen: $STAT_DELINQUENT_SEEN | Takeovers: $STAT_TAKEOVERS | T2: $STAT_TIER2_CHECKS | T3: $STAT_TIER3_CHECKS | Window: [${_delinq_window:-empty}]"
         _proof_status_line   # v0.7 (Block 6.1, §2.7 (b)): the standing unpaired line — rides the v0.6.4 status-log cadence (this ♥ Heartbeat block, every HEARTBEAT_INTERVAL), same wording every interval; armed+spare+unpaired only — structurally inert on every host today
+        _alpenglow_status_line   # v0.7 (AG-1.1): the tripwire's standing status line on the same heartbeat cadence (active since slot N via T2 | AG mode ON)
         _last_heartbeat=$now_hb
     fi
 
