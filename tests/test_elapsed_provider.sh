@@ -1492,7 +1492,7 @@ $region
         }
         alert() { :; }; alert_info() { :; }; send_telegram() { :; }; send_webhook() { :; }
         alert_warn() { case "$1" in *"TAKEOVER STARVATION"*) echo "starve-page t=$(_t)" >> "$EV" ;; *"Take VETOED"*) echo "veto-page t=$(_t)" >> "$EV" ;; esac; }   # 6.3.1 (D2-cost): the starvation page, when STARVE enables it
-        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _fence_rot_check() { :; }
+        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _fence_rot_check() { :; }
         flush_pending_alerts() { :; }; save_state() { :; }; _sd_notify() { :; }
         get_local_identity() { cat "$IDF"; }
         display_status() {
@@ -2253,7 +2253,7 @@ mono_now() { _now; }
 date() { if [[ "$1" == "+%s" ]]; then _now; return 0; fi; command date "$@"; }
 log() { :; }; log_info() { echo "INFO $*" >> "$LOG"; }; log_warn() { :; }; log_error() { echo "ERROR $*" >> "$LOG"; }
 alert() { :; }; alert_warn() { :; }; alert_info() { :; }; send_telegram() { :; }; send_webhook() { :; }
-rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _fence_rot_check() { :; }
+rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _fence_rot_check() { :; }
 flush_pending_alerts() { :; }; save_state() { :; }; _sd_notify() { :; }
 get_local_identity() { echo U1; }
 # ping answers (rc 0): the connected world. The primary's REAL check_internet (its parallel pings and wait loop) and the
