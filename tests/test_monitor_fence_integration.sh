@@ -232,7 +232,7 @@ drive_cycle() {
         eval "run_cycle() {
 $region
 }"
-        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _fence_rot_check() { :; }   # 5.4: the rot sweep is its own suite (test_fence_rot); unstubbed it would hit real systemctl on systemd-bearing runners
+        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _vat_cycle() { :; }; _fence_rot_check() { :; }   # 5.4: the rot sweep is its own suite (test_fence_rot); unstubbed it would hit real systemctl on systemd-bearing runners
         flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }
         window_push() { :; }; window_mostly_clear() { return 1; }
         get_local_identity() { echo "U1"; }
@@ -297,7 +297,7 @@ drive_cycle_primary() {
         eval "run_cycle() {
 $region
 }"
-        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _fence_rot_check() { :; }   # 5.4: same stub as drive_cycle
+        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _vat_cycle() { :; }; _fence_rot_check() { :; }   # 5.4: same stub as drive_cycle
         flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }
         window_push() { :; }; window_mostly_clear() { return 1; }
         check_internet() { echo "op:inet" >> "$EV"; return 0; }
@@ -911,11 +911,16 @@ s_pets=$(grep -cE '^[[:space:]]*_watchdog_pet[[:space:]]+# §5 end-of-cycle pet'
 # petted post-op; it runs from the top of the main loop (_version_startup_check, ONE read per 60 s until the version is
 # determined, then none) and never on a take path. _health_class reads nothing: it names an answer its caller already has.
 # A3 re-derived: one bounded op + its pet (3 + 7 = 10 s), inside the 22 s worst case. Totals 45 / 49 -> 46 / 50.
+# +2 per daemon at AG-1.4 (the pin MOVED, deliberately, in that diff): the two LOCAL reads of the vote-set admission, each a
+# curl -m 3 petted post-op - _vat_read (ONE batch getEpochInfo / getVoteAccounts / getEpochInfo; from the top of the main loop on
+# its schedule, and right before a VOTE-BASED demote) and _vat_reason (ONE getAccountInfo, only to word the page). A3 re-derived:
+# each is one bounded op + its pet (3 + 7 = 10 s), inside the 22 s worst case; on the demote path the read adds <= 3 s before
+# the demote's own petted admin calls (test_d6_holder (d5, d6, d'4, d'5) re-measured). Totals 46 / 50 -> 48 / 52.
 p_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$PRIMARY")
 s_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$STANDBY")
-[[ "$p_total" == "46" && "$s_total" == "50" ]] \
-    && ok "(14b) total pet call-site pins: primary 45 calls (+def=46), standby 49 calls (+def=50) — deletion of any pet line trips this" \
-    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 46, standby=$s_total pinned 50) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
+[[ "$p_total" == "48" && "$s_total" == "52" ]] \
+    && ok "(14b) total pet call-site pins: primary 47 calls (+def=48), standby 51 calls (+def=52) — deletion of any pet line trips this" \
+    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 48, standby=$s_total pinned 52) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
 if ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$PRIMARY" && ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$STANDBY" && ! grep -qE '^[[:space:]]*sleep "\$RECOVERY_CHECK_INTERVAL"' "$PRIMARY"; then
     ok "(14c) the >=15s sleeps (STARTUP_GRACE x3, RECOVERY_CHECK_INTERVAL, hard-stop re-verify) go through _watchdog_sleep"
 else

@@ -2258,6 +2258,143 @@ _health_class() {
         *)          printf 'unreadable' ;;
     esac
 }
+
+# ── VAT admission (AG-1.4; G7) ─────────────────────────────────────────────────────────────────────────────────────
+# Under Alpenglow a vote account counts only if it is in the epoch's VAT-filtered stake set (A11): getVoteAccounts' epochVoteAccount is
+# membership in the CURRENT epoch's epoch stakes. A staked account that was not admitted reads activatedStake > 0 and epochVoteAccount
+# false: its votes are not counted, it looks like a dead holder, and a demote or a take would change nothing (G7). Admission for an epoch is
+# fixed one epoch earlier (DESIGN-AG 1.3), so the flag is read with the epoch it came from.
+# _vat_read - ONE bounded LOCAL batch [getEpochInfo, getVoteAccounts{votePubkey, keepUnstakedDelinquents:true}, getEpochInfo] at commitment
+# finalized (rpc/src/rpc.rs:1161-1252: without keepUnstakedDelinquents a delinquent account with zero stake is DROPPED from the answer).
+# Two different epochs = boundary: the flag speaks for the epoch of the bank the request read, so it stays unknown this time. Sets:
+#   _vat_state  admitted | notadmitted (flag false, activatedStake > 0) | unstaked (flag false, activatedStake 0) | unknown | boundary
+#   _vat_stake  activatedStake (lamports), "" when not read     _vat_epoch  the epoch of the read, "" when not read
+#   _vat_left   slots left in that epoch at the read, ""        _vat_why    why unknown (no pubkey, no answer, no entry, ...)
+# An ABSENT entry (or more than one, or no flag) is unknown - NEVER "not admitted" or "unstaked": a filtered answer can be empty for an
+# account that exists.
+_vat_state=""; _vat_stake=""; _vat_epoch=""; _vat_left=""; _vat_why=""; _vat_read_ts=0; _vat_next_ts=0; _vat_page_ts=0
+_VAT_JQ='def by($i): (map(select(type == "object" and .id == $i)) | .[0]); if type != "array" then "unknown no-batch-answer"'
+_VAT_JQ+=' else (by(1).result) as $a | (by(3).result) as $c | (by(2).result) as $v'
+_VAT_JQ+=' | if ($a | type) != "object" or ($c | type) != "object" or ($a.epoch | type) != "number" or ($c.epoch | type) != "number" then "unknown no-epoch-info" elif $a.epoch != $c.epoch then "boundary \($a.epoch) \($c.epoch)" elif ($v | type) != "object" then "unknown no-vote-accounts" else'
+_VAT_JQ+=' ([($v.current // []), ($v.delinquent // [])] | map(select(type == "array")) | add // [] | map(select(type == "object" and .votePubkey == $pk))) as $m | (if ($a.slotsInEpoch | type) == "number" and ($a.slotIndex | type) == "number" then ($a.slotsInEpoch - $a.slotIndex) else "-" end) as $left'
+_VAT_JQ+=' | if ($m | length) != 1 then "unknown entries=\($m | length) \($a.epoch) \($left)" else ($m[0]) as $x | if ($x.epochVoteAccount | type) != "boolean" then "unknown no-flag \($a.epoch) \($left)"'
+_VAT_JQ+=' elif $x.epochVoteAccount then "admitted \($x.activatedStake // "-") \($a.epoch) \($left)" elif ($x.activatedStake | type) != "number" then "unknown no-stake \($a.epoch) \($left)" elif $x.activatedStake == 0 then "unstaked 0 \($a.epoch) \($left)" else "notadmitted \($x.activatedStake) \($a.epoch) \($left)" end'
+_VAT_JQ+=' end end end'
+_vat_read() {
+    local _b _rc _r _s _x1 _x2 _x3
+    _vat_state="unknown"; _vat_stake=""; _vat_epoch=""; _vat_left=""; _vat_why=""
+    if [[ -z "${VOTE_PUBKEY:-}" ]]; then _vat_why="no VOTE_PUBKEY"
+    else
+        # the body is one literal (the shipped census of RPC bodies, test_own_view (1a), reads each curl's -d as written)
+        _b=$(curl -s -m 3 "$LOCAL_RPC" -X POST -H "Content-Type: application/json" -d "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getEpochInfo\",\"params\":[{\"commitment\":\"finalized\"}]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"getVoteAccounts\",\"params\":[{\"votePubkey\":\"${VOTE_PUBKEY}\",\"commitment\":\"finalized\",\"keepUnstakedDelinquents\":true}]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"getEpochInfo\",\"params\":[{\"commitment\":\"finalized\"}]}]" 2>/dev/null)
+        _rc=$?
+        _watchdog_pet   # §5 per-op pet: bounded op completed (rc captured above) - no-op outside the armed unit
+        if [[ $_rc -ne 0 || -z "$_b" ]]; then _vat_why="no answer from LOCAL_RPC"
+        elif ! _r=$(printf '%s' "$_b" | jq -r --arg pk "$VOTE_PUBKEY" "$_VAT_JQ" 2>/dev/null) || [[ -z "$_r" ]]; then _vat_why="the answer is not a batch of JSON-RPC results"
+        else
+            read -r _s _x1 _x2 _x3 <<< "$_r"
+            case "$_s" in
+                admitted|notadmitted|unstaked)
+                    _vat_state="$_s"
+                    _canon_uint "$_x1" && _vat_stake="$_x1"
+                    _canon_uint "$_x2" && _vat_epoch="$_x2"
+                    _canon_uint "$_x3" && _vat_left="$_x3" ;;
+                boundary) _vat_state="boundary"; _vat_why="the epoch changed during the read (${_x1} -> ${_x2})" ;;
+                *)        _vat_why="${_x1:-unreadable answer}"
+                          _canon_uint "$_x2" && _vat_epoch="$_x2"
+                          _canon_uint "$_x3" && _vat_left="$_x3" ;;
+            esac
+        fi
+    fi
+    _vat_read_ts=$(mono_now)
+    # the next scheduled read: admitted - at the EARLIEST the epoch can end (5 slots/s, the fastest rate, AG-1.6), never sooner than 30 s;
+    # anything else - at most every 600 s (or at the boundary, if sooner)
+    local _w=600
+    if [[ "$_vat_state" == "admitted" ]]; then
+        _w=3600; [[ -n "$_vat_left" ]] && _w=$(( _vat_left / 5 ))
+    elif [[ -n "$_vat_left" && $(( _vat_left / 5 )) -lt 600 ]]; then
+        _w=$(( _vat_left / 5 ))
+    fi
+    [[ $_w -lt 30 ]] && _w=30
+    _vat_next_ts=$(( _vat_read_ts + _w ))
+    return 0
+}
+# _vat_cycle - from the top of the main loop, on the schedule above (NOT every cycle): the first call reads; the first cycle after an epoch change
+# reads (the schedule wakes at the earliest possible boundary); while not admitted / unknown / boundary it re-reads at most every 10 minutes.
+# Logs a change of state; pages nothing by itself (the demote guard and the AG page carry the page).
+_vat_cycle() {
+    [[ -n "${VOTE_PUBKEY:-}" ]] || return 0
+    local _now _prev; _now=$(mono_now)
+    [[ $_now -ge ${_vat_next_ts:-0} ]] || return 0
+    _prev="${_vat_state:-}"
+    _vat_read
+    if [[ "$_vat_state" != "$_prev" ]]; then
+        case "$_vat_state" in
+            admitted)           log_info "[vat] vote account ${VOTE_PUBKEY} is IN the epoch ${_vat_epoch:-?} vote set (activated stake ${_vat_stake:-?} lamports)" ;;
+            notadmitted|unstaked) log_warn "[vat] vote account ${VOTE_PUBKEY} is NOT IN the epoch ${_vat_epoch:-?} vote set (${_vat_state}; activated stake ${_vat_stake:-?} lamports) - its votes are not counted; a demote or a take would not help" ;;
+            *)                  log_info "[vat] vote-set admission of ${VOTE_PUBKEY} reads ${_vat_state}${_vat_why:+ (${_vat_why})}" ;;
+        esac
+    fi
+    return 0
+}
+# _vat_reason - the reason class for a page: ONE bounded LOCAL getAccountInfo{jsonParsed} of the vote account. A V4 vote account at 4.4.0 exposes
+# blsPubkeyCompressed (null when absent) and pendingDelegatorRewards (account-decoder/src/parse_vote.rs, D0.5); a field the answer does not carry
+# prints as a LIMIT, never as a value (an older node's jsonParsed has neither).
+_vat_reason() {
+    local _b _rc _r _p
+    _b=$(curl -s -m 3 "$LOCAL_RPC" -X POST -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountInfo\",\"params\":[\"${VOTE_PUBKEY}\",{\"encoding\":\"jsonParsed\",\"commitment\":\"finalized\"}]}" 2>/dev/null)
+    _rc=$?
+    _watchdog_pet   # §5 per-op pet: bounded op completed (rc captured above) - no-op outside the armed unit
+    if [[ $_rc -ne 0 || -z "$_b" ]]; then printf 'unavailable (no answer from LOCAL_RPC getAccountInfo)'; return 0; fi
+    _p='(.result.value // null) as $v | if ($v | type) != "object" then "unavailable (no account in the answer)"'
+    _p+=' else ($v.data.parsed.info // null) as $i'
+    _p+=' | "vote account balance " + (if ($v.lamports | type) == "number" then ($v.lamports | tostring) + " lamports" else "unavailable" end)'
+    _p+=' + "; BLS key " + (if ($i | type) != "object" then "unavailable (not a parsed vote account in the answer - LIMIT)"'
+    _p+=' elif ($i | has("blsPubkeyCompressed")) then (if $i.blsPubkeyCompressed == null then "ABSENT (no BLS key: the filter drops the account)" else "present" end)'
+    _p+=' else "unavailable (this node jsonParsed has no blsPubkeyCompressed field - LIMIT)" end)'
+    _p+=' + "; pending delegator rewards " + (if ($i | type) == "object" and ($i | has("pendingDelegatorRewards")) then ($i.pendingDelegatorRewards | tostring) + " lamports" else "unavailable (field absent - LIMIT)" end) end'
+    _r=$(printf '%s' "$_b" | jq -r "$_p" 2>/dev/null) || r=""
+    [[ -n "$_r" ]] && printf '%s' "$_r" || printf 'unavailable (the answer could not be read)'
+}
+# _vat_summary [cached] - ONE line for a page: the admission state (read fresh now unless `cached`), and for a state that explains a silent vote the
+# reason class and the named limits (the top-2000 cut is not checked; balance against rent(V4) + one epoch's VAT is stated, the row in force is not read).
+_vat_summary() {
+    local _t
+    [[ "${1:-}" == "cached" ]] || _vat_read
+    case "$_vat_state" in
+        admitted)    _t="admitted (epoch ${_vat_epoch:-?}, activated stake ${_vat_stake:-?} lamports)" ;;
+        notadmitted) _t="NOT ADMITTED (epoch ${_vat_epoch:-?}: activated stake ${_vat_stake:-?} lamports but epochVoteAccount false - votes are not counted)" ;;
+        unstaked)    _t="NOT ADMITTED (epoch ${_vat_epoch:-?}: activated stake 0 - no stake to count)" ;;
+        boundary)    _t="unknown (epoch boundary: ${_vat_why:-the epoch changed during the read})" ;;
+        *)           _t="unknown (${_vat_why:-not read})" ;;
+    esac
+    case "$_vat_state" in
+        notadmitted|unstaked)
+            _t="${_t}; reason: $(_vat_reason); the filter keeps an account only with a BLS key, stake at the epoch snapshot, balance >= rent(V4) + one epoch's VAT (0.8 SOL per epoch on mainnet's 200 ms row, DESIGN-AG A11 - the row in force is not read here) and inside the top 2000 by stake (the cut is not checked - LIMIT)" ;;
+    esac
+    printf '%s' "$_t"
+}
+# _vat_hold <what fires> - called right before a VOTE-BASED demote (own-vote lag, vote latency, delinquency): rc 0 = WITHHOLD it, because this
+# node's vote account is positively NOT in the epoch's vote set (not admitted, or no stake) - one page, throttled by ALERT_THROTTLE; rc 1 = proceed
+# as ever (admitted, unknown, boundary, no VOTE_PUBKEY - the demote needs no VAT permission). A verdict of the withhold class read in the last
+# 120 s stands (the lag fires again every cycle: no read per cycle); anything else is read FRESH now - a lapse that starts at a boundary must be seen
+# before the lag trigger's ~27 s pass. The partition triggers (frozen slot, silent LOCAL RPC, getHealth behind, lost internet) never ask.
+_vat_hold() {
+    local _now; _now=$(mono_now)
+    if ! { [[ "$_vat_state" == "notadmitted" || "$_vat_state" == "unstaked" ]] && [[ ${_vat_read_ts:-0} -gt 0 && $(( _now - _vat_read_ts )) -lt 120 ]]; }; then
+        _vat_read
+    fi
+    case "$_vat_state" in
+        notadmitted|unstaked)
+            log_warn "[vat] ${1} withheld: the vote account ${VOTE_PUBKEY} is not in the epoch's vote set (${_vat_state}) - a demote would not help"
+            if [[ ${_vat_page_ts:-0} -eq 0 || $(( _now - _vat_page_ts )) -ge ${ALERT_THROTTLE:-600} ]]; then
+                _vat_page_ts=$_now
+                alert "${1} would have demoted this node, but its vote account ${VOTE_PUBKEY} is NOT IN THE EPOCH'S VOTE SET: its votes are not counted (Alpenglow VAT admission), so a demote would not help. $(_vat_summary cached)" "$STAKED_PUBKEY" "NOT IN THE EPOCH'S VOTE SET 🚨"
+            fi
+            return 0 ;;
+    esac
+    return 1
+}
 # ── [ag] end shared block ──
 
 # ── v0.7 (Block 3, slice-4 rework) — TAKEOVER STARVATION PAGE (STANDBY ONLY; page-only) ────────
@@ -6305,6 +6442,8 @@ check_self_fence_isolation() {
                 [[ $_selffence_votelag_since -eq 0 ]] && _selffence_votelag_since=$now
                 vlsust=$(( now - _selffence_votelag_since ))
                 if [[ $vlsust -ge $SELF_FENCE_VOTE_LAG_SECS ]]; then
+                    # v0.7 (AG-1.4): a VOTE-BASED trigger does not demote a node whose vote account is positively not in the epoch's vote set (its votes cannot count: a demote would not help) - one page instead
+                    if _vat_hold "own-vote lag ${_sf_vshow} for ${vlsust}s"; then return 1; fi
                     log_warn "[self-fence] OWN vote lagging cluster-max by ${_sf_vshow} (> ${SELF_FENCE_VOTE_LAG_SLOTS}) for ${vlsust}s (>= ${SELF_FENCE_VOTE_LAG_SECS}s) while staked — votes not landing (egress isolation) → give back to unstaked"
                     _selffence_demote "self-fence: own votes not landing (lag ${_sf_vshow}, ${vlsust}s) — egress isolation"
                     return 0
@@ -7094,6 +7233,7 @@ else
     log_info "[alpenglow] tripwire DISABLED (ALPENGLOW_GATE_CHECK_HOURS=0)"
 fi
 log_info "[version] minimum validator version ${MIN_VALIDATOR_VERSION} (read from LOCAL_RPC getVersion once the validator answers; the AG page reads it fresh)"
+log_info "[vat] vote-set admission of ${VOTE_PUBKEY:-<no VOTE_PUBKEY>} is read from LOCAL_RPC at finalized: on the first cycle after an epoch change, at most every 10 min while not admitted or unknown, and right before a vote-based demote"
 
 while $_running; do
     STAT_CHECKS=$((STAT_CHECKS + 1))
@@ -7101,6 +7241,7 @@ while $_running; do
     heartbeat_ping   # v0.6.4: external watchdog ping — top of loop, before any `continue`
     _alpenglow_gate_check   # v0.7 (pre-Block-4, №9): read-only Alpenglow gate probe — self-gates on cadence; top of loop, NEVER inside a takeover/recovery/verdict path (act-then-alert untouched: this network read is nowhere near a mutation)
     _version_startup_check   # v0.7 (AG-1.5): ONE startup page when the validator is below MIN_VALIDATOR_VERSION or its version stays unreadable; self-gates (60 s retries until decided); top of loop, NEVER inside a take path
+    _vat_cycle   # v0.7 (AG-1.4): VAT admission of the vote account, read on its own schedule (epoch change / every 10 min while not admitted) - NOT every cycle; top of loop, NEVER inside a take path
     _fence_rot_check   # v0.7 (Block 5.4, §2.1-rev2.1 №2): armed holder-side fence re-verification — self-gates on _watchdog_active + cadence; bounded property reads + paging only, EXCEPT the grace-expiry graceful demote, which reuses the existing demote path (safety action first — act-then-alert holds inside it)
 
     CURRENT_IDENTITY=$(get_local_identity 2>/dev/null) || true
