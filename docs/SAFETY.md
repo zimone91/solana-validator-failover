@@ -114,13 +114,14 @@ its garbage and both N6 rows already held theirs — fix round 2's text said "ev
 mixes — every LOCAL read at 4 s, and every LOCAL read 1 s inside its own `-m` bound (the `-m 10` reads at
 9 s): frozen slot **52–127 s** / 57–87 s (frozen is not monotonic in latency: a slower LOCAL read can reach the
 frozen read sooner), dead local RPC refusing 52–74 / 52–74 s, dead local RPC with every read at its bound
-57–114 s, garbage answers 26–78 / 26–83 s, egress-only (N6) 60–86 / 65–96 s at 2.5 slots/s and 60–84 /
-65–94 s at 3.7; with only the tiers at their bounds (prompt LOCAL and admin reads) frozen 30–52 s. These are
+57–114 s, garbage answers 26–78 / 26–83 s, egress-only (N6) 63–89 / 67–98 s at 2.5 slots/s and 63–87 /
+67–96 s at 3.7 (AG-1.4: the N6 demote first reads the vote account's admission — one LOCAL `curl -m 3` — so these four
+cells are 3 s / 2 s later than the 60–86 / 65–96 and 60–84 / 65–94 s measured before it); with only the tiers at their bounds (prompt LOCAL and admin reads) frozen 30–52 s. These are
 two sample mixes, not the maximum over every mix. **CROSSINGS at the worst case:** frozen crosses the 73 / 79
 s spares (by up to 54 / 48 s), the 104 and 125 s spares (by 23 / 2 s) and the 119 s mint (by 8 s);
 dead-at-its-bound the 73 / 79 s spares (by 41 / 35 s) and the 104 s one (by 10 s); dead-refusing the 73 s
-spare (by 1 s); garbage the 73 / 79 s spares (by 10 / 4 s); N6 the 79 s spare at 2.5 (by 17 s) and the 73 s
-one at 3.7 (by 21 s); the tiers-only frozen row holds (by 21 s). A slow holder host fences later than a spare
+spare (by 1 s); garbage the 73 / 79 s spares (by 10 / 4 s); N6 the 79 s spare at 2.5 (by 19 s) and the 73 s
+one at 3.7 (by 23 s); the tiers-only frozen row holds (by 21 s). A slow holder host fences later than a spare
 with prompt I/O can take.
 
 **Every CROSSING above is a double-sign exposure of this build, named here, not a margin.** Most of

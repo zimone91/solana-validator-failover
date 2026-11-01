@@ -106,7 +106,7 @@ $region
     log() { :; }; log_info() { :; }; log_error() { case "$*" in *"[self-fence]"*|*HARD*) echo "sfe t=$(_t) ${*:0:170}" >> "$EV" ;; esac; }
     log_warn() { case "$*" in *">>> SWITCHING TO UNSTAKED"*|*"[self-fence]"*) echo "sfw t=$(_t) ${*:0:170}" >> "$EV" ;; esac; }
     alert() { :; }; alert_info() { :; }; alert_warn() { :; }; send_telegram() { :; }; send_webhook() { :; }
-    rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _fence_rot_check() { :; }
+    rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _vat_cycle() { :; }; _fence_rot_check() { :; }
     flush_pending_alerts() { :; }; _sd_notify() { :; }
     display_status() { echo "cycle t=$(_t) status=$1" >> "$EV"; }
     check_internet() { return 0; }
@@ -540,19 +540,23 @@ row "c6′h" "the (d′) mix with c3h's ops" "119-149 / 121-153" "$(g35p s14kDb)
 
 # ── (d) the worst-case I/O column (F4; fix round 2 S4 — T1-D6: every row phase-swept) ──────────────────
 echo ""; echo "─── (d) F4: the worst-case I/O column — CHECK_INTERVAL 3, the tiers at their bounds, the admin socket at 7 s, LOCAL reads at 4 s, over the collision check's 60 s phase ───"
+# AG-1.4: the own-vote-lag demote (N6) first reads the vote account's admission (_vat_hold -> _vat_read, ONE LOCAL curl -m 3) -
+# the four N6 rows below moved by that read's cost: +3 s in the first mix (every LOCAL read at 4 s: the read meets its -m 3
+# bound; was 60-86 / 60-84), +2 s in the second (every LOCAL read 1 s inside its OWN bound; was 65-96 / 65-94). The prompt-I/O
+# rows a4 / a5 are unchanged: a prompt read costs no whole second in this integer-second model. The other classes never ask.
 row d1 "frozen slot (before fix round 2, 8 offsets: 76-120)" "52-127" "$(spanp iofz 3)" 127
 row d2 "dead local RPC, refusing (8 offsets: 52-66)" "52-74" "$(spanp iodr 3)" 74
 row d3 "dead local RPC, every LOCAL read at its bound (admin 7 s, tiers at their bounds; 8 offsets: 57-106)" "57-114" "$(spanp iodh 3)" 114
 row d4 "garbage answers (8 offsets: 34-78)" "26-78" "$(spanp iogb 3)" 78
-row d5 "egress-only at 2.5 slots/s (N6)" "60-86" "$(spanp ioe25 3)" 86
-row d6 "egress-only at 3.7 slots/s (N6)" "60-84" "$(spanp ioe37 3)" 84
+row d5 "egress-only at 2.5 slots/s (N6)" "63-89" "$(spanp ioe25 3)" 89
+row d6 "egress-only at 3.7 slots/s (N6)" "63-87" "$(spanp ioe37 3)" 87
 row d7 "frozen slot, the tiers at their bounds ONLY (prompt LOCAL and admin; 8 offsets: 31-47)" "30-52" "$(spanp iot 3)" 52
 echo ""; echo "─── (d′) CK-3: the second I/O mix — every LOCAL read 1 s inside its OWN -m bound (the -m 10 reads at 9 s), admin 7 s, tiers at their bounds, phase-swept ───"
 row "d′1" "frozen slot (non-monotonic in latency: a slower LOCAL read can reach the frozen read sooner)" "57-87" "$(spanp bfz 3)" 87
 row "d′2" "dead local RPC, refusing" "52-74" "$(spanp bdr 3)" 74
 row "d′3" "garbage answers" "26-83" "$(spanp bgb 3)" 83
-row "d′4" "egress-only at 2.5 slots/s (N6)" "65-96" "$(spanp be25 3)" 96
-row "d′5" "egress-only at 3.7 slots/s (N6)" "65-94" "$(spanp be37 3)" 94
+row "d′4" "egress-only at 2.5 slots/s (N6)" "67-98" "$(spanp be25 3)" 98
+row "d′5" "egress-only at 3.7 slots/s (N6)" "67-96" "$(spanp be37 3)" 96
 
 rm -rf "$WORK"
 results_banner
