@@ -103,7 +103,6 @@ arm_startup_primary() {  # $1=DRY_RUN $2=fence-state
   DELINQUENCY_WINDOW_SIZE=10; DELINQUENCY_WINDOW_THRESHOLD=7
   TIER2_RPC=""; TIER3_RPC=""                            # M8 vantage warn short-circuits on empty
   detect_ledger_path(){ LEDGER_PATH=/tmp/led; }
-  detect_tower_base(){ :; }
   get_validator_args(){ echo ""; }                     # no --identity → startup-identity check skipped
   validate_keypair_file(){ [[ "$1" == "$STAKED_KEYPAIR" ]] && echo "STAKEDPK" || echo "UNSTAKEDPK"; }
   log(){ :;}; log_info(){ :;}; log_warn(){ :;}; log_error(){ :;}; alert(){ :;}; alert_warn(){ :;}; send_telegram(){ return 0;}; send_webhook(){ :;}

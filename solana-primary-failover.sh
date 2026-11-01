@@ -115,7 +115,6 @@ STAKED_KEYPAIR="/root/solana/mainnet-validator-keypair.json"
 UNSTAKED_KEYPAIR="/root/solana/unstaked-identity.json"
 SOLANA_PATH="$HOME/.local/share/solana/install/active_release/bin"
 LEDGER_PATH=""                            # auto-detect from systemd if empty
-TOWER_PATH=""                             # auto-detect from systemd if empty
 CONFIG_TOML=""                            # for frankendancer only
 VALIDATOR_SERVICE="solana"                # systemd unit name of the validator (ledger auto-detect fallback)
 
@@ -335,7 +334,6 @@ _last_unknown_alert=0                     # re-page throttle inside an unknown-i
 _last_recovery_log=0
 _recovery_confirm_count=0
 _running=true
-_cached_tower_base=""
 _last_heartbeat=0
 _last_hb_ping=0                           # v0.6.4: last external watchdog ping (own timer)
 _last_known_identity=""                   # detect manual identity changes
@@ -2105,6 +2103,56 @@ _alpenglow_status_line() {
 # (AG-1.2). The non-AG take path stays in the code as the base for AG-3 and is reachable only by tests, which shadow
 # this function to return 1 after sourcing a daemon (the seam idiom: tests/lib/harness.sh `harness_ag_off`).
 _ag_mode() { return 0; }
+
+# ── the vote-history file: CLASSIFIED and LOGGED, never touched (AG-1.3; G1 support, G6) ────────────────────────
+# Alpenglow's set-identity needs <ledger>/vote_history-<node pubkey>.bin (D0.4: agave validator/src/commands/run/execute.rs:582-584,
+# jito :590-592 — the file lives in the ledger directory whatever --tower says; no flag moves it). A WARM swap copies that file from the
+# old holder to the new one (docs/SAFETY.md, Alpenglow); a cold take is an operator decision, never FO's. So FO only ever LOOKS at it:
+# `stat` for the mtime and the size, one bounded read for the sha256. It never deletes, moves, copies, truncates or rewrites the file
+# (and the tower deletion of the v0.6 primary demote is gone): tests/test_tower_handling.sh pins that by bash's own parse.
+# _sha256_of <file> — the file's sha256 (hex) on stdout; rc 1 when no hashing tool exists or the bounded read failed.
+# `timeout` bounds the read where it exists (every deploy host); a macOS test box without it still hashes.
+_sha256_of() {
+    local _h _tb=""
+    command -v timeout >/dev/null 2>&1 && _tb="timeout -k 2 10"
+    # shellcheck disable=SC2086
+    if command -v sha256sum >/dev/null 2>&1; then _h=$($_tb sha256sum "$1" 2>/dev/null) || return 1
+    elif command -v shasum >/dev/null 2>&1; then _h=$($_tb shasum -a 256 "$1" 2>/dev/null) || return 1
+    else return 1; fi
+    _h="${_h%% *}"
+    [[ "$_h" =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf '%s' "$_h"
+}
+# _vh_class [<episode-start, epoch seconds>] — the class of THIS node's vote-history file for the STAKED identity, one line, rc 0:
+#   absent
+#   present (mtime=<epoch s> size=<bytes> sha256=<hex>)
+#   present-and-older-than-episode (…same fields…, episode-start=<epoch s>)  — its mtime is before the episode's first sample (wall time)
+#   unavailable (<why>)                                                      — LEDGER_PATH empty, no staked pubkey, not a regular file
+# A field that cannot be read inside `present` prints `unreadable` and the line still goes out; the caller pages or logs it as it is.
+_vh_class() {
+    local _vp _m _s _h _ep="${1:-}" _cls="present" _tail=""
+    [[ -n "${LEDGER_PATH:-}" ]] || { printf 'unavailable (LEDGER_PATH empty)'; return 0; }
+    [[ -n "${STAKED_PUBKEY:-}" ]] || { printf 'unavailable (staked pubkey unknown)'; return 0; }
+    _vp="${LEDGER_PATH}/vote_history-${STAKED_PUBKEY}.bin"
+    [[ -e "$_vp" ]] || { printf 'absent'; return 0; }
+    [[ -f "$_vp" ]] || { printf 'unavailable (not a regular file)'; return 0; }
+    _m=$(stat -c %Y "$_vp" 2>/dev/null); case "$_m" in ''|*[!0-9]*) _m=$(stat -f %m "$_vp" 2>/dev/null) ;; esac   # GNU/busybox stat, then BSD stat (macOS harness)
+    case "$_m" in ''|*[!0-9]*) _m="unreadable" ;; esac
+    _s=$(stat -c %s "$_vp" 2>/dev/null); case "$_s" in ''|*[!0-9]*) _s=$(stat -f %z "$_vp" 2>/dev/null) ;; esac
+    case "$_s" in ''|*[!0-9]*) _s="unreadable" ;; esac
+    _h=$(_sha256_of "$_vp") || _h="unreadable"
+    _watchdog_pet   # §5 per-op pet: the bounded read completed — no-op outside the armed unit
+    if [[ "$_ep" =~ ^[0-9]+$ && "$_m" =~ ^[0-9]+$ ]]; then
+        _tail=" episode-start=$_ep"
+        [[ $((10#$_m)) -lt $((10#$_ep)) ]] && _cls="present-and-older-than-episode"
+    fi
+    printf '%s (mtime=%s size=%s sha256=%s%s)' "$_cls" "$_m" "$_s" "$_h" "$_tail"
+}
+# _vh_log_after_demote <what> — after a CONFIRMED demote (the primary's switch_to_unstaked, the standby's give_back_identity):
+# the class and sha256 of the file a warm swap would copy to the next holder. A log line only; nothing is read twice.
+_vh_log_after_demote() {
+    log_info "[vote-history] after ${1:-the demote}: ${LEDGER_PATH:-<LEDGER_PATH empty>}/vote_history-${STAKED_PUBKEY:-<staked pubkey unknown>}.bin is $(_vh_class) — the file a warm swap copies to the next holder; FO never deletes, moves or rewrites it"
+}
 # ── [ag] end shared block ──
 
 
@@ -2251,8 +2299,6 @@ attempt_safe_recovery() {
 }
 
 # ========================= IDENTITY SWITCHING =================================
-
-get_tower_path() { echo "${_cached_tower_base}/tower-1_9-${STAKED_PUBKEY}.bin"; }
 
 # v0.6.8 (S4): pid of the running validator (any client), or empty if none is running.
 _validator_pid() {
@@ -5095,9 +5141,6 @@ switch_to_unstaked() {
             _selffence_hard_stop "authorized-voter remove-all timed out (${SETIDENTITY_TIMEOUT}s) — admin socket wedged"; return $?
         fi
 
-        local tower_file; tower_file=$(get_tower_path)
-        [[ -f "$tower_file" ]] && { rm -f "$tower_file"; log_info "Removed tower: $tower_file"; }
-
         # v0.5.9: path-as-argument (official Anza failover API)
         # v0.6.8 (B1): bound set-identity; on a hang escalate to a hard stop so voting provably stops.
         out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" set-identity "$UNSTAKED_KEYPAIR" 2>&1); _rc=$?
@@ -5111,6 +5154,7 @@ switch_to_unstaked() {
     sleep 1    # v0.5.9: reduced from 2s
     CURRENT_IDENTITY=$(get_local_identity) || true
     if [[ "$CURRENT_IDENTITY" == "$UNSTAKED_PUBKEY" ]]; then
+        _vh_log_after_demote "the demote to unstaked"   # v0.7 (AG-1.3): the class and sha256 of the history file a warm swap would copy; never touched
         LAST_SWITCH_TIME=$(mono_now); STAT_SWITCHES=$((STAT_SWITCHES + 1)); save_state   # v0.6.1 (F7)
         _recovery_confirm_count=0; _standby_alert_sent=""; _last_switch_fail_alert=0; window_reset
         reset_recovery_liveness; _selffence_reset   # v0.6.3 (Block 2/3): fresh trackers after the switch
@@ -5179,7 +5223,8 @@ switch_to_staked() {
         local out
         # v0.6.0: NO --require-tower — split-brain safety is gossip-based and towers aren't
         # transferred between nodes, so a rebuilt tower is the safe path. --require-tower would
-        # also block recovery (the tower was deleted going unstaked). Manual switchback scp's it first.
+        # also block recovery. Manual switchback scp's it first. (v0.7 AG-1.3: a demote no longer deletes the tower — nothing
+        # here deletes, moves or rewrites a tower or a vote-history file; this retained path is withheld in AG mode.)
         # v0.6.8 (B1): bound but fail-safe (no escalation on the promote path).
         out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" set-identity "$STAKED_KEYPAIR" 2>&1); local _src=$?
         [[ -n "$out" ]] && log_info "set-identity: $out"
@@ -5611,18 +5656,6 @@ detect_ledger_path() {
     log_info "Ledger: $LEDGER_PATH (auto-detected)"
 }
 
-detect_tower_base() {
-    # v0.6.1 (N2): honor an explicit TOWER_PATH override (was declared but ignored).
-    if [[ -n "$TOWER_PATH" ]]; then
-        _cached_tower_base="$TOWER_PATH"
-        log_info "Tower base: $_cached_tower_base (TOWER_PATH override)"
-        return
-    fi
-    local t; t=$(_extract_arg '--tower' "$(get_validator_args)")
-    _cached_tower_base="${t:-$LEDGER_PATH}"
-    log_info "Tower base: $_cached_tower_base"
-}
-
 # ========================= NUMERIC CONFIG VALIDATION (v0.6.5 F4) ===============
 # Bash arithmetic treats a non-numeric value (e.g. "abc", "10s") as 0, which would silently collapse
 # a delay/interval/threshold. Validate every numeric knob at startup: require ^[0-9]+$, normalize via
@@ -5777,7 +5810,7 @@ startup_checks() {
     else
         [[ -f "$SOLANA_PATH/agave-validator" ]] || { log_error "agave-validator not found"; exit 1; }
         [[ -f "$SOLANA_PATH/solana-keygen" ]] || { log_error "solana-keygen not found"; exit 1; }
-        detect_ledger_path; detect_tower_base
+        detect_ledger_path
     fi
     command -v jq &>/dev/null || { log_error "jq required"; exit 1; }
 

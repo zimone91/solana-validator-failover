@@ -225,7 +225,6 @@ drive_rot() {
                     *) if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@" ;;
                 esac
             }
-            get_tower_path() { echo "$MOCK_DIR/tower"; }
             save_state() { :; }
             sleep() { :; }
             DEMOTES=""; DEMOTE_TEXT=""

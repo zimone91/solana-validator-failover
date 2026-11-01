@@ -166,8 +166,10 @@ time and its three slowest against the cap.
 - `test_required_fence.sh` — keeps its awk extraction: the region must EXCLUDE its end line (a
   sed range would source-execute `load_state`); it gained the loud-empty check instead.
 - `test_alpenglow_tripwire.sh` case (9) parity — keeps its own `-n` guard (already loud).
-- `test_demote_killafter.sh` / `test_tower_handling.sh` — structural-only suites; local
-  assert_absent/assert_present kept.
+- `test_demote_killafter.sh` — structural-only suite; local assert_absent/assert_present kept.
+- `test_tower_handling.sh` — its sections 1, 2 and 8 stay structural (local assert_absent/assert_present kept);
+  since AG-1.3 it also drives the real demotes over a scratch ledger and censuses the eight shipped scripts by
+  bash's own parse (bp_parse, BP_AWK_LIB: the awk accumulator is `VIOL` because BP_AWK_LIB owns the global array `V`).
 - Clock/sink shims that are near-verbatim VARIANTS (not byte-identical) stay suite-local — the
   4.2 census found zero byte-identical sink blocks and one byte-identical clock pair; only
   byte-identical code migrates, variants are honest local state.
