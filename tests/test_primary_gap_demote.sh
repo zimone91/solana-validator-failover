@@ -29,6 +29,19 @@
 # RED ON THE BASE (4c6bbc5 + this suite): no _cycle_sleep / _gap_latch / _gap_demote / HOLDER_GAP_DEMOTE_SECS exist, so the demote never
 # fires on a gap, a 29 s knob is accepted, the census finds no site; after the change they hold.
 #
+# AG-3.8 - THE HUNG HOLDER'S RUNG, in the same world (an X cycle = the identity read fails; it lasts 11 s: XREAD=8 s of failed read + the 3 s sleep):
+#   (13) identity unreadable 55 s + LOCAL getSlot silent + lastVote frozen while the cluster tip advances -> _selffence_hard_stop exactly once
+#        ("holder unreachable 55s, local RPC silent, lastVote frozen"), then the 'HOLDER HUNG — HARD STOP' page (act, then alert); a confirmed stop latches
+#   (14) lastVote grows -> no stop, ONE throttled 'HOLDER UNREACHABLE — not stopped (lastVote grows ...)' page
+#   (15) no external answer / LOCAL getSlot answers (and then no second external read) / a restarted process / a busy unit / a stale or backwards view /
+#        no process at the first cycle -> no stop, a page with its own reason; (15b) a provider flip re-baselines, the next cycle decides
+#   (16) the identity reads again -> the episode is over (a stamp kept across it would stop the validator)
+#   (17) DRY_RUN -> the dry page once per ALERT_THROTTLE, no stop, no admin call
+#   (18) a ladder that did not confirm is retried only after ALERT_THROTTLE; an unstaked node is never sampled; N = the knob fires (>=)
+#   (19) HOLDER_UNREACHABLE_STOP_SECS=29 refuses to start   (20) _validator_pid: the unit's MainPID (canonical, > 1, alive) first, pgrep after
+#   (21) structure: _hung_check in the unreachable branch before the display, _hung_reset right after the readable identity; the standby has none of it
+# RED ON THE BASE (aa49329 + this suite): no _hung_check, so no hung holder is ever stopped, a 29 s knob is accepted, _validator_pid ignores MainPID.
+#
 # harness: tests/lib/harness.sh - ok/bad+banners, paths, mutate(), extract_region.
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
@@ -42,7 +55,7 @@ STK="StakedPubkey111111111111111111111111111111"
 UNS="UnstakedPubkey1111111111111111111111111111"
 
 # ── the world: the REAL loop region over a plan, an ordered event log ─────────────────────────────────────────────────
-gap_world() {   # gap_world <script> <plan> [VAR=val ...] -> the events, one per line: CYCLE k / IDENT x / INET / SELFFENCE / COLLISION / TIER1 / WINDOW_RESET / DEMOTE <reason> / PAGE <status> / ADMIN <argv> / LOG[W] <gap line> / SLEEP n / GRACE n
+gap_world() {   # gap_world <script> <plan> [VAR=val ...] -> the events, one per line: CYCLE k / IDENT x / INET / SELFFENCE / COLLISION / TIER1 / WINDOW_RESET / DEMOTE <reason> / PAGE <status> / ADMIN <argv> / LOG[W] <gap line> / SLEEP n / GRACE n / (AG-3.8) WPAGE <alert_warn text> / TXT <alert text> / SAMPLE / LOCALSLOT / HARDSTOP <why>
     local script="$1" plan="$2" cs region; shift 2
     cs=$(cut_src "$script")
     region=$(extract_region "$script" '^while \$_running; do' '^done$') || { echo "NO-REGION"; return 0; }
@@ -63,6 +76,7 @@ $region
         TG_ENABLED=false; DRY_RUN=false; ALERT_THROTTLE=600; PRIMARY_SELF_FENCE=true; CHECK_INTERVAL=3; TURBO_INTERVAL=1; _current_interval=3
         CONNECTIVITY_RETRIES=99; MAX_VOTE_LATENCY=0; DELINQUENCY_RETRIES=1; STARTUP_GRACE=30; RECOVERY_MODE=manual; SETIDENTITY_TIMEOUT=15
         _SIM_NOW=1700000000; DEMOTE_FAILS=0; _dcalls=0
+        T_BASE=1700000000; XREAD=0; LVMODE=down; SLOTMODE=silent; PIDMODE=same; UNITBUSY=""; HS_RC=0   # AG-3.8: an unreadable cycle costs XREAD s more; the external lastVote / local RPC / pid / unit worlds
         for kv in "$@"; do eval "$kv"; done
         [[ "$MAX_VOTE_LATENCY" == "0" && "$plan" == *l* ]] && MAX_VOTE_LATENCY=10
         mono_now() { echo "$_SIM_NOW"; }
@@ -73,8 +87,8 @@ $region
         case "$(tok_id)" in S) _last_known_identity="$STK" ;; U) _last_known_identity="$UNS" ;; *) _last_known_identity="$STK" ;; esac
         rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _vat_cycle() { :; }; _fence_rot_check() { :; }; _g2_step() { :; }; _elapsed_step() { :; }
         flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }; _watchdog_pet() { :; }; send_telegram() { return 0; }; send_webhook() { :; }
-        log_info() { case "$1" in *"[gap]"*) ev "LOG $1" ;; esac; }; log_warn() { case "$1" in *"[gap]"*) ev "LOGW $1" ;; esac; }; log_error() { :; }
-        alert() { ev "PAGE $3"; return 0; }; alert_info() { :; }; alert_warn() { :; }
+        log_info() { case "$1" in *"[gap]"*) ev "LOG $1" ;; esac; }; log_warn() { case "$1" in *"[gap]"*|*"[hung]"*) ev "LOGW $1" ;; esac; }; log_error() { :; }
+        alert() { ev "PAGE $3"; ev "TXT ${1:0:600}"; return 0; }; alert_info() { :; }; alert_warn() { ev "WPAGE ${1:0:600}"; }
         get_local_identity() { ev "IDENT $(tok_id)"; case "$(tok_id)" in S) echo "$STAKED_PUBKEY" ;; U) echo "$UNSTAKED_PUBKEY" ;; *) return 0 ;; esac; }
         check_internet() { ev INET; tok_has i && return 1; return 0; }
         check_self_fence_isolation() { ev SELFFENCE; tok_has f && return 0; return 1; }
@@ -83,6 +97,22 @@ $region
         tier1_get_vote_latency() { tok_has l && echo 99 || echo 1; }
         verify_latency_tiered() { return 0; }
         _vat_hold() { return 1; }
+        _validator_pid() { case "$PIDMODE" in none) ;; changed) if [[ $_SIM_NOW -ge $(( T_BASE + 30 )) ]]; then printf '5555'; else printf '4242'; fi ;; *) printf '4242' ;; esac; }
+        _hung_unit_busy() { [[ -n "$UNITBUSY" ]] || return 1; printf '%s' "$UNITBUSY"; return 0; }
+        _hung_local_slot() { ev LOCALSLOT; [[ "$SLOTMODE" == "answers" ]] && printf '123456789'; return 0; }
+        get_staked_liveness_sample() {   # the external vote-account read: lastVote / the same payload's cluster tip / the provider tier
+            ev SAMPLE
+            local d=$(( _SIM_NOW - T_BASE )) tier=T2
+            case "$LVMODE" in
+                frozen)  printf '5000 %s %s\n' $(( 9000 + d )) "$tier" ;;
+                growing) printf '%s %s %s\n' $(( 5000 + 2 * d )) $(( 9000 + d )) "$tier" ;;
+                stale)   printf '5000 9000 %s\n' "$tier" ;;
+                back)    printf '%s %s %s\n' $(( 5000 - d )) $(( 9000 + d )) "$tier" ;;
+                flip)    [[ $d -ge 30 ]] && tier=T3; printf '5000 %s %s\n' $(( 9000 + d )) "$tier" ;;
+                *)       return 1 ;;
+            esac
+        }
+        _selffence_hard_stop() { ev "HARDSTOP $1"; _hs_branch="${HS_BRANCH:-normal ladder (process state S)}"; return $HS_RC; }
         window_push() { :; }; window_count() { echo 0; }; window_triggered() { return 1; }; window_mostly_clear() { return 1; }; window_reset() { ev WINDOW_RESET; }
         if [[ "${REAL_DEMOTE:-0}" != "1" ]]; then
             switch_to_unstaked() { _dcalls=$((_dcalls + 1)); ev "DEMOTE $1"; [[ $_dcalls -le $DEMOTE_FAILS ]] && return 1; return 0; }
@@ -93,6 +123,7 @@ $region
             fi
             ev "SLEEP $1"
             _SIM_NOW=$(( _SIM_NOW + $1 + $(tok_freeze) ))
+            [[ "$(tok_id)" == "X" ]] && _SIM_NOW=$(( _SIM_NOW + XREAD ))   # the failed identity read (the real one times out at 8 s) is time the cycle took
             IDX=$(( IDX + 1 ))
             if [[ $IDX -ge ${#PLAN[@]} ]]; then _running=false; else ev "CYCLE $IDX"; fi
         }
@@ -267,12 +298,262 @@ struct_why() {   # struct_why <script> -> why the structure is wrong (empty = ri
 struct_ok() { [[ -z "$(struct_why "$1")" ]]; }
 w11=$(struct_why "$PRIMARY")
 [[ -z "$w11" ]] && ok "(11) the loop has five _cycle_sleep sites and ONE raw _watchdog_sleep (the STARTUP_GRACE wait inside the manual-change branch); _gap_latch is called once, before the identity read; _gap_demote once, after it and before check_internet and the self-fence; _cycle_sleep stamps, then sleeps" || bad "(11) structure:$w11"
-# The standby carries no stamp and never assigns or expands the knob. It NAMES the knob in text - the other half of the pairing rule (AG-3.1b: the comments, the armed
-# start-up refusal and the unarmed warning say "the holder's HOLDER_GAP_DEMOTE_SECS + 30") - so a mention is not a use.
-sb_gap_use() { grep -c -E '_cycle_end_ts|^[[:space:]]*(export[[:space:]]+)?HOLDER_GAP_DEMOTE_SECS=|\$\{?HOLDER_GAP_DEMOTE_SECS' "$1"; }
+# The standby carries no stamp, no latch, no demote and never assigns or expands the knob. It NAMES the knob in text - the other half of the pairing rule (AG-3.1b: the comments,
+# the armed start-up refusal and the unarmed warning say "the holder's HOLDER_GAP_DEMOTE_SECS + 30") - so a mention is not a use.
+sb_gap_use() { grep -c -E '_cycle_end_ts|_gap_latch|_gap_demote|^[[:space:]]*(export[[:space:]]+)?HOLDER_GAP_DEMOTE_SECS=|\$\{?HOLDER_GAP_DEMOTE_SECS' "$1"; }
 sb_gap_clean() { [[ "$(sb_gap_use "$1")" == "0" ]]; }
 sb_gap_clean "$STANDBY" \
-    && ok "(11b) the gap rule is the holder's: the standby carries no stamp and never assigns or expands the knob (it names the knob in text: the pairing rule)" || bad "(11b) the standby uses the holder's gap rule: $(sb_gap_use "$STANDBY") line(s)"
+    && ok "(11b) the gap rule is the holder's: the standby carries no stamp, no latch, no demote and never assigns or expands the knob (it only NAMES the pairing rule: comments, the armed refusal, the unarmed warning)" || bad "(11b) the standby uses the holder's gap mechanism: $(sb_gap_use "$STANDBY") line(s)"
+
+# ══ AG-3.8: THE HUNG HOLDER'S RUNG ════════════════════════════════════════════════════════════════════════════════════════
+# A validator that is alive but mute keeps the staked identity; its admin socket answers nothing, so the identity read fails on every cycle and
+# the unreachable branch used to only page. _hung_check (the unreachable branch) hard-stops it through _selffence_hard_stop once the identity
+# has been unreadable for HOLDER_UNREACHABLE_STOP_SECS AND it is the same process AND LOCAL getSlot is silent AND the vote account's lastVote
+# (one external read) has not moved while the cluster tip did. Every doubt is a page, never a kill. The world: PLAN "S X X ..." - an X cycle
+# is 11 s long (XREAD=8 s of failed identity read + the 3 s sleep), so the stamp is at the first X, N = 11 k, and the first evaluating cycle
+# is the fourth X (N=33 >= 30). LVMODE / SLOTMODE / PIDMODE / UNITBUSY / HS_RC / HS_BRANCH set what the external read, the local RPC, the pid,
+# the unit and the ladder do.
+PL9="S X X X X X X X X"
+hs_n() { n_of "$1" '^HARDSTOP'; }
+wp_n() { printf '%s\n' "$1" | grep -c -F 'WPAGE HOLDER UNREACHABLE — not stopped ('; }
+reason_kept() { [[ "$(hs_n "$1")" == "0" && "$(printf '%s\n' "$1" | grep -c -F "WPAGE HOLDER UNREACHABLE — not stopped ($2")" == "1" && "$(n_of "$1" '^ADMIN')" == "0" ]]; }
+
+# ── (13) the hung holder is hard-stopped, once, and the page comes after the stop ─────────────────────────────────────────
+echo ""; echo "─── (13) identity unreadable 33 s + LOCAL getSlot silent + lastVote frozen while the tip advances -> ONE hard stop, then the page ───"
+ev13=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen)
+p_hung_stop() {
+    local e="$1" i_hs i_pg
+    [[ "$(hs_n "$e")" == "1" && "$(n_of "$(cyc "$e" 4)" '^HARDSTOP holder unreachable 33s, local RPC silent, lastVote frozen$')" == "1" \
+       && "$(n_of "$e" '^PAGE HOLDER HUNG — HARD STOP 🚨$')" == "1" && "$(wp_n "$e")" == "0" \
+       && "$(n_of "$e" '^ADMIN')" == "0" && "$(n_of "$e" '^DEMOTE')" == "0" && "$(n_of "$(cyc "$e" 1)" '^SAMPLE')" == "1" && "$(n_of "$e" '^SAMPLE')" == "2" ]] || return 1
+    i_hs=$(printf '%s\n' "$e" | grep -n '^HARDSTOP' | head -1 | cut -d: -f1); i_pg=$(printf '%s\n' "$e" | grep -n '^PAGE HOLDER HUNG' | head -1 | cut -d: -f1)
+    [[ -n "$i_hs" && -n "$i_pg" && $i_hs -lt $i_pg ]]
+}
+t13=$(printf '%s\n' "$ev13" | grep '^TXT Hung holder: ')
+if p_hung_stop "$ev13" && [[ "$t13" == *"the identity has been unreadable for 33s (validator pid 4242), LOCAL getSlot is silent, and lastVote 5000 has not moved for 33s while the cluster tip advanced (9003 to 9036)"* && "$t13" == *"confirmed DOWN"* ]]; then
+    ok "(13) 11 s cycles: the stamp and the first lastVote sample on the first unreadable cycle, the decision on the fourth (N=33 >= 30): _selffence_hard_stop gets 'holder unreachable 33s, local RPC silent, lastVote frozen' exactly once, THEN the 'HOLDER HUNG — HARD STOP 🚨' page names the three facts and 'confirmed DOWN'; no admin call, no demote; the cycles after it are quiet (the confirmed stop latches), no 'not stopped' page"
+else
+    bad "(13) hung holder: hardstops=$(hs_n "$ev13") pages=$(n_of "$ev13" '^PAGE HOLDER HUNG') wpages=$(wp_n "$ev13") samples=$(n_of "$ev13" '^SAMPLE') :: $(printf '%s' "$ev13" | grep -E '^(HARDSTOP|PAGE|WPAGE|TXT)' | tr '\n' ';' | cut -c1-300)"
+fi
+ev13f=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen "HS_BRANCH='fast: process state T, systemctl stop skipped'")
+p_branch_named() { printf '%s\n' "$1" | grep -q -F 'Ladder branch: fast: process state T, systemctl stop skipped.'; }
+if p_branch_named "$ev13f" && printf '%s\n' "$t13" | grep -q -F 'Ladder branch: normal ladder (process state S).'; then
+    ok "(13b) the page names the branch the ladder took: 'Ladder branch: fast: process state T, systemctl stop skipped.' when the ladder reports the fast branch, 'Ladder branch: normal ladder (process state S).' when it reports the normal one"
+else
+    bad "(13b) branch in the page: fast=[$(printf '%s' "$ev13f" | grep '^TXT Hung holder' | cut -c1-80)...] normal=[$(printf '%s' "$t13" | cut -c180-330)]"
+fi
+
+# ── (14) lastVote GROWS -> nothing is stopped; ONE page per ALERT_THROTTLE ────────────────────────────────────────────────
+echo ""; echo "─── (14) a voting validator with a mute admin socket is not touched: lastVote grows -> no stop, a throttled page ───"
+ev14=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=growing); ev14t=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=growing ALERT_THROTTLE=20)
+p_growing_kept() { reason_kept "$1" 'lastVote grows'; }
+if p_growing_kept "$ev14" && [[ "$(wp_n "$ev14t")" == "3" && "$(hs_n "$ev14t")" == "0" ]]; then
+    ok "(14) lastVote 5006 -> 5072 between the baseline and the decision: HARDSTOP 0, exactly ONE 'HOLDER UNREACHABLE — not stopped (lastVote grows (...)' page over the five evaluating cycles at ALERT_THROTTLE=600; at ALERT_THROTTLE=20 the same world pages again 22 s later, twice (3 pages) - the page is paced by the throttle, not once-only"
+else
+    bad "(14) growing: hardstops=$(hs_n "$ev14") wpages=$(wp_n "$ev14") throttled(20) wpages=$(wp_n "$ev14t") :: $(printf '%s' "$ev14" | grep -E '^(HARDSTOP|WPAGE)' | tr '\n' ';' | cut -c1-260)"
+fi
+
+# ── (15) every other doubt is a page too ─────────────────────────────────────────────────────────────────────────────────
+echo ""; echo "─── (15) no external answer / the local RPC answers / a restarted process / a busy unit / a stale or inconsistent view -> never a stop ───"
+p_down_kept() { reason_kept "$1" 'no external RPC answered the vote-account read'; }
+p_answers_kept() { reason_kept "$1" 'LOCAL getSlot answers (slot 123456789)' && [[ "$(n_of "$1" '^SAMPLE')" == "1" ]]; }
+p_restart_kept() { reason_kept "$1" 'the validator process changed (pid 4242 to 5555): it restarted, it is not hung'; }
+p_busy_kept() { reason_kept "$1" 'the validator unit is deactivating (a start or stop is in progress)'; }
+p_stale_kept() { reason_kept "$1" 'the external view did not advance (cluster tip 9000)'; }
+p_back_kept() { reason_kept "$1" 'lastVote went backwards'; }
+p_nopid_kept() { reason_kept "$1" 'no validator process was found at the first unreadable cycle'; }
+p15_ok=1; p15_rows=""
+for row in "down:p_down_kept:LVMODE=down" "answers:p_answers_kept:LVMODE=frozen SLOTMODE=answers" "restarted:p_restart_kept:LVMODE=frozen PIDMODE=changed" \
+           "busy-unit:p_busy_kept:LVMODE=frozen UNITBUSY=deactivating" "stale-view:p_stale_kept:LVMODE=stale" "backwards:p_back_kept:LVMODE=back" "no-process:p_nopid_kept:LVMODE=frozen PIDMODE=none"; do
+    lab=${row%%:*}; rest=${row#*:}; pred=${rest%%:*}; vars=${rest#*:}
+    # shellcheck disable=SC2086
+    e15=$(gap_world "$PRIMARY" "$PL9" XREAD=8 $vars)
+    if "$pred" "$e15"; then p15_rows="$p15_rows $lab"; else p15_ok=0; p15_rows="$p15_rows $lab:[hardstops=$(hs_n "$e15") wpages=$(wp_n "$e15") $(printf '%s' "$e15" | grep -E '^WPAGE' | head -1 | cut -c1-110)]"; fi
+done
+[[ $p15_ok -eq 1 ]] && ok "(15) each of these worlds keeps the validator alive and pages once with its own reason:$p15_rows (and when LOCAL getSlot answers there is NO second external read)" || bad "(15) a doubt still stops or pages wrongly:$p15_rows"
+e15f=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=flip)
+if [[ "$(hs_n "$e15f")" == "1" && "$(n_of "$(cyc "$e15f" 5)" '^HARDSTOP holder unreachable 44s')" == "1" && "$(printf '%s\n' "$e15f" | grep -c -F 'WPAGE HOLDER UNREACHABLE — not stopped (the answering RPC changed (T2 to T3)')" == "1" ]]; then
+    ok "(15b) the answering provider changed between the baseline and the decision (T2 -> T3): no stop on that cycle (two providers' samples are not compared), the sample just read becomes the baseline, and the NEXT cycle (same provider, 11 s later) proves the freeze and stops"
+else
+    bad "(15b) provider flip: hardstops=$(hs_n "$e15f") :: $(printf '%s' "$e15f" | grep -E '^(HARDSTOP|WPAGE)' | tr '\n' ';' | cut -c1-260)"
+fi
+
+# ── (16) the identity reads again -> the clock is gone ──────────────────────────────────────────────────────────────────
+echo ""; echo "─── (16) the identity reads again on the fourth cycle (33 s): the episode is over; the next one counts from its own first cycle ───"
+ev16=$(gap_world "$PRIMARY" "S X X X S X X X" XREAD=8 LVMODE=frozen)
+p_readable_again() { [[ "$(hs_n "$1")" == "0" && "$(wp_n "$1")" == "0" && "$(n_of "$1" '^SAMPLE')" == "2" ]]; }
+if p_readable_again "$ev16"; then
+    ok "(16) 3 unreadable cycles (N up to 22), 1 readable, 3 unreadable: no decision at all (the second episode reaches N=22), two baselines were taken (one per episode) - a stamp kept across the readable cycle would have stopped the validator on the first cycle after it (N=36)"
+else
+    bad "(16) reset: hardstops=$(hs_n "$ev16") samples=$(n_of "$ev16" '^SAMPLE') :: $(printf '%s' "$ev16" | grep -E '^(HARDSTOP|WPAGE|SAMPLE)' | tr '\n' ';' | cut -c1-200)"
+fi
+
+# ── (17) DRY_RUN ───────────────────────────────────────────────────────────────────────────────────────────────────────
+echo ""; echo "─── (17) DRY_RUN: the dry page once per ALERT_THROTTLE, no stop, no admin call ───"
+ev17=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen DRY_RUN=true); ev17t=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen DRY_RUN=true ALERT_THROTTLE=20)
+p_dry_kept() { [[ "$(hs_n "$1")" == "0" && "$(n_of "$1" '^ADMIN')" == "0" && "$(n_of "$1" '^PAGE \[DRY RUN\] WOULD HARD-STOP the hung validator$')" == "1" && "$(n_of "$1" '^PAGE HOLDER HUNG')" == "0" ]]; }
+if p_dry_kept "$ev17" && [[ "$(n_of "$ev17t" '^PAGE \[DRY RUN\] WOULD HARD-STOP the hung validator$')" == "3" && "$(hs_n "$ev17t")" == "0" ]]; then
+    ok "(17) DRY_RUN=true with every fact holding: _selffence_hard_stop is never called, no admin call, ONE '[DRY RUN] WOULD HARD-STOP the hung validator' page over the five evaluating cycles (three at ALERT_THROTTLE=20) and no 'HOLDER HUNG' page"
+else
+    bad "(17) dry run: hardstops=$(hs_n "$ev17") admin=$(n_of "$ev17" '^ADMIN') dry=$(n_of "$ev17" '^PAGE \[DRY RUN\]') hung=$(n_of "$ev17" '^PAGE HOLDER HUNG') throttled=$(n_of "$ev17t" '^PAGE \[DRY RUN\]')"
+fi
+
+# ── (18) a failed ladder is retried only after ALERT_THROTTLE; an unstaked node is left alone; the boundary is >= ──────────
+echo ""; echo "─── (18) a stop that did not confirm waits ALERT_THROTTLE for its retry; an unstaked node is never sampled; N = the knob fires (>=) ───"
+ev18=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen HS_RC=1); ev18t=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen HS_RC=1 ALERT_THROTTLE=20)
+p_failed_once() { [[ "$(hs_n "$1")" == "1" && "$(n_of "$1" '^PAGE HOLDER HUNG — HARD STOP 🚨$')" == "1" ]] && printf '%s\n' "$1" | grep -q '^TXT Hung holder: .*did NOT confirm the validator down'; }
+if p_failed_once "$ev18" && [[ "$(hs_n "$ev18t")" == "3" ]]; then
+    ok "(18a) the ladder returns 1: ONE attempt over the five evaluating cycles and one page that says 'did NOT confirm the validator down' (the PRIMARY SELF-FENCE pages are the ladder's own); at ALERT_THROTTLE=20 the retries come 22 s apart (3 attempts)"
+else
+    bad "(18a) failed ladder: attempts=$(hs_n "$ev18") pages=$(n_of "$ev18" '^PAGE HOLDER HUNG') throttled attempts=$(hs_n "$ev18t")"
+fi
+ev18u=$(gap_world "$PRIMARY" "U X X X X X X X X" XREAD=8 LVMODE=frozen)
+p_unstaked_quiet() { [[ "$(hs_n "$1")" == "0" && "$(n_of "$1" '^SAMPLE')" == "0" && "$(wp_n "$1")" == "0" ]]; }
+if p_unstaked_quiet "$ev18u"; then
+    ok "(18b) a node last seen UNSTAKED whose identity stops reading: no sample, no stop, no page from the rung (nothing staked is held)"
+else
+    bad "(18b) unstaked: hardstops=$(hs_n "$ev18u") samples=$(n_of "$ev18u" '^SAMPLE') wpages=$(wp_n "$ev18u")"
+fi
+ev18b=$(gap_world "$PRIMARY" "$PL9" XREAD=10 LVMODE=frozen HOLDER_UNREACHABLE_STOP_SECS=39)
+p_boundary_hung() { [[ "$(hs_n "$1")" == "1" && "$(n_of "$(cyc "$1" 4)" '^HARDSTOP holder unreachable 39s,')" == "1" ]]; }
+if p_boundary_hung "$ev18b"; then
+    ok "(18c) 13 s cycles and HOLDER_UNREACHABLE_STOP_SECS=39: the stop comes on the fourth unreadable cycle, at N=39 exactly - the rule is >="
+else
+    bad "(18c) boundary: hardstops=$(hs_n "$ev18b") :: $(printf '%s' "$ev18b" | grep -E '^HARDSTOP' | tr '\n' ';' | cut -c1-200)"
+fi
+
+# ── (19) startup: the knob has a floor of 20 ───────────────────────────────────────────────────────────────────────────
+echo ""; echo "─── (19) startup: HOLDER_UNREACHABLE_STOP_SECS has a floor of 20 ───"
+h_def=$(rc_of "$PRIMARY"); h_19=$(rc_of "$PRIMARY" 'HOLDER_UNREACHABLE_STOP_SECS=19'); h_20=$(rc_of "$PRIMARY" 'HOLDER_UNREACHABLE_STOP_SECS=20'); h_abc=$(rc_of "$PRIMARY" 'HOLDER_UNREACHABLE_STOP_SECS=abc')
+if [[ "$h_def" == "0" && "$h_19" == "1" && "$h_20" == "0" && "$h_abc" == "1" ]]; then
+    ok "(19) the default 30 passes, 20 passes, 19 refuses to start, 'abc' refuses to start"
+else
+    bad "(19) knob: default=$h_def 19=$h_19 20=$h_20 abc=$h_abc"
+fi
+p_hung19_refused() { [[ "$(rc_of "$1" 'HOLDER_UNREACHABLE_STOP_SECS=19')" == "1" ]]; }
+
+# ── (20) the ladder's pid: the unit's MainPID first ────────────────────────────────────────────────────────────────────
+echo ""; echo "─── (20) _validator_pid: the unit's MainPID (canonical, > 1, alive) first, pgrep as the fallback ───"
+vp_run() {   # vp_run <script> <what systemctl show prints> <what pgrep prints> -> the pid _validator_pid answers
+    local script="$1" mp="$2" pg="$3" src; src=$(cut_src "$script")
+    (
+        # shellcheck disable=SC1090
+        source "$src" 2>/dev/null
+        timeout() { shift; "$@"; }
+        systemctl() { printf '%s\n' "$mp"; }
+        pgrep() { [[ -n "$pg" ]] && printf '%s\n' "$pg"; return 0; }
+        VALIDATOR_TYPE=agave
+        _validator_pid
+    )
+}
+vp1=$(vp_run "$PRIMARY" "$$" 7777); vp2=$(vp_run "$PRIMARY" 0 7777); vp3=$(vp_run "$PRIMARY" 2147483000 7777); vp4=$(vp_run "$PRIMARY" abc 7777); vp5=$(vp_run "$PRIMARY" "" ""); vp6=$(vp_run "$PRIMARY" "007" 7777)
+p_vp_pref() { [[ "$(vp_run "$1" "$$" 7777)" == "$$" ]]; }
+p_vp_alive() { [[ "$(vp_run "$1" 2147483000 7777)" == "7777" ]]; }
+if [[ "$vp1" == "$$" && "$vp2" == "7777" && "$vp3" == "7777" && "$vp4" == "7777" && "$vp5" == "" && "$vp6" == "7777" ]]; then
+    ok "(20) a live MainPID wins over pgrep's pid; MainPID 0, a dead MainPID, a non-numeric one and a non-canonical one ('007') fall back to pgrep; nothing anywhere -> empty"
+else
+    bad "(20) _validator_pid: live=$vp1 zero=$vp2 dead=$vp3 abc=$vp4 none='$vp5' 007=$vp6"
+fi
+
+# ── (21) structure ────────────────────────────────────────────────────────────────────────────────────────────────────────
+echo ""; echo "─── (21) structure by text: _hung_check sits in the unreachable branch before the display; _hung_reset after the readable identity; the standby has none of it ───"
+hung_struct_why() {
+    local f="$1" why="" lp l_z l_hc l_ds l_sl l_rs l_ok l_gd
+    lp=$(loop_code "$f"); [[ -n "$lp" ]] || { printf 'no-loop-region'; return; }
+    [[ "$(printf '%s\n' "$lp" | grep -cE '^[[:space:]]*_hung_check')" == "1" && "$(printf '%s\n' "$lp" | grep -cE '^[[:space:]]*_hung_reset')" == "1" ]] || why="$why check-or-reset-not-called-once"
+    l_z=$(printf '%s\n' "$lp" | grep -n 'if \[\[ -z "$CURRENT_IDENTITY" \]\]; then' | head -1 | cut -d: -f1)
+    l_hc=$(printf '%s\n' "$lp" | grep -n -E '^[[:space:]]*_hung_check' | head -1 | cut -d: -f1)
+    l_ds=$(printf '%s\n' "$lp" | grep -n 'display_status "N/A"' | head -1 | cut -d: -f1)
+    l_sl=$(printf '%s\n' "$lp" | grep -n '_cycle_sleep "$CHECK_INTERVAL"' | head -1 | cut -d: -f1)
+    l_rs=$(printf '%s\n' "$lp" | grep -n -E '^[[:space:]]*_hung_reset' | head -1 | cut -d: -f1)
+    l_ok=$(printf '%s\n' "$lp" | grep -n '^    _last_unreachable_alert=0' | head -1 | cut -d: -f1)
+    l_gd=$(printf '%s\n' "$lp" | grep -n -E '^[[:space:]]*_gap_demote' | head -1 | cut -d: -f1)
+    [[ -n "$l_z" && -n "$l_hc" && -n "$l_ds" && -n "$l_sl" && -n "$l_rs" && -n "$l_ok" && -n "$l_gd" ]] || { printf '%s anchors-missing' "$why"; return; }
+    [[ $l_z -lt $l_hc && $l_hc -lt $l_ds && $l_ds -lt $l_sl ]] || why="$why check-not-inside-the-unreachable-branch-before-the-display"
+    [[ $l_ok -lt $l_rs && $l_rs -lt $l_gd ]] || why="$why reset-not-right-after-the-readable-identity"
+    printf '%s' "$why"
+}
+hung_struct_ok() { [[ -z "$(hung_struct_why "$1")" ]]; }
+w21=$(hung_struct_why "$PRIMARY")
+[[ -z "$w21" ]] && ok "(21) _hung_check is called once, inside the unreachable branch after the identity read failed and before display_status and the cycle sleep; _hung_reset once, right after _last_unreachable_alert=0 and before _gap_demote" || bad "(21) structure:$w21"
+[[ "$(grep -c '_hung_\|^HOLDER_UNREACHABLE_STOP_SECS=' "$STANDBY")" == "0" ]] \
+    && ok "(21b) the hung-holder rung is the holder's: the standby carries neither its state nor the knob's definition (its texts may name the knob)" || bad "(21b) the standby carries the hung-holder rung"
+
+# ── (22) the ladder's FAST branch: a stopped (T) or uninterruptible (D) process skips `systemctl stop` ─────────────────────
+echo ""; echo "─── (22) the real _selffence_hard_stop: state T or D -> mask --runtime, SIGKILL, verify (no systemctl stop, no SIGTERM); any other or unreadable state -> the normal ladder ───"
+ladder_world() {   # ladder_world <script> <process state letter or empty> <rc of systemctl stop> [resurrect 1] -> rc=<rc>|branch=<_hs_branch>|status=<the last alert's status>|events=<STOP/MASK/TERM/KILL9 in order>
+    local script="$1" st="$2" rc_stop="$3" resurrect="${4:-0}"
+    (
+        set +e
+        SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$script" > "$SRC"
+        # shellcheck disable=SC1090
+        source "$SRC" 2>/dev/null; rm -f "$SRC"
+        STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VALIDATOR_TYPE="agave"; VALIDATOR_SERVICE="solana"
+        SELF_FENCE_HARD_STOP=true; HARD_STOP_REVERIFY_SECS=7; TG_ENABLED=false
+        log_info(){ :; }; log_warn(){ :; }; log_error(){ :; }; send_telegram(){ return 0; }; send_webhook(){ :; }; _watchdog_pet(){ :; }
+        _STATUS=""; alert(){ _STATUS="$3"; }
+        EV=$(mktemp); trap 'rm -f "$EV" "$EV.dead"' EXIT
+        _PROC=1
+        timeout(){   # runs in a $( ) subshell: "the stop worked" is a file, not a variable
+            case "$*" in
+                *systemctl\ stop*) echo STOP >> "$EV"; [[ "$rc_stop" == "0" ]] && : > "$EV.dead"; return "$rc_stop" ;;
+                *systemctl\ mask*) echo MASK >> "$EV"; return 0 ;;
+            esac
+            return 0
+        }
+        pgrep(){ [[ "$_PROC" == "1" && ! -e "$EV.dead" ]] && echo 4242; return 0; }
+        _proc_state(){ printf '%s' "$st"; }
+        kill(){ if [[ "$1" == "-9" ]]; then echo KILL9 >> "$EV"; _PROC=0; else echo TERM >> "$EV"; fi; return 0; }   # SIGTERM is ignored: only SIGKILL ends the process
+        sleep(){ [[ "$1" == "$HARD_STOP_REVERIFY_SECS" && "$resurrect" == "1" ]] && _PROC=1; :; }
+        _selffence_hard_stop "test wedge"; rc=$?
+        printf 'rc=%s|branch=%s|status=%s|events=%s\n' "$rc" "$_hs_branch" "$_STATUS" "$(tr '\n' ',' < "$EV")"
+    )
+}
+FAST_T="rc=0|branch=fast: process state T, systemctl stop skipped|status=PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)|events=MASK,KILL9,"
+FAST_D="rc=0|branch=fast: process state D, systemctl stop skipped|status=PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)|events=MASK,KILL9,"
+NORM_S="rc=0|branch=normal ladder (process state S)|status=PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)|events=STOP,MASK,TERM,KILL9,"
+NORM_U="rc=0|branch=normal ladder (process state unknown)|status=PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)|events=STOP,MASK,TERM,KILL9,"
+p_fast_T() { [[ "$(ladder_world "$1" T 1)" == "$FAST_T" ]]; }
+p_fast_D() { [[ "$(ladder_world "$1" D 1)" == "$FAST_D" ]]; }
+p_normal_S() { [[ "$(ladder_world "$1" S 1)" == "$NORM_S" ]]; }
+p_normal_unreadable() { [[ "$(ladder_world "$1" "" 1)" == "$NORM_U" ]]; }
+p_fast_verified() { [[ "$(ladder_world "$1" T 1 1)" == "rc=1|branch=fast: process state T, systemctl stop skipped|status=PRIMARY SELF-FENCE — HARD STOP FAILED 🚨|events=MASK,KILL9," ]]; }
+l_t=$(ladder_world "$PRIMARY" T 1); l_d=$(ladder_world "$PRIMARY" D 1)
+if [[ "$l_t" == "$FAST_T" && "$l_d" == "$FAST_D" ]]; then
+    ok "(22a) state T and state D: NO systemctl stop and NO SIGTERM - the events are exactly 'MASK,KILL9' (mask --runtime first, then SIGKILL), rc 0, the branch reads 'fast: process state T|D, systemctl stop skipped', the ✅ page says 'unit masked'"
+else
+    bad "(22a) fast branch: T=[$l_t] D=[$l_d]"
+fi
+l_s=$(ladder_world "$PRIMARY" S 1); l_s0=$(ladder_world "$PRIMARY" S 0); l_u=$(ladder_world "$PRIMARY" "" 1); l_r=$(ladder_world "$PRIMARY" R 1); l_tt=$(ladder_world "$PRIMARY" t 1); l_z=$(ladder_world "$PRIMARY" Z 1)
+if [[ "$l_s" == "$NORM_S" && "$l_s0" == "rc=0|branch=normal ladder (process state S)|status=PRIMARY SELF-FENCE — HARD STOP ✅|events=STOP," && "$l_u" == "$NORM_U" \
+      && "$l_r" == "${NORM_S//state S/state R}" && "$l_tt" == "${NORM_S//state S/state t}" && "$l_z" == "${NORM_S//state S/state Z}" ]]; then
+    ok "(22b) state S (stop fails): STOP, MASK, TERM, KILL9 in the old order; state S with a clean stop: STOP only, no mask; an unreadable state, R, a tracing stop (t) and Z: the same normal ladder - the failure direction is the existing ladder, never a skipped stop"
+else
+    bad "(22b) normal ladder: S=[$l_s] S0=[$l_s0] unreadable=[$l_u] R=[$l_r] t=[$l_tt] Z=[$l_z]"
+fi
+if p_fast_verified "$PRIMARY"; then
+    ok "(22c) the fast branch still re-verifies: a validator that is back after HARD_STOP_REVERIFY_SECS makes the stop FAIL (rc 1, 'HARD STOP FAILED' page) - the fast branch skips the stop, not the proof"
+else
+    bad "(22c) fast branch + resurrect: $(ladder_world "$PRIMARY" T 1 1)"
+fi
+ps_t=$(printf 'Name:\tagave-validator\nUmask:\t0022\nState:\tT (stopped)\nTgid:\t1\n'); ps_d=$(printf 'State:\tD (disk sleep)\n'); ps_s=$(printf 'State:\tS (sleeping)\n')
+ps_run() {   # ps_run <script> <the status file's text, or "-" for no file> <pid argument> -> what _proc_state answers (PROC_ROOT stands in for /proc)
+    local script="$1" txt="$2" arg="$3" src d; src=$(cut_src "$script"); d=$(mktemp -d)
+    (
+        # shellcheck disable=SC1090
+        source "$src" 2>/dev/null
+        if [[ "$txt" != "-" ]]; then mkdir -p "$d/4242"; printf '%s\n' "$txt" > "$d/4242/status"; fi
+        PROC_ROOT="$d"; _proc_state "$arg"
+    ); rm -rf "$d"
+}
+pr1=$(ps_run "$PRIMARY" "$ps_t" 4242); pr2=$(ps_run "$PRIMARY" "$ps_d" 4242); pr3=$(ps_run "$PRIMARY" "$ps_s" 4242); pr4=$(ps_run "$PRIMARY" "-" 4242); pr5=$(ps_run "$PRIMARY" "$ps_t" abc); pr6=$(ps_run "$PRIMARY" "no state line here" 4242)
+p_proc_state() { [[ "$(ps_run "$1" "$ps_t" 4242)" == "T" ]]; }
+if [[ "$pr1" == "T" && "$pr2" == "D" && "$pr3" == "S" && "$pr4" == "" && "$pr5" == "" && "$pr6" == "" ]]; then
+    ok "(22d) _proc_state reads the letter after 'State:' in /proc/<pid>/status (T, D, S); a missing file, a non-numeric pid and a file without a State line answer nothing (so the ladder takes the normal branch)"
+else
+    bad "(22d) _proc_state: T=[$pr1] D=[$pr2] S=[$pr3] missing=[$pr4] abc=[$pr5] noline=[$pr6]"
+fi
+
 
 # ── (12) controls ─────────────────────────────────────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (12) CONTROLS (mutate()): each mutant must turn its case red ───"
@@ -313,9 +594,43 @@ ctl_sb() {   # ctl_sb <label> <sed expr> - the standby predicate (sb_gap_clean) 
     sb_gap_clean "$STANDBY" && rv=y || rv=n; sb_gap_clean "$m" && mv=y || mv=n
     if [[ "$rv" == "y" && "$mv" == "n" ]]; then ctl_rows="$ctl_rows $label:red"; else ctl_ok=0; ctl_rows="$ctl_rows $label:[shipped=$rv,mutant=$mv]"; fi
 }
-ctl_sb sb-knob-assigned 's/^TAKEOVER_DELAY=90 /HOLDER_GAP_DEMOTE_SECS=45; TAKEOVER_DELAY=90 /'
-ctl_sb sb-knob-expanded 's/^TAKEOVER_DELAY=90 /: "$HOLDER_GAP_DEMOTE_SECS"; TAKEOVER_DELAY=90 /'
-ctl_sb sb-stamp 's/^TAKEOVER_DELAY=90 /_cycle_end_ts=0; TAKEOVER_DELAY=90 /'
+ctl_sb sb-knob-assigned 's/^AG_ARMED_TAKE=false/HOLDER_GAP_DEMOTE_SECS=45; AG_ARMED_TAKE=false/'
+ctl_sb sb-knob-expanded 's/^AG_ARMED_TAKE=false/: "$HOLDER_GAP_DEMOTE_SECS"; AG_ARMED_TAKE=false/'
+ctl_sb sb-stamp 's/^AG_ARMED_TAKE=false/_cycle_end_ts=0; AG_ARMED_TAKE=false/'
+ctl_sb sb-latch 's/^AG_ARMED_TAKE=false/_gap_latch; AG_ARMED_TAKE=false/'
+ctl_sb sb-demote 's/^AG_ARMED_TAKE=false/_gap_demote; AG_ARMED_TAKE=false/'
+# AG-3.8: the hung-holder rung's mutants. HG limits a sed expression to _hung_check's body; every mutant must turn its case red
+HG='/^_hung_check() {/,/^}/ '
+LG='/^_selffence_hard_stop() {/,/^}/ '
+ctl hung-not-wired '/^        _hung_check   # v0.7 (AG-3.8)/d' "$PL9" p_hung_stop XREAD=8 LVMODE=frozen
+ctl hung-no-reset '/^    _hung_reset   # v0.7 (AG-3.8)/d' "S X X X S X X X" p_readable_again XREAD=8 LVMODE=frozen
+ctl hung-gt-not-ge 's/if \[\[ \$n -lt \$HOLDER_UNREACHABLE_STOP_SECS \]\]; then/if [[ $n -le $HOLDER_UNREACHABLE_STOP_SECS ]]; then/' "$PL9" p_boundary_hung XREAD=10 LVMODE=frozen HOLDER_UNREACHABLE_STOP_SECS=39
+ctl hung-baseline-not-taken "$HG"'s/^        if _hung_sample; then _hung_rebase "\$now"; fi$/        :/' "$PL9" p_hung_stop XREAD=8 LVMODE=frozen
+ctl hung-no-growth-check "$HG"'s/-gt \${VOTE_LIVENESS_EPSILON:-0}/-gt 999999999/' "$PL9" p_growing_kept XREAD=8 LVMODE=growing
+ctl hung-no-slot-check "$HG"'s/^            if \[\[ -n "\$slot" \]\]; then$/            if false; then/' "$PL9" p_answers_kept XREAD=8 LVMODE=frozen SLOTMODE=answers
+ctl hung-down-is-frozen "$HG"'s/why="no external RPC answered the vote-account read"/why=""/' "$PL9" p_down_kept XREAD=8 LVMODE=down
+ctl hung-no-pid-check "$HG"'s/^        elif \[\[ "\$pid1" != "\$_hung_pid0" \]\]; then$/        elif false; then/' "$PL9" p_restart_kept XREAD=8 LVMODE=frozen PIDMODE=changed
+ctl hung-no-busy-check "$HG"'s/^    elif busy=\$(_hung_unit_busy); then$/    elif false; then/' "$PL9" p_busy_kept XREAD=8 LVMODE=frozen UNITBUSY=deactivating
+ctl hung-no-tip-check "$HG"'s/^            elif \[\[ \$_hs_ref -le \$_hung_lv_tip \]\]; then$/            elif false; then/' "$PL9" p_stale_kept XREAD=8 LVMODE=stale
+ctl hung-no-dry-guard "$HG"'s/^    if \[\[ "\$DRY_RUN" == "true" \]\]; then$/    if false; then/' "$PL9" p_dry_kept XREAD=8 LVMODE=frozen DRY_RUN=true
+ctl hung-no-latch "$HG"'s/^        _hung_done=1$/        :/' "$PL9" p_hung_stop XREAD=8 LVMODE=frozen
+ctl hung-no-throttle "$HG"'s/-ge \${ALERT_THROTTLE:-600} \]\]; then$/-ge 0 ]]; then/' "$PL9" p_growing_kept XREAD=8 LVMODE=growing
+ctl hung-no-retry-wait "$HG"'s/^        _hung_try_ts=\$(mono_now)$/        :/' "$PL9" p_failed_once XREAD=8 LVMODE=frozen HS_RC=1
+ctl hung-staked-only-dropped "$HG"'s/^    \[\[ "\$_last_known_identity" == "\$STAKED_PUBKEY" .* || return 0$/    [[ ${_hung_done:-0} -eq 0 ]] || return 0/' "U X X X X X X X X" p_unstaked_quiet XREAD=8 LVMODE=frozen
+ctl hung-page-no-branch "$HG"'s/ Ladder branch: \${_hs_branch:-unknown}\.//' "$PL9" p_branch_named XREAD=8 LVMODE=frozen "HS_BRANCH='fast: process state T, systemctl stop skipped'"
+ctl_rc hung-knob-floor 's/_validate_numeric HOLDER_UNREACHABLE_STOP_SECS 20 /_validate_numeric HOLDER_UNREACHABLE_STOP_SECS 0 /' p_hung19_refused
+ctl_rc hung-struct-moved '/^        _hung_check   # v0.7 (AG-3.8)/d; s/^        display_status "N\/A"$/        display_status "N\/A"; _hung_check/' hung_struct_ok
+ctl_rc vp-no-mainpid '/^_validator_pid() {/,/^}/ { /kill -0/d; }' p_vp_pref
+ctl_rc vp-no-alive-check '/^_validator_pid() {/,/^}/ s/ && kill -0 "\$p" 2>\/dev\/null//' p_vp_alive
+# the ladder's fast branch (AG-3.8): detection always true / removed / D forgotten / no mask / SIGTERM kept
+ctl_rc fast-detects-always "$LG"'s/case "\$_hs_st" in T|D) _hs_fast=1;/case "$_hs_st" in *) _hs_fast=1;/' p_normal_S
+ctl_rc fast-detects-always-u "$LG"'s/case "\$_hs_st" in T|D) _hs_fast=1;/case "$_hs_st" in *) _hs_fast=1;/' p_normal_unreadable
+ctl_rc fast-detection-removed "$LG"'s/case "\$_hs_st" in T|D) _hs_fast=1;/case "$_hs_st" in Z) _hs_fast=1;/' p_fast_T
+ctl_rc fast-D-forgotten "$LG"'s/case "\$_hs_st" in T|D) _hs_fast=1;/case "$_hs_st" in T) _hs_fast=1;/' p_fast_D
+ctl_rc fast-no-mask "$LG"'s/^        sc_out=""; sc_rc=1$/        sc_out=""; sc_rc=0/' p_fast_T
+ctl_rc fast-keeps-sigterm "$LG"'s/^        if \[\[ -z "\$_hs_fast" \]\]; then .*$/        if true; then/' p_fast_T
+ctl_rc fast-no-reverify "$LG"'s/^    _watchdog_sleep "\${HARD_STOP_REVERIFY_SECS:-15}".*$/    :/' p_fast_verified
+ctl_rc proc-state-wrong-letter '/^_proc_state() {/,/^}/ s/\${_st:0:1}/${_st:2:1}/' p_proc_state
 [[ $ctl_ok -eq 1 ]] && ok "(12) every mutant of the rule turns its case red:$ctl_rows" || bad "(12) a control is not red (NOT-APPLIED = its sed matched nothing):$ctl_rows"
 
 results_banner

@@ -819,10 +819,15 @@ for script in "$PRIMARY" "$STANDBY"; do
     hard=$(printf '%s\n' "$inv" | grep -cE 'systemctl (stop|mask) ')
     known_show=$(printf '%s\n' "$inv" | grep -c 'systemctl show "\${VALIDATOR_SERVICE')
     bounded_show=$(printf '%s\n' "$inv" | grep -c 'timeout -k 2 5 systemctl show "\${VALIDATOR_SERVICE')
-    if [[ "$n_inv" == "4" && "$funnel" == "1" && "$hard" == "2" && "$known_show" == "1" && "$bounded_show" == "1" ]]; then
-        ok "(13) $name: allowlist census EXACT — 4 systemctl-bearing invocation lines = the in-block funnel + 2 hard-stop actuators + 1 startup ExecStart read (BOUNDED since the 5.4 GO condition — the spelling is asserted, a bare revert goes red); every other systemctl line is a pure string mention"
+    # AG-3.8: the PRIMARY has two more bounded READ-ONLY `show`s, outside the sweep: _validator_pid's `-p MainPID --value` (the pid the hard stop
+    # must kill - the unit's own, pgrep after it) and _hung_unit_busy's `-p ActiveState --value` (a unit that is starting or stopping is not a hang).
+    # Both are `timeout 5 systemctl show -p <property> --value "${VALIDATOR_SERVICE...}"`; the standby has neither.
+    pro_show=$(printf '%s\n' "$inv" | grep -cE 'timeout 5 systemctl show -p (MainPID|ActiveState) --value "\$\{VALIDATOR_SERVICE')
+    want_n=4; want_pro=0; [[ "$name" == "solana-primary-failover.sh" ]] && { want_n=6; want_pro=2; }
+    if [[ "$n_inv" == "$want_n" && "$pro_show" == "$want_pro" && "$funnel" == "1" && "$hard" == "2" && "$known_show" == "1" && "$bounded_show" == "1" ]]; then
+        ok "(13) $name: allowlist census EXACT — $want_n systemctl-bearing invocation lines = the in-block funnel + 2 hard-stop actuators + 1 startup ExecStart read (BOUNDED since the 5.4 GO condition — the spelling is asserted, a bare revert goes red)$([[ $want_pro -gt 0 ]] && echo " + the primary's 2 AG-3.8 read-only shows (MainPID, ActiveState)"); every other systemctl line is a pure string mention"
     else
-        bad "(13) $name: systemctl census moved (total=$n_inv want=4 funnel=$funnel hard=$hard known_show=$known_show bounded_show=$bounded_show) — REVIEW: $(printf '%s\n' "$inv" | head -5 | tr '\n' ' ')"
+        bad "(13) $name: systemctl census moved (total=$n_inv want=$want_n pro_show=$pro_show want=$want_pro funnel=$funnel hard=$hard known_show=$known_show bounded_show=$bounded_show) — REVIEW: $(printf '%s\n' "$inv" | head -5 | tr '\n' ' ')"
     fi
 done
 
