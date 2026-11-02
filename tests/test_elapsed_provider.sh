@@ -122,6 +122,7 @@
 # asserted by content; the per-daemon adapters are exercised behaviorally (7c/7d).
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+harness_ag_off   # AG-1.2: these worlds test the RETAINED take path - AG mode is shadowed off (tests/lib/harness.sh)
 
 title_banner "watchdog-elapsed proof provider (v0.7 Block 6.3)"
 

@@ -79,6 +79,7 @@
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+harness_ag_off   # AG-1.2: these worlds test the RETAINED take path - AG mode is shadowed off (tests/lib/harness.sh)
 FENCE="$HARNESS_DIR/systemd/failover-fence.sh"
 BASH_BIN="${BASH:-/bin/bash}"
 
@@ -916,11 +917,15 @@ s_pets=$(grep -cE '^[[:space:]]*_watchdog_pet[[:space:]]+# §5 end-of-cycle pet'
 # its schedule, and right before a VOTE-BASED demote) and _vat_reason (ONE getAccountInfo, only to word the page). A3 re-derived:
 # each is one bounded op + its pet (3 + 7 = 10 s), inside the 22 s worst case; on the demote path the read adds <= 3 s before
 # the demote's own petted admin calls (test_d6_holder (d5, d6, d'4, d'5) re-measured). Totals 46 / 50 -> 48 / 52.
+# +2 per daemon at AG-1.2 (the pin MOVED, deliberately, in that diff): the AG page's two LOCAL reads, each a curl -m 3 petted post-op -
+# _ag_slot_final (getSlot{finalized}) and _ag_health_text (getHealth). They run only at an AG decision point, AFTER every gate of the take and
+# BEFORE the page - the mutation they would precede is not made (the stop returns first), so the A3 span they sit in is not a take's. A3
+# re-derived: each is one bounded op + its pet (3 + 7 = 10 s), inside the 22 s worst case. Totals 48 / 52 -> 50 / 54.
 p_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$PRIMARY")
 s_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$STANDBY")
-[[ "$p_total" == "48" && "$s_total" == "52" ]] \
-    && ok "(14b) total pet call-site pins: primary 47 calls (+def=48), standby 51 calls (+def=52) — deletion of any pet line trips this" \
-    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 48, standby=$s_total pinned 52) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
+[[ "$p_total" == "50" && "$s_total" == "54" ]] \
+    && ok "(14b) total pet call-site pins: primary 49 calls (+def=50), standby 53 calls (+def=54) — deletion of any pet line trips this" \
+    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 50, standby=$s_total pinned 54) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
 if ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$PRIMARY" && ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$STANDBY" && ! grep -qE '^[[:space:]]*sleep "\$RECOVERY_CHECK_INTERVAL"' "$PRIMARY"; then
     ok "(14c) the >=15s sleeps (STARTUP_GRACE x3, RECOVERY_CHECK_INTERVAL, hard-stop re-verify) go through _watchdog_sleep"
 else

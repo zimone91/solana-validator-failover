@@ -72,6 +72,7 @@
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+harness_ag_off   # AG-1.2: these worlds test the RETAINED take path - AG mode is shadowed off (tests/lib/harness.sh)
 
 title_banner "Own-view hardening (v0.7 Block 6.3.1)"
 
@@ -756,6 +757,7 @@ get_staked_liveness_sample getVoteAccounts processed
 _own_head_sample getSlot confirmed
 _own_view_veto batch[getSlot,getVoteAccounts] confirmed
 _vat_read batch[getEpochInfo,getVoteAccounts,getEpochInfo] finalized
+_ag_slot_final getSlot finalized
 _g2_snap batch[getSlot,getClusterNodes] confirmed
 _elapsed_step getSlot processed
 check_self_fence_isolation getSlot confirmed
@@ -769,6 +771,7 @@ local_check_delinquency getVoteAccounts finalized
 _own_head_sample getSlot confirmed
 _own_view_veto batch[getSlot,getVoteAccounts] confirmed
 _vat_read batch[getEpochInfo,getVoteAccounts,getEpochInfo] finalized
+_ag_slot_final getSlot finalized
 tier2_check_delinquency getVoteAccounts finalized
 tier2_check_delinquency getSlot finalized
 tier2_check_delinquency getVoteAccounts finalized
@@ -796,8 +799,8 @@ d1_scan() {   # $1=file → line 1 "rpc=<n> unparseable=<n> gva/slot=<n> without
 }
 d1_green() { local s; s=$(d1_scan "$1" | head -1); [[ "$s" == *" unparseable=0 "* && "$s" == *" without=0" ]]; }
 d1p=$(d1_scan "$PRIMARY"); d1s=$(d1_scan "$STANDBY")
-if [[ "$(printf '%s\n' "$d1p" | head -1)" == "rpc=30 unparseable=0 gva/slot=18 without=0" && "$(printf '%s\n' "$d1s" | head -1)" == "rpc=32 unparseable=0 gva/slot=18 without=0" ]]; then
-    ok "(1a) on bash's own parse of BOTH daemons (bp_parse), every curl COMMAND to an RPC endpoint — its command word read with quotes and backslashes removed, in any function, the file level or after the marker, a command substitution, a \$((cmd) ) and an unquoted here-document's \$( ) included — carries one literal -d body jq parses as a JSON-RPC request (primary 30, standby 32; the pages and pings excluded by their URL words), and every getVoteAccounts/getSlot request in them names params[0].commitment (18 bodies each, zero without one); no shell is run as a command (a literal shell word followed by anything but only --version / --help, whatever wraps it: its string, script or stream is unreadable — red); not seen: a curl or a shell whose command word is assembled at run time, a tool running its argument through a shell it names itself (flock -c), a string run by eval / trap / mapfile -C (the (0d) census's), code an interpreter runs from a string (awk's system(), perl -e, python3 -c)"
+if [[ "$(printf '%s\n' "$d1p" | head -1)" == "rpc=32 unparseable=0 gva/slot=19 without=0" && "$(printf '%s\n' "$d1s" | head -1)" == "rpc=34 unparseable=0 gva/slot=19 without=0" ]]; then
+    ok "(1a) on bash's own parse of BOTH daemons (bp_parse), every curl COMMAND to an RPC endpoint — its command word read with quotes and backslashes removed, in any function, the file level or after the marker, a command substitution, a \$((cmd) ) and an unquoted here-document's \$( ) included — carries one literal -d body jq parses as a JSON-RPC request (primary 32, standby 34; the pages and pings excluded by their URL words), and every getVoteAccounts/getSlot request in them names params[0].commitment (19 bodies each, zero without one); no shell is run as a command (a literal shell word followed by anything but only --version / --help, whatever wraps it: its string, script or stream is unreadable — red); not seen: a curl or a shell whose command word is assembled at run time, a tool running its argument through a shell it names itself (flock -c), a string run by eval / trap / mapfile -C (the (0d) census's), code an interpreter runs from a string (awk's system(), perl -e, python3 -c)"
 else
     bad "(1a) primary: $d1p :: standby: $d1s"
 fi
@@ -1094,8 +1097,9 @@ fi
 # (3c-seg) the take paths, by structure. The SEGMENT — every statement after the re-check's '|| return 1' through
 # the LAST set-identity command (the agave one; the first is frankendancer's) — must be exactly the permitted
 # statements below, in order (an allowlist: layer 1). The FALL-THROUGH — the segment minus every RETURN-BRANCH
-# (an if…fi without else/elif, or a && { … } block, whose last statement is a return: the DRY_RUN report and the
-# keypair-missing page never reach set-identity) — and every daemon function it calls, transitively, hold NO
+# (an if…fi without else/elif, or a && { … } block, whose last statement is a return: the DRY_RUN report, the
+# keypair-missing page and — AG-1.2 — the Alpenglow stop (`if _ag_mode; then … _ag_take_withheld … return 1; fi`, whose reads and
+# page are outside the rule's subject: it returns before any mutation) never reach set-identity) — and every daemon function it calls, transitively, hold NO
 # network primitive (net_scan) except the notify socket's socat (_sd_notify: the watchdog pet, a local datagram)
 # (layer 2); _own_view_veto — the one admitted read — is pinned by (3c). The A8 rule these enforce:
 # no network, no alerts; one bounded local veto read allowed.
@@ -1146,6 +1150,11 @@ A8_NET_OK='3 NET _sd_notify socat;'   # the notify socket: 'command -v socat' + 
 SEG_S='
 _own_view_veto || return 1
 local reason="$1"
+if _ag_mode; then
+LAST_TAKEOVER_TIME=$(mono_now); save_state
+_ag_take_withheld "standby" "$reason"
+return 1
+fi
 if [[ "$DRY_RUN" == "true" ]]; then
 log_warn "[DRY RUN] Would TAKE staked — $reason"
 alert "$reason" "$STAKED_PUBKEY" "[DRY RUN] WOULD TAKE STAKED"
@@ -1169,6 +1178,11 @@ out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledge
 '
 SEG_P='
 _own_view_veto || return 1
+if _ag_mode; then
+LAST_SWITCH_TIME=$(mono_now); save_state
+_ag_take_withheld "primary" "$reason"
+return 1
+fi
 [[ ! -s "$STAKED_KEYPAIR" ]] && {
 log_error "Staked keypair missing/empty"
 alert "$reason" "N/A" "RECOVERY BLOCKED — keypair problem"; return 1
@@ -1205,7 +1219,7 @@ fi
 # S1 (the structure rule itself): the DRY_RUN branch's 'return 0' deleted — no statement added, yet its page now
 # falls through to set-identity, and layer 2 (structure) is red on it (layer 1 too: a permitted statement went missing).
 a4_rows=""; a4_ok=1
-for a in A1 A2 A5 A6 A7 S1; do
+for a in A1 A2 A5 A6 A7 S1 A8 A9; do
     m="$WORK/t4-$a/solana-standby-failover.sh"; rc=0
     case $a in
         A1) ev_mut "$STANDBY" "_own_view_veto || return 1" after "$m" <<'EOB' || rc=1
@@ -1235,14 +1249,20 @@ EOB
         ;;
         S1) mkdir -p "$(dirname "$m")"
             awk '/^take_staked_identity\(\) \{/ {f = 1} f && /WOULD TAKE STAKED/ {w = 1} f && w && !done && /^[[:space:]]*return 0$/ {done = 1; next} {print} END {exit(done ? 0 : 1)}' "$STANDBY" > "$m" || rc=1 ;;
+        A8) mkdir -p "$(dirname "$m")"   # AG-1.2: a `command curl` on the RETAINED path, one line after the Alpenglow branch's closing fi
+            awk '/^take_staked_identity\(\) \{/ {f = 1} f && /_ag_take_withheld "standby"/ {g = 1} f && g && !done && /^    fi$/ {print; print "    command curl -s -m 1 \"$TIER3_RPC\" -X POST -H \"Content-Type: application/json\" -d \"{}\" >/dev/null 2>&1"; done = 1; next} {print} END {exit(done ? 0 : 1)}' "$STANDBY" > "$m" || rc=1 ;;
+        A9) ev_mut "$STANDBY" '_ag_take_withheld "standby" "$reason"' after "$m" <<'EOB' || rc=1   # AG-1.2: a statement INSIDE the Alpenglow branch (it returns before any mutation: the network layer cannot see it)
+        _ag_pt=$(date)
+EOB
+        ;;
     esac
     [[ $rc -eq 0 ]] || { a4_ok=0; a4_rows="$a4_rows $a:not-applied"; continue; }
     r=$(a8_layers "$m" take_staked_identity "$SEG_S"); r=${r%% *}
     a4_rows="$a4_rows $a:$r"
-    case $a in S1) [[ "$r" == *"net-red"* ]] || a4_ok=0 ;; *) [[ "$r" == "allow-red/net-red" ]] || a4_ok=0 ;; esac
+    case $a in S1) [[ "$r" == *"net-red"* ]] || a4_ok=0 ;; A9) [[ "$r" == "allow-red/net-green" ]] || a4_ok=0 ;; *) [[ "$r" == "allow-red/net-red" ]] || a4_ok=0 ;; esac
 done
 if [[ $a4_ok -eq 1 ]]; then
-    ok "(3c-ctl) the panel's T4 evasions, each one line after the veto in a copy of the standby — RED on BOTH layers alone:$a4_rows (the 6.3.1 census before fix round 1: A1 and A5 green on the static AND the dynamic census, A2/A6/A7 green on the static one); S1 — the DRY_RUN branch's return deleted, nothing added — is red on the structure layer: the branch's page now falls through to set-identity"
+    ok "(3c-ctl) the panel's T4 evasions, each one line after the veto in a copy of the standby — RED on BOTH layers alone:$a4_rows (the 6.3.1 census before fix round 1: A1 and A5 green on the static AND the dynamic census, A2/A6/A7 green on the static one); S1 — the DRY_RUN branch's return deleted, nothing added — is red on the structure layer: the branch's page now falls through to set-identity; A8 (AG-1.2) — a command curl one line AFTER the Alpenglow branch, on the retained path — is red on both layers; A9 — a statement INSIDE the Alpenglow branch, which returns before any mutation — is red on the allowlist alone (its network reads are outside the rule's subject, its text is not)"
 else
     bad "(3c-ctl) an evasion is green on a layer:$a4_rows"
 fi

@@ -1408,6 +1408,15 @@ peer_has_relinquished() {
 # DRY_RUN issues NOTHING (the §2.3 guarantee: zero admin-socket mutations) and logs the
 # would-act once per episode. agave-only (no fdctl authorized-voter path in this tree).
 _prewarm_voter_add() {
+    # v0.7 (AG-1.2): FIRST - before the PREWARM_VOTER_ADD gate. This call sits in the delay window, ahead of take_staked_identity and its veto, so the
+    # stop after the veto does not reach it (D0 F1): in AG mode FO never adds the staked voter. _prewarm_done stays 0, so _prewarm_reset is never armed.
+    if _ag_mode; then
+        if [[ "${PREWARM_VOTER_ADD:-false}" == "true" && ${_ag_pv_logged:-0} -eq 0 ]]; then
+            _ag_pv_logged=1
+            log_warn "[prewarm] Alpenglow mode: PREWARM_VOTER_ADD=true is inert - FO never adds the staked voter (no authorized-voter call)"
+        fi
+        return 0
+    fi
     [[ "${PREWARM_VOTER_ADD:-false}" == "true" ]] || return 0
     [[ ${_prewarm_done:-0} -eq 0 ]] || return 0
     _prewarm_done=1
@@ -1807,6 +1816,7 @@ OWN_HEAD_H=16                    # max age (s, veto-post − sample-pre) of the 
 
 _own_view_reset() {
     _own_bank_active_time=0; _own_bank_max_vote=""; _own_head_ring=""
+    _ag_page_ts=0   # v0.7 (AG-1.2): the AG page's episode marker ends with the episode - every episode-close site calls this function (N-is-all)
     return 0
 }
 
@@ -2394,6 +2404,82 @@ _vat_hold() {
             return 0 ;;
     esac
     return 1
+}
+# ── AG mode on the take paths (AG-1.2; G1, G2, G10) ────────────────────────────────────────────────────────────────
+# In AG mode FO never takes the staked identity: the standby's take_staked_identity and the primary's switch_to_staked return 1 right after the
+# own-view veto - before the keypair check, the DRY_RUN branch and every admin-socket call - and the standby's pre-warm function returns before its gate (it
+# runs in the delay window, ahead of the take path and its veto). What is left is ONE page per episode: every gate FO has said "take now", the operator
+# decides. The episode's marker is _ag_page_ts (the mono stamp of its last page, 0 = none yet): _own_view_reset clears it at EVERY episode-close
+# site (N-is-all, listed in test_own_view), a restart forgets it. The same episode pages again after ALERT_THROTTLE, never sooner. The take paths
+# stamp their cooldown (the failed take's N9 idiom) so the decision points are spaced - the episode state is NOT reset, and nothing here calls
+# window_reset: the DRY_RUN branch's window_reset + cooldown re-pages every cooldown (G2's defect).
+_ag_page_ts=0
+_ag_pv_logged=0
+# _ag_slot_final - this node's finalized slot on stdout, or "unavailable (<why>)": ONE bounded LOCAL getSlot (curl -m 3, petted).
+_ag_slot_final() {
+    local _b _rc _s
+    _b=$(curl -s -m 3 "$LOCAL_RPC" -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}' 2>/dev/null)
+    _rc=$?
+    _watchdog_pet   # §5 per-op pet: bounded op completed (rc captured above) - no-op outside the armed unit
+    if [[ $_rc -ne 0 || -z "$_b" ]]; then printf 'unavailable (no answer from LOCAL_RPC)'; return 0; fi
+    _s=$(printf '%s' "$_b" | jq -r '.result // empty' 2>/dev/null)
+    if _canon_uint "$_s"; then printf '%s' "$_s"; else printf 'unavailable (no slot in the answer)'; fi
+}
+# _ag_health_text - this node's getHealth, classified by AG-1.5's _health_class, in the words of the page: ONE bounded LOCAL call (curl -m 3, petted).
+_ag_health_text() {
+    local _b _rc _c
+    _b=$(curl -s -m 3 "$LOCAL_RPC" -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' 2>/dev/null)
+    _rc=$?
+    _watchdog_pet   # §5 per-op pet: bounded op completed (rc captured above) - no-op outside the armed unit
+    if [[ $_rc -ne 0 || -z "$_b" ]]; then printf 'unreadable (no answer from LOCAL_RPC)'; return 0; fi
+    _c=$(_health_class "$_b")
+    case "$_c" in
+        ok)         printf 'ok' ;;
+        "behind "*) printf 'behind by %s slots' "${_c#behind }" ;;
+        unknown)    printf 'UNKNOWN (agave answers Unknown while votor has seen no finalized slot - error -32005 with numSlotsBehind null)' ;;
+        *)          printf 'unreadable (not a getHealth answer FO knows)' ;;
+    esac
+}
+# _ag_take_withheld <standby|primary> <the take path's own reason string> - the decision point of an AG-mode take. Returns 0 always; the caller returns 1.
+# A repeat inside the episode (ALERT_THROTTLE) is a log line. A page reads every field it carries here, bounded and LOCAL (curl -m 3 each): a read that
+# fails prints "unavailable (<why>)" and the page still goes out.
+_ag_take_withheld() {
+    local _role="$1" _why="${2:-}" _now _fts _since _ep="" _slot _health _ver _vat _vh _t
+    _now=$(mono_now)
+    if [[ ${_ag_page_ts:-0} -gt 0 && $(( _now - _ag_page_ts )) -lt ${ALERT_THROTTLE:-600} ]]; then
+        log_info "[ag] ${_role}: take withheld in Alpenglow mode (${_why}) - this episode was paged $(( _now - _ag_page_ts ))s ago"
+        return 0
+    fi
+    _ag_page_ts=$_now
+    log_warn "[ag] ${_role}: take WITHHELD in Alpenglow mode - every gate says take now (${_why}); nothing was done"
+    _fts="${_liveness_first_ts:-0}"
+    if _canon_uint "$_fts" && [[ $_fts -gt 0 && $_now -ge $_fts ]]; then
+        _since="$(( _now - _fts ))s since the episode's first liveness sample (lastVote ${_liveness_first_vote:-unknown}, cluster tip ${_liveness_first_tip:-unknown} at that read, provider ${_liveness_first_provider:-unknown})"
+        _ep=$(( $(date +%s) - (_now - _fts) ))   # wall time of that sample: _vh_class compares the file's mtime (wall time) with it - a display value, no timer reads it
+    else
+        _since="unavailable (no liveness sample in this episode)"
+    fi
+    _slot=$(_ag_slot_final)
+    _health=$(_ag_health_text)
+    _ver=$(_version_class)
+    _vat_read
+    _vat=$(_vat_summary cached)
+    case "$_vat_state" in
+        notadmitted|unstaked) _vat="${_vat} - the holder's silence is likely a VAT lapse, not a death" ;;
+    esac
+    _vh=$(_vh_class "$_ep")
+    _t="${_why} - every gate FO has says the take would happen now, and in Alpenglow mode FO never takes the staked identity automatically: nothing was done."
+    _t="${_t} Holder silent ${_since}."
+    _t="${_t} This node: finalized slot ${_slot}; getHealth ${_health}; validator ${_ver}."
+    _t="${_t} VAT admission: ${_vat}."
+    _t="${_t} Vote history ${LEDGER_PATH:-<LEDGER_PATH empty>}/vote_history-${STAKED_PUBKEY:-<staked pubkey unknown>}.bin: ${_vh}."
+    _t="${_t} Operator path: warm swap - demote the old holder first, then move the vote history (docs/SAFETY.md, Alpenglow). A cold take is an operator decision; FO never makes it."
+    if [[ "$_role" == "primary" ]]; then
+        alert "$_t" "$STAKED_PUBKEY" "RECOVERY WITHHELD — Alpenglow mode 🚨"
+    else
+        alert "$_t" "$STAKED_PUBKEY" "TAKEOVER WITHHELD — Alpenglow mode 🚨"
+    fi
+    return 0
 }
 # ── [ag] end shared block ──
 
@@ -3214,6 +3300,15 @@ take_staked_identity() {
     # this is that read. VETO-ONLY: it can turn this take into a hold, never the reverse.
     _own_view_veto || return 1
     local reason="$1"
+    # v0.7 (AG-1.2): ALPENGLOW MODE - FO never takes the staked identity automatically. Every gate above has said "take now" (the episode, the delay, the
+    # external confirm, the fence, the fresh re-check, the own-view veto); this is where the take would begin, and it does not: no keypair check, no
+    # DRY_RUN report, no admin-socket call of any kind - one page per episode (_ag_take_withheld). The cooldown stamp is the failed take's (N9) and only
+    # spaces the decision points; the episode state is NOT reset (the page's marker, _ag_page_ts, ends in _own_view_reset).
+    if _ag_mode; then
+        LAST_TAKEOVER_TIME=$(mono_now); save_state
+        _ag_take_withheld "standby" "$reason"
+        return 1
+    fi
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_warn "[DRY RUN] Would TAKE staked — $reason"
@@ -7036,6 +7131,7 @@ startup_checks() {
         log_warn "⚠️ PREWARM_VOTER_ADD='${PREWARM_VOTER_ADD}' is not true/false — coerced to false (fail toward OFF)"
         PREWARM_VOTER_ADD=false
     fi
+    [[ "$PREWARM_VOTER_ADD" == "true" ]] && _ag_mode && log_warn "⚠️ PREWARM_VOTER_ADD=true is INERT in Alpenglow mode — FO never adds the staked voter, so the lever does nothing (docs/SAFETY.md, Alpenglow)"
     [[ "$PREWARM_VOTER_ADD" == "true" ]] && log_warn "⚠️ PREWARM_VOTER_ADD=true — the pre-warm lever is LIVE-TEST-GATED (addendum §3/№8): do not enable before the testnet on-chain observation window"
 
     # v0.6.9 (M8): TIER2/TIER3 vantage-independence. Identical URLs silently void A6 ("two vantages")

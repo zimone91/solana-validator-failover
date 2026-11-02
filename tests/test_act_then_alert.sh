@@ -92,6 +92,7 @@
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+harness_ag_off   # AG-1.2: these worlds test the RETAINED take path - AG mode is shadowed off (tests/lib/harness.sh)
 
 T0=100000            # mono origin (never 0 — 0 collides with the "unset" sentinel)
 DELAY=60             # TAKEOVER_DELAY / RECOVERY_DELAY (shipped default)
