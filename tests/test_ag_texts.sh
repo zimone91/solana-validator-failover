@@ -225,7 +225,7 @@ standby|A|0|gate FO has says
 standby|P|1|every gate FO has said the take would happen now
 standby|P|1|Mode:              ALPENGLOW — this node NEVER takes the staked identity itself
 standby|P|2|no spare takes the identity by itself
-standby|P|1|no spare takes it by itself, so an operator moves it
+standby|P|1|no spare takes it by itself unless it is armed (AG_ARMED_TAKE=true), otherwise an operator moves it
 standby|P|4|retained path: v0.7 withholds every take
 standby|P|1|in Alpenglow mode (v0.7) no take is made at all, so nothing is bypassed today
 standby|P|2|Tier-1 not ready (no take decision is made while this holds)
@@ -236,7 +236,7 @@ primary|A|0|gate FO has says
 primary|P|1|every gate FO has said the take would happen now
 primary|P|1|Mode:              ALPENGLOW — this node NEVER re-takes the staked identity itself
 primary|P|2|no spare takes the identity by itself
-primary|P|1|no spare takes it by itself, so an operator moves it
+primary|P|1|no spare takes it by itself unless it is armed (AG_ARMED_TAKE=true), otherwise an operator moves it
 primary|P|1|the retained automatic re-take path
 primary|P|1|in Alpenglow mode (v0.7) no take is made at all, so nothing is bypassed today
 readme|A|0|Automatic staked-identity failover for Solana validators.
@@ -252,7 +252,8 @@ readme|P|1|**v0.7 needs agave / Jito-Solana `4.4.0` or newer**
 readme|P|1|v0.7 itself is being exercised on the testnet pair (the Block 10 end-to-end run)
 readme|P|1|up to about 27 s at the decision point
 readme|A|0|- A promoted STANDBY that later isolates self-fences too
-readme|P|1|A promoted STANDBY (the retained path: v0.7 never promotes one by itself) that later isolates self-fences too
+readme|A|0|(the retained path: v0.7 never promotes one by itself)
+readme|P|1|A promoted STANDBY (an unarmed spare never promotes itself; an armed one does, by the cold take) that later isolates self-fences too
 manual|A|0|Recommended fix — the Anza
 manual|A|0|(hot spare)
 manual|P|1|ALPENGLOW MODE (always on)
@@ -261,15 +262,16 @@ manual|P|1|retained path
 notifications|A|0|Cannot monitor or take over
 notifications|A|0|Cannot take over if needed
 notifications|A|0|a spare may take over
-notifications|P|3|Retained path — not sent in v0.7
+notifications|P|1|Retained path — not sent in v0.7
 notifications|P|1|The second is the retained path: not sent in v0.7
 notifications|P|1|The take is the retained path: not sent in v0.7
 notifications|P|1|no spare takes the identity by itself
 arm|P|1|Alpenglow mode (v0.7): the pairing (P5), the vantage checks (P6) and this summary condition only the retained take path
-templates|P|2|v0.7 ALPENGLOW MODE (always on): FO never takes the staked identity automatically
+templates|P|1|v0.7 ALPENGLOW MODE (always on): by default FO never takes the staked identity automatically
+templates|P|1|v0.7 ALPENGLOW MODE (always on): this node never takes the staked identity automatically
 templates|P|1|(Retained path: v0.7 withholds every take.)
 templates|A|0|(we TAKE it when PRIMARY drops it)
-templates|P|1|v0.7: FO never takes it - you move it to this node by the warm swap after the page
+templates|P|1|v0.7: an unarmed spare - the default - never takes it: you move it to this node by the warm swap after the page
 templates|P|1|a value of 1..23 is logged once at start
 sysd|A|0|the spare takes on its timer path
 sysd|P|1|in Alpenglow mode the spare takes nothing
@@ -277,7 +279,7 @@ splitbrain|A|0|(research pending)
 splitbrain|P|1|v0.7 never takes the staked
 safety|P|1|## Alpenglow mode (v0.7)
 safety|P|1|**The retained take path, unreachable in v0.7.**
-safety|P|1|**What FO does not do.** It does not take, re-take or pre-warm.
+safety|P|1|**What FO does not do.** By default it does not take, re-take or pre-warm
 safety|P|1|`TAKEOVER WITHHELD — Alpenglow mode 🚨`
 safety|P|1|in v0.7 (Alpenglow mode) the spare pages instead of taking
 safety|P|1|The top-2000 cut is not checked
@@ -287,7 +289,43 @@ safety|P|1|the standby says so once at start - a log line, no page - when the va
 safety|P|1|the vote-history file under `timeout -k 2 10` (12 s more
 safety|A|0|A field that cannot be read prints
 safety|P|1|`unreadable (<why>)` for `getHealth`
-safety|P|1|the validator stays unstaked until an operator acts'
+safety|P|1|the validator stays unstaked until an operator acts
+standby|P|1|this spare is NOT ARMED (AG_ARMED_TAKE=false): nothing was done
+standby|P|1|this spare is ARMED, but the readiness margin held the take
+standby|P|1|TAKEOVER BLOCKED — authorized-voter add failed
+standby|P|1|[DRY RUN] WOULD TAKE STAKED (Alpenglow cold take)
+standby|P|1|ALPENGLOW, ARMED — this spare WILL take the staked identity by itself
+standby|P|1|LIVE MODE — STANDBY will perform a real takeover
+standby|P|1|it never takes (not armed)
+standby|P|1|cold take: empty history, floor = own root
+readme|P|1|(`AG_ARMED_TAKE=true`, off by default
+readme|P|1|What an **armed** spare runs instead is the *cold take*
+readme|P|1|(default **90s**; the floor is 60s
+readme|P|1|`AG_ARMED_TAKE=false` (the default) only pages
+readme|P|1|(`AG_ARMED_TAKE=true`), the standby takes it cold, voter first
+templates|P|1|ONLY the literal `true` arms it
+templates|P|1|HOLDER_GAP_DEMOTE_SECS + 30 (shipped 90 >= 45 + 30;
+templates|P|1|an armed spare below 75 REFUSES to start
+templates|P|1|the on-chain lastVote understates the real one by up to ~8 slots: 170 + 8 = 178, rounded up to 200
+notifications|P|1|`TAKEOVER BLOCKED — authorized-voter add failed`
+notifications|P|1|`[DRY RUN] WOULD TAKE STAKED (Alpenglow cold take)`
+notifications|P|1|this spare is ARMED, but the readiness margin held the take
+safety|P|1|### Armed cold take (opt-in, rc1)
+safety|P|1|`own - holder >= AG_TAKE_MARGIN_SLOTS` (default 200)
+safety|P|1|so 170 + 8 = 178, rounded up to **200**
+safety|P|1|`authorized-voter add` of the staked keypair first
+safety|P|1|`TAKEOVER BLOCKED — authorized-voter add failed`
+safety|P|1|`validator/src/commands/set_identity/mod.rs`
+safety|P|1|`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 90 >= 45 + 30)
+safety|P|1|an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 75 s
+safety|P|1|two bounded local reads, the veto, then the margin
+safety|P|1|3 + 36 + 10 + 11 = 60 s, which does not converge either
+safety|P|1|duplicates, not equivocation;
+safety|P|1|exit is not a guarantee when the forks diverge
+safety|P|1|systemd does not expand `$HOME` in an `EnvironmentFile=`
+safety|P|1|That line is in the monitor skeleton (AG-3.5)
+safety|A|0|That is unit work, not part of this release.
+sysd|P|1|unless it is armed (`AG_ARMED_TAKE=true`'
 claims_for() {   # claims_for <key> <file…> -> the claims that do not hold, empty = all hold
     local key="$1" k kind min ph n c f why=""; shift
     while IFS='|' read -r k kind min ph; do
@@ -370,7 +408,7 @@ cw() { claims_for wizard "$1"; }
 ctl9 p-wizard-hot-spare "$WIZ" 's/Monitoring spare\. Pages you at/Hot spare. Takes over at/' cw
 cs() { claims_for standby "$1"; }
 ctl9 p-standby-mode-line "$STANDBY" '/Mode:              ALPENGLOW — this node NEVER takes the staked identity itself/d' cs
-ctl9 p-standby-alert "$STANDBY" 's/in Alpenglow mode no spare takes the identity by itself, so it stays on this node until an operator moves it\. Intervene (stop the validator; move the identity only by the warm swap, docs\/SAFETY.md)\." "\$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"/a spare may take over. Intervene (stop the validator or confirm the spare took over)." "$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"/' cs
+ctl9 p-standby-alert "$STANDBY" 's/in Alpenglow mode no spare takes the identity by itself unless it is armed (AG_ARMED_TAKE=true), so by default it stays on this node until an operator moves it\. Intervene (stop the validator; move the identity only by the warm swap, docs\/SAFETY.md)\." "\$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"/a spare may take over. Intervene (stop the validator or confirm the spare took over)." "$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"/' cs
 cp_() { claims_for primary "$1"; }
 ctl9 p-primary-banner "$PRIMARY" '/Mode:              ALPENGLOW — this node NEVER re-takes the staked identity itself/d' cp_
 cr() { claims_for readme "$1"; }
@@ -378,11 +416,11 @@ ctl9 p-readme-headline "$README" 's/^Staked-identity failover \*\*monitor\*\* fo
 cm() { claims_for manual "$1"; }
 ctl9 p-manual-banner "$MANUAL" 's/ALPENGLOW MODE (always on)/MODE/' cm
 cn() { claims_for notifications "$1"; }
-ctl9 p-notif-mark "$NOTIF" 's/| `TOOK STAKED ✅` | \*\*Retained path — not sent in v0.7\*\* (Alpenglow mode withholds the take: see the `WITHHELD` page)\. /| `TOOK STAKED ✅` | /' cn
+ctl9 p-notif-mark "$NOTIF" 's/| `RECOVERED TO STAKED ✅` \/ `RECOVERY FAILED ❌` \/ `RECOVERY BLOCKED — keypair problem` | \*\*Retained path — not sent in v0.7\*\* (Alpenglow mode withholds the take: see the `WITHHELD` page)\. /| `RECOVERED TO STAKED ✅` \/ `RECOVERY FAILED ❌` \/ `RECOVERY BLOCKED — keypair problem` | /' cn
 ca() { claims_for arm "$1"; }
 ctl9 p-arm-summary "$ARM" '/Alpenglow mode (v0.7): the pairing (P5), the vantage checks (P6) and this summary condition only the retained take path/d' ca
 ct() { claims_for templates "$1" "$ENV_P"; }
-ctl9 p-template-header "$ENVS" 's/^# v0\.7 ALPENGLOW MODE (always on): FO never takes the staked identity automatically\./# MODE./' ct
+ctl9 p-template-header "$ENVS" 's/^# v0\.7 ALPENGLOW MODE (always on): by default FO never takes the staked identity automatically:/# MODE:/' ct
 cx() { claims_for splitbrain "$1"; }
 ctl9 p-splitbrain-note "$SPLIT" 's/Alpenglow note (v0\.7)/Alpenglow note (research pending)/' cx
 cq() { claims_for safety "$1"; }
@@ -390,11 +428,32 @@ ctl9 p-safety-section "$SAFETY" 's/^## Alpenglow mode (v0\.7)$/## Mode/' cq
 ctl9 p-safety-15s "$SAFETY" 's/can take up to about 27 s/can take up to 15 s/' cq
 ctl9 p-safety-unreadable "$SAFETY" 's/`unreadable (<why>)` for `getHealth`/`unavailable (<why>)` for everything/' cq
 ctl9 p-readme-steps-up "$README" 's/then the spare only \*\*pages you\*\*/the spare steps up/' cr
+ctl9 p-standby-notarmed "$STANDBY" 's/this spare is NOT ARMED (AG_ARMED_TAKE=false): nothing was done/in Alpenglow mode FO never takes the staked identity automatically: nothing was done/' cs
+ctl9 p-standby-armed-held "$STANDBY" 's/this spare is ARMED, but the readiness margin held the take/the readiness margin held the take/g' cs
+ctl9 p-standby-blocked-status "$STANDBY" 's/"TAKEOVER BLOCKED — authorized-voter add failed"/"TAKEOVER BLOCKED"/' cs
+ctl9 p-standby-armed-banner "$STANDBY" 's/ALPENGLOW, ARMED — this spare WILL take the staked identity by itself/ALPENGLOW/' cs
+ctl9 p-standby-live-mode "$STANDBY" 's/LIVE MODE — STANDBY will perform a real takeover/LIVE MODE/' cs
+ctl9 p-readme-armed-default "$README" 's/`AG_ARMED_TAKE=false` (the default) only pages/AG_ARMED_TAKE only pages/' cr
+ctl9 p-readme-delay-90 "$README" 's/(default \*\*90s\*\*; the floor is 60s/(default **60s**; the floor is 60s/' cr
+ctl9 p-readme-coldtake "$README" 's/What an \*\*armed\*\* spare runs instead is the \*cold take\*/What an armed spare runs instead is a take/' cr
+ctl9 p-template-literal-true "$ENVS" 's/ONLY the literal `true` arms it/any value arms it/' ct
+ctl9 p-template-pairing "$ENVS" 's/HOLDER_GAP_DEMOTE_SECS + 30 (shipped 90 >= 45 + 30;/HOLDER_GAP_DEMOTE_SECS (shipped;/' ct
+ctl9 p-notif-blocked "$NOTIF" 's/| `TAKEOVER BLOCKED — authorized-voter add failed` |/| `TAKEOVER BLOCKED` |/' cn
+ctl9 p-notif-dry-cold "$NOTIF" 's/| `\[DRY RUN\] WOULD TAKE STAKED (Alpenglow cold take)` |/| `[DRY RUN] WOULD TAKE STAKED` |/' cn
+ctl9 p-safety-armed-section "$SAFETY" 's/^### Armed cold take (opt-in, rc1)$/### Cold take/' cq
+ctl9 p-safety-margin-200 "$SAFETY" 's/so 170 + 8 = 178, rounded up to \*\*200\*\*/so 170 + 8 = 178, rounded up to **180**/' cq
+ctl9 p-safety-duplicates "$SAFETY" 's/exit is not a guarantee when the forks diverge/exit is a guarantee/' cq
+ctl9 p-safety-unit-work "$SAFETY" 's/That line is in the monitor skeleton (AG-3.5)/That is unit work, not part of this release./' cq
+ctl9 p-safety-pairing "$SAFETY" 's/`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 90 >= 45 + 30)/`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 60 >= 45 + 30)/' cq
+ctl9 p-safety-refuse "$SAFETY" 's/an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 75 s/an armed spare warns at start when its `TAKEOVER_DELAY` is below 75 s/' cq
+ctl9 p-template-refuse "$ENVS" 's/an armed spare below 75 REFUSES to start/an armed spare below 75 warns at start/' ct
+ctl9 p-safety-envfile "$SAFETY" 's/systemd does not expand `\$HOME` in an `EnvironmentFile=`/systemd expands `$HOME` in an `EnvironmentFile=`/' cq
 ctl9 p-readme-version "$README" 's/\*\*v0\.7 needs agave \/ Jito-Solana `4\.4\.0` or newer\*\*/v0.7 runs on any agave/' cr
 ctl9 p-readme-27s "$README" 's/up to about 27 s at the decision point/up to about 15 s at the decision point/' cr
-ctl9 p-readme-promoted "$README" 's/A promoted STANDBY (the retained path: v0.7 never promotes one by itself) that later/A promoted STANDBY that later/' cr
-ctl9 p-template-take "$ENVS" 's/(v0\.7: FO never takes it - you move it to this node by the warm swap after the page; the retained path took it when PRIMARY dropped it)/(we TAKE it when PRIMARY drops it)/' ct
+ctl9 p-readme-promoted "$README" 's/A promoted STANDBY (an unarmed spare never promotes itself; an armed one does, by the cold take) that later/A promoted STANDBY that later/' cr
+ctl9 p-template-take "$ENVS" 's/(v0\.7: an unarmed spare - the default - never takes it: you move it to this node by the warm swap after the page;/(we TAKE it when PRIMARY drops it;/' ct
 csd() { claims_for sysd "$1"; }
+ctl9 p-sysd-armed "$SYSD" 's/unless it is armed (`AG_ARMED_TAKE=true`: a cold take/unless it is configured (a cold take/' csd
 ctl9 p-sysd-timer "$SYSD" 's/in Alpenglow mode the spare takes nothing/the spare takes on its timer path/' csd
 led_probe() { chk_text "$1" "Arming the fence \\(v0.7\\): set .LEDGER_PATH. explicitly" 5 "has no such detection" "falls to its stop path" "short form \`-l\`"; }
 ctl9 led-no-detection "$MANUAL" 's/but the fence (`failover-fence.sh`, run by the unit.s `OnFailure=`) has no such detection/but the fence (`failover-fence.sh`, run by the unit'"'"'s `OnFailure=`) reads it like the daemons/' led_probe

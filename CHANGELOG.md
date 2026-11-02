@@ -5,6 +5,22 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **AG-3 (rc1) — the armed cold take under Alpenglow, opt-in; the holder's gap rule; unit and ceremony hygiene.** A standby with `AG_ARMED_TAKE=true`
+  (default `false`; only the literal `true` arms, anything else is not armed and says so once at start) takes the staked identity itself - cold - when every gate
+  of the page has said "take now" and a readiness margin also holds. The primary never takes, armed or not. Every figure and limit:
+  [docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1).
+  - **The stop is fail-closed:** `if ! _ag_take_allowed` - an undefined predicate withholds (the AG-1 form let it fall through). The `TAKEOVER WITHHELD` page names whether the
+    spare is not armed or armed but held by the margin; `DRY_RUN` on an armed spare evaluates the margin and pages `[DRY RUN] WOULD TAKE STAKED (Alpenglow cold take)`.
+  - **The readiness margin:** `AG_TAKE_MARGIN_SLOTS=200` (a canonical integer ≥ 150, or the daemon refuses to start): the spare's finalized slot (its root under Alpenglow) minus the holder's
+    last observed `lastVote` must reach it; a failed read, a missing baseline or an unusable knob holds the take. One more bounded local read in the act-then-alert window: two bounded local
+    reads (the veto, then the margin).
+  - **The take is voter-first (G4):** `authorized-voter add` first, then `set-identity --do-not-require-vote-history` (agave and Jito-Solana 4.4.0). A failed or timed-out voter add stops the take
+    (`TAKEOVER BLOCKED — authorized-voter add failed`). Reason (A8): an identity before its voter opens a HotSpare / NonVoting window, measured on 2026-10-06 and on the testnet pair on 2026-11-02.
+  - **The holder's gap rule:** `HOLDER_GAP_DEMOTE_SECS=45` (floor 30): a staked holder whose monitor did not run for that long (a frozen or suspended host) demotes itself right after the cycle's
+    identity read. Pairing rule: the spare's `TAKEOVER_DELAY` ≥ that + 30; `TAKEOVER_DELAY` is now 90 (was 60) - pinned by the `facts` job together with the other armed-take defaults. An armed spare whose `TAKEOVER_DELAY` is below 75 refuses to start (`DRY_RUN` is no exception); one that is not armed logs a warning.
+  - **Unit and ceremony:** the monitor unit carries an `ExecStop=` that re-sends a lost TERM; `failover arm` refuses a real arm without a readable `LEDGER_PATH` (precondition `P6-ledger`) and
+    verifies that the rendered monitor unit carries the `ExecStop=`; both deploy scripts now write the ledger directory they detect into `LEDGER_PATH`.
+
 - **AG-1 — Alpenglow mode: FO never takes the staked identity automatically.** Always on, no knob; every figure and limit is in
   [docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07).
   - **The stop:** the standby's `take_staked_identity` and the primary's `switch_to_staked` (`RECOVERY_MODE=rpc`) return right after the

@@ -3,10 +3,12 @@
 > **Status:** read the honest-limits note in the [README](../README.md) and the safety model in
 > [SAFETY.md](SAFETY.md) before arming anything. `DRY_RUN=true` is the shipped default everywhere.
 
-> **v0.7 — ALPENGLOW MODE (always on).** FO never takes the staked identity automatically: the standby's take, the primary's `RECOVERY_MODE=rpc` re-take and the pre-warm are
+> **v0.7 — ALPENGLOW MODE (always on).** By default FO never takes the staked identity automatically: the standby's take, the primary's `RECOVERY_MODE=rpc` re-take and the pre-warm are
 > withheld, and a take that every gate approves is **paged once per episode** (`TAKEOVER WITHHELD — Alpenglow mode`). The staked identity moves by the operator's *warm swap* —
-> see **Manual switch-back** below and [SAFETY.md — Alpenglow](SAFETY.md#alpenglow-mode-v07). Everywhere this manual describes a spare *taking* the identity, the takeover timelines,
-> `ALLOW_UNFENCED_TAKEOVER`, `RECOVERY_MODE=rpc` or give-back, it describes the **retained path**, which v0.7 does not run: the same gates decide when the *page* is sent.
+> see **Manual switch-back** below and [SAFETY.md — Alpenglow](SAFETY.md#alpenglow-mode-v07). The one opt-in is a standby armed with `AG_ARMED_TAKE=true` (default `false`): it takes cold, voter first,
+> once a readiness margin (`AG_TAKE_MARGIN_SLOTS`, default 200) also holds - read [SAFETY.md — Armed cold take](SAFETY.md#armed-cold-take-opt-in-rc1) before setting it; the pairing rule is
+> `TAKEOVER_DELAY` (standby, default 90) ≥ `HOLDER_GAP_DEMOTE_SECS` (primary, default 45) + 30. Everywhere this manual describes a spare *taking* the identity, the takeover timelines,
+> `ALLOW_UNFENCED_TAKEOVER`, `RECOVERY_MODE=rpc` or give-back, it describes the **retained path**, which v0.7 does not run: the same gates decide when the *page* is sent (or, armed, when the cold take is made).
 
 > **v0.6.9 changes (vs v0.6.8) — `DRY_RUN=true` default unchanged.**
 > **"Post-failover symmetry" hardening** — the protection the PRIMARY demote path already had is

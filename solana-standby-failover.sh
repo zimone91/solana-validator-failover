@@ -147,7 +147,7 @@ MAX_DELINQUENT_SLOTS=0
 # --- Safety ---
 # v0.5.9: DRY_RUN=true is the safe default. Live mode requires explicit DRY_RUN=false in env.
 DRY_RUN=true
-TAKEOVER_DELAY=90                         # seconds of confirmed delinquency before takeover (v0.7 AG-3: 90; a hung holder's own fence ends in a kill at ~67 s - no-answer 30 + demote timeout 15 + `systemctl stop` bound 20 + kill 2 - so the spare decides after that; the pairing rule: >= the holder's HOLDER_GAP_DEMOTE_SECS (45) + 30)
+TAKEOVER_DELAY=90                         # seconds of confirmed delinquency before takeover (v0.7 AG-3: 90; the pairing rule: >= the holder's HOLDER_GAP_DEMOTE_SECS (45) + 30)
 # v0.7 (AG-3.1): THE ARM SWITCH. Alpenglow mode is the default and the spare only PAGES (TAKEOVER WITHHELD); the ARMED cold take is an opt-in. ONLY the literal `true` arms it - any other value
 # (TRUE, 1, yes, a typo, a trailing space) is NOT armed and says so once at startup. Arming is the operator's ceremony (docs/SAFETY.md, "Armed cold take"): the take is a SET-IDENTITY with an empty vote
 # history, so it is safe only when both conditions of DESIGN-AG 2.3 hold at the moment of the take: (i) the holder has relinquished (demoted, or dead and not coming back staked - every restart boots
@@ -6287,7 +6287,7 @@ _fence_rot_check() {
                     # act-then-alert: the demote path performs the safety action FIRST and carries
                     # its own alerting; the reason below IS the demote page's text.
                     _last_rot_demote_try=$_rot_now
-                    _rot_graceful_demote "Fence rot persisted ${FENCE_ROT_GRACE}s while ARMED+STAKED: ${_rot_found}. Graceful demote — this node no longer holds the staked identity; in Alpenglow mode no spare takes it by itself, so an operator moves it (warm swap, docs/SAFETY.md)."
+                    _rot_graceful_demote "Fence rot persisted ${FENCE_ROT_GRACE}s while ARMED+STAKED: ${_rot_found}. Graceful demote — this node no longer holds the staked identity; in Alpenglow mode no spare takes it by itself unless it is armed (AG_ARMED_TAKE=true), otherwise an operator moves it (warm swap, docs/SAFETY.md)."
                 elif [[ -n "$UNSTAKED_PUBKEY" && "$_rot_id" == "$UNSTAKED_PUBKEY" ]]; then
                     if [[ ${_rot_unstaked_noted:-0} -eq 0 ]]; then
                         _rot_unstaked_noted=1
@@ -7347,7 +7347,7 @@ startup_checks() {
                 # evidence-gated; no-ops outside the armed unit.
                 _watchdog_extend_if_starting 2>/dev/null
                 log_warn "Persisted role STAKED + local validator unreachable ${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s+ at startup — sending URGENT alert"
-                alert "STANDBY was STAKED (promoted holder) at last save + local validator unreachable since monitor startup (>${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s) — the daemon cannot self-fence/demote; in Alpenglow mode no spare takes the identity by itself, so it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"
+                alert "STANDBY was STAKED (promoted holder) at last save + local validator unreachable since monitor startup (>${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s) — the daemon cannot self-fence/demote; in Alpenglow mode no spare takes the identity by itself unless it is armed (AG_ARMED_TAKE=true), so by default it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"
                 _wait_alerted=1
                 _watchdog_extend_if_starting 2>/dev/null
             fi
@@ -7517,7 +7517,7 @@ while $_running; do
             # Page URGENT, not warn (ported from the primary's F1 sub-item). FAILURE DIRECTION: page.
             if [[ -n "$STAKED_PUBKEY" && "$_last_known_identity" == "$STAKED_PUBKEY" ]]; then
                 log_warn "Local validator unreachable while STAKED (promoted holder) — sending URGENT alert"
-                alert "STANDBY holds staked + local validator unreachable — the daemon cannot self-fence/demote; in Alpenglow mode no spare takes the identity by itself, so it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"
+                alert "STANDBY holds staked + local validator unreachable — the daemon cannot self-fence/demote; in Alpenglow mode no spare takes the identity by itself unless it is armed (AG_ARMED_TAKE=true), so by default it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"
             else
                 log_warn "Local validator unreachable — sending alert"
                 alert_warn "⚠️ STANDBY local validator unreachable! Cannot monitor — a failure of the holder will not be seen or paged."

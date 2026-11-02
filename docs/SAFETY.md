@@ -1,7 +1,7 @@
 # Safety model
 
-> **v0.7 — Alpenglow mode.** FO never takes the staked identity automatically; it detects and pages. Read [Alpenglow mode](#alpenglow-mode-v07) first: the take-side sections below describe the
-> *retained* take path and the gates that decide when a page is sent.
+> **v0.7 — Alpenglow mode.** By default FO never takes the staked identity automatically; it detects and pages. A standby takes it only when you arm it (`AG_ARMED_TAKE=true`: [Armed cold take](#armed-cold-take-opt-in-rc1)).
+> Read [Alpenglow mode](#alpenglow-mode-v07) first: the take-side sections below describe the *retained* take path and the gates that decide when a page is sent (or, armed, when the take is made).
 
 ## Prime directive
 
@@ -13,9 +13,9 @@ double-sign.
 
 ## Alpenglow mode (v0.7)
 
-**AG mode is always on in v0.7.** FO never takes the staked identity automatically: not the standby's take, not the primary's `RECOVERY_MODE=rpc` re-take, and not
-the pre-warm that registers the staked voter ahead of a take. No environment knob, state file or RPC answer turns it off in a shipped script — `_ag_mode` answers
-"on" unconditionally; the startup tripwire only *reports* the Alpenglow feature gate — and CI pins that.
+**AG mode is always on in v0.7.** By default FO never takes the staked identity automatically: not the standby's take, not the primary's `RECOVERY_MODE=rpc` re-take, and not
+the pre-warm that registers the staked voter ahead of a take. The one opt-in is the standby's *armed cold take* (`AG_ARMED_TAKE=true`, [below](#armed-cold-take-opt-in-rc1)); the primary never takes, armed or not.
+No environment knob, state file or RPC answer turns AG mode off in a shipped script — `_ag_mode` answers "on" unconditionally; the startup tripwire only *reports* the Alpenglow feature gate — and CI pins that.
 
 **Why.** Alpenglow replaces TowerBFT with votor and a vote-history file. The feature gate (`A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS`) was read active on all
 three public clusters on 2026-11-01 (testnet from slot 444,620,256, devnet 504,144,000, mainnet 459,648,000), so the take path described below runs on none of them.
@@ -32,7 +32,7 @@ acceptable is an operator decision; FO does not make it.
   demote it to its own unstaked identity. A `getHealth` answer of *Unknown* — agave answers Unknown while votor has seen no finalized slot — is named in the log and demotes
   nothing. A *vote-based* demote (N6, the latency and delinquency triggers) first reads whether the vote account is in the epoch's vote set (below) and is withheld, with a
   page, while it is not; the partition triggers never wait for that read's verdict.
-- When every gate of a take says "take now", the spare sends **one page per episode** — `TAKEOVER WITHHELD — Alpenglow mode 🚨`; the primary's `RECOVERY_MODE=rpc`
+- When every gate of a take says "take now", an unarmed spare (the default) sends **one page per episode** — `TAKEOVER WITHHELD — Alpenglow mode 🚨` (an armed spare sends it only while the readiness margin holds the take); the primary's `RECOVERY_MODE=rpc`
   twin is `RECOVERY WITHHELD — Alpenglow mode 🚨` — and repeats it at most once per `ALERT_THROTTLE` while the episode lasts; between pages a decision point is a log line. The page
   carries what the operator needs: the take path's reason; the holder's silence since the episode's first liveness sample (its last vote and the cluster tip at that read, and
   the provider); this node's finalized slot and `getHealth` class; its validator version against the minimum; the VAT admission; the state of the vote-history file; and
@@ -41,12 +41,11 @@ acceptable is an operator decision; FO does not make it.
   (a voting veto, an aborting re-check, the delay) sends no Alpenglow page.
 - `PREWARM_VOTER_ADD=true` is inert and `RECOVERY_MODE=rpc` cannot re-take; each says so once at startup.
 
-**What FO does not do.** It does not take, re-take or pre-warm. It does not delete, move, copy, truncate or rewrite a vote-history file or a tower file — a census of
-the shipped scripts by bash's own parse (`tests/test_tower_handling.sh`) pins that — and it names agave's flag that switches the vote-history requirement off in no file of
-the tree, which CI also pins.
+**What FO does not do.** By default it does not take, re-take or pre-warm (armed, the standby takes - cold - and still never re-takes on the primary or pre-warms). It does not delete, move, copy, truncate or rewrite a vote-history file or a tower file — a census of
+the shipped scripts by bash's own parse (`tests/test_tower_handling.sh`) pins that — and it names agave's flag that switches the vote-history requirement off in exactly one shipped place, the standby's armed cold take, which CI pins.
 
-**The retained take path, unreachable in v0.7.** The code that takes the staked identity (the standby's `take_staked_identity`, the primary's `switch_to_staked`,
-`_prewarm_voter_add`) stays, behind the Alpenglow stop, as the base for a later release; only the tests reach it, by shadowing `_ag_mode`. The rest of this document —
+**The retained take path, unreachable in v0.7.** The code that takes the staked identity the TowerBFT way (identity first, then the voter: the standby's `take_staked_identity`, the primary's `switch_to_staked`,
+`_prewarm_voter_add`) stays, behind the Alpenglow stop, as the base for a later release; only the tests reach it, by shadowing `_ag_mode` and the standby's `_ag_take_allowed`. What an armed standby runs is not that path but the cold take (voter first, the vote-history requirement switched off), below. The rest of this document —
 the cross-node invariant, the spare's own view, verified-demote, the timing tables — describes the gates that decide *when a page is sent* in v0.7, and the take that used to
 follow them. Where a figure belongs to the take path it was measured under TowerBFT; *Slot time under Alpenglow* below sorts the figures. The physical model of the spare's own
 node in *The spare's own view* — its `processed` bank is the tower's last votable bank, and freezes within about 8 votes on a minority fork — is TowerBFT's as well: under
@@ -61,8 +60,8 @@ is the operator's, and it is a *warm swap*:
 3. the file is copied to the new holder's ledger directory and its sha256 is checked there;
 4. on the new holder, `authorized-voter add` of the staked keypair, then `set-identity` of the staked keypair — in that order, with no extra flags.
 
-A vote-history file is never deleted. A cold take — without the old holder's current file — is made only by an operator who knows the old node is down and will not vote again, following
-agave's own documentation; FO never makes it.
+A vote-history file is never deleted. A cold take — without the old holder's current file — is made by an operator who knows the old node is down and will not vote again, following
+agave's own documentation; FO makes it only on a standby you armed ([Armed cold take](#armed-cold-take-opt-in-rc1)), when its two conditions hold.
 
 **VAT admission.** Under Alpenglow a vote account counts only if it is in the epoch's validator-admission-ticket (VAT) set: built when the epoch before is entered, from the accounts
 with a BLS key, stake at that moment, and a balance of at least rent plus one epoch's VAT (less pending delegator rewards when block revenue sharing is on), cut to the top 2,000 by stake.
@@ -89,6 +88,64 @@ the reason class where the node's `getAccountInfo` can show it (the BLS key, pen
 - The fence script (`failover-fence.sh`) does not report the vote-history class, and has no ledger detection: arm with `LEDGER_PATH` set (the deployment manual, *Arming the fence*).
 - The wizard preset for `MAX_DELINQUENT_SLOTS` is 24 from v0.7; an existing env file keeps its value (15 sits close to the tail of Alpenglow's healthy vote lag), and the standby says so once at start - a log line, no page - when the value is 1 to 23.
 - Every take-path figure in this document was measured at 2.5 or 3.7 slots/s and is not re-derived for the Alpenglow rate in this release.
+
+### Armed cold take (opt-in, rc1)
+
+**What it is.** `AG_ARMED_TAKE` in the standby's env file defaults to `false`. Only the literal value `true` arms the spare; any other value (`TRUE`, `1`, `yes`, a typo, a trailing space) leaves it unarmed and
+the daemon says so once at start. An armed spare takes the staked identity itself - a *cold take*, `set-identity` with an empty vote history - when every gate that sends the `TAKEOVER WITHHELD` page has said "take
+now" **and** one more number clears, the readiness margin. The primary never takes, armed or not (`RECOVERY_MODE=rpc` stays withheld); nothing pre-warms; FO never deletes, moves or copies a vote-history file.
+Arming is the operator's ceremony: edit the standby's env file, restart, and read the start banner (`Mode: ALPENGLOW, ARMED - this spare WILL take the staked identity by itself ...`) and the
+`AG_ARMED_TAKE=true` warning in the log. `DRY_RUN=true` on an armed spare evaluates the margin too and pages `[DRY RUN] WOULD TAKE STAKED (Alpenglow cold take)` instead of taking.
+
+**The two conditions.** A `set-identity` with an empty history starts the new holder's votes at its own root: votor never votes at or below its floor, the larger of the history's root and the node's own bank
+root. That conflicts with the old holder only if the old holder voted above that floor at or after the swap. A cold take is therefore safe only when, at the moment of the take, (i) the old holder has
+relinquished - it is demoted, or dead and not coming back staked (every restart boots on its unstaked identity) - and (ii) the spare's root is above the old holder's last real vote by a margin. FO measures them:
+
+- **(i)** is what the gate chain already proves for the page: the episode (the sliding window), `TAKEOVER_DELAY`, the external confirmation, the vote-liveness fence (the holder's vote account has not advanced
+  across `VOTE_LIVENESS_MIN_SPAN`), the fresh re-check and the spare's own-view veto.
+- **(ii)** is one arithmetic gate: `own - holder >= AG_TAKE_MARGIN_SLOTS` (default 200). `own` is the spare's finalized slot - under Alpenglow `finalized` is the root, so one local `getSlot{finalized}` read
+  (`curl -m 3`) gives the floor an empty history starts from. `holder` is the last `lastVote` of the holder's vote account that the vote-liveness gate accepted (frozen: a holder that is not voting). A read that
+  fails, an answer that is not a canonical integer, a missing baseline or an unusable knob HOLDS the take (fail-closed). A held take sends the usual `TAKEOVER WITHHELD` page, worded `this spare is ARMED, but the
+  readiness margin held the take: own finalized <n>, holder lastVote <n>, margin <n> < AG_TAKE_MARGIN_SLOTS=<k>` (or the reason a read failed), and the spare decides again at the next decision point (one per
+  `TAKEOVER_COOLDOWN`), when its root has moved on. The polarity is fail-closed by construction: the stop is `if ! _ag_take_allowed`, so a missing definition withholds.
+
+**The margin's derivation.** A partitioned holder keeps casting votes nobody sees until its own self-fence fires: the Internet-lost trigger at about 13.5-16.5 s (17 s measured on the testnet pair), the frozen-slot
+and no-answer triggers at 30 s; add one monitor cycle (3 s) and the demote (1 s): at most 34 s. At the conservative 5 slots/s that is 170 slots. The on-chain `lastVote` understates the holder's real last vote
+by up to about 8 slots, so 170 + 8 = 178, rounded up to **200**. The knob refuses to start below 150.
+
+**The take.** `authorized-voter add` of the staked keypair first - an identity before its voter opens a window in which the node holds the staked identity with no voter (HotSpare / NonVoting; measured on
+2026-10-06 and on the testnet pair on 2026-11-02) - then `set-identity` with `--do-not-require-vote-history`. If the voter add fails or times out the take stops there:
+`TAKEOVER BLOCKED — authorized-voter add failed`, no `set-identity`, the cooldown stamped; an `already present` answer (the voter is loaded) is accepted. The flag is in agave and Jito-Solana `4.4.0` (`validator/src/commands/set_identity/mod.rs`,
+lines 59-64; `set-identity` requires the saved vote history unless it is given, line 27). A vote-history file that IS present gives the same floor as none - agave accepts it silently - so the flag only makes the
+cold take explicit. FO reports the file's class (absent; present with its mtime, size and sha256; unavailable) before and after the take and never acts on it. The `TOOK STAKED` page ends `cold take: empty
+history, floor = own root <n>; holder lastVote <n>; margin <n> slots; vote history before the take: <class>`.
+
+**The pairing rule and the gap rule.** The gap rule is the holder's half, against the one thing the margin cannot see - a host that was frozen (a VM pause, a live migration, a suspend) and wakes after the spare
+took. The monitor stamps the end of every cycle on a monotonic clock; a cycle that starts `HOLDER_GAP_DEMOTE_SECS` (default 45 s, floor 30) or more after the last stamp, on a node that holds the staked identity,
+demotes it - after the cycle's loop-top reads and the identity read, before `check_internet`, the manual-change detection and the self-fence. A monitor that has just started has no previous cycle and so no gap; an
+unstaked node only logs one INFO line; a demote that could not run stays pending and is retried on the next cycle. Failure direction: a false gap (a very long stall of the monitor itself) demotes a healthy
+holder - availability, never a second voter. The pairing rule is what makes the two halves meet: the spare's `TAKEOVER_DELAY` must be at least the holder's `HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 90 >= 45 + 30),
+so a freeze shorter than the gap bound ends, and the holder is voting again, well before the spare's earliest take, and a longer one is demoted at the wake. The holder cannot read the spare's env file, so the rule
+lives in both env templates and here, and the `facts` job pins the shipped pair; an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 75 s (the holder's default 45 + 30; `DRY_RUN` is no exception), and a spare that is not armed logs one warning below 75.
+
+**What the armed spare does not do.** It does not re-take on the primary (`RECOVERY_MODE=rpc` stays withheld), pre-warm, copy or move a vote-history file, or give the identity back: the way back to the old
+node is the operator's warm swap, above.
+
+**Prerequisites on the holder.** The monitor unit carries the `ExecStop=` TERM re-send (*Known bash behaviour* below; `failover arm` verifies it), `LEDGER_PATH` in the env file names the ledger directory (the
+fence has no detection of its own; `failover arm` refuses a real arm without it), and `SOLANA_PATH` in the env file is an absolute path: systemd does not expand `$HOME` in an `EnvironmentFile=` (measured on
+systemd 255.4: `$HOME`, `${HOME}` and `$(...)` reach the process literally), so a literal `$HOME/...` there hands the fence a path that does not exist. The deploy scripts write `SOLANA_PATH="$HOME/..."`;
+replace it before arming.
+
+**The act-then-alert window.** The rule (*The spare's own view*): between the fresh re-check's return-0 and `set-identity` - no network, no alerts; one bounded local veto read allowed. That holds as written for the
+primary and for an unarmed spare; an armed spare adds one bounded local read after the veto, the readiness margin: two bounded local reads, the veto, then the margin. The voter add is an admin call, not a read.
+`PROOF_MAX_AGE` (50 s) is re-derived: acceptance slack 3 s + the re-check's 36 s + the veto's 10 s + the margin's 11 s (`curl -m 3`, its 7 s pet, ~1 s of parse) = 60 s > 50 - it does not converge by 10 s. The
+figure is left unchanged because the edge check that would read it is wired into no take path in this release; whoever wires it (Block 6.4) must move it to 61 or take the margin read before the re-check.
+
+**Residual (accepted for this release).** A holder whose whole host was frozen and thaws after the take votes until its gap rule demotes it: milliseconds on a healthy host, at most about 27 s when every
+bounded read of the cycle's top is at its limit. agave's duplicate-instance check is the second line:
+measured once on the testnet pair (the second node's `set-identity <staked>` while the holder was live), the holder logged `duplicate running instances of the same validator node` after 6.0 s and exited after 7.9 s
+(status 1; systemd restarted it on its unstaked identity), and during the 5.97 s of overlap both nodes cast identical votes (29 of them: the same slot, type and block), with no divergence. Measured once;
+duplicates, not equivocation; the holder's exit is not a guarantee when the forks diverge. No slashing is enforced for this on mainnet today; what a duplicate costs is the credits of those slots.
 
 ## The cross-node invariant
 
@@ -379,7 +436,7 @@ under this escalation contract:
    verified-demote proof. That is an automatic failover to the healthy side where a spare watches the
    demoting node: behind a PRIMARY, the STANDBY; behind a promoted STANDBY, a BACKUP if there is one (the
    old PRIMARY re-takes only with `RECOVERY_MODE=rpc`; at the default `manual` it does not) — **the retained
-   path: in v0.7 (Alpenglow mode) the spare pages instead of taking**. An unreadable
+   path: in v0.7 (Alpenglow mode) the spare pages instead of taking** (an armed spare takes: [Armed cold take](#armed-cold-take-opt-in-rc1)). An unreadable
    identity at expiry demotes nothing (that would be a guess); paging continues.
 
 The availability tradeoff is accepted and bounded: a broken-but-loud fence costs (at worst) one
@@ -976,13 +1033,14 @@ piece is **veto-only** — it can turn a take into a hold, never the reverse.
   before the (throttled) alert; no cooldown is set — a withdrawn verdict, not a failed take. **The
   act-then-alert rule now reads: between the fresh re-check's return-0 and set-identity — no network, no
   alerts; one bounded local veto read allowed**; the censuses admit exactly this read (by structure: the
-  take segment's statements are pinned and its fall-through calls no network primitive). The 2 s bound
+  take segment's statements are pinned and its fall-through calls no network primitive). On a standby armed with `AG_ARMED_TAKE=true` the window holds a second bounded local read after
+  the veto - the readiness margin's `getSlot{finalized}` (`curl -m 3` and its pet): two bounded local reads, the veto, then the margin ([Armed cold take](#armed-cold-take-opt-in-rc1)). The 2 s bound
   is ~400× a healthy loopback read (4–5 ms measured), and every second of it lengthens the
   verdict→mutation span. **`PROOF_MAX_AGE` (50 s) covers the acceptance→mutation span — 49 s, a margin of
   1 s** (the re-check's one sampler call at its worst — `TIER2`'s 10 s timeout, then `TIER3`'s 10 s read,
   each + a 7 s pet, + 2 s of parse: 36 s — then the veto's worst 10 s: 2 s + a 7 s pet + 1 s of parse, after
   3 s of acceptance slack); 58 s if 6.4's gate is placed before the pre-take own-head sample, which does not
-  converge. Fix rounds 1 and 2 had shrunk it to 32 s (41 s gate-first) by reading one tier's worth; both
+  converge. On an armed standby the span gains the readiness margin's read (11 s): 3 + 36 + 10 + 11 = 60 s, which does not converge either - the figure is unchanged because the edge check is wired into no take path in this release. Fix rounds 1 and 2 had shrunk it to 32 s (41 s gate-first) by reading one tier's worth; both
   changes are removed (below), so the first 6.3.1 build's arithmetic stands again. **The re-check is the
   6.3 build's again (fix round 3 — the delta reviews' DL-1, LB-1 and LB-2, each a safety regression):** ONE
   call of the liveness sampler — `TIER2`, and `TIER3` only when `TIER2` yields nothing — and the decision on
@@ -1488,7 +1546,10 @@ the daemon pages rather than guesses (`TAKEOVER_STARVATION_ALERT_SECS`, default 
   wait, a second TERM, a red named `TERM trap lost (bash 5.2 race)`); the daemons are not changed. What it means for operations: a `systemctl stop` whose TERM is
   lost runs to the unit's stop timeout, ends in SIGKILL and sends no 'stopped' page, and the daemon keeps monitoring — and acting — until then. **Required
   before any monitor or fence unit is armed:** the unit's `ExecStop=` re-sends TERM, a few times, while `$MAINPID` lives (each TERM is an independent chance: two
-  consecutive losses are about 1e-5 at the measured rate). That is unit work, not part of this release.
+  consecutive losses are about 1e-5 at the measured rate). That line is in the monitor skeleton (AG-3.5): up to 3 TERMs, 1 s apart, while `$MAINPID` lives, always exit 0 (a failing `ExecStop=` leaves the unit
+  `failed`, and `failed` dispatches `OnFailure=`); `failover arm` verifies that the rendered unit carries it, `test_arm_ceremony` (18) runs it against a bash that drops TERMs, and on systemd 255.4 it does not run
+  on the watchdog path. Every `systemctl stop` takes at least a second longer, and a stop page that takes longer than the 1 s step is followed by a second one (the extra TERM re-enters `cleanup()`; measured on
+  bash 5.2.21); the daemons are not changed.
 - Tests are function-level with mocked I/O: they exercise the real decision functions, but do **not**
   prove cross-process ordering between two live systemd services. A chaos/E2E gate on real nodes is
   required before unattended operation.
