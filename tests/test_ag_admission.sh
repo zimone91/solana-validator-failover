@@ -377,6 +377,7 @@ $1 == "L" { fn = $2; raw = $6; rn[fn]++; has[fn, rn[fn]] = (index(raw, "_vat_hol
         else if (r ~ /^self-fence: local getHealth/) cls = "gethealth-behind"
         else if (r ~ /^Internet lost/) cls = "internet-lost"
         else if (fn == "_rot_graceful_demote") cls = "rot-graceful"
+        else if (r ~ /^holder gap:/) cls = "holder-gap"
         else cls = "UNCLASSIFIED"
         g = has[fn, rn[fn]]; for (k = 1; k <= 6 && !g; k++) if (rn[fn] - k >= 1) g = has[fn, rn[fn] - k]
         row = sprintf("%s|%s|%d", fn, cls, g); T[row] = 1 } }
@@ -393,6 +394,7 @@ check_self_fence_isolation|slot-frozen|0'
 VG_PRIMARY='(post)|delinquency|1
 (post)|internet-lost|0
 (post)|vote-latency|1
+_gap_demote|holder-gap|0
 _rot_graceful_demote|rot-graceful|0
 check_self_fence_isolation|gethealth-behind|0
 check_self_fence_isolation|local-rpc-silent|0
@@ -402,7 +404,7 @@ for scr in "$STANDBY" "$PRIMARY"; do
     n=$(role_of "$scr"); t=$(vg_scan "$scr"); want="$VG_STANDBY"; [[ "$n" == "primary" ]] && want="$VG_PRIMARY"
     want=$(printf '%s\n' "$want" | sort)
     [[ "$t" == "$want" ]] \
-        && ok "(5a:$n) the demote call sites by bash's parse: the vote-based ones (own-vote lag$([[ $n == primary ]] && echo ', vote latency, delinquency')) are each behind _vat_hold; the partition triggers (frozen slot, silent LOCAL RPC, getHealth behind$([[ $n == primary ]] && echo ', lost internet')) and the fence-rot graceful demote are not" \
+        && ok "(5a:$n) the demote call sites by bash's parse: the vote-based ones (own-vote lag$([[ $n == primary ]] && echo ', vote latency, delinquency')) are each behind _vat_hold; the partition triggers (frozen slot, silent LOCAL RPC, getHealth behind$([[ $n == primary ]] && echo ', lost internet')) and the fence-rot graceful demote$([[ $n == primary ]] && echo ' and the holder-gap demote (AG-3.4: a frozen host demotes first, it does not ask)') are not" \
         || bad "(5a:$n) demote-site census moved: $(printf '%s' "$t" | tr '\n' ';')"
 done
 
@@ -476,6 +478,11 @@ done
 m="$WORK/c-census-inet.sh"
 if mutate "$PRIMARY" 's/^\( *\)switch_to_unstaked "Internet lost/\1_vat_hold "x" || switch_to_unstaked "Internet lost/' "$m"; then
     [[ "$(vg_scan "$m")" != "$(vg_scan "$PRIMARY")" ]] && ok "(6:guarded-partition-trigger) CONTROL: a _vat_hold put in front of the lost-internet demote moves the demote-site table" || bad "(6:guarded-partition-trigger) the census did not see a guarded partition trigger"
+fi
+# ... and so must the holder-gap demote (AG-3.4): a host that was frozen demotes first, it never asks the vote-account read
+m="$WORK/c-census-gap.sh"
+if mutate "$PRIMARY" 's/^\( *\)if switch_to_unstaked "holder gap:/\1if _vat_hold "x" || switch_to_unstaked "holder gap:/' "$m"; then
+    [[ "$(vg_scan "$m")" != "$(vg_scan "$PRIMARY")" ]] && ok "(6:guarded-gap-demote) CONTROL: a _vat_hold put in front of the holder-gap demote moves the demote-site table" || bad "(6:guarded-gap-demote) the census did not see a guarded gap demote"
 fi
 
 results_banner
