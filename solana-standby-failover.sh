@@ -543,7 +543,8 @@ _persisted_role=""                        # role recorded in the last persisted 
 # SELF_FENCE_RETAKE_COOLDOWN seconds; persisted (a Restart=always monitor restart must not clear the
 # lockout — the fenced vote account still looks delinquent, and re-taking it is the exact hazard).
 SELF_FENCE_DEMOTE_TIME=0
-_last_lockout_log=0                       # throttle for the lockout log line (turbo would spam it)
+_last_lockout_log=0                       # throttle for the lockout log line (turbo would spam it): the mono_now stamp of its last WARN, 0 = none yet; the cycles in between log it at INFO (v0.7 B7.5)
+_last_cooldown_log=0                      # v0.7 (B7.5): the same for the takeover-cooldown line - its own stamp, in memory
 _last_known_identity=""                   # v0.6.9 (H1): last successfully-read identity (drives the staked-unreachable URGENT page)
 # v0.6.9 (M5): collision-detector state — consecutive non-self-endpoint strikes + throttle stamps.
 _collision_strikes=0
@@ -2650,6 +2651,7 @@ _starvation_note_close() {
 
 # --- Full takeover attempt (gates: window → delay → external confirm → gossip → take) ---
 attempt_takeover() {
+    local _gate_msg   # v0.7 (B7.5): the text of the lockout / cooldown line - logged at WARN once per 60 s per site, at INFO in between
     now=$(mono_now)   # v0.7 (Block 3): SAFETY clock — feeds the H1.3 lockout, the N3 anchor, the cooldown and the confirm throttle
     _maybe_starvation_page   # v0.7 (B3 s4 rework): FIRST — before the H1.3 lockout, reachable from EVERY hold path (the delay-branch early return included: that is where the measured silence lives)
     # v0.6.9 (H1.3): post-self-fence RE-TAKE LOCKOUT — checked before everything else. After a
@@ -2659,9 +2661,13 @@ attempt_takeover() {
     # elapses; the episode state was reset at the demote, so every gate then re-evaluates FRESH.
     # FAILURE DIRECTION: toward NOT taking (availability loss, never a double-sign).
     if [[ ${SELF_FENCE_DEMOTE_TIME:-0} -gt 0 && $(( now - SELF_FENCE_DEMOTE_TIME )) -lt ${SELF_FENCE_RETAKE_COOLDOWN:-600} ]]; then
-        if [[ $(( now - _last_lockout_log )) -ge 60 ]]; then
-            log_warn "Re-take locked out after self-fence: $(( SELF_FENCE_RETAKE_COOLDOWN - (now - SELF_FENCE_DEMOTE_TIME) ))s remaining — we fenced OURSELVES; the delinquency we see is (likely) our own demote, not a dead holder"
+        _gate_msg="Re-take locked out after self-fence: $(( SELF_FENCE_RETAKE_COOLDOWN - (now - SELF_FENCE_DEMOTE_TIME) ))s remaining — we fenced OURSELVES; the delinquency we see is (likely) our own demote, not a dead holder"
+        # v0.7 (B7.5): WARN at most once per 60 s, the first call at once (a stamp of 0 is "never logged", not "a minute ago"); every other cycle the same text at INFO - the information stays, the WARN stream does not
+        if [[ ${_last_lockout_log:-0} -eq 0 || $(( now - _last_lockout_log )) -ge 60 ]]; then
+            log_warn "$_gate_msg"
             _last_lockout_log=$now
+        else
+            log_info "$_gate_msg"
         fi
         return 1
     fi
@@ -2757,7 +2763,14 @@ attempt_takeover() {
     # v0.6.0: cooldown gate — after any takeover attempt (especially a FAILED one) don't retry or
     # re-alert every cycle. Without this a failed takeover loops every 1s in turbo → alert storm.
     if [[ $LAST_TAKEOVER_TIME -gt 0 && $(( now - LAST_TAKEOVER_TIME )) -lt $TAKEOVER_COOLDOWN ]]; then
-        log_warn "Takeover cooldown: $(( TAKEOVER_COOLDOWN - (now - LAST_TAKEOVER_TIME) ))s remaining since last attempt"
+        _gate_msg="Takeover cooldown: $(( TAKEOVER_COOLDOWN - (now - LAST_TAKEOVER_TIME) ))s remaining since last attempt"
+        # v0.7 (B7.5): the lockout line's rule, with its own stamp - this line was a WARN on EVERY cycle (1 s in turbo) for the whole cooldown
+        if [[ ${_last_cooldown_log:-0} -eq 0 || $(( now - _last_cooldown_log )) -ge 60 ]]; then
+            log_warn "$_gate_msg"
+            _last_cooldown_log=$now
+        else
+            log_info "$_gate_msg"
+        fi
         return 1
     fi
 
