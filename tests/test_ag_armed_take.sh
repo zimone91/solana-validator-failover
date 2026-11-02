@@ -665,4 +665,24 @@ else
     bad "(16d) unarmed chain, 200 s: admin=$(admin_n "$un") pages=$(evn "$un" 'PAGE')"
 fi
 
+# ── (17) a LONG episode held by the margin pages like an unarmed one ───────────────────────────────────────────────────────
+echo ""; echo "─── (17) 900 s of one episode held by the readiness margin: ONE page per ALERT_THROTTLE, every other decision point is a log line (the held state does not page at each cooldown) ───"
+lh=$(ag3_sb "$STANDBY" ARMED=true MARGIN=99999999 HZ=900)
+np=$(evn "$lh" 'PAGE .*WITHHELD'); nd=$(evn "$lh" 'TAKE-ENTER'); nh=$(evn "$lh" 'LOG .*\[ag\] armed take: held'); nw=$(evn "$lh" 'LOG .*\[ag\] standby: take withheld')
+pt=$(printf '%s\n' "$lh" | awk '/^EV: TAKE-ENTER/ { sub(/.*t=/, ""); t = $0 } /^EV: PAGE .*WITHHELD/ { printf "%s ", t }' | sed 's/ $//')
+p1=${pt%% *}; p2=${pt##* }
+if [[ "$np" == "2" && $nd -ge 6 && $nd -le 9 && "$nh" == "$nd" && "$nw" == "$(( nd - 2 ))" && "$(admin_n "$lh")" == "0" && "$p1" =~ ^[0-9]+$ && "$p2" =~ ^[0-9]+$ && $(( p2 - p1 )) -ge 600 ]] \
+   && ! printf '%s\n' "$lh" | grep '^EV: PAGE .*WITHHELD' | grep -qv 'ARMED, but the readiness margin held the take'; then
+    ok "(17a) armed, held by the margin for 900 s: $nd decision points (one per TAKEOVER_COOLDOWN 120 s), each logs '[ag] armed take: held' ($nh), TWO pages (at t=$pt: the first, and the first one past ALERT_THROTTLE 600 s), the other $(( nd - 2 )) are log lines '[ag] standby: take withheld' ($nw), ZERO admin calls - the throttle of the unarmed episode"
+else
+    bad "(17a) long held episode: pages=$np decision-points=$nd held-logs=$nh withheld-logs=$nw admin=$(admin_n "$lh") pages at t=[$pt]"
+fi
+if mutate "$STANDBY" 's/ -lt \${ALERT_THROTTLE:-600} \]\]; then$/ -lt 0 ]]; then/' "$WORK/mut-throttle-off.sh" >/dev/null; then
+    lm=$(ag3_sb "$WORK/mut-throttle-off.sh" ARMED=true MARGIN=99999999 HZ=900)
+    nm=$(evn "$lm" 'PAGE .*WITHHELD')
+    [[ "$nm" -gt 2 ]] && ok "(17b) the throttle removed from _ag_take_withheld pages at every decision point ($nm pages in 900 s): (17a) is red on it - the page count is the throttle's, not an accident of the timeline" || bad "(17b) the throttle-off mutant still pages only $nm times: (17a) would stay green"
+else
+    bad "(17b) the throttle-off sed expression changed nothing"
+fi
+
 results_banner
