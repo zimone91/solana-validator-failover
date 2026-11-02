@@ -1453,10 +1453,10 @@ EOT
     t0=$(date +%s)
     MAINPID="$mp" /bin/sh -c "$script" >/dev/null 2>&1 &
     epid=$!
-    ( sleep 9; kill -9 "$epid" 2>/dev/null ) >/dev/null 2>&1 &
+    ( trap 'kill "$sp" 2>/dev/null; exit 0' TERM; sleep 9 & sp=$!; wait "$sp"; kill -9 "$epid" 2>/dev/null ) >/dev/null 2>&1 &
     wpid=$!
     wait "$epid" 2>/dev/null; rc=$?
-    kill "$wpid" 2>/dev/null
+    kill "$wpid" 2>/dev/null; { wait "$wpid"; } 2>/dev/null   # the watchdog's TERM trap kills its own sleep: nothing outlives the scenario (run_all names a leftover LEFT RUNNING)
     t1=$(date +%s)
     terms=$(grep -c '^term ' "$d/terms" 2>/dev/null)
     alive=no
