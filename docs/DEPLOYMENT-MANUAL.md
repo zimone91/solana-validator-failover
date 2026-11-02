@@ -412,10 +412,10 @@ bash deploy-failover-standby.sh
 
 ### Arming the fence (v0.7): set `LEDGER_PATH` explicitly
 
-Set `LEDGER_PATH` in `failover.env` to the validator's ledger directory **before** `failover arm`. The shipped env writes it empty; the daemons fill it in from the running validator's `--ledger`,
+Set `LEDGER_PATH` in `failover.env` to the validator's ledger directory **before** `failover arm`. The wizards write the ledger they detected (when it is a directory on that host) and leave it empty otherwise; the daemons fill an empty value in from the running validator's `--ledger`,
 but the fence (`failover-fence.sh`, run by the unit's `OnFailure=`) has no such detection: with the value empty, every admin-socket call it makes fails to connect and it falls to its stop path
 (the validator is stopped instead of demoted). Note also that the daemons detect the ledger only from the long form `--ledger`: a validator started with the short form `-l` makes them exit 1 at startup
-and ask for `LEDGER_PATH` — set it there too. (The fence reading the ledger the way the daemons do, and `arm` refusing a ledger it cannot resolve, are tracked for the release that decides what stays armed.)
+and ask for `LEDGER_PATH` — set it there too. `failover arm` refuses a REAL arm when the value is empty or not a readable directory (precondition P6-ledger; a page-only arm only warns). The fence reading the ledger the way the daemons do is tracked for the release that decides what stays armed.
 
 ### Update existing (no re-deploy)
 

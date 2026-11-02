@@ -67,6 +67,16 @@ number in arithmetic was the measured case) — logs an `ERROR` and exits **1**:
 `Main loop exited.` and exit 0 — the armed monitor sat dead and unfenced. The shipped v0.6.x unit
 (`Restart=always`) restarts the daemon either way.
 
+## `ExecStop=` — the TERM re-send (AG-3.5; the (12e) TERM race)
+
+The monitor skeleton carries one `ExecStop=` (the arm renders it into the armed unit and verifies it
+byte-exact): while `$MAINPID` lives it re-sends TERM, at most 3 times, 1 s apart, and always exits 0.
+It covers the bash behaviour in `docs/SAFETY.md` ("Known bash behaviour"): on some bash 5.2 builds
+the shell catches a TERM and never runs the trap, so a `systemctl stop` would run to the stop timeout,
+end in SIGKILL and send no 'stopped' page, while a second TERM ends the daemon at once. It must exit 0
+— a failing `ExecStop=` leaves the unit `failed`, and `failed` dispatches `OnFailure=` (the fence).
+systemd's own TERM follows it as before.
+
 ## HOLD, as implemented (supersedes addendum §2.2's original wording)
 
 The addendum's original §2.2 described HOLD as "no watchdog re-arm, one CRITICAL page, quiet".
@@ -135,7 +145,10 @@ wording could not ship, both directions traced:
    command printed and the one documented dangerous override
    `ARM_ACCEPT_UNVERIFIED_IDENTITY=1`, which arms with a LOUD WARN naming exactly what was
    not verified; page-only proceeds with a WARN and needs none of this; frankendancer states
-   the stop-only posture and skips); and the §2.3 one-arm-state announcement (DRY_RUN decides
+   the stop-only posture and skips); **P6-ledger** (AG-3.5): a REAL arm refuses when the env's
+   `LEDGER_PATH` is empty or not a readable directory — the fence reads it from the env file only
+   and cannot detect it, and an empty value turns every real fence dispatch into a validator
+   stop (a page-only arm only warns); and the §2.3 one-arm-state announcement (DRY_RUN decides
    WHICH unit).
 2. **Probe before arming (§2.1-rev2.1 condition 1, shipped):** render the two `arm-probe`
    skeletons into `ARM_RUNTIME_DIR` (tmpfs — ephemeral by construction), daemon-reload, start

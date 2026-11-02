@@ -224,7 +224,7 @@ new_mock() {
     local role="${1:-standby}"
     MOCK_DIR=$(mktemp -d "$MOCK_PARENT/m.XXXXXX")
     mkdir -p "$MOCK_DIR/etc-systemd" "$MOCK_DIR/run-systemd" "$MOCK_DIR/opt" \
-             "$MOCK_DIR/markers" "$MOCK_DIR/state"
+             "$MOCK_DIR/markers" "$MOCK_DIR/state" "$MOCK_DIR/ledger"
     EVENTS="$MOCK_DIR/events"; : > "$EVENTS"
     touch "$MOCK_DIR/probe.fires"
     write_daemon "$MOCK_DIR/opt/solana-${role}-failover.sh"
@@ -246,6 +246,7 @@ write_env_standby() {   # extra KEY=VAL lines append (later lines override on so
         echo "UNSTAKED_KEYPAIR=\"$MOCK_DIR/opt/unstaked.json\""
         echo 'UNSTAKED_PUBKEY="UNSTAKEDPUBKEY42"'
         echo "SOLANA_PATH=\"$STUB_DIR\""
+        echo "LEDGER_PATH=\"$MOCK_DIR/ledger\""   # AG-3.5 P6-ledger: a REAL arm needs the ledger directory in the env file
         echo 'VALIDATOR_UNIT="sol-test.service"'
         echo 'EXPECTED_PRIMARY_SELF_FENCE_SECS=30'
         echo 'SELF_FENCE_MARGIN_SECS=30'
@@ -264,6 +265,7 @@ write_env_primary() {
         echo "UNSTAKED_KEYPAIR=\"$MOCK_DIR/opt/unstaked.json\""
         echo 'UNSTAKED_PUBKEY="UNSTAKEDPUBKEY42"'
         echo "SOLANA_PATH=\"$STUB_DIR\""
+        echo "LEDGER_PATH=\"$MOCK_DIR/ledger\""   # AG-3.5 P6-ledger: a REAL arm needs the ledger directory in the env file
         echo 'VALIDATOR_UNIT="sol-test.service"'
         echo 'EXPECTED_PRIMARY_SELF_FENCE_SECS=30'
         echo 'SELF_FENCE_MARGIN_SECS=30'
