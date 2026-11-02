@@ -2239,7 +2239,7 @@ fi
 # Pre-fix red: the aborted loop fell through to 'Main loop exited.' and exited 0 (armed unit: Restart=no,
 # OnFailure fires only on 'failed' → no restart, no fence, no page).
 m5_run() {   # $1=daemon $2=mode (inject|m4mut|horizon|sigterm) → "rc=<exit>|err=<the ERROR line>"
-    local d="$1" mode="$2" drv cut lg ck pid rc
+    local d="$1" mode="$2" drv cut lg ck pid rc lost=0 s0
     drv=$(mktemp "$WORK/m5drv.XXXXXX"); lg=$(mktemp "$WORK/m5log.XXXXXX"); ck=$(mktemp "$WORK/m5clk.XXXXXX")
     cut=$(seam_cut "$d") || { echo "rc=CUT-FAILED"; return; }
     {
@@ -2302,16 +2302,33 @@ M5STUBS
     if [[ "$mode" == "sigterm" ]]; then
         "$BASH" "$drv" >/dev/null 2>&1 &
         pid=$!
-        command sleep 1.5; kill -TERM "$pid" 2>/dev/null; wait "$pid"; rc=$?
+        command sleep 1.5; kill -TERM "$pid" 2>/dev/null
+        # v0.7 (AG-1.8, option 2 of the TERM-trap record): a BOUNDED wait. Bash can DROP a TERM that lands while the shell is busy with command
+        # substitutions (5.2: measured 5 / 2,400 on 5.2.21 and 19 / 2,400 on 5.2.37 in a bare loop; 1 / 320 through the real standby loop): the daemon
+        # then keeps looping and an unbounded `wait` held the suite to its per-suite cap (an hour or more). The daemon here ends in well under a
+        # second (its sleep stub is 0.2 s), so 10 s without an exit is a lost TERM: it is recorded (lost=1), a SECOND TERM is sent (each TERM is an
+        # independent chance), and the caller fails the row BY THAT NAME. A KILL after a further 5 s guarantees the loop never outlives the world.
+        s0=$SECONDS
+        while kill -0 "$pid" 2>/dev/null && [[ $(( SECONDS - s0 )) -lt 10 ]]; do command sleep 0.1; done
+        if kill -0 "$pid" 2>/dev/null; then
+            lost=1; kill -TERM "$pid" 2>/dev/null
+            s0=$SECONDS
+            while kill -0 "$pid" 2>/dev/null && [[ $(( SECONDS - s0 )) -lt 5 ]]; do command sleep 0.1; done
+            kill -KILL "$pid" 2>/dev/null
+        fi
+        wait "$pid"; rc=$?
     else
         "$BASH" "$drv" >/dev/null 2>&1; rc=$?
     fi
-    echo "rc=$rc|err=$(grep -m1 '^ERROR Main loop ABORTED' "$lg" | cut -c1-90)|exited=$(grep -c 'Main loop exited' "$lg")|shutdown=$(grep -c 'Shutdown signal received' "$lg")"
+    echo "rc=$rc|err=$(grep -m1 '^ERROR Main loop ABORTED' "$lg" | cut -c1-90)|exited=$(grep -c 'Main loop exited' "$lg")|shutdown=$(grep -c 'Shutdown signal received' "$lg")|lost=$lost"
 }
 m5_ok=1; m5_rows=""
 for dd in "$STANDBY" "$PRIMARY"; do
     ri=$(m5_run "$dd" inject); rh=$(m5_run "$dd" horizon); rs=$(m5_run "$dd" sigterm)
-    if [[ "$(field "$ri" rc)" == "1" && "$(field "$ri" err)" == "ERROR Main loop ABORTED without a shutdown request"* && "$(field "$ri" exited)" == "0" ]] \
+    if [[ "$(field "$rs" lost)" == "1" ]]; then
+        # AG-1.8: not a provider failure and not a timing threshold - bash dropped the TERM (docs/SAFETY.md, "Known bash behaviour"). Named, and fast.
+        m5_ok=0; bad "(12e) $(basename "$dd"): TERM trap lost (bash 5.2 race) - the daemon was still running 10 s after SIGTERM and ended on the second TERM: sigterm=$rs (inject=$ri :: horizon=$rh)"
+    elif [[ "$(field "$ri" rc)" == "1" && "$(field "$ri" err)" == "ERROR Main loop ABORTED without a shutdown request"* && "$(field "$ri" exited)" == "0" ]] \
        && [[ "$(field "$rh" rc)" == "0" && "$(field "$rh" exited)" == "1" && "$(field "$rs" rc)" == "0" && "$(field "$rs" shutdown)" == "1" ]]; then
         m5_rows="$m5_rows $(basename "$dd" .sh):abort→1,horizon→0,SIGTERM→0"
     else
@@ -2324,6 +2341,22 @@ if [[ $m5_ok -eq 1 && "$(field "$rm4" rc)" == "1" && "$(field "$rm4" err)" == "E
 else
     [[ $m5_ok -eq 1 ]] && bad "(12e) m4-mutant: $rm4"
 fi
+# (12e-ctl) AG-1.8 - the lost-TERM world turns red BY NAME, inside its bound. The mutant `cleanup` ignores the FIRST TERM (it records it and returns, so the
+# loop goes on - what bash does when it drops a trap) and behaves as shipped on the second: the sigterm world must report lost=1 within 10 s + the
+# second TERM's exit, and the row must still see exactly one shutdown line (the second TERM ran the shipped path). On the base this world ran to the
+# per-suite cap: `wait` had no bound.
+m5c_ok=1; m5c_rows=""
+for dd in "$STANDBY" "$PRIMARY"; do
+    mt="$WORK/term-dropped-$(basename "$dd")"
+    mutate "$dd" 's/^cleanup() {$/cleanup() { [[ -e "$LOG.t1" ]] || { : > "$LOG.t1"; return 0; }/' "$mt" || { m5c_ok=0; continue; }
+    t0=$SECONDS; rl=$(m5_run "$mt" sigterm); dt=$(( SECONDS - t0 ))
+    if [[ "$(field "$rl" lost)" == "1" && "$(field "$rl" shutdown)" == "1" && "$(field "$rl" rc)" == "0" && $dt -le 20 ]]; then
+        m5c_rows="$m5c_rows $(basename "$dd" .sh):lost→named in ${dt}s"
+    else
+        m5c_ok=0; bad "(12e-ctl) $(basename "$dd"): the dropped-TERM mutant did not turn the sigterm world red by name inside its bound ($dt s): $rl"
+    fi
+done
+[[ $m5c_ok -eq 1 ]] && ok "(12e-ctl) AG-1.8 - a daemon whose trap DROPS the first TERM (mutant cleanup, applied under assert) turns the sigterm world red BY NAME, bounded:$m5c_rows (10 s wait + the second TERM's exit; was: no end, the suite cap). A double trap on bash 3.2 still fails the shutdown=1 count as before"
 
 # (12f) M6 (INT-2/CC-6a) — the MEASURED gap between consecutive pets, house bound-counting (every read at its
 # full -m bound, every pet 7 s, T2 failing), the take held on the cooldown so watchdog-elapsed evaluates.

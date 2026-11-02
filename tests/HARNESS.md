@@ -164,6 +164,25 @@ its suite. A process that left the group (its own `set -m`, `setsid`) is not sto
 holds strace past run_all's end is named and stopped by `tests/strace-hermetic.sh`. Each run prints every suite's wall
 time and its three slowest against the cap.
 
+## Known bash behaviour: the TERM trap races (AG-1.8)
+
+A daemon's `trap cleanup SIGTERM …` is not reliable in bash when the TERM lands while the shell is busy with command substitutions. Two effects, measured
+in a bare loop of `$( )` substitutions (800 TERMs per cell, 3 loop shapes, 2,400 per bash; nothing of this project in the loop):
+
+| bash | effect measured | runs of 2,400 |
+|---|---|---|
+| 3.2.57 (the macOS CI floor) | the trap ran TWICE (a forked `$( )` child ran it too: two log lines, two pages) | 61 |
+| 5.1.16 (Ubuntu 22.04) | none | 0 |
+| 5.2.21 (Ubuntu 24.04) | the trap was LOST (the TERM was caught, never run, the loop went on) | 5 |
+| 5.2.37 | the trap was LOST | 19 |
+
+Through the real standby loop (the `test_elapsed_provider` (12e) sigterm world) on 5.2.21: 1 of 320 lost, the primary loop 0 of 320. A second TERM ends a
+lost one at once. What the suite does about it: (12e) waits a bounded 10 s after its TERM; a daemon still running then has LOST it, so the world records
+`TERM trap lost (bash 5.2 race)`, sends a second TERM and fails the row by that name; a double trap on bash 3.2 fails the one-shutdown-line count, as before.
+(12e-ctl) proves the naming: a mutant `cleanup` that drops the first TERM, applied under assert, turns the world red by that name within its bound — before
+AG-1.8 that world ran to the per-suite cap. The remedy for a real unit is not a test change: the unit's `ExecStop=` has to re-send TERM while `$MAINPID` lives
+(docs/SAFETY.md, *Other standing notes*) — required before any unit is armed.
+
 ## Deliberately NOT migrated (and why — decided, not deferred)
 
 - `test_v058_regression.sh` — fully self-contained by design: INVERTED results semantics (its
