@@ -325,7 +325,13 @@ safety|P|1|a knob of 22 would mean the third
 safety|P|1|clock reads 0, 12, 23, 34 s
 safety|P|1|the validator is dead 48 to 51 s after the hang
 safety|P|1|70 to 73 s when it is wedged for its whole bound
-safety|P|1|**A limit of the process test:**
+safety|P|1|**A restarted validator is not a hung one (AG-3.8d).**
+safety|P|1|validator restarted (new process,
+safety|P|1|cannot tell a hung validator from a restarted one
+safety|A|0|A limit of the process test
+notifications|P|1|cannot tell a hung validator from a restarted one
+notifications|P|1|restarted since the last readable identity read
+templates|P|1|a validator that restarted (since the last readable read, or during the episode)
 safety|A|0|0, 11, 22, 33
 safety|A|0|49 to 55 s
 safety|A|0|70 to 75 s
@@ -339,7 +345,9 @@ templates|A|0|0 / 11 / 22 / 33
 templates|A|0|49 to 55 s
 templates|A|0|70 to 75 s
 primary|P|1|clock reads 0, 12, 23, 34 s
-primary|P|1|LIMIT: the pid is taken at the FIRST unreadable cycle
+primary|P|1|A validator that RESTARTED since the last readable identity read is not hung either (AG-3.8d)
+primary|P|1|log_info "[hung] validator restarted (new process
+primary|A|0|LIMIT: the pid is taken at the FIRST unreadable cycle
 primary|A|0|(0, 11, 22, 33 s)
 primary|A|0|49 to 55 s
 primary|A|0|a restarted one never either
@@ -480,9 +488,13 @@ ctl9 p-safety-rung-quant "$SAFETY" 's/a knob of 22 would mean the third/a knob o
 ctl9 p-safety-rung-clock "$SAFETY" 's/clock reads 0, 12, 23, 34 s/clock reads 0, 11, 22, 33 s/' cq
 ctl9 p-safety-rung-dead "$SAFETY" 's/the validator is dead 48 to 51 s after the hang/the validator is dead 49 to 55 s after the hang/' cq
 ctl9 p-safety-rung-wedged "$SAFETY" 's/70 to 73 s when it is wedged for its whole bound/70 to 75 s when it is wedged for its whole bound/' cq
-ctl9 p-safety-rung-limit "$SAFETY" 's/\*\*A limit of the process test:\*\*/**A note:**/' cq
+ctl9 p-safety-rung-restart "$SAFETY" 's/\*\*A restarted validator is not a hung one (AG-3.8d).\*\*/**A note (AG-3.8d).**/' cq
+ctl9 p-safety-rung-cannot-tell "$SAFETY" 's/cannot tell a hung validator from a restarted one/cannot tell/' cq
+ctl9 p-notif-rung-restart "$NOTIF" 's/restarted since the last readable identity read/restarted/' cn
+ctl9 p-template-rung-restart "$ENV_P" 's/a validator that restarted (since the last readable read, or during the episode)/a restarted process/' cpt
 ctl9 p-primary-rung-clock "$PRIMARY" 's/clock reads 0, 12, 23, 34 s/clock reads 0, 11, 22, 33 s/' cp_
-ctl9 p-primary-rung-limit "$PRIMARY" 's/LIMIT: the pid is taken at the FIRST unreadable cycle/the pid is taken at the first unreadable cycle/' cp_
+ctl9 p-primary-rung-restart "$PRIMARY" 's/A validator that RESTARTED since the last readable identity read is not hung either (AG-3.8d)/A validator that restarted/' cp_
+ctl9 p-primary-rung-info "$PRIMARY" 's/log_info "\[hung\] validator restarted (new process/log_info "[hung] restarted (new process/' cp_
 ctl9 p-safety-rung-margin "$SAFETY" 's/the fast branch kills at least about 10 s before it/the fast branch kills well after it/' cq
 ctl9 p-readme-rung "$README" 's/hard-stopped by its own daemon after/paged after/' cr
 ctl9 p-template-rung "$ENVS" 's/HOLDER_UNREACHABLE_STOP_SECS=30) hard-stops a mute validator/HOLDER_UNREACHABLE_STOP_SECS=30) pages a mute validator/' ct

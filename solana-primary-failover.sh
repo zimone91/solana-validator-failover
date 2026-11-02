@@ -258,7 +258,7 @@ HOLDER_GAP_DEMOTE_SECS=30
 # last seen STAKED, AND it is still the same validator process (its unit not starting or stopping), AND LOCAL getSlot is silent, AND one
 # external read of the vote account (TIER2_RPC, then TIER3_RPC) shows lastVote NOT growing while the cluster tip does, the validator is
 # hung and not voting: it is HARD-STOPPED through the self-fence ladder. Anything else - an external read that does not answer, lastVote
-# growing, a local RPC that answers, a process that changed during the episode - is NOT stopped (a voting validator with a wedged admin socket is left alone: a
+# growing, a local RPC that answers, a validator that restarted (since the last readable read, or during the episode) - is NOT stopped (a voting validator with a wedged admin socket is left alone: a
 # restart costs minutes of missed votes): a page, throttled by ALERT_THROTTLE. DRY_RUN=true pages what it would stop and stops nothing.
 # Floor 20. Needs VOTE_PUBKEY (the external read looks the vote account up).
 # THE LADDER'S TWO BRANCHES: a process in state T (stopped) or D (uninterruptible sleep) cannot handle SIGTERM, so `systemctl stop` would only wait
@@ -6572,10 +6572,30 @@ _gap_demote() {
 }
 
 # v0.7 (AG-3.8): the HUNG HOLDER'S RUNG (HOLDER_UNREACHABLE_STOP_SECS above) - also outside every shared twin block: only this daemon is a holder.
-# _hung_reset - the identity reads again: the episode is over (the next unreadable cycle starts a new one).
+# _proc_start_secs <pid> - the process's start time in WHOLE seconds since boot, rounded down (the clock of mono_now: /proc/uptime), from field 22 of
+# /proc/<pid>/stat (clock ticks since boot) over CLK_TCK (getconf; 100 when it answers nothing usable). Prints NOTHING when the pid is not a number, the file
+# is unreadable or its shape is unexpected - the caller then cannot tell. PROC_ROOT stands in for /proc in the tests. Read-only.
+_proc_start_secs() {
+    local _pid="$1" _f="${PROC_ROOT:-/proc}/$1/stat" _s="" _hz _t
+    local -a _a
+    [[ "$_pid" =~ ^[0-9]+$ && -r "$_f" ]] || return 0
+    IFS= read -r _s < "$_f" 2>/dev/null || [[ -n "$_s" ]] || return 0
+    _s="${_s##*) }"                       # drop "pid (comm) ": comm may hold spaces and parentheses, the LAST ") " closes it
+    read -r -a _a <<< "$_s"               # state ppid pgrp session tty_nr tpgid flags minflt cminflt majflt cmajflt utime stime cutime cstime priority nice num_threads itrealvalue starttime ...
+    _t="${_a[19]:-}"
+    _canon_uint "$_t" || return 0
+    _hz=$(getconf CLK_TCK 2>/dev/null)
+    { _canon_uint "$_hz" && [[ $_hz -ge 1 ]]; } || _hz=100
+    printf '%s' $(( _t / _hz ))
+    return 0
+}
+# _hung_reset - the identity reads again: the episode is over (the next unreadable cycle starts a new one). It also stamps WHEN the identity was last
+# read (every readable cycle, whatever the identity, before the manual-change grace): a validator process that started at or after that moment is a
+# restart, not a hang (AG-3.8d, _hung_check).
 _hung_reset() {
-    _hung_since=0; _hung_pid0=""; _hung_lv=""; _hung_lv_tip=""; _hung_lv_tier=""; _hung_lv_ts=0
+    _hung_since=0; _hung_pid0=""; _hung_start=""; _hung_lv=""; _hung_lv_tip=""; _hung_lv_tier=""; _hung_lv_ts=0
     _hung_done=0; _hung_page_ts=0; _hung_try_ts=0
+    _hung_read_ts=$(mono_now)
 }
 # _hung_local_slot - LOCAL getSlot(confirmed), the self-fence's own request: prints the slot when the local RPC answered a canonical one, nothing when it
 # was silent or answered garbage (garbage from our own node is no proof of life). Read-only.
@@ -6613,9 +6633,12 @@ _hung_rebase() { _hung_lv=$_hs_lv; _hung_lv_tip=$_hs_ref; _hung_lv_tier=$_hs_tie
 # HARD-STOP the validator when it is provably hung (the same process, its unit not busy, LOCAL getSlot silent, lastVote unchanged for >=
 # VOTE_LIVENESS_MIN_INTERVAL while the cluster tip advanced, both reads from the same provider) - otherwise NOT, with the reason in a throttled
 # page. Every doubt (an external read that fails, a view that did not advance, a lastVote that grows or goes backwards, a process that changed)
-# is a "not stopped": a voting validator is never killed. LIMIT: the pid is taken at the FIRST unreadable cycle, so a validator that restarted before it (and is
-# still loading its ledger: unit active, local RPC silent, lastVote frozen) is the episode's process and is stopped after the knob like a hung one - it came up on the
-# unstaked identity, nothing staked is lost, the page names the facts. The kill is _selffence_hard_stop, untouched.
+# is a "not stopped": a voting validator is never killed. A validator that RESTARTED since the last readable identity read is not hung either (AG-3.8d): a crash
+# and a restart on the unstaked identity leave the identity unreadable, the local RPC silent and lastVote frozen for minutes while the new process loads its ledger.
+# The first unreadable cycle compares the process's start time (_proc_start_secs: /proc/<pid>/stat, whole seconds since boot, rounded down - the clock of mono_now)
+# with the time of the last readable read (_hung_read_ts, stamped by _hung_reset): started at or after it (the same second counts) = a restart - one INFO line, the
+# episode is closed (_hung_done=2) and the rung is quiet until the identity reads again; a start time that cannot be read, or lies in the future, is "cannot tell
+# hung from restarted" at the decision: a page, never a kill. The kill is _selffence_hard_stop, untouched.
 _hung_check() {
     local now n why="" busy pid1 slot age old facts verdict rc
     [[ "$_last_known_identity" == "$STAKED_PUBKEY" && ${_hung_done:-0} -eq 0 ]] || return 0
@@ -6623,6 +6646,16 @@ _hung_check() {
     if [[ ${_hung_since:-0} -eq 0 ]]; then
         _hung_since=$now
         _hung_pid0=$(_validator_pid)
+        _hung_start=""
+        if [[ -n "$_hung_pid0" && ${_hung_read_ts:-0} -gt 0 ]]; then
+            _hung_start=$(_proc_start_secs "$_hung_pid0")
+            { _canon_uint "$_hung_start" && [[ $_hung_start -le $now ]]; } || _hung_start=""   # unreadable, or impossible (later than now): no verdict - the decision doubts
+        fi
+        if [[ -n "$_hung_start" && $_hung_start -ge $_hung_read_ts ]]; then
+            log_info "[hung] validator restarted (new process, pid ${_hung_pid0}, started $(( _hung_start - _hung_read_ts )) s after the last readable identity read) - not hung: the hung-holder rung is not armed for this episode (it re-arms when the identity reads again)"
+            _hung_done=2; _hung_since=0; _hung_pid0=""
+            return 0
+        fi
         log_warn "[hung] the validator's identity is unreadable while STAKED (validator pid ${_hung_pid0:-none}): the hung-holder rung counts from now - after ${HOLDER_UNREACHABLE_STOP_SECS}s it hard-stops the validator if it is the same process, LOCAL getSlot is silent and the vote account's lastVote is not growing"
         if _hung_sample; then _hung_rebase "$now"; fi
         return 0
@@ -6634,6 +6667,8 @@ _hung_check() {
     fi
     if [[ -z "$_hung_pid0" ]]; then
         why="no validator process was found at the first unreadable cycle"
+    elif [[ -z "$_hung_start" ]]; then
+        why="cannot tell a hung validator from a restarted one: the start time of pid ${_hung_pid0} is unreadable or out of range"
     elif busy=$(_hung_unit_busy); then
         why="the validator unit is ${busy} (a start or stop is in progress)"
     else

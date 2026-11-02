@@ -72,7 +72,7 @@ gap_world() {   # gap_world <script> <plan> [VAR=val ...] -> the events, one per
         eval "run_loop() {
 $region
 }"
-        EV=$(mktemp); export EV; trap 'rm -rf "$EV" "$EV.bin"' EXIT
+        EV=$(mktemp); export EV; trap 'rm -rf "$EV" "$EV.bin" "$EV.sc"' EXIT
         mkdir -p "$EV.bin"; printf '#!/bin/bash\necho "ADMIN $*" >> "%s"\nexit 0\n' "$EV" > "$EV.bin/agave-validator"; chmod +x "$EV.bin/agave-validator"
         SOLANA_PATH="$EV.bin"
         ev() { printf '%s\n' "$*" >> "$EV"; }
@@ -82,7 +82,7 @@ $region
         TG_ENABLED=false; DRY_RUN=false; ALERT_THROTTLE=600; PRIMARY_SELF_FENCE=true; CHECK_INTERVAL=3; TURBO_INTERVAL=1; _current_interval=3
         CONNECTIVITY_RETRIES=99; MAX_VOTE_LATENCY=0; DELINQUENCY_RETRIES=1; STARTUP_GRACE=30; RECOVERY_MODE=manual; SETIDENTITY_TIMEOUT=15
         _SIM_NOW=1700000000; DEMOTE_FAILS=0; _dcalls=0
-        T_BASE=1700000000; XREAD=0; LVMODE=down; SLOTMODE=silent; PIDMODE=same; UNITBUSY=""; HS_RC=0   # AG-3.8: an unreadable cycle costs XREAD s more; the external lastVote / local RPC / pid / unit worlds
+        T_BASE=1700000000; XREAD=0; LVMODE=down; SLOTMODE=silent; PIDMODE=same; STARTMODE=old; UNITBUSY=""; HS_RC=0   # AG-3.8 (AG-3.8d: STARTMODE): an unreadable cycle costs XREAD s more; the external lastVote / local RPC / pid / unit worlds
         for kv in "$@"; do eval "$kv"; done
         [[ "$MAX_VOTE_LATENCY" == "0" && "$plan" == *l* ]] && MAX_VOTE_LATENCY=10
         mono_now() { echo "$_SIM_NOW"; }
@@ -93,7 +93,7 @@ $region
         case "$(tok_id)" in S) _last_known_identity="$STK" ;; U) _last_known_identity="$UNS" ;; *) _last_known_identity="$STK" ;; esac
         rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _vat_cycle() { :; }; _fence_rot_check() { :; }; _g2_step() { :; }; _elapsed_step() { :; }
         flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }; _watchdog_pet() { :; }; send_telegram() { return 0; }; send_webhook() { :; }
-        log_info() { case "$1" in *"[gap]"*) ev "LOG $1" ;; esac; }; log_warn() { case "$1" in *"[gap]"*|*"[hung]"*) ev "LOGW $1" ;; esac; }; log_error() { :; }
+        log_info() { case "$1" in *"[gap]"*|*"[hung]"*) ev "LOG $1" ;; esac; }; log_warn() { case "$1" in *"[gap]"*|*"[hung]"*) ev "LOGW $1" ;; esac; }; log_error() { :; }
         alert() { ev "PAGE $3"; ev "TXT ${1:0:600}"; return 0; }; alert_info() { :; }; alert_warn() { ev "WPAGE ${1:0:600}"; }
         get_local_identity() { ev "IDENT $(tok_id)"; case "$(tok_id)" in S) echo "$STAKED_PUBKEY" ;; U) echo "$UNSTAKED_PUBKEY" ;; *) return 0 ;; esac; }
         check_internet() { ev INET; tok_has i && return 1; return 0; }
@@ -104,6 +104,18 @@ $region
         verify_latency_tiered() { return 0; }
         _vat_hold() { return 1; }
         _validator_pid() { case "$PIDMODE" in none) ;; changed) if [[ $_SIM_NOW -ge $(( T_BASE + 30 )) ]]; then printf '5555'; else printf '4242'; fi ;; *) printf '4242' ;; esac; }
+        _proc_start_secs() {   # AG-3.8d: the validator process's start, seconds since boot: old = long before the last readable read; new = 2 s after it; at_read = in the same second as it; sec_before = 1 s before it; future = later than now; none = unreadable; new_then_old = new for the first episode, old after
+            local n
+            case "$STARTMODE" in
+                old)          printf '%s' $(( T_BASE - 5000 )) ;;
+                new)          printf '%s' $(( T_BASE + 2 )) ;;
+                at_read)      printf '%s' "$T_BASE" ;;
+                sec_before)   printf '%s' $(( T_BASE - 1 )) ;;
+                future)       printf '%s' $(( _SIM_NOW + 100 )) ;;
+                new_then_old) echo x >> "$EV.sc"; n=$(wc -l < "$EV.sc"); if [[ $n -le 1 ]]; then printf '%s' $(( T_BASE + 2 )); else printf '%s' $(( T_BASE - 5000 )); fi ;;
+                *)            ;;
+            esac
+        }
         _hung_unit_busy() { [[ -n "$UNITBUSY" ]] || return 1; printf '%s' "$UNITBUSY"; return 0; }
         _hung_local_slot() { ev LOCALSLOT; [[ "$SLOTMODE" == "answers" ]] && printf '123456789'; return 0; }
         get_staked_liveness_sample() {   # the external vote-account read: lastVote / the same payload's cluster tip / the provider tier
@@ -568,7 +580,7 @@ rung_timeline() {   # rung_timeline <script> <knob> <phi> <fast|healthy|wedged> 
     cs=$(cut_src "$script"); region=$(extract_region "$script" '^while \$_running; do' '^done$') || { echo "NO-REGION"; return 0; }
     (
         set +e
-        EVF=$(mktemp); CLK=$(mktemp); echo 0 > "$CLK"; rm -f "$CLK.dead"; export EVF CLK
+        EVF=$(mktemp); CLK=$(mktemp); echo 1000 > "$CLK"; rm -f "$CLK.dead"; export EVF CLK   # 1000: the clock never reads 0 (a 0 stamp means unset)
         trap 'rm -f "$EVF" "$CLK" "$CLK.dead"' EXIT
         # shellcheck disable=SC1090
         source "$cs" 2>/dev/null
@@ -617,6 +629,7 @@ $region
         get_local_identity() { if [[ $CYCLE -eq 0 ]]; then echo "$STAKED_PUBKEY"; else _gli_real; fi; }   # cycle 0 is healthy; then the hang: the read runs into its bound
         case "$ladder" in fast) PSTATE=T ;; *) PSTATE=S ;; esac
         _proc_state() { printf '%s' "$PSTATE"; }
+        _proc_start_secs() { printf '%s' 1; }   # the validator has been running since long before the last readable read (AG-3.8d)
         pgrep() { [[ -e "$CLK.dead" ]] || echo 4242; return 0; }
         kill() { if [[ "$1" == "-9" ]]; then echo "$(mono_now)" > "$CLK.dead"; fi; return 0; }   # a hung process ignores TERM; only SIGKILL ends it
         sleep() { adv "$1"; }
@@ -626,7 +639,7 @@ $region
         _current_interval=$CHECK_INTERVAL
         # the hang H is PHI s before the first cycle that finds it: cycle 0 is healthy and ends with its sleep, cycle 1 starts at CHECK_INTERVAL
         local t1=$CHECK_INTERVAL H stamp slot lad down
-        H=$(( t1 - phi ))
+        H=$(( 1000 + t1 - phi ))
         _running=true; run_loop
         stamp=$(grep '^STAMP' "$EVF" | head -1 | cut -d' ' -f2); slot=$(grep '^SLOT' "$EVF" | head -1 | cut -d' ' -f2); lad=$(grep '^LADDER_START' "$EVF" | head -1 | cut -d' ' -f2)
         down=$(cat "$CLK.dead" 2>/dev/null)
@@ -700,6 +713,92 @@ p_timeline_all() {   # p_timeline_all <script> - one case from each of (23a)-(23
       && [[ "$(rung_timeline "$s" 22 0 fast 1)" == "stamp=8 n=23 start=37 down=37" ]] \
       && [[ "$(rung_timeline "$s" 30 3 fast 1 frankendancer)" == "stamp=8 n=33 start=47 down=47" ]]
 }
+
+
+# ── (24) AG-3.8d: a validator that RESTARTED since the last readable identity read is not hung ──────────────────────────────────
+echo ""; echo "─── (24) a restarted validator (its process started at or after the last readable identity read) is never stopped by the rung; an unreadable start time is a doubt, not a verdict ───"
+# The class (AG-3.8's limit, §13.9 of the package): crash -> systemd restarts the unit on the unstaked identity -> the new process loads its ledger for minutes (identity unreadable, LOCAL RPC silent,
+# lastVote frozen). The pid taken at the first unreadable cycle IS the new process, so "the process changed during the episode" never fires - the start time against the last readable read does.
+p_restart_not_hung() {   # no stop, no rung page, no external or local read, no admin call; ONE INFO line says why
+    local e="$1"
+    [[ "$(hs_n "$e")" == "0" && "$(wp_n "$e")" == "0" && "$(n_of "$e" '^PAGE HOLDER')" == "0" && "$(n_of "$e" '^SAMPLE')" == "0" && "$(n_of "$e" '^LOCALSLOT')" == "0" && "$(n_of "$e" '^ADMIN')" == "0" \
+       && "$(printf '%s\n' "$e" | grep -c -F 'LOG [hung] validator restarted (new process, pid 4242, started 2 s after the last readable identity read) - not hung')" == "1" ]]
+}
+p_cannot_tell() { reason_kept "$1" 'cannot tell a hung validator from a restarted one'; }
+ev24a=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen STARTMODE=new)
+ev24a_long=$(gap_world "$PRIMARY" "S X X X X X X X X X X X X X X X X X X X" XREAD=8 LVMODE=frozen STARTMODE=new)
+if p_restart_not_hung "$ev24a" && p_restart_not_hung "$ev24a_long"; then
+    ok "(24a) the process started 2 s after the last readable read (a restart): over 8 unreadable cycles - and over 19, far past the knob - NO hard stop, NO external or local read, NO rung page, and exactly ONE INFO line 'validator restarted (new process, pid 4242, started 2 s after the last readable identity read) - not hung'"
+else
+    bad "(24a) restarted validator: hardstops=$(hs_n "$ev24a") samples=$(n_of "$ev24a" '^SAMPLE') wpages=$(wp_n "$ev24a") info=$(printf '%s' "$ev24a" | grep -c 'validator restarted') (long: hardstops=$(hs_n "$ev24a_long") info=$(printf '%s' "$ev24a_long" | grep -c 'validator restarted')) :: $(printf '%s' "$ev24a" | grep -E '^(HARDSTOP|WPAGE|LOG)' | tr '\n' ';' | cut -c1-260)"
+fi
+ev24h=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen STARTMODE=old)
+ev24s=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen STARTMODE=sec_before)
+if p_hung_stop "$ev24h" && p_hung_stop "$ev24s" && [[ "$(printf '%s' "$ev24h$ev24s" | grep -c 'validator restarted')" == "0" ]]; then
+    ok "(24b) the same process (started long before the last readable read, and 1 s before it): the rung works exactly as before - ONE hard stop at N=33, the page after it, no 'restarted' line"
+else
+    bad "(24b) same process: old: hardstops=$(hs_n "$ev24h") / 1 s before: hardstops=$(hs_n "$ev24s") :: $(printf '%s' "$ev24s" | grep -E '^(HARDSTOP|WPAGE|LOG)' | tr '\n' ';' | cut -c1-200)"
+fi
+ev24e=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen STARTMODE=at_read)
+p_at_read_restarted() { [[ "$(printf '%s\n' "$1" | grep -c -F 'LOG [hung] validator restarted (new process, pid 4242, started 0 s after the last readable identity read) - not hung')" == "1" && "$(hs_n "$1")" == "0" && "$(wp_n "$1")" == "0" ]]; }
+if p_at_read_restarted "$ev24e"; then
+    ok "(24c) the boundary: a process that started in the SAME second as the last readable read counts as restarted (>=): no stop, one INFO line ('started 0 s after') - the doubt goes the way that cannot kill a booting validator"
+else
+    bad "(24c) boundary: hardstops=$(hs_n "$ev24e") :: $(printf '%s' "$ev24e" | grep -E '^(HARDSTOP|WPAGE|LOG)' | tr '\n' ';' | cut -c1-240)"
+fi
+ev24u=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen STARTMODE=none)
+ev24f=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen STARTMODE=future)
+ev24ud=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen STARTMODE=none DRY_RUN=true)
+if p_cannot_tell "$ev24u" && p_cannot_tell "$ev24f" && [[ "$(hs_n "$ev24ud")" == "0" && "$(printf '%s\n' "$ev24ud" | grep -c -F 'WPAGE HOLDER UNREACHABLE — not stopped (cannot tell a hung validator from a restarted one')" == "1" && "$(n_of "$ev24ud" '^PAGE .*WOULD HARD-STOP')" == "0" ]]; then
+    ok "(24d) the start time is unreadable (no stat file, or a time LATER than now - impossible): NO stop, ONE throttled 'HOLDER UNREACHABLE — not stopped (cannot tell a hung validator from a restarted one: the start time of pid 4242 is unreadable)' page; under DRY_RUN the same page and no 'WOULD HARD-STOP' page"
+else
+    bad "(24d) unreadable start: none: hardstops=$(hs_n "$ev24u") wpages=$(wp_n "$ev24u") / future: hardstops=$(hs_n "$ev24f") wpages=$(wp_n "$ev24f") / dry: $(printf '%s' "$ev24ud" | grep -E '^(HARDSTOP|WPAGE|PAGE)' | tr '\n' ';' | cut -c1-240)"
+fi
+ev24r=$(gap_world "$PRIMARY" "S X X X S X X X X X X X X" XREAD=8 LVMODE=frozen STARTMODE=new_then_old)
+if [[ "$(printf '%s\n' "$ev24r" | grep -c -F 'LOG [hung] validator restarted')" == "1" && "$(hs_n "$ev24r")" == "1" && "$(n_of "$ev24r" '^PAGE HOLDER HUNG — HARD STOP 🚨$')" == "1" ]]; then
+    ok "(24e) the restart closes only ITS episode: the identity reads again (the rung is re-armed and the read time moves), a later hang of the SAME unit - a process that started before that read - is stopped once, as before"
+else
+    bad "(24e) restart then hang: restarted-lines=$(printf '%s' "$ev24r" | grep -c 'validator restarted') hardstops=$(hs_n "$ev24r") :: $(printf '%s' "$ev24r" | grep -E '^(HARDSTOP|WPAGE|LOG)' | tr '\n' ';' | cut -c1-260)"
+fi
+# the real _proc_start_secs over a fixture /proc: field 22 of the stat line (ticks since boot) / CLK_TCK
+mk_stat() {   # mk_stat <comm> <starttime ticks> -> a /proc/<pid>/stat line (52 fields; the 22nd is the start time)
+    printf '4242 (%s) S 1 4242 4242 0 -1 4194560 100 0 0 0 1234 56 0 0 20 0 80 0 %s 123456789 4500 18446744073709551615 1 1 0 0 0 0 0 4096 0 0 0 0 17 3 0 0 0 0 0 0 0 0 0 0 0 0 0' "$1" "$2"
+}
+ps_start() {   # ps_start <script> <stat line, or "-" for no file> <pid argument> [100|250|garbage|none: what getconf CLK_TCK answers] -> what _proc_start_secs prints
+    local script="$1" txt="$2" arg="$3" hz="${4:-100}" src d; src=$(cut_src "$script"); d=$(mktemp -d)
+    (
+        # shellcheck disable=SC1090
+        source "$src" 2>/dev/null
+        if [[ "$txt" != "-" ]]; then mkdir -p "$d/4242"; printf '%s\n' "$txt" > "$d/4242/stat"; fi
+        case "$hz" in garbage) getconf() { printf 'lots'; } ;; none) getconf() { return 1; } ;; *) getconf() { printf '%s' "$hz"; } ;; esac
+        PROC_ROOT="$d"; _proc_start_secs "$arg" 2>/dev/null
+    ); rm -rf "$d"
+}
+p_start_parse() {   # the shipped parser, one case each
+    local s="$1"
+    [[ "$(ps_start "$s" "$(mk_stat agave-validator 987654)" 4242)" == "9876" \
+       && "$(ps_start "$s" "$(mk_stat 'agave (validator) x' 987654)" 4242)" == "9876" \
+       && "$(ps_start "$s" "$(mk_stat agave-validator 987654)" 4242 250)" == "3950" \
+       && "$(ps_start "$s" "$(mk_stat agave-validator 987654)" 4242 garbage)" == "9876" \
+       && "$(ps_start "$s" "$(mk_stat agave-validator 987654)" 4242 none)" == "9876" ]]
+}
+p_start_empty() {   # unreadable or malformed: prints nothing
+    local s="$1"
+    [[ -z "$(ps_start "$s" "-" 4242)" && -z "$(ps_start "$s" "$(mk_stat agave-validator 987654)" abc)" && -z "$(ps_start "$s" "4242 (agave-validator) S 1 4242" 4242)" \
+       && -z "$(ps_start "$s" "$(mk_stat agave-validator 12x4)" 4242)" && -z "$(ps_start "$s" "no parenthesis at all in this line" 4242)" ]]
+}
+if p_start_parse "$PRIMARY" && p_start_empty "$PRIMARY"; then
+    ok "(24f) _proc_start_secs reads the 22nd field of /proc/<pid>/stat over CLK_TCK (987654 ticks = 9876 s at 100, 3950 s at 250; getconf answering garbage or nothing = 100), even when comm holds spaces and parentheses; a missing file, a non-numeric pid, a short line, a non-numeric start time and a line without a parenthesis print nothing"
+else
+    bad "(24f) _proc_start_secs: plain=[$(ps_start "$PRIMARY" "$(mk_stat agave-validator 987654)" 4242)] parens=[$(ps_start "$PRIMARY" "$(mk_stat 'agave (validator) x' 987654)" 4242)] hz250=[$(ps_start "$PRIMARY" "$(mk_stat agave-validator 987654)" 4242 250)] garbage=[$(ps_start "$PRIMARY" "$(mk_stat agave-validator 987654)" 4242 garbage)] nofile=[$(ps_start "$PRIMARY" "-" 4242)] short=[$(ps_start "$PRIMARY" "4242 (agave-validator) S 1 4242" 4242)]"
+fi
+p_reset_stamps() { local lp; lp=$(sed -n '/^_hung_reset() {/,/^}/p' "$1"); [[ "$(printf '%s\n' "$lp" | grep -c -F '_hung_read_ts=$(mono_now)')" == "1" ]]; }
+p_sb_none() { [[ "$(grep -c -E '_proc_start_secs|_hung_read_ts|_hung_start' "$STANDBY")" == "0" ]]; }
+if p_reset_stamps "$PRIMARY" && p_sb_none; then
+    ok "(24g) structure: _hung_reset stamps the time of the last readable identity read ('_hung_read_ts=\$(mono_now)', once); the standby has no _proc_start_secs, no _hung_read_ts, no _hung_start"
+else
+    bad "(24g) structure: reset-stamps=$(p_reset_stamps "$PRIMARY" && echo yes || echo no) standby-clean=$(p_sb_none && echo yes || echo no)"
+fi
 
 
 # ── (12) controls ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -786,6 +885,19 @@ ctl_rc tl-stop-bound-10 "$LG"'s/timeout -k 5 15 systemctl stop/timeout -k 5 10 s
 ctl_rc tl-term-grace-4 "$LG"'s/^            sleep 2; pid=\$(_validator_pid)/            sleep 4; pid=$(_validator_pid)/' p_timeline_all
 ctl_rc tl-check-interval-5 's/^CHECK_INTERVAL=3 /CHECK_INTERVAL=5 /' p_timeline_all
 ctl_rc tl-fast-branch-gone "$LG"'s/case "\$_hs_st" in T|D) _hs_fast=1;/case "$_hs_st" in Z) _hs_fast=1;/' p_timeline_all
+# the restart guard (24): the comparison, its sign and boundary, the doubt, the future check, the stamp, the latch; the parser's field, comm, tick rate
+ctl restart-guard-removed "$HG"'s/^        if \[\[ -n "\$_hung_start" && \$_hung_start -ge \$_hung_read_ts \]\]; then$/        if false; then/' "$PL9" p_restart_not_hung XREAD=8 LVMODE=frozen STARTMODE=new
+ctl restart-sign-flipped "$HG"'s/\$_hung_start -ge \$_hung_read_ts/$_hung_start -lt $_hung_read_ts/' "$PL9" p_hung_stop XREAD=8 LVMODE=frozen STARTMODE=old
+ctl restart-gt-not-ge "$HG"'s/\$_hung_start -ge \$_hung_read_ts/$_hung_start -gt $_hung_read_ts/' "$PL9" p_at_read_restarted XREAD=8 LVMODE=frozen STARTMODE=at_read
+ctl restart-no-cannot-tell "$HG"'s/^    elif \[\[ -z "\$_hung_start" \]\]; then$/    elif false; then/' "$PL9" p_cannot_tell XREAD=8 LVMODE=frozen STARTMODE=none
+ctl restart-future-allowed "$HG"'s/ && \[\[ \$_hung_start -le \$now \]\]; } || _hung_start=""/; } || _hung_start=""/' "$PL9" p_cannot_tell XREAD=8 LVMODE=frozen STARTMODE=future
+ctl restart-no-read-stamp '/^_hung_reset() {/,/^}/ { /^    _hung_read_ts=\$(mono_now)$/d; }' "$PL9" p_hung_stop XREAD=8 LVMODE=frozen STARTMODE=old
+ctl_rc restart-stamp-struct '/^_hung_reset() {/,/^}/ { /^    _hung_read_ts=\$(mono_now)$/d; }' p_reset_stamps
+ctl restart-not-latched "$HG"'s/^            _hung_done=2; _hung_since=0; _hung_pid0=""$/            _hung_since=0; _hung_pid0=""/' "$PL9" p_restart_not_hung XREAD=8 LVMODE=frozen STARTMODE=new
+ctl_rc start-wrong-field 's/_t="\${_a\[19\]:-}"/_t="${_a[18]:-}"/' p_start_parse
+ctl_rc start-comm-greedy 's/_s="\${_s##\*) }"/_s="${_s#*) }"/' p_start_parse
+ctl_rc start-hz-fallback-1 's/{ _canon_uint "\$_hz" && \[\[ \$_hz -ge 1 \]\]; } || _hz=100$/{ _canon_uint "$_hz" \&\& [[ $_hz -ge 1 ]]; } || _hz=1/' p_start_parse
+ctl_rc start-hz-ignored 's/^    _hz=\$(getconf CLK_TCK 2>\/dev\/null)$/    _hz=100/' p_start_parse
 [[ $ctl_ok -eq 1 ]] && ok "(12) every mutant of the rule turns its case red:$ctl_rows" || bad "(12) a control is not red (NOT-APPLIED = its sed matched nothing):$ctl_rows"
 
 results_banner
