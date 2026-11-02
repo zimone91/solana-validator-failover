@@ -267,8 +267,12 @@ struct_why() {   # struct_why <script> -> why the structure is wrong (empty = ri
 struct_ok() { [[ -z "$(struct_why "$1")" ]]; }
 w11=$(struct_why "$PRIMARY")
 [[ -z "$w11" ]] && ok "(11) the loop has five _cycle_sleep sites and ONE raw _watchdog_sleep (the STARTUP_GRACE wait inside the manual-change branch); _gap_latch is called once, before the identity read; _gap_demote once, after it and before check_internet and the self-fence; _cycle_sleep stamps, then sleeps" || bad "(11) structure:$w11"
-[[ "$(grep -c '_cycle_end_ts\|HOLDER_GAP_DEMOTE_SECS' "$STANDBY")" == "0" ]] \
-    && ok "(11b) the gap rule is the holder's: the standby carries neither the stamp nor the knob" || bad "(11b) the standby mentions the holder's gap rule"
+# The standby carries no stamp and never assigns or expands the knob. It NAMES the knob in text - the other half of the pairing rule (AG-3.1b: the comments, the armed
+# start-up refusal and the unarmed warning say "the holder's HOLDER_GAP_DEMOTE_SECS + 30") - so a mention is not a use.
+sb_gap_use() { grep -c -E '_cycle_end_ts|^[[:space:]]*(export[[:space:]]+)?HOLDER_GAP_DEMOTE_SECS=|\$\{?HOLDER_GAP_DEMOTE_SECS' "$1"; }
+sb_gap_clean() { [[ "$(sb_gap_use "$1")" == "0" ]]; }
+sb_gap_clean "$STANDBY" \
+    && ok "(11b) the gap rule is the holder's: the standby carries no stamp and never assigns or expands the knob (it names the knob in text: the pairing rule)" || bad "(11b) the standby uses the holder's gap rule: $(sb_gap_use "$STANDBY") line(s)"
 
 # ── (12) controls ─────────────────────────────────────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (12) CONTROLS (mutate()): each mutant must turn its case red ───"
@@ -303,6 +307,15 @@ ctl no-retry 's/^        if switch_to_unstaked \("holder gap: .*"\); then$/     
 ctl_rc no-floor 's/_validate_numeric HOLDER_GAP_DEMOTE_SECS 30 /_validate_numeric HOLDER_GAP_DEMOTE_SECS 0 /' p_29_refused
 ctl_rc no-interval-relation 's/^    if \[\[ \$HOLDER_GAP_DEMOTE_SECS -lt \$_gap_floor \]\]; then$/    if false; then/' p_interval_relation
 ctl_rc census-one-site-reverted 's/^        _cycle_sleep "\$CHECK_INTERVAL"; continue/        _watchdog_sleep "$CHECK_INTERVAL"; continue/' struct_ok
+ctl_sb() {   # ctl_sb <label> <sed expr> - the standby predicate (sb_gap_clean) holds on the shipped script and FAILS on the mutant
+    local label="$1" expr="$2" m="$WORK/mut-$1.sh" rv mv
+    if ! mutate "$STANDBY" "$expr" "$m"; then ctl_ok=0; ctl_rows="$ctl_rows $label:NOT-APPLIED"; return; fi
+    sb_gap_clean "$STANDBY" && rv=y || rv=n; sb_gap_clean "$m" && mv=y || mv=n
+    if [[ "$rv" == "y" && "$mv" == "n" ]]; then ctl_rows="$ctl_rows $label:red"; else ctl_ok=0; ctl_rows="$ctl_rows $label:[shipped=$rv,mutant=$mv]"; fi
+}
+ctl_sb sb-knob-assigned 's/^TAKEOVER_DELAY=90 /HOLDER_GAP_DEMOTE_SECS=45; TAKEOVER_DELAY=90 /'
+ctl_sb sb-knob-expanded 's/^TAKEOVER_DELAY=90 /: "$HOLDER_GAP_DEMOTE_SECS"; TAKEOVER_DELAY=90 /'
+ctl_sb sb-stamp 's/^TAKEOVER_DELAY=90 /_cycle_end_ts=0; TAKEOVER_DELAY=90 /'
 [[ $ctl_ok -eq 1 ]] && ok "(12) every mutant of the rule turns its case red:$ctl_rows" || bad "(12) a control is not red (NOT-APPLIED = its sed matched nothing):$ctl_rows"
 
 results_banner
