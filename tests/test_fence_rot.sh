@@ -821,11 +821,13 @@ for script in "$PRIMARY" "$STANDBY"; do
     bounded_show=$(printf '%s\n' "$inv" | grep -c 'timeout -k 2 5 systemctl show "\${VALIDATOR_SERVICE')
     # AG-3.8: the PRIMARY has two more bounded READ-ONLY `show`s, outside the sweep: _validator_pid's `-p MainPID --value` (the pid the hard stop
     # must kill - the unit's own, pgrep after it) and _hung_unit_busy's `-p ActiveState --value` (a unit that is starting or stopping is not a hang).
-    # Both are `timeout 5 systemctl show -p <property> --value "${VALIDATOR_SERVICE...}"`; the standby has neither.
+    # Both are `timeout 5 systemctl show -p <property> --value "${VALIDATOR_SERVICE...}"`. B7.1: the STANDBY carries the first of them too - its _validator_pid has the primary's body (the
+    # unit's MainPID first, for the same reason: its hard stop kills what the function returns) - and not the second (_hung_unit_busy is the holder's rung): 5 lines, 1 in the family.
     pro_show=$(printf '%s\n' "$inv" | grep -cE 'timeout 5 systemctl show -p (MainPID|ActiveState) --value "\$\{VALIDATOR_SERVICE')
-    want_n=4; want_pro=0; [[ "$name" == "solana-primary-failover.sh" ]] && { want_n=6; want_pro=2; }
+    want_n=5; want_pro=1; pro_txt=" + the standby's 1 B7.1 read-only show (MainPID)"
+    [[ "$name" == "solana-primary-failover.sh" ]] && { want_n=6; want_pro=2; pro_txt=" + the primary's 2 AG-3.8 read-only shows (MainPID, ActiveState)"; }
     if [[ "$n_inv" == "$want_n" && "$pro_show" == "$want_pro" && "$funnel" == "1" && "$hard" == "2" && "$known_show" == "1" && "$bounded_show" == "1" ]]; then
-        ok "(13) $name: allowlist census EXACT — $want_n systemctl-bearing invocation lines = the in-block funnel + 2 hard-stop actuators + 1 startup ExecStart read (BOUNDED since the 5.4 GO condition — the spelling is asserted, a bare revert goes red)$([[ $want_pro -gt 0 ]] && echo " + the primary's 2 AG-3.8 read-only shows (MainPID, ActiveState)"); every other systemctl line is a pure string mention"
+        ok "(13) $name: allowlist census EXACT — $want_n systemctl-bearing invocation lines = the in-block funnel + 2 hard-stop actuators + 1 startup ExecStart read (BOUNDED since the 5.4 GO condition — the spelling is asserted, a bare revert goes red)$pro_txt; every other systemctl line is a pure string mention"
     else
         bad "(13) $name: systemctl census moved (total=$n_inv want=$want_n pro_show=$pro_show want=$want_pro funnel=$funnel hard=$hard known_show=$known_show bounded_show=$bounded_show) — REVIEW: $(printf '%s\n' "$inv" | head -5 | tr '\n' ' ')"
     fi

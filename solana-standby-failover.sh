@@ -3647,11 +3647,45 @@ give_back_identity() {
 # Returns 0 if it self-fenced (caller should display + sleep + continue), 1 otherwise.
 
 # v0.6.9 (H1, S4 port): pid of the running validator (any client), or empty if none is running.
+# v0.7 (B7.1): the primary's function, body for body (AG-3.8's MainPID first, then B7.1's pgrep fallback that never answers an ADMIN CLIENT). The standby's own bounded admin calls
+# (agave-validator --ledger L set-identity | authorized-voter | contact-info | monitor | exit | wait-for-restart-window) carry the validator's process name and run while the hard stop
+# runs: `pgrep | head -1` could answer one of them, and the hard stop of a promoted STAKED holder would kill the client and leave the validator voting. The unit's MainPID (a canonical
+# uint > 1 that is alive) is what systemd runs and the hard stop must kill; with no unit, MainPID 0 or a stopped one, every pgrep hit's argv is read (${PROC_ROOT:-/proc}/<pid>/cmdline,
+# NUL-separated; PROC_ROOT is the test seam). A hit with one of those six words as an argument after argv[0], as a WHOLE word, is a client and is passed over (--identity
+# /keys/set-identity.json is not one; the word after --ledger is that option's value, so a ledger directory called `monitor` is not one either). The first hit with --ledger and no such
+# word wins, else the first hit that is not a client. A cmdline that cannot be read (no /proc entry, macOS) proves nothing: that hit counts as not-a-client, so with no readable cmdline
+# at all the answer is the first pgrep hit, as before (the old behaviour is the floor). Only clients alive = no validator = empty. One pgrep per process name, in the old order
+# (callers and stubs count them), builtins otherwise (bash 3.2: `read -d ''` splits the NULs). The pid prints with no newline, rc 0. Pinned with the primary's, the fence script's and the
+# arm ceremony's copies by test_block7_rc1 (B7.1-14).
 _validator_pid() {
-    local p; p=$(pgrep -x agave-validator 2>/dev/null | head -1)
-    [[ -z "$p" && "$VALIDATOR_TYPE" == "frankendancer" ]] && p=$(pgrep -x fdctl 2>/dev/null | head -1)
-    [[ -z "$p" ]] && p=$(pgrep -x solana-validator 2>/dev/null | head -1)
-    printf '%s' "$p"
+    local p n c f w i sk sub led first pick
+    p=$(timeout 5 systemctl show -p MainPID --value "${VALIDATOR_SERVICE:-solana}" 2>/dev/null)
+    if _canon_uint "$p" && [[ $p -gt 1 ]] && kill -0 "$p" 2>/dev/null; then printf '%s' "$p"; return 0; fi
+    for n in agave-validator fdctl solana-validator; do
+        [[ "$n" == "fdctl" && "$VALIDATOR_TYPE" != "frankendancer" ]] && continue
+        first=""; pick=""
+        for c in $(pgrep -x "$n" 2>/dev/null); do
+            f="${PROC_ROOT:-/proc}/$c/cmdline"; sub=""; led=""; sk=""; i=0
+            if [[ -r "$f" ]]; then
+                while IFS= read -r -d '' w || [[ -n "$w" ]]; do
+                    i=$((i + 1))
+                    [[ $i -gt 1 ]] || continue
+                    [[ -z "$sk" ]] || { sk=""; continue; }
+                    case "$w" in
+                        --ledger) led=1; sk=1 ;;
+                        --ledger=*) led=1 ;;
+                        set-identity|authorized-voter|contact-info|monitor|exit|wait-for-restart-window) sub=1 ;;
+                    esac
+                done 2>/dev/null < "$f"
+            fi
+            [[ -z "$sub" ]] || continue
+            [[ -n "$first" ]] || first=$c
+            [[ -z "$led" ]] || { pick=$c; break; }
+        done
+        pick=${pick:-$first}
+        [[ -z "$pick" ]] || { printf '%s' "$pick"; return 0; }
+    done
+    return 0
 }
 
 # ── [one-arm-state] shared classifier + startup refusal — BYTE-IDENTICAL in both daemons (test_one_arm_state) ──

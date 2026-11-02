@@ -5,6 +5,14 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **B7.1 — `_validator_pid` is the validator, never an admin client of the daemon (Block 7, rc1).** `pgrep -x agave-validator | head -1` could answer a bounded admin call of the daemon itself or of the operator
+  (`agave-validator --ledger L set-identity | authorized-voter | contact-info | monitor | exit | wait-for-restart-window` has the validator's process name and runs while the hard stop runs): the hard stop then
+  killed the client, called a hung STAKED holder "still running" (`HARD STOP FAILED`) and left it voting; in the fence script and the arm ceremony the pid names a systemd unit through its cgroup, so a client of the
+  monitor unit could be taken for the validator's unit. Now the unit's `MainPID` comes first in BOTH daemons (the standby's is new), and the `pgrep` fallback (the three process names as before, one `pgrep` per name, all hits)
+  reads each hit's `cmdline`: a hit with one of the six words as an argument after `argv[0]`, as a whole word (`--identity /keys/set-identity.json` is not one; the word after `--ledger` is its value), is passed over; a hit with
+  `--ledger` and no such word is preferred; a `cmdline` that cannot be read proves nothing (no readable `cmdline` at all = the first hit, as before); only clients alive = no validator, empty. The fence script and the arm
+  ceremony carry the same selection and never ask the unit. Pinned by `tests/test_block7_rc1.sh` (B7.1), with mutants.
+
 - **AG-3 (rc1) — the armed cold take under Alpenglow, opt-in; the holder's gap rule and hung-validator rung; unit and ceremony hygiene.** A standby with `AG_ARMED_TAKE=true`
   (default `false`; only the literal `true` arms, anything else is not armed and says so once at start) takes the staked identity itself - cold - when every gate
   of the page has said "take now" and a readiness margin also holds. The primary never takes, armed or not. Every figure and limit:
