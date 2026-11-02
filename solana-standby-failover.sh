@@ -1159,8 +1159,9 @@ tier1_check_local_health() {
 #                              holder is within the threshold. A failed or non-canonical reference, or an
 #                              unusable lastVote, SKIPS the test (return 1: fail toward NOT opening an episode,
 #                              as on the 6.3 build) — and that is no evidence: at the wizard's threshold a dead
-#                              holder sits in agave's `current` list for ~51 s after its last vote (128 slots at
-#                              2.5 slots/s), so `current` alone is not "voting" there (MEASURED on the 6.3.1
+#                              holder sits in agave's `current` list for up to ~51 s after its last vote (128 slots at
+#                              2.5 slots/s, the SLOWEST rate of the slot-params table - an upper bound; ~27 s at the Alpenglow
+#                              rate, AG-1.6), so `current` alone is not "voting" there (MEASURED on the 6.3.1
 #                              build: ONE failed reference at t40 was stamped as holder voting and moved a dead
 #                              holder's take t80 → t100, silently).
 # _lcd_noev names why a return 1 carries no evidence (for the main loop's log line). The window's behavior is
@@ -2087,6 +2088,15 @@ _alpenglow_status_line() {
 # this function to return 1 after sourcing a daemon (the seam idiom: tests/lib/harness.sh `harness_ag_off`).
 _ag_mode() { return 0; }
 
+# ── slot rates (AG-1.6; G11) ───────────────────────────────────────────────────────────────────────────────────────
+# Every conversion between slots and seconds on an Alpenglow path uses an end of ONE table: the slot-params rows (one per reduce_slot_time_to_*ms gate:
+# 400, 350, 300, 250, 200 ms; jito byte-identical to agave). 400 ms = 2.5 slots/s is the SLOWEST rate any row allows, 200 ms = 5 slots/s the FASTEST.
+# Measured under Alpenglow: 4.667 slots/s median (4.567-4.817), mainnet 2026-11-01 (DESIGN-AG 1.2). The rule: a MINIMUM duration expressed in slots (the
+# fewest seconds those slots can take) is converted at the FASTEST rate; an UPPER bound on elapsed time at the SLOWEST. The code needs the fast end only
+# (the VAT schedule: the earliest the epoch can end); the slow end is named where a text states an upper bound ("up to ~51 s" = 128 slots at 2.5 slots/s).
+# docs/SAFETY.md, "Slot time under Alpenglow", holds the table and the measurement; tests/test_ag_texts.sh pins both ends and every text that quotes them.
+_AG_SLOTS_PER_S_FAST=5
+
 # ── the vote-history file: CLASSIFIED and LOGGED, never touched (AG-1.3; G1 support, G6) ────────────────────────
 # Alpenglow's set-identity needs <ledger>/vote_history-<node pubkey>.bin (D0.4: agave validator/src/commands/run/execute.rs:582-584,
 # jito :590-592 — the file lives in the ledger directory whatever --tower says; no flag moves it). A WARM swap copies that file from the
@@ -2317,13 +2327,13 @@ _vat_read() {
         fi
     fi
     _vat_read_ts=$(mono_now)
-    # the next scheduled read: admitted - at the EARLIEST the epoch can end (5 slots/s, the fastest rate, AG-1.6), never sooner than 30 s;
+    # the next scheduled read: admitted - at the EARLIEST the epoch can end (_AG_SLOTS_PER_S_FAST, the fastest rate, AG-1.6), never sooner than 30 s;
     # anything else - at most every 600 s (or at the boundary, if sooner)
     local _w=600
     if [[ "$_vat_state" == "admitted" ]]; then
-        _w=3600; [[ -n "$_vat_left" ]] && _w=$(( _vat_left / 5 ))
-    elif [[ -n "$_vat_left" && $(( _vat_left / 5 )) -lt 600 ]]; then
-        _w=$(( _vat_left / 5 ))
+        _w=3600; [[ -n "$_vat_left" ]] && _w=$(( _vat_left / _AG_SLOTS_PER_S_FAST ))
+    elif [[ -n "$_vat_left" && $(( _vat_left / _AG_SLOTS_PER_S_FAST )) -lt 600 ]]; then
+        _w=$(( _vat_left / _AG_SLOTS_PER_S_FAST ))
     fi
     [[ $_w -lt 30 ]] && _w=30
     _vat_next_ts=$(( _vat_read_ts + _w ))

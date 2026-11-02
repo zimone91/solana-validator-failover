@@ -398,6 +398,7 @@ ctl_read absent-as-lapse 's/then "unknown entries=.*$/then "notadmitted 1 1 1"/'
 ctl_read inverted-flag 's/elif \$x.epochVoteAccount then "admitted /elif ($x.epochVoteAccount | not) then "admitted /' "$B_ADMITTED" state
 ctl_read boundary-ignored 's/elif \$a.epoch != \$c.epoch then "boundary /elif false then "boundary /' "$B_BOUNDARY" state
 ctl_read keep-unstaked-dropped 's/,\\"keepUnstakedDelinquents\\":true//' "$B_ADMITTED" req
+ctl_read rate-constant 's/^_AG_SLOTS_PER_S_FAST=5$/_AG_SLOTS_PER_S_FAST=4/' "$B_ADMITTED" next   # AG-1.6: the schedule divides by the named fast-end constant, not by a literal
 ctl_hold() {   # ctl_hold <label> <sed expr> <vh_run args…> — the mutant's call sequence differs from the real one
     local label="$1" expr="$2" scr n m real mut; shift 2
     for scr in "$STANDBY" "$PRIMARY"; do

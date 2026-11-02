@@ -451,6 +451,20 @@ an assumption about who is lying:
 is not a physical state: a side under 2/3 stops voting within ~8 votes, and a side at or above 2/3
 is the canonical chain, where the spare's own bank sees exactly the holder votes the tiers see.)
 
+**Slot time under Alpenglow (v0.7, AG-1.6).** Every public cluster runs Alpenglow, and its slot rate is faster than anything the figures below assume:
+mainnet measured **4.667 slots/s** median (4.567–4.817, 214 ms) on 2026-11-01. The slot-params table bounds the rate on both sides — one row per
+`reduce_slot_time_to_*ms` gate: 400 (legacy), 350, 300, 250 and 200 ms — so every conversion on an Alpenglow path uses one of its ends, named once in the
+daemons (`_AG_SLOTS_PER_S_FAST`) and here: a **minimum** duration expressed in slots is taken at the FASTEST rate, **5 slots/s** (the VAT schedule: the earliest an epoch
+can end), an **upper bound** on elapsed time at the SLOWEST, **2.5 slots/s** (the 128-slot delinquency window is at most ≈ 51 s; ≈ 26 s at the fastest rate;
+≈ 27 s at the measured one). Under Alpenglow `confirmed` follows the highest finalized slot — measured on public RPC nodes, 2026-11-01: equal in 8 of 8
+testnet and 3 of 3 mainnet samples, `processed` 1–2 slots ahead — so the TowerBFT lag of 32 slots between `processed` and `finalized` that some figures
+below use does not exist. The healthy vote lag measured p50 2, p90 8, max 9 slots (665 mainnet accounts), which is why the wizard's fast-delinquency preset is
+**24** slots (it was 15). Everything below this paragraph was measured at 2.5 or 3.7 slots/s under TowerBFT. A figure that bounds a time from above (a holder
+fence's worst case, the lag a spare may carry) still holds — 2.5 slots/s is the slowest rate there is; a figure that is a minimum (the earliest a spare's take can
+come after the last vote) belongs to the take path, which AG mode never runs, and stays as measured for the release that re-derives it (AG-3). In the tables below
+*the wizard preset* is the set the v0.6.6–v0.6.9 wizards wrote — `TAKEOVER_DELAY` 60, `CHECK_INTERVAL` 3, `GOSSIP_VERIFY` on, `MAX_DELINQUENT_SLOTS` 15 — which is
+what those worlds ran; the v0.7 wizard writes 24.
+
 **Slot time.** Every seconds figure below was measured at **2.5 slots/s** (400 ms slots — the rate
 the code's derivations assume, e.g. `N_HEAD = (MARGIN_ELAPSED − 1) × 5/2`). Mainnet **measured ≈ 3.7
 slots/s** on 2026-09-26 (265–283 ms per slot: `getRecentPerformanceSamples` on the public

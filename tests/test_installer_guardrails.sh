@@ -80,7 +80,8 @@ grep -qF "gives the PRIMARY its worst-case self-fence time plus a cross-node mar
   || bad "(7) TAKEOVER_DELAY why-note missing"
 
 # (8) MAX_DELINQUENT_SLOTS why-note — and it carries NO danger framing (speed, not a double-sign value).
-mln=$(grep -F "Recommended 15 — detects a stopped PRIMARY quickly" "$DEPLOY_STANDBY")
+# AG-1.6: the preset is ONE variable of the wizard (MAX_DELINQ_PRESET, pinned in test_ag_texts); the note reads it, so the literal text carries the variable
+mln=$(grep -F 'Recommended ${MAX_DELINQ_PRESET} — detects a stopped PRIMARY quickly' "$DEPLOY_STANDBY")
 if [[ -n "$mln" && "$mln" != *'${RED}'* && "$mln" != *"double-sign"* ]]; then
   ok "(8) MAX_DELINQUENT_SLOTS why-note present, no danger framing"
 else
