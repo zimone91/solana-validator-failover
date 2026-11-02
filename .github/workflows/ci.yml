@@ -336,16 +336,22 @@ jobs:
           done
           [ "$bad" = 0 ] || { echo "RED: the MIN_VALIDATOR_VERSION default moved in one place (rule: this step's comment)"; exit 1; }
           echo "MIN_VALIDATOR_VERSION is 4.4.0 in both daemons, their drift tables and both env templates"
-      - name: the agave flag that switches the vote-history requirement off is named in no file of the tree (v0.7 AG-1.2)
-        # RULE: FO never tells an operator to take the staked identity cold. The flag that lets a validator start or set-identity without
-        # its vote-history file is named in NO file of the tree - script, comment, message, doc or test (an operator who reads it in FO's
-        # own text may apply it, and a cold take is exactly the double-vote the warm swap exists to prevent). It is assembled from two
-        # halves here, so this file does not carry it either. A legitimate change (a reviewed decision to document it) updates this step.
+      - name: the agave flag that switches the vote-history requirement off is named once in the standby and in no other shipped file (v0.7 AG-3.3)
+        # RULE: the flag that lets a validator set-identity without its vote-history file has ONE place in the shipped code: the standby's
+        # armed cold take (AG-3.3 - `_AG_COLD_FLAG`, the single definition the one armed set-identity and the banner use). It is named
+        # in no other shipped script or template: not the primary (it never takes: G10, switch_to_staked stays withheld), not the
+        # installers, the arm, the fence scripts, the units, the env templates - and not in a test (the suites assemble it from two
+        # halves, and so does this step, so this file does not carry it either). Docs may name it: they explain the cold take. A legitimate
+        # change (a second take site, a flag in a template) is a reviewed decision and updates this step.
         run: |
           flag="do-not-require""-vote-history"
-          hits=$(grep -rIlF -e "$flag" . --exclude-dir=.git || true)
-          [ -z "$hits" ] || { echo "RED: the flag is named in: $hits"; exit 1; }
-          echo "no file of the tree names the vote-history requirement flag"
+          bad=0
+          n=$(grep -cF -e "$flag" solana-standby-failover.sh || true)
+          [ "$n" = 1 ] || { echo "solana-standby-failover.sh names the flag $n time(s) - want exactly 1 (the _AG_COLD_FLAG definition)"; bad=1; }
+          others=$(find . -type f -not -path './.git/*' -not -path './docs/*' -not -name 'solana-standby-failover.sh' -not -name '*.md' -not -name 'ci.yml' -exec grep -lIF -e "$flag" {} + 2>/dev/null || true)
+          [ -z "$others" ] || { echo "the flag is also named in: $others"; bad=1; }
+          [ "$bad" = 0 ] || { echo "RED: the cold-take flag moved (rule: this step's comment)"; exit 1; }
+          echo "the vote-history requirement flag is named once, in solana-standby-failover.sh, and in no other script, template, unit or test"
       - name: no shipped script deletes, moves, copies or rewrites a vote-history, tower or ledger path — the crude line grep (v0.7 AG-1 fix round)
         # RULE: FO never deletes, moves, copies, truncates or redirects into a vote-history file, a tower file or the ledger (the warm swap is
         # the operator's, with the file intact: docs/SAFETY.md, Alpenglow). In the eight shipped scripts no non-comment line combines a mutating

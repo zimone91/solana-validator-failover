@@ -7,7 +7,7 @@
 #   - _prewarm_voter_add (the delay window - it runs BEFORE the take path and its veto) returns first, before the PREWARM_VOTER_ADD gate;
 #   - the daemons say at startup that PREWARM_VOTER_ADD=true / RECOVERY_MODE=rpc cannot act in Alpenglow mode (the daemon still starts);
 #   - the standby says at startup, in the log only, that a MAX_DELINQUENT_SLOTS of 1..23 is below the Alpenglow preset 24 (no page, the daemon still starts);
-#   - the agave flag that switches the vote-history requirement off is named in no file of the tree.
+#   - the agave flag that switches the vote-history requirement off is named in no shipped script but the standby's ONE armed set-identity (AG-3.3; tests/test_ag_armed_take.sh).
 # EVERY GATE BEFORE THE STOP RUNS AS TODAY (the episode, the delay, the external confirm, the fence, the fresh re-check, the veto): the page means
 # "every gate FO has said the take would happen now" - a gate that holds produces NO AG page.
 # The worlds are the act-then-alert idiom (tests/test_act_then_alert.sh): the REAL attempt_takeover -> take_staked_identity and the REAL
@@ -23,7 +23,7 @@
 #   (6) _prewarm_voter_add: no admin call, one log line, _prewarm_reset never armed; the shadowed world adds - and DRY_RUN with and without the shadow
 #   (7) the startup warnings, and the standby's drift note for a MAX_DELINQUENT_SLOTS below the preset (log only; 6 controls)
 #   (8) STRUCTURE by bash's text: the stop's place in each take function, the prewarm's first statement, the marker's three writers, the page's
-#       reads (LOCAL, curl -m 3, one spelling), the flag string named nowhere, the shadow census of the other suites
+#       reads (LOCAL, curl -m 3, one spelling), the cold flag named once in the standby only, the shadow census of the other suites
 #   (9) CONTROLS (mutate()): each stop removed, the marker never cleared, a page at every decision point, the stop after the DRY_RUN branch /
 #       the keypair test, no pacing stamp, a dropped page field
 # RED ON THE BASE (the AG-1.4 tree + this suite): the real take_staked_identity and switch_to_staked, every gate open, call set-identity and
@@ -258,7 +258,7 @@ has() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
 st() { printf '%s\n' "$1" | grep '^STATE=' | sed 's/^STATE=//'; }
 agp() { evn "$1" 'PAGE .*WITHHELD'; }                                   # agp <out> - the AG pages
 heads() { printf '%s\n' "$1" | grep '^EV: PAGE ' | sed 's/^EV: PAGE [^<]*<b>//; s/<\/b>.*//' | cut -c1-40 | tr '\n' ';'; }   # heads <out> - every page's status
-dp() { evn "$1" 'LOG .*\[ag\]'; }                                     # dp <out> - the AG decision points (each logs one [ag] line)   # st <world output> - the STATE record, for field
+dp() { evn "$1" 'LOG .*\[ag\].*WITHHELD'; }                          # dp <out> - the AG decision points (each logs one [ag] ... WITHHELD line; AG-3's "armed take: held" line is the predicate's, not a decision point of its own)   # st <world output> - the STATE record, for field
 miss=""
 
 # ── (1) STANDBY, every gate open ──────────────────────────────────────────────────────────────────
@@ -271,7 +271,7 @@ else
     bad "(1a) admin=$(evn "$out" 'ADMIN') pages=$(evn "$out" 'PAGE') exits=$(evn "$out" 'TAKE-EXIT rc=1') curlbin=$(evn "$out" 'NET CURLBIN') :: $(printf '%s\n' "$out" | grep -E '^EV: (ADMIN|PAGE)' | cut -c1-120 | head -4 | tr '\n' ';')"
 fi
 miss=""
-for f in "TAKEOVER WITHHELD — Alpenglow mode" "Delinquent" "never takes the staked identity automatically: nothing was done" \
+for f in "TAKEOVER WITHHELD — Alpenglow mode" "Delinquent" "this spare is NOT ARMED (AG_ARMED_TAKE=false): nothing was done" \
          "Holder silent" "since the episode's first liveness sample (lastVote 5000, cluster tip 9000" "provider T2" \
          "finalized slot 80" "getHealth ok" "validator ok (version 4.4.0, minimum 4.4.0)" "VAT admission: admitted (epoch 1074" \
          "Vote history $WORK/ledger-absent/vote_history-S1.bin: absent" \
@@ -524,14 +524,17 @@ first_line() { grep -n -m1 -E -e "$2" <<< "$1" | cut -d: -f1; }              # f
 for scr in "$STANDBY" "$PRIMARY"; do
     n=$(role_of "$scr"); fn=take_staked_identity; [[ "$n" == "primary" ]] && fn=switch_to_staked
     body=$(fn_code "$scr" "$fn")
-    lv=$(first_line "$body" '^[[:space:]]*_own_view_veto \|\| return 1$'); la=$(first_line "$body" '^[[:space:]]*if _ag_mode; then$')
+    # AG-3.1: the standby's stop asks the fail-closed predicate (`if ! _ag_take_allowed` - an undefined predicate withholds); the primary's stays `if _ag_mode`
+    gre='^[[:space:]]*if _ag_mode; then$'; gtxt="if _ag_mode; then"; gwant='if_ag_mode;then'
+    [[ "$n" == "standby" ]] && { gre='^[[:space:]]*if ! _ag_take_allowed; then$'; gtxt="if ! _ag_take_allowed; then"; gwant='if!_ag_take_allowed;then'; }
+    lv=$(first_line "$body" '^[[:space:]]*_own_view_veto \|\| return 1$'); la=$(first_line "$body" "$gre")
     ld=$(first_line "$body" '"\$DRY_RUN" == "true"'); lk=$(first_line "$body" '-s "\$STAKED_KEYPAIR"'); ls=$(first_line "$body" '(timeout|fdctl|agave-validator).*set-identity')
     calls=$(grep -c '_ag_take_withheld "' <<< "$body")
     stamp=LAST_TAKEOVER_TIME; [[ "$n" == "primary" ]] && stamp=LAST_SWITCH_TIME
-    want="if_ag_mode;then${stamp}=\$(mono_now);save_state_ag_take_withheld\"${n}\"\"\$reason\"return1fi"
+    want="${gwant}${stamp}=\$(mono_now);save_state_ag_take_withheld\"${n}\"\"\$reason\"return1fi"
     got=$(sed -n "${la},$(( la + 4 ))p" <<< "$body" | tr -d ' \n')
     if [[ -n "$lv" && -n "$la" && -n "$ld" && -n "$lk" && -n "$ls" && $lv -lt $la && $la -lt $ld && $la -lt $lk && $la -lt $ls && "$calls" == "1" && "$got" == "$want" ]]; then
-        ok "(8a:$n) $fn: 'if _ag_mode; then' stands after the veto (line $lv), before the DRY_RUN branch ($ld), the keypair test ($lk) and the first set-identity ($ls); its five lines are exactly the stamp, ONE _ag_take_withheld \"$n\" call and 'return 1'"
+        ok "(8a:$n) $fn: '$gtxt' stands after the veto (line $lv), before the DRY_RUN branch ($ld), the keypair test ($lk) and the first set-identity ($ls); its five lines are exactly the stamp, ONE _ag_take_withheld \"$n\" call and 'return 1'"
     else
         bad "(8a:$n) $fn order: veto=$lv ag=$la dry=$ld key=$lk set-identity=$ls calls=$calls got=[$got]"
     fi
@@ -555,8 +558,13 @@ for scr in "$STANDBY" "$PRIMARY"; do
     [[ "$(grep -c '_ag_slot_final' <<< "$tb")" == "1" && "$(grep -c '_ag_health_text' <<< "$tb")" == "1" ]] || { rd_ok=0; rd_why="$rd_why $(role_of "$scr"): _ag_take_withheld does not call each read helper exactly once"; }
 done
 [[ $rd_ok -eq 1 ]] && ok "(8d) the page's own reads: _ag_slot_final (getSlot{finalized}) and _ag_health_text (getHealth) are each exactly one 'curl -s -m 3 \"\$LOCAL_RPC\"' with a literal body, and _ag_take_withheld names no network primitive - the version, the VAT and the history reads are the AG-1.5 / 1.4 / 1.3 helpers, censused in their own suites" || bad "(8d) page reads:$rd_why"
-hits=$(grep -rIlF -e "$FLAG" "$HARNESS_DIR" --exclude-dir=.git 2>/dev/null | head -5 | tr '\n' ' ')
-[[ -z "$hits" ]] && ok "(8e) the agave flag that switches the vote-history requirement off is named in NO file of the tree (code, comment, message, doc, test): 0 occurrences" || bad "(8e) the flag is named in: $hits"
+# AG-3.3: the cold flag is named in the STANDBY exactly once (the _AG_COLD_FLAG definition; the banner and the call use the variable), at the one set-identity of the armed path, and in no other shipped script or template
+fl_s=$(grep -cF -e "$FLAG" "$STANDBY")
+fl_other=$(cd "$HARNESS_DIR" && grep -lF -e "$FLAG" ./*.sh systemd/*.sh systemd/*.skel ./*.env.example 2>/dev/null | grep -v 'solana-standby-failover.sh$' | tr '\n' ' ')
+fl_site=$(fn_code "$STANDBY" take_staked_identity | grep -c 'set-identity "\$_AG_COLD_FLAG" "\$STAKED_KEYPAIR"')
+fl_def=$(grep -c '^_AG_COLD_FLAG="--'"$FLAG"'"' "$STANDBY")
+[[ "$fl_s" == "1" && "$fl_def" == "1" && "$fl_site" == "1" && -z "$fl_other" ]] \
+    && ok "(8e) the cold flag is named in the standby ONCE (the _AG_COLD_FLAG definition), used at the ONE armed set-identity of take_staked_identity, and in no other shipped script or template" || bad "(8e) cold flag census: standby lines=$fl_s definition=$fl_def armed-site=$fl_site other-files=[$fl_other]"
 
 # the shadow census of the OTHER suites. The census method: the full suite run on a tree whose _ag_mode logs its REAL caller (the suite, the function), no suite shadowed; the
 # pinned lists below are what it found. REAL reach of a take path (take_staked_identity / switch_to_staked) => the suite is SHADOWED (calls harness_ag_off at least once);
@@ -568,7 +576,7 @@ NOT_REACHED="test_backup_fence.sh test_primary_recovery_liveness.sh test_require
 sh_ok=1; sh_why=""; sh_rows=""; sh_n=0
 for f in "$HARNESS_DIR"/tests/test_*.sh; do
     b=$(basename "$f")
-    [[ "$b" == "test_ag_take.sh" ]] && continue
+    [[ "$b" == "test_ag_take.sh" || "$b" == "test_ag_armed_take.sh" ]] && continue   # the two suites whose worlds run the REAL predicates (AG-3: the armed take's suite joins)
     mentions=$(grep -cE 'attempt_takeover|attempt_safe_recovery|take_staked_identity|switch_to_staked|_prewarm_voter_add' "$f")
     shadows=$(grep -c 'harness_ag_off' "$f")
     pva=$(grep -c 'PREWARM_VOTER_ADD' "$f")
@@ -598,7 +606,7 @@ mut_world() {   # mut_world <label> <standby|primary> <sed expr> [knob …] -> e
     echo applied > "$WORK/mw.state"
     if [[ "$role" == "primary" ]]; then ag_pr "$m" "$@"; else ag_sb "$m" "$@"; fi
 }
-c=$(mut_world sb-stop standby '/^take_staked_identity() {/,/^}/ s/^    if _ag_mode; then$/    if false; then/') && [[ "$(evn "$c" 'ADMIN agave-validator .*set-identity')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
+c=$(mut_world sb-stop standby '/^take_staked_identity() {/,/^}/ s/^    if ! _ag_take_allowed; then$/    if false; then/') && [[ "$(evn "$c" 'ADMIN agave-validator .*set-identity')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
     && ctl_rows="$ctl_rows sb-stop:red" || { ctl_ok=0; ctl_rows="$ctl_rows sb-stop:$(mw_label)"; }
 c=$(mut_world pr-stop primary '/^switch_to_staked() {/,/^}/ s/^    if _ag_mode; then$/    if false; then/') && [[ "$(evn "$c" 'ADMIN agave-validator .*set-identity')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
     && ctl_rows="$ctl_rows pr-stop:red" || { ctl_ok=0; ctl_rows="$ctl_rows pr-stop:$(mw_label)"; }
@@ -608,9 +616,9 @@ c=$(mut_world marker standby 's/^    _ag_page_ts=0   # v0\.7 (AG-1\.2).*$/    :/
     && ctl_rows="$ctl_rows marker-never-cleared:red" || { ctl_ok=0; ctl_rows="$ctl_rows marker-never-cleared:$(mw_label)"; }
 c=$(mut_world throttle standby '/^_ag_take_withheld() {/,/^}/ s/ -lt \${ALERT_THROTTLE:-600} \]\]; then$/ -lt 0 ]]; then/' HZ=900) && [[ "$(agp "$c")" -ge 6 ]] \
     && ctl_rows="$ctl_rows page-every-decision:red" || { ctl_ok=0; ctl_rows="$ctl_rows page-every-decision:$(mw_label)"; }
-c=$(mut_world after-dry standby '/^take_staked_identity() {/,/^}/ s/^    if _ag_mode; then$/    if _ag_mode \&\& [[ "$DRY_RUN" != "true" ]]; then/' DRY_RUN=true) && [[ "$(evn "$c" 'PAGE .*WOULD TAKE')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
+c=$(mut_world after-dry standby '/^take_staked_identity() {/,/^}/ s/^    if ! _ag_take_allowed; then$/    if ! _ag_take_allowed \&\& [[ "$DRY_RUN" != "true" ]]; then/' DRY_RUN=true) && [[ "$(evn "$c" 'PAGE .*WOULD TAKE')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
     && ctl_rows="$ctl_rows stop-below-DRY_RUN:red" || { ctl_ok=0; ctl_rows="$ctl_rows stop-below-DRY_RUN:$(mw_label)"; }
-c=$(mut_world after-key standby '/^take_staked_identity() {/,/^}/ s/^    if _ag_mode; then$/    if _ag_mode \&\& [[ -s "$STAKED_KEYPAIR" ]]; then/' KP=empty) && [[ "$(evn "$c" 'PAGE .*TAKEOVER BLOCKED')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
+c=$(mut_world after-key standby '/^take_staked_identity() {/,/^}/ s/^    if ! _ag_take_allowed; then$/    if ! _ag_take_allowed \&\& [[ -s "$STAKED_KEYPAIR" ]]; then/' KP=empty) && [[ "$(evn "$c" 'PAGE .*TAKEOVER BLOCKED')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
     && ctl_rows="$ctl_rows stop-below-keypair:red" || { ctl_ok=0; ctl_rows="$ctl_rows stop-below-keypair:$(mw_label)"; }
 c=$(mut_world pr-after-dry primary '/^switch_to_staked() {/,/^}/ s/^    if _ag_mode; then$/    if _ag_mode \&\& [[ "$DRY_RUN" != "true" ]]; then/' DRY_RUN=true) && [[ "$(evn "$c" 'PAGE .*WOULD RECOVER')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
     && ctl_rows="$ctl_rows primary-stop-below-DRY_RUN:red" || { ctl_ok=0; ctl_rows="$ctl_rows primary-stop-below-DRY_RUN:$(mw_label)"; }

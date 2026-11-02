@@ -2104,8 +2104,9 @@ _alpenglow_status_line() {
 # AG mode is the rule of v0.7 (DESIGN-AG §4, TASK-AG1 AG-1.1): FO never takes the staked identity automatically,
 # on any role, on any cluster. `_ag_mode` returns 0 (AG mode) UNCONDITIONALLY. No env knob, no state file and no RPC
 # answer can make it return non-zero in a shipped script; the tripwire above only reports. The take paths ask it
-# (AG-1.2). The non-AG take path stays in the code as the base for AG-3 and is reachable only by tests, which shadow
-# this function to return 1 after sourcing a daemon (the seam idiom: tests/lib/harness.sh `harness_ag_off`).
+# (AG-1.2). The non-AG take path stays in the code as the retained path and is reachable only by tests, which shadow
+# this function to return 1 (and the standby's _ag_take_allowed to return 0) after sourcing a daemon (the seam idiom: tests/lib/harness.sh `harness_ag_off`).
+# AG-3: the ARMED cold take is decided by the standby's _ag_take_allowed (below the block, S only); this predicate still gates the primary's stop and the pre-warm.
 _ag_mode() { return 0; }
 
 # ── slot rates (AG-1.6; G11) ───────────────────────────────────────────────────────────────────────────────────────
@@ -2498,12 +2499,12 @@ _ag_take_withheld() {
         notadmitted|unstaked) _vat="${_vat} - the holder's silence is likely a VAT lapse, not a death" ;;
     esac
     _vh=$(_vh_class "$_ep")
-    _t="${_why} - every gate FO has said the take would happen now, and in Alpenglow mode FO never takes the staked identity automatically: nothing was done."
+    _t="${_why} - every gate FO has said the take would happen now, and ${_ag_lead:-in Alpenglow mode FO never takes the staked identity automatically: nothing was done.}"
     _t="${_t} Holder silent ${_since}."
     _t="${_t} This node: finalized slot ${_slot}; getHealth ${_health}; validator ${_ver}."
     _t="${_t} VAT admission: ${_vat}."
     _t="${_t} Vote history ${LEDGER_PATH:-<LEDGER_PATH empty>}/vote_history-${STAKED_PUBKEY:-<staked pubkey unknown>}.bin: ${_vh}."
-    _t="${_t} Operator path: warm swap - demote the old holder first, then move the vote history (docs/SAFETY.md, Alpenglow). A cold take is an operator decision; FO never makes it."
+    _t="${_t} Operator path: warm swap - demote the old holder first, then move the vote history (docs/SAFETY.md, Alpenglow). ${_ag_opnote:-A cold take is an operator decision; FO never makes it.}"
     if [[ "$_role" == "primary" ]]; then
         alert "$_t" "$STAKED_PUBKEY" "RECOVERY WITHHELD — Alpenglow mode 🚨"
     else

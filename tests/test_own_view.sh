@@ -117,6 +117,7 @@ $1 == "C" { n = split($6, W, "\034")
         if (bpq(W[k]) != "set-identity") continue
         f = $2; cmd[f]++; seen[f] = 1; rr = bpr(W[k]); rcmd[f] += gsub(/set-identity/, "&", rr)
         j = k + 1; if (j < n && bpq(W[j]) == "--config" && bpr(W[j + 1]) == "\"$CONFIG_TOML\"") j += 2
+        if ($2 == "take_staked_identity" && j < n && bpr(W[j]) == "\"$_AG_COLD_FLAG\"") j += 1   # AG-3.3: the armed cold take names its flag (one variable, one definition) right before the key
         arg = (j <= n) ? bpr(W[j]) : "(none)"
         want = "\"$UNSTAKED_KEYPAIR\""; if (f == "switch_to_staked" || f == "take_staked_identity") want = "\"$STAKED_KEYPAIR\""
         if (arg != want) badarg = badarg f "(arg " arg ", want " want ") "
@@ -140,10 +141,10 @@ ev_mut() {
         !done && $0 !~ /^[[:space:]]*#/ && index($0, a) { if (w == "before") printf "%s", blk; print; if (w == "after") printf "%s", blk; done = 1; next }
         { print } END { exit(done ? 0 : 1) }' "$1" > "$4"
 }
-ST_CENSUS="solana-primary-failover.sh[_selffence_hard_stop:0/3 switch_to_staked:2/3 switch_to_unstaked:2/3 ]solana-standby-failover.sh[give_back_identity:2/3 take_staked_identity:2/4 ]deploy-failover.sh[(top):0/2 ]failover-arm.sh[_retire_legacy_monitors:0/2 ]failover-fence.sh[_admin_remove_all:0/1 _admin_set_identity_unstaked:1/2 _sustained_identity_repoll:0/1 main:0/2 ]"
+ST_CENSUS="solana-primary-failover.sh[_selffence_hard_stop:0/3 switch_to_staked:2/3 switch_to_unstaked:2/3 ]solana-standby-failover.sh[give_back_identity:2/3 take_staked_identity:3/9 ]deploy-failover.sh[(top):0/2 ]failover-arm.sh[_retire_legacy_monitors:0/2 ]failover-fence.sh[_admin_remove_all:0/1 _admin_set_identity_unstaked:1/2 _sustained_identity_repoll:0/1 main:0/2 ]"
 take_sites=$(setid_census $SHIPPED); arg_bad=$(setid_badargs $SHIPPED); st_xc=$(setid_xcheck $SHIPPED)
 if [[ "$take_sites" == "$ST_CENSUS" && -z "$arg_bad" && -z "$st_xc" ]]; then
-    ok "(0a) N-is-all, on bash's own parse of the eight shipped scripts: EVERY set-identity token is pinned by file, function and kind — a COMMAND word (its quotes and backslashes removed) or TEXT inside a string or a here-document (the primary wizard's two are its env template's comments) — the only COMMAND tokens are switch_to_staked's two (agave + fdctl — primary) and take_staked_identity's two (standby) to \"\$STAKED_KEYPAIR\", and switch_to_unstaked's, give_back_identity's and the fence's to \"\$UNSTAKED_KEYPAIR\"; nothing in install.sh / the deploy wizards / the arm can set an identity; bash sourcing the daemons' seams, the arm and the fence scripts leaves exactly the functions the parse lists, each with its printed body"
+    ok "(0a) N-is-all, on bash's own parse of the eight shipped scripts: EVERY set-identity token is pinned by file, function and kind — a COMMAND word (its quotes and backslashes removed) or TEXT inside a string or a here-document (the primary wizard's two are its env template's comments) — the only COMMAND tokens are switch_to_staked's two (agave + fdctl — primary) and take_staked_identity's THREE (standby: fdctl, the armed cold take's agave call - its one flag variable before the key - and the retained agave call) to \"\$STAKED_KEYPAIR\", and switch_to_unstaked's, give_back_identity's and the fence's to \"\$UNSTAKED_KEYPAIR\"; nothing in install.sh / the deploy wizards / the arm can set an identity; bash sourcing the daemons' seams, the arm and the fence scripts leaves exactly the functions the parse lists, each with its printed body"
 else
     bad "(0a) take-path census moved: census=[$take_sites] args:[$arg_bad] parse-vs-exec:[$st_xc]"
 fi
@@ -1098,8 +1099,9 @@ fi
 # the LAST set-identity command (the agave one; the first is frankendancer's) — must be exactly the permitted
 # statements below, in order (an allowlist: layer 1). The FALL-THROUGH — the segment minus every RETURN-BRANCH
 # (an if…fi without else/elif, or a && { … } block, whose last statement is a return: the DRY_RUN report, the
-# keypair-missing page and — AG-1.2 — the Alpenglow stop (`if _ag_mode; then … _ag_take_withheld … return 1; fi`, whose reads and
-# page are outside the rule's subject: it returns before any mutation) never reach set-identity) — and every daemon function it calls, transitively, hold NO
+# keypair-missing page, the Alpenglow stop — AG-1.2 — (`if _ag_mode; then … _ag_take_withheld … return 1; fi` on the primary, `if ! _ag_take_allowed; then …` on the standby since AG-3.1:
+# their reads, the armed predicate's ONE readiness read included (censused in tests/test_ag_armed_take.sh (2f)), and their page are outside the rule's subject: they return before any
+# mutation) and the armed voter-add failure page (AG-3.3: `authorized-voter add` failed or timed out, return 1 before any set-identity) never reach set-identity) — and every daemon function it calls, transitively, hold NO
 # network primitive (net_scan) except the notify socket's socat (_sd_notify: the watchdog pet, a local datagram)
 # (layer 2); _own_view_veto — the one admitted read — is pinned by (3c). The A8 rule these enforce:
 # no network, no alerts; one bounded local veto read allowed.
@@ -1150,14 +1152,21 @@ A8_NET_OK='3 NET _sd_notify socat;'   # the notify socket: 'command -v socat' + 
 SEG_S='
 _own_view_veto || return 1
 local reason="$1"
-if _ag_mode; then
+if ! _ag_take_allowed; then
 LAST_TAKEOVER_TIME=$(mono_now); save_state
 _ag_take_withheld "standby" "$reason"
 return 1
 fi
+local _ag_vh_before=""
+_ag_mode && _ag_vh_before=$(_vh_class)
 if [[ "$DRY_RUN" == "true" ]]; then
+if _ag_mode; then
+log_warn "[DRY RUN] Would TAKE staked (Alpenglow cold take) — $reason"
+alert "${reason} - $(_ag_cold_take_fields "$_ag_vh_before")" "$STAKED_PUBKEY" "[DRY RUN] WOULD TAKE STAKED (Alpenglow cold take)"
+else
 log_warn "[DRY RUN] Would TAKE staked — $reason"
 alert "$reason" "$STAKED_PUBKEY" "[DRY RUN] WOULD TAKE STAKED"
+fi
 LAST_TAKEOVER_TIME=$(mono_now); save_state
 window_reset
 return 0
@@ -1173,7 +1182,25 @@ _rc=${PIPESTATUS[0]}
 [[ $_rc -eq 124 || $_rc -eq 137 ]] && { take_wedged=1; log_warn "[take] fdctl set-identity timed out (${SETIDENTITY_TIMEOUT}s) — admin socket wedged; the re-read below decides what applied (fail toward NOT taking)"; }
 _watchdog_pet
 else
-local out
+local out add_detail
+if _ag_mode; then
+out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" authorized-voter add "$STAKED_KEYPAIR" 2>&1); _rc=$?
+[[ -n "$out" ]] && log_info "add-voter: $out"
+_watchdog_pet
+if [[ $_rc -eq 124 || $_rc -eq 137 || ( $_rc -ne 0 && "$out" != *"already present"* ) ]]; then
+add_detail="timed out (${SETIDENTITY_TIMEOUT}s)"; [[ $_rc -ne 124 && $_rc -ne 137 ]] && add_detail="${out:-rc ${_rc}}"
+log_error "[take] authorized-voter add failed (${add_detail}) — set-identity NOT attempted (voter first: a wedged or refusing socket must not be followed by an identity change)"
+LAST_TAKEOVER_TIME=$(mono_now); save_state
+alert "authorized-voter add failed (${add_detail}) - set-identity was NOT attempted: ${reason}" "${CURRENT_IDENTITY:-unknown}" "TAKEOVER BLOCKED — authorized-voter add failed"
+return 1
+fi
+[[ $_rc -ne 0 ]] && log_info "[take] authorized-voter add: the voter is already loaded - continuing to set-identity"
+_vh_log_around_take before "$_ag_vh_before"
+out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" set-identity "$_AG_COLD_FLAG" "$STAKED_KEYPAIR" 2>&1); _rc=$?
+[[ -n "$out" ]] && log_info "set-identity: $out"
+[[ $_rc -eq 124 || $_rc -eq 137 ]] && { take_wedged=1; log_warn "[take] set-identity timed out (${SETIDENTITY_TIMEOUT}s) — admin socket wedged; the re-read below decides what applied (fail toward NOT taking)"; }
+_watchdog_pet
+else
 out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" set-identity "$STAKED_KEYPAIR" 2>&1); _rc=$?
 '
 SEG_P='

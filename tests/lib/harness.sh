@@ -177,12 +177,14 @@ load_seam() {           # cut + source + automatic re-application of installed s
 # AG mode is unconditional in the shipped daemons (_ag_mode returns 0) and the take paths stop on it: a page, never a take. A suite that tests the
 # RETAINED take path (the gates, the veto, the DRY_RUN branch, the keypair test, the set-identity calls, the cooldown) calls this ONCE per world, AFTER
 # the daemon's functions are defined, so its assertions keep meaning what they say - without it every "no take" would pass because AG mode withheld
-# the take (green for the wrong reason). Registered: load_seam re-applies it after every source. HARNESS_AG_REAL=1 skips it (the AG suite's worlds
+# the take (green for the wrong reason). It shadows BOTH predicates the stops ask: _ag_mode (-> 1, the primary's stop and the pre-warm) and, since AG-3, _ag_take_allowed (-> 0, the standby's stop). Registered: load_seam re-applies it after every source. HARNESS_AG_REAL=1 skips it (the AG suite's worlds
 # run the REAL _ag_mode). AG_REACH_LOG=<file> appends "<suite> <caller>" for every call (the dynamic census of the worlds that reach an AG check).
 harness_ag_off() {
     _harness_register harness_ag_off
     [[ "${HARNESS_AG_REAL:-0}" == "1" ]] && return 0
     _ag_mode() { [[ -n "${AG_REACH_LOG:-}" ]] && printf 'SHADOW %s %s\n' "${0##*/}" "${FUNCNAME[1]:-?}" >> "$AG_REACH_LOG"; return 1; }
+    # AG-3: the STANDBY's take site asks _ag_take_allowed (not _ag_mode): the retained path = the take is allowed, and the armed readiness read (a LOCAL getSlot) never happens in these worlds
+    _ag_take_allowed() { [[ -n "${AG_REACH_LOG:-}" ]] && printf 'SHADOW %s %s\n' "${0##*/}" "${FUNCNAME[1]:-?}" >> "$AG_REACH_LOG"; return 0; }
     return 0
 }
 

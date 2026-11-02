@@ -188,7 +188,8 @@ order_of() {   # order_of <manual> -> "<staked set-identity lines NOT directly p
     awk '/agave-validator .*set-identity .*mainnet-validator-keypair\.json/ { if (prev !~ /authorized-voter add .*mainnet-validator-keypair\.json/) bad++; n++ } { if ($0 !~ /^[[:space:]]*$/) prev=$0 } END { printf "%d/%d", bad+0, n+0 }' "$1"
 }
 [[ "$(order_of "$MANUAL")" == "0/3" ]] && ok "(6c) the manual's three staked set-identity lines (Phase 3, the emergency step 2, the switch-back) are each immediately preceded by the staked authorized-voter add: voter first, then identity" || bad "(6c) voter/identity order in the manual: $(order_of "$MANUAL") (want 0/3)"
-[[ "$(cnt 'do-not-require' "$MANUAL" "$SAFETY" "$README" "$STANDBY" "$PRIMARY")" == "0" ]] && ok "(6d) no operator text names the flag that switches the vote-history requirement off (the whole-tree census is test_ag_take (8e) and the facts job's step)" || bad "(6d) a text names the do-not-require flag"
+# AG-3.3: the flag has ONE place in the shipped code (the standby's armed cold take) and is explained in docs/SAFETY.md only, in the "Armed cold take" subsection; the manual, the README and the primary never name it
+[[ "$(cnt 'do-not-require' "$MANUAL" "$README" "$PRIMARY")" == "0" && "$(cnt 'do-not-require' "$STANDBY")" == "1" ]] && ok "(6d) the flag that switches the vote-history requirement off is named in the standby once (the armed cold take's one definition) and in neither the manual, the README nor the primary (the whole-tree census is test_ag_take (8e) and the facts job's step)" || bad "(6d) the do-not-require flag census: manual+README+primary=$(cnt 'do-not-require' "$MANUAL" "$README" "$PRIMARY") standby=$(cnt 'do-not-require' "$STANDBY")"
 
 # ── (7) the promises ───────────────────────────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (7) every text that promised an automatic takeover says what Alpenglow mode does, or is marked retained path ───"
