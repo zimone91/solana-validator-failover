@@ -185,6 +185,9 @@ harness_ag_off() {
     _ag_mode() { [[ -n "${AG_REACH_LOG:-}" ]] && printf 'SHADOW %s %s\n' "${0##*/}" "${FUNCNAME[1]:-?}" >> "$AG_REACH_LOG"; return 1; }
     # AG-3: the STANDBY's take site asks _ag_take_allowed (not _ag_mode): the retained path = the take is allowed, and the armed readiness read (a LOCAL getSlot) never happens in these worlds
     _ag_take_allowed() { [[ -n "${AG_REACH_LOG:-}" ]] && printf 'SHADOW %s %s\n' "${0##*/}" "${FUNCNAME[1]:-?}" >> "$AG_REACH_LOG"; return 0; }
+    # B7.4: the primary's re-take stop and the standby's pre-warm stop ask positive predicates too (both 'never' as shipped): the retained path = allowed
+    _ag_primary_retake_allowed() { [[ -n "${AG_REACH_LOG:-}" ]] && printf 'SHADOW %s %s\n' "${0##*/}" "${FUNCNAME[1]:-?}" >> "$AG_REACH_LOG"; return 0; }
+    _ag_prewarm_allowed() { [[ -n "${AG_REACH_LOG:-}" ]] && printf 'SHADOW %s %s\n' "${0##*/}" "${FUNCNAME[1]:-?}" >> "$AG_REACH_LOG"; return 0; }
     return 0
 }
 

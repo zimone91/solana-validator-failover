@@ -524,8 +524,8 @@ first_line() { grep -n -m1 -E -e "$2" <<< "$1" | cut -d: -f1; }              # f
 for scr in "$STANDBY" "$PRIMARY"; do
     n=$(role_of "$scr"); fn=take_staked_identity; [[ "$n" == "primary" ]] && fn=switch_to_staked
     body=$(fn_code "$scr" "$fn")
-    # AG-3.1: the standby's stop asks the fail-closed predicate (`if ! _ag_take_allowed` - an undefined predicate withholds); the primary's stays `if _ag_mode`
-    gre='^[[:space:]]*if _ag_mode; then$'; gtxt="if _ag_mode; then"; gwant='if_ag_mode;then'
+    # AG-3.1: the standby's stop asks the fail-closed predicate (`if ! _ag_take_allowed` - an undefined predicate withholds); B7.4: so does the primary's (`if ! _ag_primary_retake_allowed`)
+    gre='^[[:space:]]*if ! _ag_primary_retake_allowed; then$'; gtxt="if ! _ag_primary_retake_allowed; then"; gwant='if!_ag_primary_retake_allowed;then'
     [[ "$n" == "standby" ]] && { gre='^[[:space:]]*if ! _ag_take_allowed; then$'; gtxt="if ! _ag_take_allowed; then"; gwant='if!_ag_take_allowed;then'; }
     lv=$(first_line "$body" '^[[:space:]]*_own_view_veto \|\| return 1$'); la=$(first_line "$body" "$gre")
     ld=$(first_line "$body" '"\$DRY_RUN" == "true"'); lk=$(first_line "$body" '-s "\$STAKED_KEYPAIR"'); ls=$(first_line "$body" '(timeout|fdctl|agave-validator).*set-identity')
@@ -540,7 +540,7 @@ for scr in "$STANDBY" "$PRIMARY"; do
     fi
 done
 pbody=$(fn_code "$STANDBY" _prewarm_voter_add); pfirst=$(printf '%s\n' "$pbody" | sed -n '2p')
-[[ "$pfirst" == "    if _ag_mode; then" ]] && ok "(8b) _prewarm_voter_add: the first statement is 'if _ag_mode; then' - above the PREWARM_VOTER_ADD gate and every admin call" || bad "(8b) _prewarm_voter_add first statement: [$pfirst]"
+[[ "$pfirst" == "    if ! _ag_prewarm_allowed; then" ]] && ok "(8b) _prewarm_voter_add: the first statement is 'if ! _ag_prewarm_allowed; then' (B7.4) - above the PREWARM_VOTER_ADD gate and every admin call" || bad "(8b) _prewarm_voter_add first statement: [$pfirst]"
 mk_ok=1; mk_why=""
 for scr in "$STANDBY" "$PRIMARY"; do
     w=$(grep -nE '^[[:space:]]*_ag_page_ts=' "$scr" | grep -v ':[[:space:]]*#' | sed 's/:.*//' | wc -l | tr -d ' ')
@@ -576,7 +576,7 @@ NOT_REACHED="test_backup_fence.sh test_primary_recovery_liveness.sh test_require
 sh_ok=1; sh_why=""; sh_rows=""; sh_n=0
 for f in "$HARNESS_DIR"/tests/test_*.sh; do
     b=$(basename "$f")
-    [[ "$b" == "test_ag_take.sh" || "$b" == "test_ag_armed_take.sh" ]] && continue   # the two suites whose worlds run the REAL predicates (AG-3: the armed take's suite joins)
+    [[ "$b" == "test_ag_take.sh" || "$b" == "test_ag_armed_take.sh" || "$b" == "test_block7_rc1.sh" ]] && continue   # the suites whose worlds run the REAL predicates (AG-3: the armed take's suite joins; B7.4: so does Block 7's, which drives the two AG stops with every gate before them mocked open)
     mentions=$(grep -cE 'attempt_takeover|attempt_safe_recovery|take_staked_identity|switch_to_staked|_prewarm_voter_add' "$f")
     shadows=$(grep -c 'harness_ag_off' "$f")
     pva=$(grep -c 'PREWARM_VOTER_ADD' "$f")
@@ -608,9 +608,9 @@ mut_world() {   # mut_world <label> <standby|primary> <sed expr> [knob …] -> e
 }
 c=$(mut_world sb-stop standby '/^take_staked_identity() {/,/^}/ s/^    if ! _ag_take_allowed; then$/    if false; then/') && [[ "$(evn "$c" 'ADMIN agave-validator .*set-identity')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
     && ctl_rows="$ctl_rows sb-stop:red" || { ctl_ok=0; ctl_rows="$ctl_rows sb-stop:$(mw_label)"; }
-c=$(mut_world pr-stop primary '/^switch_to_staked() {/,/^}/ s/^    if _ag_mode; then$/    if false; then/') && [[ "$(evn "$c" 'ADMIN agave-validator .*set-identity')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
+c=$(mut_world pr-stop primary '/^switch_to_staked() {/,/^}/ s/^    if ! _ag_primary_retake_allowed; then$/    if false; then/') && [[ "$(evn "$c" 'ADMIN agave-validator .*set-identity')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
     && ctl_rows="$ctl_rows pr-stop:red" || { ctl_ok=0; ctl_rows="$ctl_rows pr-stop:$(mw_label)"; }
-c=$(mut_world prewarm standby '/^_prewarm_voter_add() {/,/^}/ s/^    if _ag_mode; then$/    if false; then/' PREWARM_VOTER_ADD=true HZ=$(( DELAY - 10 ))) && [[ "$(evn "$c" 'ADMIN agave-validator .*authorized-voter add')" == "1" ]] \
+c=$(mut_world prewarm standby '/^_prewarm_voter_add() {/,/^}/ s/^    if ! _ag_prewarm_allowed; then$/    if false; then/' PREWARM_VOTER_ADD=true HZ=$(( DELAY - 10 ))) && [[ "$(evn "$c" 'ADMIN agave-validator .*authorized-voter add')" == "1" ]] \
     && ctl_rows="$ctl_rows prewarm-stop:red" || { ctl_ok=0; ctl_rows="$ctl_rows prewarm-stop:$(mw_label)"; }
 c=$(mut_world marker standby 's/^    _ag_page_ts=0   # v0\.7 (AG-1\.2).*$/    :/' HZ=400 CLOSE_AT="130") && [[ "$(agp "$c")" == "1" ]] \
     && ctl_rows="$ctl_rows marker-never-cleared:red" || { ctl_ok=0; ctl_rows="$ctl_rows marker-never-cleared:$(mw_label)"; }
@@ -620,7 +620,7 @@ c=$(mut_world after-dry standby '/^take_staked_identity() {/,/^}/ s/^    if ! _a
     && ctl_rows="$ctl_rows stop-below-DRY_RUN:red" || { ctl_ok=0; ctl_rows="$ctl_rows stop-below-DRY_RUN:$(mw_label)"; }
 c=$(mut_world after-key standby '/^take_staked_identity() {/,/^}/ s/^    if ! _ag_take_allowed; then$/    if ! _ag_take_allowed \&\& [[ -s "$STAKED_KEYPAIR" ]]; then/' KP=empty) && [[ "$(evn "$c" 'PAGE .*TAKEOVER BLOCKED')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
     && ctl_rows="$ctl_rows stop-below-keypair:red" || { ctl_ok=0; ctl_rows="$ctl_rows stop-below-keypair:$(mw_label)"; }
-c=$(mut_world pr-after-dry primary '/^switch_to_staked() {/,/^}/ s/^    if _ag_mode; then$/    if _ag_mode \&\& [[ "$DRY_RUN" != "true" ]]; then/' DRY_RUN=true) && [[ "$(evn "$c" 'PAGE .*WOULD RECOVER')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
+c=$(mut_world pr-after-dry primary '/^switch_to_staked() {/,/^}/ s/^    if ! _ag_primary_retake_allowed; then$/    if ! _ag_primary_retake_allowed \&\& [[ "$DRY_RUN" != "true" ]]; then/' DRY_RUN=true) && [[ "$(evn "$c" 'PAGE .*WOULD RECOVER')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
     && ctl_rows="$ctl_rows primary-stop-below-DRY_RUN:red" || { ctl_ok=0; ctl_rows="$ctl_rows primary-stop-below-DRY_RUN:$(mw_label)"; }
 c=$(mut_world nostamp standby '/^take_staked_identity() {/,/^}/ s/^        LAST_TAKEOVER_TIME=\$(mono_now); save_state$/        :/' HZ=900) && [[ "$(dp "$c")" -ge 30 ]] \
     && ctl_rows="$ctl_rows no-pacing-stamp:red" || { ctl_ok=0; ctl_rows="$ctl_rows no-pacing-stamp:$(mw_label)"; }
