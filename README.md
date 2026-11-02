@@ -2,11 +2,15 @@
 
 [![ci](https://github.com/zimone91/solana-validator-failover/actions/workflows/ci.yml/badge.svg)](https://github.com/zimone91/solana-validator-failover/actions/workflows/ci.yml)
 
-Automatic staked-identity failover for Solana validators. If your staked node dies or goes silent, a
-spare picks the identity up via `agave-validator set-identity` — no restart, no manual steps, ~60s.
-The ~60s holds while the external RPCs are observable — when they are not, the takeover holds for as
-long as the blindness lasts (by design: unobservable time counts as life) and the operator is paged
-(`TAKEOVER_STARVATION_ALERT_SECS`, default 300s).
+Staked-identity failover **monitor** for Solana validators. **Alpenglow mode (always on in v0.7): FO never takes the
+staked identity by itself.** If your staked node dies or goes silent, the holder fences itself (drops to its own unstaked
+identity within ~30s when it can) and the spare — after the same gates as ever: the delay, the external confirmation, the
+vote-liveness fence, its own node's view — **pages you** (`TAKEOVER WITHHELD — Alpenglow mode`) with what you need to do the
+*warm swap* yourself: demote the old holder, move the vote-history file, then `authorized-voter add` and `set-identity` on the new
+one ([docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07)). The automatic take (`set-identity` on the spare, ~60s) is the *retained path*: kept
+in the code as the base for a later release, unreachable in v0.7, and marked as such wherever this README describes it. When the
+external RPCs are not observable the gates hold for as long as the blindness lasts (by design: unobservable time counts as life)
+and the operator is paged (`TAKEOVER_STARVATION_ALERT_SECS`, default 300s).
 
 Built safety-first: the failing node **steps down before** the spare steps up, and every ambiguous
 state resolves toward *nobody holds the stake* rather than two nodes holding it.
@@ -17,7 +21,8 @@ state resolves toward *nobody holds the stake* rather than two nodes holding it.
 
 The failing node fences **itself** (dead RPC, frozen slot, or its own votes not landing) and drops to an
 unstaked identity within ~30s. Only then, after a 60s floor plus an on-chain check that the vote account
-really stopped, does the spare take over. Live-tested end to end on testnet: [test evidence](docs/SAFETY.md#what-has-been-tested).
+really stopped, does the spare page you that the identity is free to be moved (v0.7: it never moves it itself; the take it used to make
+is the retained path). Live-tested end to end on testnet (the retained path): [test evidence](docs/SAFETY.md#what-has-been-tested).
 
 The honest limit: a node that has gone **completely silent** cannot be proven incapable of voting — it
 might be wedged, or partitioned and still signing where you can't see it. Detecting that from the
@@ -30,8 +35,8 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
 ## What it does
 
 - Watches the local validator. If the PRIMARY goes delinquent or isolated, it **self-fences** to its
-  own unstaked identity within ~30s; a STANDBY then **takes** the staked identity after a cross-node
-  safety delay.
+  own unstaked identity within ~30s; a STANDBY then **pages** you after a cross-node safety delay that the staked identity is
+  free to be moved — in Alpenglow mode (v0.7) it never takes it itself.
 - Detects the failure modes that matter: dead local RPC, frozen slot, **egress-only partition** (own
   votes not landing while the node still looks healthy), and on-chain delinquency.
 - **Fails safe by design:** ambiguity resolves toward *unstaked / stop / page the operator*, not toward
@@ -41,6 +46,10 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
 
 > **Prime directive: never let two nodes hold and vote the same staked identity (double-sign).**
 > Everything below serves that goal; the honest limits of the current implementation follow it.
+>
+> **v0.7, Alpenglow mode:** the take-side bullets below describe the *retained* take path — what the same gates guard — which v0.7 never runs:
+> a take every gate approves is **withheld and paged**, once per episode ([docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07)). They stay because
+> those gates decide *when the page is sent*, and the code is the base for a later release.
 
 - The PRIMARY **relinquishes first** (self-fences to unstaked) before any spare can take.
 - The STANDBY takes only after `TAKEOVER_DELAY` (default **60s** = the PRIMARY's ~30s self-fence + a 30s
@@ -106,13 +115,14 @@ rather than proof; v0.7 adds a watchdog so a node that can no longer confirm it 
 stops itself. Detail: [docs/SAFETY.md](docs/SAFETY.md) · [docs/SPLIT-BRAIN-RESIDUAL.md](docs/SPLIT-BRAIN-RESIDUAL.md).
 
 ```
-PRIMARY ──self-fence ~30s──►  STANDBY ──takes at 60s──►  BACKUP
-holds staked, steps down       takes staked              (120s, only if STANDBY is also down)
+PRIMARY ──self-fence ~30s──►  STANDBY ──pages at 60s──►  BACKUP
+holds staked, steps down       pages: the swap is yours  (pages at 120s, only if STANDBY is also down)
+                               (retained path: took the staked identity — not run in v0.7)
 ```
 
-A spare's take also waits for its own-view reads (milliseconds on a healthy node; measured +9 to +15 s
+A spare's page (the take that Alpenglow mode withholds) also waits for its own-view reads (milliseconds on a healthy node; measured +9 to +15 s
 when every local read takes 1 s with prompt tiers, up to +40 s in the measured cells with a slow tier as
-well; a spare whose local reads take 2 s or more never takes, and pages — so does one whose `TIER2` fails
+well; a spare whose local reads take 2 s or more never sends it, and pages the veto instead — so does one whose `TIER2` fails
 slowly (times out, or answers an error late) while `TIER3` is slow, the starvation above) after the delays
 shown.
 Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
@@ -127,7 +137,7 @@ Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 ```bash
 sh -c "$(curl -sSfL https://zim.one/failover/v0.6.10)"
 ```
-Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, verifies them (against the version's `SHA256SUMS` manifest, fail-closed, from the first manifest-bearing release on — `v0.6.9`/`v0.6.10` predate the manifest and are syntax-checked only, which the installer says aloud; no v0.6.x tag is signed), and runs the installer (interactive; starts in DRY_RUN). This tool hot-swaps your staked identity — read `install.sh` before running it. The paranoid path (recommended for a root-level tool):
+Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, verifies them (against the version's `SHA256SUMS` manifest, fail-closed, from the first manifest-bearing release on — `v0.6.9`/`v0.6.10` predate the manifest and are syntax-checked only, which the installer says aloud; no v0.6.x tag is signed), and runs the installer (interactive; starts in DRY_RUN). This tool watches a hot-swap pair and, on its retained path, hot-swaps your staked identity (v0.7 withholds that and pages) — read `install.sh` before running it. The paranoid path (recommended for a root-level tool):
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.6.10/install.sh
@@ -172,7 +182,7 @@ properties every `FENCE_ROT_CHECK_SECS` (default 60 s): drift that verifiably ki
 fence) pages CRITICAL immediately with the exact fix command, and only if it persists for
 `FENCE_ROT_GRACE` (default 1800 s, floor max(600, `ALERT_THROTTLE`)) while the node still
 verifiably holds the staked identity does the holder gracefully demote itself to unstaked — the
-spare then takes over on its timer path (the v0.6.x semantics, with or without G2; once Block 6.4 wires
+spare then sees a silent holder and pages (v0.7: it never takes; the retained path took over on its timer path, the v0.6.x semantics, with or without G2; once Block 6.4 wires
 the relinquish-proof gate, via the verified-demote proof). Never instant, never on a guess: a failing
 `systemctl` is treated as cannot-verify (page after a blind streak, no demote clock), and both
 knobs are daemon defaults with validation — no env entry needed. Un-armed hosts (everything
@@ -204,8 +214,8 @@ process group, and fails the run, named. Note the limit: these are function-leve
 - **Not for unattended mainnet yet** — see “How safe is it — honestly” above. Until the v0.7 fence
   lands, run `DRY_RUN`, testnet, or keep a human in the loop to fence the old node before promotion.
 - **Test on testnet first** — DRY_RUN soak, then a live failover on a testnet stack.
-- This tool **moves your staked identity between machines.** Never aim `STAKED_KEYPAIR` at an identity
-  you can't afford to have hot-swapped.
+- In v0.7 this tool never moves your staked identity between machines **by itself** (Alpenglow mode); its retained path did, and a later
+  release may. Never aim `STAKED_KEYPAIR` at an identity you can't afford to have hot-swapped.
 - **Each node needs its own unique unstaked keypair** — a shared unstaked pubkey breaks the fence.
 - **Point `VOTE_PUBKEY` at *your* vote account** — the one whose `nodePubkey` is your staked identity.
   The release does not yet verify that binding; a wrong vote account silently misleads the fence.
@@ -215,8 +225,8 @@ process group, and fails the run, named. Note the limit: these are function-leve
 ## Roadmap
 
 - **v0.7** — the fence: a node that can no longer confirm it owns the identity is stopped by a
-  watchdog, and the spare takes over only on positive proof the old holder was stopped or stepped
-  down — never on inference alone. Ships alongside evidence fixes (vote account ↔ identity binding,
+  watchdog, and the spare pages (it never takes, in Alpenglow mode) on the same gates; the retained take path needs positive proof the old holder was stopped or stepped
+  down — never inference alone. Ships alongside evidence fixes (vote account ↔ identity binding,
   atomic state, escalation on an unverified demote), a simpler installer, a status dashboard, and a
   chaos/E2E gate on real nodes.
 - **v0.8** — optional external fence providers (cloud API / IPMI / PDU) on the same interface, for

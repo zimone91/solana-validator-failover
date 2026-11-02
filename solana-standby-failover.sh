@@ -376,7 +376,7 @@ _DEFAULT_STATE_FILE="$STATE_FILE"   # v0.6.9 (B5): the shipped default, captured
 STATE_MAX_AGE_SECS=900
 # v0.6.9 (H3): if the persisted state says we were STAKED (promoted holder) and the startup "waiting
 # for local validator" loop exceeds this, page 🚨 once (the daemon cannot demote an unreachable
-# validator; a spare may take over — intervene).
+# validator; in Alpenglow mode no spare takes over by itself - the identity stays here until an operator moves it — intervene).
 STARTUP_STAKED_UNREACHABLE_ALERT_SECS=60
 
 # ========================= LOAD EXTERNAL CONFIG ===============================
@@ -1087,7 +1087,7 @@ tier1_check_local_health() {
     _watchdog_pet   # §5 per-op pet (Block 5.2/FF-B1 N-audit): bounded op completed (rc captured above); fires on the unreachable early-return too — no-op outside the armed unit
 
     if [[ $_t1h_rc -ne 0 || -z "$health_result" ]]; then
-        log_warn "[TIER1] Local RPC unreachable — not ready to take over"
+        log_warn "[TIER1] Local RPC unreachable — Tier-1 not ready (no take decision is made while this holds)"
         return 1
     fi
 
@@ -1115,7 +1115,7 @@ tier1_check_local_health() {
     # v0.7 (AG-1.5): Unknown (error -32005, numSlotsBehind null) is NOT READY like every other non-ok answer - said by its name
     # (Alpenglow: votor has seen no finalized slot yet, rpc_health.rs:94-103). The decision is the old one: return 1.
     if [[ "$(_health_class "$health_result")" == "unknown" ]]; then
-        log_warn "[TIER1] getHealth answers UNKNOWN (Alpenglow: the node has seen no finalized slot yet) — not ready to take over"
+        log_warn "[TIER1] getHealth answers UNKNOWN (Alpenglow: the node has seen no finalized slot yet) — Tier-1 not ready (no take decision is made while this holds)"
         return 1
     fi
 
@@ -1304,7 +1304,7 @@ confirm_delinquency_external() {
     # to succeed, the authoritative vote-liveness fence still needs T2/T3 to sample lastVote, so a
     # both-externals-down takeover blocked anyway. The one real emergency local-only takeover is
     # ALLOW_UNFENCED_TAKEOVER=true + VOTE_LIVENESS_VERIFY=false (disables the split-brain fence).
-    log_warn "[CONFIRM] ⚠️ BOTH T2 and T3 unreachable — cannot confirm, holding (emergency local-only takeover = ALLOW_UNFENCED_TAKEOVER=true + VOTE_LIVENESS_VERIFY=false)"
+    log_warn "[CONFIRM] ⚠️ BOTH T2 and T3 unreachable — cannot confirm, holding (the retained path's emergency local-only takeover = ALLOW_UNFENCED_TAKEOVER=true + VOTE_LIVENESS_VERIFY=false; v0.7 withholds every take)"
     return 2
 }
 
@@ -2478,7 +2478,7 @@ _ag_take_withheld() {
         notadmitted|unstaked) _vat="${_vat} - the holder's silence is likely a VAT lapse, not a death" ;;
     esac
     _vh=$(_vh_class "$_ep")
-    _t="${_why} - every gate FO has says the take would happen now, and in Alpenglow mode FO never takes the staked identity automatically: nothing was done."
+    _t="${_why} - every gate FO has said the take would happen now, and in Alpenglow mode FO never takes the staked identity automatically: nothing was done."
     _t="${_t} Holder silent ${_since}."
     _t="${_t} This node: finalized slot ${_slot}; getHealth ${_health}; validator ${_ver}."
     _t="${_t} VAT admission: ${_vat}."
@@ -2822,7 +2822,7 @@ attempt_takeover() {
         fi
     elif [[ "${ALLOW_UNFENCED_TAKEOVER:-false}" == "true" ]]; then
         # Dangerous, explicit operator override (startup also warns). No authoritative fence at all.
-        log_warn "[fence] ⚠️ vote-liveness DISABLED and ALLOW_UNFENCED_TAKEOVER=true — UNFENCED takeover (operator override)"
+        log_warn "[fence] ⚠️ vote-liveness DISABLED and ALLOW_UNFENCED_TAKEOVER=true — UNFENCED takeover (operator override; retained path: v0.7 withholds every take)"
     else
         # Required but disabled and no override → cannot determine → BLOCK (invariant 3). The daemon
         # normally refuses to start in this state (startup_checks); this is the belt-and-suspenders.
@@ -3348,8 +3348,9 @@ take_staked_identity() {
         _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
     else
         local out
-        # v0.6.0: NO --require-tower — STANDBY never has a saved tower for the staked identity
-        # (towers aren't transferred), so --require-tower would block the very first takeover.
+        # v0.6.0: NO --require-tower on a set-identity (a TowerBFT flag; Alpenglow has no tower). This is the retained take path, withheld in AG mode (AG-1.2).
+        # A staked identity moves by the WARM SWAP (docs/SAFETY.md, Alpenglow): the old holder demoted first, the vote-history file's sha256 equal on two
+        # reads, a copy with a sha check, then on the new holder `authorized-voter add` and `set-identity`. A vote-history file is never deleted.
         # agave rebuilds the vote floor from the cluster; split-brain is gated by gossip above.
         out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" set-identity "$STAKED_KEYPAIR" 2>&1); _rc=$?
         [[ -n "$out" ]] && log_info "set-identity: $out"
@@ -4336,7 +4337,7 @@ _proof_startup_check() {
     if [[ "${ALLOW_UNFENCED_TAKEOVER:-false}" == "true" ]]; then
         # the 6.1 half of the lever integration: the every-START scream (the per-take half is
         # the gate's `bypassed` outcome above).
-        alert "ALLOW_UNFENCED_TAKEOVER=true on an ARMED spare — every take will BYPASS the relinquish-proof gate (no proof the holder relinquished; double-sign risk). Unset the lever unless this is a deliberate, temporary override." "${STAKED_PUBKEY:-unknown}" "PROOF GATE BYPASS ARMED 🚨"
+        alert "ALLOW_UNFENCED_TAKEOVER=true on an ARMED spare — every take will BYPASS the relinquish-proof gate (no proof the holder relinquished; double-sign risk) — in Alpenglow mode (v0.7) no take is made at all, so nothing is bypassed today; this is the retained path's lever. Unset the lever unless this is a deliberate, temporary override." "${STAKED_PUBKEY:-unknown}" "PROOF GATE BYPASS ARMED 🚨"
     fi
     _g2_register   # v0.7 (Block 6.2): register the verified-demote provider (armed+spare already gated above; self-gates on PRIMARY_UNSTAKED_PUBKEY + vantage config) BEFORE the posture lines below, so they print the real registry
     _elapsed_register   # v0.7 (Block 6.3): register the watchdog-elapsed provider — ONLY over a token that classifies ok at _derive_proof_floors (silent otherwise: the §2.7 posture below is the loud part) — BEFORE the posture lines, so the PAIRED line prints the measured registry
@@ -6163,7 +6164,7 @@ _fence_rot_check() {
                     # act-then-alert: the demote path performs the safety action FIRST and carries
                     # its own alerting; the reason below IS the demote page's text.
                     _last_rot_demote_try=$_rot_now
-                    _rot_graceful_demote "Fence rot persisted ${FENCE_ROT_GRACE}s while ARMED+STAKED: ${_rot_found}. Graceful demote — the spare takes over via the verified-demote proof; the healthy side continues."
+                    _rot_graceful_demote "Fence rot persisted ${FENCE_ROT_GRACE}s while ARMED+STAKED: ${_rot_found}. Graceful demote — this node no longer holds the staked identity; in Alpenglow mode no spare takes it by itself, so an operator moves it (warm swap, docs/SAFETY.md)."
                 elif [[ -n "$UNSTAKED_PUBKEY" && "$_rot_id" == "$UNSTAKED_PUBKEY" ]]; then
                     if [[ ${_rot_unstaked_noted:-0} -eq 0 ]]; then
                         _rot_unstaked_noted=1
@@ -7040,7 +7041,7 @@ startup_checks() {
             startup_id_pub=$("$SOLANA_PATH/solana-keygen" pubkey "$startup_id_path" 2>/dev/null) || true
             if [[ -n "$startup_id_pub" && "$startup_id_pub" == "$STAKED_PUBKEY" ]]; then
                 log_error "Validator startup --identity resolves to the STAKED key — a restart boots this node VOTING (double-sign-on-restart risk)"
-                alert "Validator startup --identity is the STAKED key — a solana.service restart boots this node VOTING even while demoted (double-sign-on-restart). Fix the startup --identity to the unstaked key (Anza identity.json symlink recommended)." "$STAKED_PUBKEY" "STAKED STARTUP IDENTITY 🚨"
+                alert "Validator startup --identity is the STAKED key — a solana.service restart boots this node VOTING even while demoted (double-sign-on-restart). Fix it: the validator's startup --identity is this node's own UNSTAKED keypair, never re-pointed: every restart comes up unstaked." "$STAKED_PUBKEY" "STAKED STARTUP IDENTITY 🚨"
             fi
         fi
     fi
@@ -7071,9 +7072,9 @@ startup_checks() {
     # takeover with only a warning" hole. Mirrors the F4 auto-reject pattern (fail at startup, loud).
     if [[ "$VOTE_LIVENESS_VERIFY" != "true" ]]; then
         if [[ "${ALLOW_UNFENCED_TAKEOVER:-false}" == "true" ]]; then
-            log_warn "⚠️  ⚠️  ⚠️  VOTE_LIVENESS_VERIFY=false AND ALLOW_UNFENCED_TAKEOVER=true — NO split-brain fence; takeover is UNFENCED (double-sign risk)  ⚠️  ⚠️  ⚠️"
+            log_warn "⚠️  ⚠️  ⚠️  VOTE_LIVENESS_VERIFY=false AND ALLOW_UNFENCED_TAKEOVER=true — NO split-brain fence; takeover is UNFENCED (double-sign risk; retained path: v0.7 withholds every take)  ⚠️  ⚠️  ⚠️"
         else
-            log_error "VOTE_LIVENESS_VERIFY must be true (the authoritative split-brain fence). Refusing to start unfenced — set ALLOW_UNFENCED_TAKEOVER=true ONLY if you accept the double-sign risk."
+            log_error "VOTE_LIVENESS_VERIFY must be true (the authoritative split-brain fence). Refusing to start unfenced — set ALLOW_UNFENCED_TAKEOVER=true ONLY if you accept the double-sign risk (retained path: v0.7 withholds every take either way)."
             exit 1
         fi
     fi
@@ -7200,7 +7201,7 @@ startup_checks() {
                 # evidence-gated; no-ops outside the armed unit.
                 _watchdog_extend_if_starting 2>/dev/null
                 log_warn "Persisted role STAKED + local validator unreachable ${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s+ at startup — sending URGENT alert"
-                alert "STANDBY was STAKED (promoted holder) at last save + local validator unreachable since monitor startup (>${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s) — the daemon cannot self-fence/demote; a spare may take over. Intervene (stop the validator or confirm the spare took over)." "$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"
+                alert "STANDBY was STAKED (promoted holder) at last save + local validator unreachable since monitor startup (>${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s) — the daemon cannot self-fence/demote; in Alpenglow mode no spare takes the identity by itself, so it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"
                 _wait_alerted=1
                 _watchdog_extend_if_starting 2>/dev/null
             fi
@@ -7262,7 +7263,8 @@ startup_checks() {
 
     echo ""
     echo "  Node:              $NODE_NAME"
-    echo "  Role:              STANDBY (hot spare)"
+    echo "  Role:              STANDBY (monitoring spare)"
+    echo "  Mode:              ALPENGLOW — this node NEVER takes the staked identity itself: a take every gate approves is WITHHELD and paged (docs/SAFETY.md, Alpenglow)"
     echo "  Staked:            $STAKED_PUBKEY"
     echo "  Unstaked:          $UNSTAKED_PUBKEY"
     echo "  Current:           $CURRENT_IDENTITY"
@@ -7291,7 +7293,7 @@ startup_checks() {
         echo "  Fast-path (A):     off (pure v0.6.7 timer behavior)"
     fi
     echo "  Vote-liveness:     $VOTE_LIVENESS_VERIFY (AUTHORITATIVE; ε>${VOTE_LIVENESS_EPSILON} slots / ${VOTE_LIVENESS_MIN_INTERVAL}s)"
-    [[ "$VOTE_LIVENESS_VERIFY" != "true" ]] && echo "  ⚠️  UNFENCED TAKEOVER (ALLOW_UNFENCED_TAKEOVER=true) — no split-brain fence"
+    [[ "$VOTE_LIVENESS_VERIFY" != "true" ]] && echo "  ⚠️  UNFENCED TAKEOVER (ALLOW_UNFENCED_TAKEOVER=true) — no split-brain fence (retained path: v0.7 withholds every take; the fence still decides whether the page is sent)"
     # v0.6.9 (H1): Self-fence banner line for the PROMOTED holder, mirroring the primary's (signals
     # armed + hard-stop state) so live-test banners can be checked side-by-side.
     if [[ "$STANDBY_SELF_FENCE" == "true" ]]; then
@@ -7361,10 +7363,10 @@ while $_running; do
             # Page URGENT, not warn (ported from the primary's F1 sub-item). FAILURE DIRECTION: page.
             if [[ -n "$STAKED_PUBKEY" && "$_last_known_identity" == "$STAKED_PUBKEY" ]]; then
                 log_warn "Local validator unreachable while STAKED (promoted holder) — sending URGENT alert"
-                alert "STANDBY holds staked + local validator unreachable — the daemon cannot self-fence/demote; a spare may take over. Intervene (stop the validator or confirm the spare took over)." "$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"
+                alert "STANDBY holds staked + local validator unreachable — the daemon cannot self-fence/demote; in Alpenglow mode no spare takes the identity by itself, so it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "STANDBY UNREACHABLE WHILE STAKED 🚨"
             else
                 log_warn "Local validator unreachable — sending alert"
-                alert_warn "⚠️ STANDBY local validator unreachable! Cannot monitor or take over."
+                alert_warn "⚠️ STANDBY local validator unreachable! Cannot monitor — a failure of the holder will not be seen or paged."
             fi
             _last_unreachable_alert=$now_ts
         else
@@ -7403,7 +7405,7 @@ while $_running; do
             # Our node isn't ready — alert with throttle
             now_ts=$(date +%s)
             if [[ $(( now_ts - _last_behind_alert )) -ge $ALERT_THROTTLE ]]; then
-                alert_warn "⚠️ STANDBY node too far behind or unhealthy! Cannot take over if needed."
+                alert_warn "⚠️ STANDBY node too far behind or unhealthy! It is not ready to judge a holder failure (Tier-1 gate) — a failure would not be paged."
                 _last_behind_alert=$now_ts
             fi
             display_status "T1:BEHIND"

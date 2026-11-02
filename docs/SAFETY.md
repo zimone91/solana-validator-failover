@@ -1,5 +1,8 @@
 # Safety model
 
+> **v0.7 — Alpenglow mode.** FO never takes the staked identity automatically; it detects and pages. Read [Alpenglow mode](#alpenglow-mode-v07) first: the take-side sections below describe the
+> *retained* take path and the gates that decide when a page is sent.
+
 ## Prime directive
 
 **Never let two nodes hold and vote the same staked identity at the same time (double-sign).**
@@ -8,7 +11,86 @@ Every decision in this system is designed to fail toward *unstaked / stop / page
 than toward two nodes voting. Availability loss (a brief voting gap) is always preferred over a
 double-sign.
 
+## Alpenglow mode (v0.7)
+
+**AG mode is always on in v0.7.** FO never takes the staked identity automatically: not the standby's take, not the primary's `RECOVERY_MODE=rpc` re-take, and not
+the pre-warm that registers the staked voter ahead of a take. No environment knob, state file or RPC answer turns it off in a shipped script — `_ag_mode` answers
+"on" unconditionally; the startup tripwire only *reports* the Alpenglow feature gate — and CI pins that.
+
+**Why.** Alpenglow replaces TowerBFT with votor and a vote-history file. The feature gate (`A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS`) was read active on all
+three public clusters on 2026-11-01 (testnet from slot 444,620,256, devnet 504,144,000, mainnet 459,648,000), so the take path described below runs on none of them.
+Under Alpenglow, a plain `set-identity` of the staked key on a spare that lacks the old holder's *current* vote-history file is a *cold swap*: votor never votes at or
+below its floor — the larger of the history's root and the node's own bank root — and never on a slot already in the loaded history, so a spare with an absent or
+stale history conflicts with the old holder's votes whenever the old holder voted on a slot above the spare's bank root at the moment of `set-identity`, or votes again
+afterwards. FO cannot see that from outside (the on-chain `lastVote` is written by leaders and is only a lower bound of the real last vote). Whether a cold swap is
+acceptable is an operator decision; FO does not make it.
+
+**What FO does.**
+
+- It monitors and detects as before: local delinquency, the external confirmation, the vote-liveness fence and the spare's own view.
+- The holder's self-fence is unchanged: a frozen slot, a silent local RPC, its own votes not landing (N6) or a `getHealth` "behind" count over `SELF_FENCE_MAX_BEHIND`
+  demote it to its own unstaked identity. A `getHealth` answer of *Unknown* — agave answers Unknown while votor has seen no finalized slot — is named in the log and demotes
+  nothing. A *vote-based* demote (N6, the latency and delinquency triggers) first reads whether the vote account is in the epoch's vote set (below) and is withheld, with a
+  page, while it is not; the partition triggers never wait for that read's verdict.
+- When every gate of a take says "take now", the spare sends **one page per episode** — `TAKEOVER WITHHELD — Alpenglow mode 🚨`; the primary's `RECOVERY_MODE=rpc`
+  twin is `RECOVERY WITHHELD — Alpenglow mode 🚨` — and repeats it at most once per `ALERT_THROTTLE` while the episode lasts; between pages a decision point is a log line. The page
+  carries what the operator needs: the take path's reason; the holder's silence since the episode's first liveness sample (its last vote and the cluster tip at that read, and
+  the provider); this node's finalized slot and `getHealth` class; its validator version against the minimum; the VAT admission; the state of the vote-history file; and
+  the operator path, the warm swap below. A field that cannot be read prints `unavailable (<why>)` and the page still goes out. A gate that holds (a voting veto, an
+  aborting re-check, the delay) sends no Alpenglow page.
+- `PREWARM_VOTER_ADD=true` is inert and `RECOVERY_MODE=rpc` cannot re-take; each says so once at startup.
+
+**What FO does not do.** It does not take, re-take or pre-warm. It does not delete, move, copy, truncate or rewrite a vote-history file or a tower file — a census of
+the shipped scripts by bash's own parse (`tests/test_tower_handling.sh`) pins that — and it names agave's flag that switches the vote-history requirement off in no file of
+the tree, which CI also pins.
+
+**The retained take path, unreachable in v0.7.** The code that takes the staked identity (the standby's `take_staked_identity`, the primary's `switch_to_staked`,
+`_prewarm_voter_add`) stays, behind the Alpenglow stop, as the base for a later release; only the tests reach it, by shadowing `_ag_mode`. The rest of this document —
+the cross-node invariant, the spare's own view, verified-demote, the timing tables — describes the gates that decide *when a page is sent* in v0.7, and the take that used to
+follow them. Where a figure belongs to the take path it was measured under TowerBFT; *Slot time under Alpenglow* below sorts the figures. The physical model of the spare's own
+node in *The spare's own view* — its `processed` bank is the tower's last votable bank, and freezes within about 8 votes on a minority fork — is TowerBFT's as well: under
+Alpenglow `processed` is not a tower's vote bank, and that model is not re-derived in this release.
+
+**The vote-history file and the warm swap.** `vote_history-<staked pubkey>.bin`, in the ledger directory, is Alpenglow's record of the slots the identity has voted on. FO classifies it
+(absent; present with its mtime, size and sha256; present but older than the episode; unavailable) in the Alpenglow page, and logs its class and sha256 after a confirmed demote. The swap
+is the operator's, and it is a *warm swap*:
+
+1. the old holder is demoted to its own unstaked identity first (`authorized-voter remove-all`, then `set-identity` of its unstaked keypair);
+2. the vote-history file's sha256 is read twice on the old holder and is equal both times (the file has stopped changing);
+3. the file is copied to the new holder's ledger directory and its sha256 is checked there;
+4. on the new holder, `authorized-voter add` of the staked keypair, then `set-identity` of the staked keypair — in that order, with no extra flags.
+
+A vote-history file is never deleted. A cold take — without the old holder's current file — is made only by an operator who knows the old node is down and will not vote again, following
+agave's own documentation; FO never makes it.
+
+**VAT admission.** Under Alpenglow a vote account counts only if it is in the epoch's validator-admission-ticket (VAT) set: built when the epoch before is entered, from the accounts
+with a BLS key, stake at that moment, and a balance of at least rent plus one epoch's VAT (less pending delegator rewards when block revenue sharing is on), cut to the top 2,000 by stake.
+`getVoteAccounts` reports membership as `epochVoteAccount`. A staked account outside the set shows `activatedStake > 0` and `epochVoteAccount: false`: its votes are not counted, it looks
+like a dead holder — and a demote or a take would change nothing. FO reads the flag from the node's own RPC, with `keepUnstakedDelinquents` (a filtered answer drops zero-stake delinquent
+accounts; an absent entry is *unknown*, never "not admitted"), together with the epoch on both sides of the read (a flag read across an epoch boundary stays unknown), on a schedule that
+wakes at the earliest moment the epoch can end (5 slots/s, below), and says it in the page; a vote-based demote is withheld, with a page, while the account is not admitted. The page names
+the reason class where the node's `getAccountInfo` can show it (the BLS key, pending delegator rewards, the balance); a field the node's answer lacks is stated as a limit, not guessed.
+
+**Named limits of this slice.**
+
+- The VAT read adds up to 3 s (one local `curl -m 3`) before a *vote-based* demote; the N6 holder rows in *The cross-node invariant* moved by it (+3 s and +2 s).
+- The "remaining payments" page for a VAT balance running out (the runway) is not implemented: only the lapse itself is read and paged.
+- The top-2000 cut is not checked: an account outside the top 2,000 by stake is outside the set whatever its balance, and nothing in the account shows it. The VAT amount the page quotes
+  (0.8 SOL per epoch on mainnet's 200 ms row) is a design figure; the row in force is not read.
+- The Alpenglow page reads five things from the node's own RPC — the finalized slot, `getHealth`, `getVersion`, the VAT batch and the vote account — each bounded at 3 s, so a decision point
+  can take up to 15 s; the page goes out whatever a read answers. The reads run after every gate has said take, and nothing follows them but the page.
+- The version minimum is not checked on frankendancer (no comparable field): *not checked (frankendancer)*, no page. The version is what the node's own RPC answers (`getVersion`, `solana-core`),
+  never read from the executable.
+- A `getHealth` Unknown is named by the holder's self-fence and read as *not ready* by Tier-1, but it does not demote the holder; what stays armed on a holder under Alpenglow is a decision still to be made.
+- Under Alpenglow `confirmed` follows the finalized slot (measured on public RPC nodes only), so a cluster-wide finalization stall looks like isolation to the frozen-slot self-fence: every armed
+  holder would demote after `SELF_FENCE_ISOLATION_SECS`, and in v0.7 nothing re-takes — the validator stays unstaked until an operator acts.
+- The fence script (`failover-fence.sh`) does not report the vote-history class, and has no ledger detection: arm with `LEDGER_PATH` set (the deployment manual, *Arming the fence*).
+- The wizard preset for `MAX_DELINQUENT_SLOTS` is 24 from v0.7; an existing env file keeps its value (15 sits close to the tail of Alpenglow's healthy vote lag).
+- Every take-path figure in this document was measured at 2.5 or 3.7 slots/s and is not re-derived for the Alpenglow rate in this release.
+
 ## The cross-node invariant
+
+> **Alpenglow mode (v0.7):** the take this section guards is the *retained* path — v0.7 pages instead of taking. The ordering below still decides when the page is sent.
 
 A spare must not take the staked identity until the previous holder has **provably relinquished** it.
 Two independent mechanisms enforce this:
@@ -294,7 +376,8 @@ under this escalation contract:
    spare's detection runs its course; once Block 6.4 wires the relinquish-proof gate, it takes via the
    verified-demote proof. That is an automatic failover to the healthy side where a spare watches the
    demoting node: behind a PRIMARY, the STANDBY; behind a promoted STANDBY, a BACKUP if there is one (the
-   old PRIMARY re-takes only with `RECOVERY_MODE=rpc`; at the default `manual` it does not). An unreadable
+   old PRIMARY re-takes only with `RECOVERY_MODE=rpc`; at the default `manual` it does not) — **the retained
+   path: in v0.7 (Alpenglow mode) the spare pages instead of taking**. An unreadable
    identity at expiry demotes nothing (that would be a guess); paging continues.
 
 The availability tradeoff is accepted and bounded: a broken-but-loud fence costs (at worst) one

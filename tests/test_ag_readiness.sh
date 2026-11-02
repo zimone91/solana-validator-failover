@@ -312,7 +312,7 @@ T1_OK='{"jsonrpc":"2.0","result":"ok","id":1}'
 T1_UNK='{"jsonrpc":"2.0","error":{"code":-32005,"message":"Node is unhealthy","data":{"numSlotsBehind":null}},"id":1}'
 T1_B200='{"jsonrpc":"2.0","error":{"code":-32005,"message":"Node is behind by 200 slots","data":{"numSlotsBehind":200}},"id":1}'
 out=$(t1_run "$STANDBY" "$T1_UNK")
-[[ "$(field "$out" rc)" == "1" && "$(field "$out" log)" == *"W:[TIER1] getHealth answers UNKNOWN (Alpenglow: the node has seen no finalized slot yet) — not ready to take over"* ]] \
+[[ "$(field "$out" rc)" == "1" && "$(field "$out" log)" == *"W:[TIER1] getHealth answers UNKNOWN (Alpenglow: the node has seen no finalized slot yet) — Tier-1 not ready (no take decision is made while this holds)"* ]] \
     && ok "(6a) Unknown → rc 1 (not ready, as before) and the log says UNKNOWN by name" || bad "(6a) Tier-1 Unknown misread ($out)"
 out=$(t1_run "$STANDBY" "$T1_OK")
 [[ "$(field "$out" rc)" == "0" && "$(field "$out" log)" == *"I:[TIER1] Health OK — slot 777"* ]] && ok "(6b) ok → rc 0, 'Health OK — slot 777' (unchanged)" || bad "(6b) Tier-1 ok misread ($out)"
@@ -449,7 +449,7 @@ for scr in "$STANDBY" "$PRIMARY"; do
     fi
 done
 m="$WORK/c-t1.sh"
-if mutate "$STANDBY" 's/        log_warn "\[TIER1\] getHealth answers UNKNOWN (Alpenglow: the node has seen no finalized slot yet) — not ready to take over"/&; return 0/' "$m"; then
+if mutate "$STANDBY" 's/        log_warn "\[TIER1\] getHealth answers UNKNOWN (Alpenglow: the node has seen no finalized slot yet) — Tier-1 not ready (no take decision is made while this holds)"/&; return 0/' "$m"; then
     out=$(t1_run "$m" "$T1_UNK")
     [[ "$(field "$out" rc)" == "0" ]] && ok "(9:tier1-unknown-ready) CONTROL: a Tier-1 whose Unknown branch returned 0 would read READY (case 6a bites)" || bad "(9:tier1-unknown-ready) the Tier-1 control did not bite ($out)"
 fi

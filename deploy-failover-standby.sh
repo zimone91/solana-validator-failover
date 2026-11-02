@@ -173,7 +173,7 @@ done
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
 echo -e "  ${BOLD}${CYAN}Solana Failover  ·  STANDBY / BACKUP  ·  v0.6.10${NC}"
-echo -e "  Automatic staked-identity hot-swap for Solana validators"
+echo -e "  Staked-identity failover monitor for Solana validators — Alpenglow mode: it detects and pages, the swap is yours"
 echo ""
 echo -e "  ${DIM}Author:${NC}     zim.one  ·  https://zim.one"
 echo -e "  ${DIM}Validator:${NC}  ${CYAN}2zykwzzo1pd3H2oSj5j5SRLTvmpa9Nr2S2Bh8tTVd5Tq${NC}"
@@ -228,24 +228,25 @@ step "Server role"
 echo ""
 echo -e "  ${BOLD}Choose the role for this server:${NC}"
 echo ""
-echo -e "  ${GREEN}STANDBY${NC}  — Hot spare. Takes over at ${REC_TAKEOVER_DELAY}s if PRIMARY fails (the PRIMARY"
-echo -e "            self-fences at ~30s, plus a 30s cross-node safety margin = ${REC_TAKEOVER_DELAY}s)."
+echo -e "  ${GREEN}STANDBY${NC}  — Monitoring spare. Pages you at ${REC_TAKEOVER_DELAY}s if PRIMARY fails (the PRIMARY"
+echo -e "            self-fences at ~30s, plus a 30s cross-node safety margin = ${REC_TAKEOVER_DELAY}s). Alpenglow mode (always on"
+echo -e "            in v0.7): it NEVER takes the staked identity itself — the warm swap is yours (docs/SAFETY.md, Alpenglow)."
 echo -e "            Use for your main backup server in a different DC."
 echo ""
-echo -e "  ${YELLOW}BACKUP${NC}   — Cold spare. Takes over at 120s, only if BOTH PRIMARY"
-echo -e "            and STANDBY are down. Last line of defense."
-echo -e "  ${DIM}v0.7: either spare's take ends with one bounded read of its OWN node (curl -m 2 plus a watchdog${NC}"
-echo -e "  ${DIM}pet) that withdraws the take if the holder shows voting there; with its own-head samples a take${NC}"
-echo -e "  ${DIM}cycle makes 5-12 bounded local reads (more armed or with the fast path) — milliseconds on a${NC}"
+echo -e "  ${YELLOW}BACKUP${NC}   — Cold spare. Pages you at 120s, only if BOTH PRIMARY"
+echo -e "            and STANDBY are down. Last line of defense; it never takes the identity either."
+echo -e "  ${DIM}v0.7: the last gate before either spare pages is one bounded read of its OWN node (curl -m 2 plus a watchdog${NC}"
+echo -e "  ${DIM}pet) that holds the page back if the holder shows voting there; with its own-head samples a cycle${NC}"
+echo -e "  ${DIM}makes 5-12 bounded local reads (more armed or with the fast path) — milliseconds on a${NC}"
 echo -e "  ${DIM}healthy node, +9-15s when each takes 1s with prompt RPCs; a node whose local reads take 2s or${NC}"
-echo -e "  ${DIM}more never takes over, nor one whose Tier 2 fails slowly (times out, or errors late) while${NC}"
-echo -e "  ${DIM}Tier 3 is slow (it pages instead).${NC}"
+echo -e "  ${DIM}more never pages the swap, nor one whose Tier 2 fails slowly (times out, or errors late) while${NC}"
+echo -e "  ${DIM}Tier 3 is slow (it pages the starvation warning instead).${NC}"
 echo ""
 echo -e "  ${BOLD}${CYAN}Recommended 3-node setup:${NC}"
 echo ""
 echo -e "     ${GREEN}PRIMARY${NC}  ${DIM}──self-fence ~30s──►${NC}  ${GREEN}${BOLD}STANDBY${NC}  ${DIM}──60s──►${NC}  ${YELLOW}BACKUP${NC}"
-echo -e "     ${DIM}holds staked, steps down       takes staked       takes staked${NC}"
-echo -e "     ${DIM}                                                  (only if STANDBY${NC}"
+echo -e "     ${DIM}holds staked, steps down       pages: the swap    pages: the swap${NC}"
+echo -e "     ${DIM}                               is yours           (only if STANDBY${NC}"
 echo -e "     ${DIM}                                                   is also down)${NC}"
 echo ""
 
@@ -284,7 +285,7 @@ if [[ "$CFG_ROLE" == "STANDBY" ]]; then
     ROLE_GOSSIP_VERIFY=true
     ROLE_MAX_DELINQ_SLOTS=$MAX_DELINQ_PRESET
     ROLE_NODE_SUFFIX="-STANDBY"
-    ok "Role: STANDBY (safe-fast takeover, gossip verified)"
+    ok "Role: STANDBY (monitoring spare, gossip verified; in Alpenglow mode it pages and never takes)"
     echo ""
     echo -e "  ${CYAN}Preset: TAKEOVER_DELAY=60s, CHECK_INTERVAL=3s, GOSSIP_VERIFY=true, MAX_DELINQUENT_SLOTS=${MAX_DELINQ_PRESET}${NC}"
 else
@@ -293,16 +294,16 @@ else
     ROLE_GOSSIP_VERIFY=false
     ROLE_MAX_DELINQ_SLOTS=$MAX_DELINQ_PRESET
     ROLE_NODE_SUFFIX="-BACKUP"
-    ok "Role: BACKUP (delayed takeover, gossip OFF, vote-liveness fence ON)"
+    ok "Role: BACKUP (delayed page, gossip OFF, vote-liveness fence ON; in Alpenglow mode it never takes)"
     echo ""
     echo -e "  ${CYAN}Preset: TAKEOVER_DELAY=120s, CHECK_INTERVAL=5s, GOSSIP_VERIFY=false, MAX_DELINQUENT_SLOTS=${MAX_DELINQ_PRESET}${NC}"
     echo ""
     echo -e "  ${YELLOW}Why GOSSIP_VERIFY=false for BACKUP?${NC}"
-    echo -e "  If STANDBY took identity and then crashed, gossip still shows staked on"
+    echo -e "  If STANDBY held the identity (after a warm swap you ran) and then crashed, gossip still shows staked on"
     echo -e "  STANDBY's endpoint for 5-10 min — gossip-verify ON would block BACKUP."
-    echo -e "  So gossip is OFF, but ${BOLD}vote-liveness (v0.6.2) is ON${NC}: BACKUP takes over"
-    echo -e "  only once the staked vote account stops advancing (the crashed STANDBY"
-    echo -e "  is no longer voting). A real fence — no longer a blind takeover."
+    echo -e "  So gossip is OFF, but ${BOLD}vote-liveness (v0.6.2) is ON${NC}: BACKUP pages only once the staked"
+    echo -e "  vote account stops advancing (the crashed STANDBY is no longer voting). A real fence — never a blind"
+    echo -e "  verdict; in Alpenglow mode BACKUP pages and never takes."
 fi
 echo ""
 
@@ -378,9 +379,9 @@ if [[ -n "$STARTUP_IDENTITY" && -f "$STARTUP_IDENTITY" ]]; then
     STARTUP_IDENTITY_PUB=$("$SOLANA_PATH/solana-keygen" pubkey "$STARTUP_IDENTITY" 2>/dev/null) || true
     if [[ "${STARTUP_IDENTITY_PUB:-}" == "$STAKED_PUB" ]]; then
         if [[ "$ALLOW_STAKED_STARTUP_IDENTITY" == "true" ]]; then
-            warn "⚠️ Validator startup --identity is STAKED — proceeding ONLY because --allow-staked-startup-identity was given. A solana.service restart boots this node VOTING (double-sign-on-restart). Repoint the startup --identity to the UNSTAKED key (Anza identity.json symlink) ASAP."
+            warn "⚠️ Validator startup --identity is STAKED — proceeding ONLY because --allow-staked-startup-identity was given. A solana.service restart boots this node VOTING (double-sign-on-restart). Fix it ASAP: the validator's startup --identity is this node's own UNSTAKED keypair, never re-pointed: every restart comes up unstaked."
         else
-            fail "Validator startup --identity is the STAKED key: a solana.service restart would boot this node VOTING (double-sign-on-restart). Set the startup --identity to the UNSTAKED keypair (Anza identity.json symlink recommended), or re-run with --allow-staked-startup-identity to override."
+            fail "Validator startup --identity is the STAKED key: a solana.service restart would boot this node VOTING (double-sign-on-restart). Fix it: the validator's startup --identity is this node's own UNSTAKED keypair, never re-pointed: every restart comes up unstaked. (Or re-run with --allow-staked-startup-identity to override.)"
         fi
     elif [[ -n "${STARTUP_IDENTITY_PUB:-}" ]]; then
         ok "Startup --identity is not the staked key — fail-safe"
@@ -535,8 +536,9 @@ if [[ "$ADVANCED" == "true" ]]; then
     CFG_VOTE_LIVENESS="$REPLY"
     if [[ "$CFG_VOTE_LIVENESS" != "true" ]]; then
         warn "Vote-liveness is the authoritative split-brain fence. With it OFF the daemon REFUSES to start"
-        warn "unless you accept an UNFENCED takeover — there is then NO double-sign protection at all."
-        ask_choice "Accept UNFENCED takeover (dangerous)?" "false" "false" "true"
+        warn "unless you accept an UNFENCED takeover (retained path: Alpenglow mode withholds every take in v0.7, so no take is made either way)"
+        warn "— and then NO double-sign protection stands behind the page or a later release that takes."
+        ask_choice "Accept UNFENCED takeover (dangerous; retained path — v0.7 never takes)?" "false" "false" "true"
         CFG_ALLOW_UNFENCED="$REPLY"
     fi
 else
@@ -575,9 +577,9 @@ fi
 # (it cannot compute the take-visibility floor), so collect it in ALL modes — not only under Option A.
 CFG_STANDBY_TAKEOVER_DELAY=""
 if [[ "$CFG_ROLE" == "BACKUP" ]]; then
-    echo -e "  ${YELLOW}A BACKUP takes over only AFTER the STANDBY has. Enter the STANDBY's TAKEOVER_DELAY${NC}"
-    echo -e "  ${YELLOW}(NOT this BACKUP's) so this node waits until the STANDBY's take is externally visible${NC}"
-    echo -e "  ${YELLOW}before it may take — otherwise two spares could take at once (double-sign).${NC}"
+    echo -e "  ${YELLOW}A BACKUP pages only AFTER the STANDBY would have. Enter the STANDBY's TAKEOVER_DELAY${NC}"
+    echo -e "  ${YELLOW}(NOT this BACKUP's) so this node waits until the STANDBY's take would be externally visible${NC}"
+    echo -e "  ${YELLOW}(the retained take path's rule: otherwise two spares could take at once — v0.7 pages instead).${NC}"
     # Re-run safety: an existing env holds this BACKUP's configured STANDBY_TAKEOVER_DELAY — the
     # default must follow it (a hard-coded 60 here would let one Enter lower the take-visibility
     # floor this node's cross-node timing is computed from).
@@ -1038,9 +1040,9 @@ if [[ "$CFG_ROLE" == "BACKUP" ]]; then
     echo ""
     echo -e "  ${BOLD}${YELLOW}BACKUP NOTE${NC}"
     echo -e "    ${DIM}GOSSIP_VERIFY=$CFG_GOSSIP_VERIFY  VOTE_LIVENESS_VERIFY=$CFG_VOTE_LIVENESS  TAKEOVER_DELAY=${CFG_TAKEOVER_DELAY}s${NC}"
-    echo -e "    ${DIM}BACKUP takes over only after BOTH PRIMARY and STANDBY stop voting the staked${NC}"
+    echo -e "    ${DIM}BACKUP pages only after BOTH PRIMARY and STANDBY stop voting the staked${NC}"
     echo -e "    ${DIM}identity (vote-liveness fence) AND ${CFG_TAKEOVER_DELAY}s elapse — a real fence,${NC}"
-    echo -e "    ${DIM}not a blind takeover.${NC}"
+    echo -e "    ${DIM}not a blind verdict (Alpenglow mode: it never takes).${NC}"
 fi
 
 # v0.7 (Block 6.1, §2.7 (c) [6.0-COND-4]): this wizard writes a SPARE config with NO pairing

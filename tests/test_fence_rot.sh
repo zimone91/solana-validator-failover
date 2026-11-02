@@ -605,8 +605,10 @@ else
 fi
 new_mock
 out=$(drive_rot "$STANDBY" 1900 scen_masked 1 file 0 "")
-if [[ "$(field "$out" demotes)" == "[1800]" && "$(field "$out" demotetext)" == *"verified-demote proof"* && "$(field "$out" demotetext)" == *"healthy side"* ]]; then
-    ok "(7c) demote at exactly t0+grace; the reason names the automatic-failover consequence (verified-demote proof / healthy side continues)"
+dtxt=$(field "$out" demotetext)
+if [[ "$(field "$out" demotes)" == "[1800]" && "$dtxt" == *"no spare takes it by itself"* && "$dtxt" == *"warm swap"* && "$dtxt" != *"verified-demote proof"* && "$dtxt" != *"healthy side"* ]]; then
+    # v0.7 AG-1.7: under Alpenglow mode no spare takes the identity by itself, so the reason no longer promises the healthy side's takeover (the v0.6 text did)
+    ok "(7c) demote at exactly t0+grace; the reason says what AG mode does with the identity (no spare takes it by itself; the operator moves it by the warm swap) and no longer promises a takeover"
 else
     bad "(7c) demote timing/reason wrong: $out"
 fi
