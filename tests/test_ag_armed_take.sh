@@ -294,7 +294,7 @@ for v in TRUE 1 yes "true "; do
 done
 ok "(1e) the predicate itself reads the LITERAL: AG_ARMED_TAKE=TRUE, 1, yes and 'true ' (trailing space) leave the take withheld even if no startup coercion ran"
 dflt=$( (set +e; load_seam "$STANDBY"; printf '%s|%s|%s' "${AG_ARMED_TAKE-UNSET}" "${AG_TAKE_MARGIN_SLOTS-UNSET}" "${TAKEOVER_DELAY-UNSET}") )
-[[ "$dflt" == "false|200|90" ]] && ok "(1f) the shipped defaults the worlds above read: AG_ARMED_TAKE=false, AG_TAKE_MARGIN_SLOTS=200, TAKEOVER_DELAY=90" || bad "(1f) shipped defaults (armed|margin|delay): $dflt"
+[[ "$dflt" == "false|200|60" ]] && ok "(1f) the shipped defaults the worlds above read: AG_ARMED_TAKE=false, AG_TAKE_MARGIN_SLOTS=200, TAKEOVER_DELAY=60" || bad "(1f) shipped defaults (armed|margin|delay): $dflt"
 
 # ── (2) armed + margin ok: voter first, then the cold set-identity ───────────────────────────────────────────
 echo ""; echo "─── (2) armed, margin ok: authorized-voter add FIRST, then set-identity with the cold flag; TOOK page with the cold-take fields ───"
@@ -388,7 +388,7 @@ for md in fail timeout; do
     want_detail="admin rpc unreachable"; [[ "$md" == "timeout" ]] && want_detail="timed out"
     pg=$(printf '%s\n' "$out" | grep -m1 '^EV: PAGE ')
     if [[ "$(admin_args "$out" | sub_key)" == "authorized-voter add <key>" && "$(rc_of "$out")" == "1" && "$(page_n "$out")" == "1" && "$(page_head "$out")" == "TAKEOVER BLOCKED — authorized-voter add failed" \
-          && "$(field "$(printf '%s\n' "$out" | grep '^STATE=' | sed 's/^STATE=//')" ltt)" -gt 0 ]] && has "$pg" "$want_detail" && has "$pg" "set-identity was NOT attempted"; then
+          && "$(field "$(printf '%s\n' "$out" | grep '^STATE=' | sed 's/^STATE=//')" ltt)" -gt 0 ]] && has "$pg" "$want_detail" && has "$pg" "the identity change was NOT attempted"; then
         ok "(4:$md) the voter add ${md}s: NO set-identity (one admin call), ONE page 'TAKEOVER BLOCKED — authorized-voter add failed' naming '$want_detail', the cooldown stamped, rc 1"
     else
         bad "(4:$md) calls=[$(admin_args "$out" | sub_key | tr '\n' ';')] rc=$(rc_of "$out") pages=$(page_n "$out") head=$(page_head "$out") page=$pg"
@@ -497,7 +497,7 @@ if [[ -n "$lw_stmt" && "$(lw_run true)" == "1" && "$(lw_run false)" == "0" ]]; t
 else
     bad "(11b) armed notice: stmt=[${lw_stmt:0:60}] armed=$(lw_run true) unarmed=$(lw_run false)"
 fi
-pw_check() {   # pw_check <script> -> empty when the pairing floor behaves, else why not. ARMED + a delay below 75 refuses to start (DRY_RUN no exception); not armed only warns below 75
+pw_check() {   # pw_check <script> -> empty when the pairing floor behaves, else why not. ARMED + a delay below 60 refuses to start (DRY_RUN no exception); not armed only warns below 60
     local sc="$1" st su d why=""
     st=$(grep -F -m1 -e 'AG_ARMED_TAKE=true with TAKEOVER_DELAY=' "$sc"); su=$(grep -F -m1 -e 'this spare is not armed, so it only pages' "$sc")
     [[ -n "$st" && -n "$su" ]] || { printf 'statements missing'; return 0; }
@@ -508,24 +508,24 @@ pw_check() {   # pw_check <script> -> empty when the pairing floor behaves, else
     pu_n() {    # pu_n <armed> <delay> -> the number of WARN lines the unarmed-floor statement prints
         ( set +e; load_seam "$sc"; log_warn(){ printf 'WARN %s\n' "$1"; }; AG_ARMED_TAKE="$1"; TAKEOVER_DELAY="$2"; eval "$su" ) | grep -c '^WARN '
     }
-    for d in 30 60 74; do [[ "$(pw_rc true $d)" == "1" ]] || why="$why [armed $d: no refusal]"; done
-    [[ "$(pw_rc true 60 true)" == "1" ]] || why="$why [armed 60 DRY_RUN=true: no refusal]"
-    for d in 75 90 120; do [[ "$(pw_rc true $d)" == "0" ]] || why="$why [armed $d refused]"; done
-    for d in 30 60 74; do [[ "$(pw_rc false $d)" == "0" ]] || why="$why [unarmed $d refused]"; [[ "$(pu_n false $d)" == "1" ]] || why="$why [unarmed $d: no warning]"; done
-    for d in 75 90; do [[ "$(pu_n false $d)" == "0" ]] || why="$why [unarmed $d warned]"; done
-    [[ "$(pu_n true 60)" == "0" ]] || why="$why [armed 60: the unarmed warning fired]"
+    for d in 30 45 59; do [[ "$(pw_rc true $d)" == "1" ]] || why="$why [armed $d: no refusal]"; done
+    [[ "$(pw_rc true 59 true)" == "1" ]] || why="$why [armed 59 DRY_RUN=true: no refusal]"
+    for d in 60 90 120; do [[ "$(pw_rc true $d)" == "0" ]] || why="$why [armed $d refused]"; done
+    for d in 30 45 59; do [[ "$(pw_rc false $d)" == "0" ]] || why="$why [unarmed $d refused]"; [[ "$(pu_n false $d)" == "1" ]] || why="$why [unarmed $d: no warning]"; done
+    for d in 60 90; do [[ "$(pu_n false $d)" == "0" ]] || why="$why [unarmed $d warned]"; done
+    [[ "$(pu_n true 59)" == "0" ]] || why="$why [armed 59: the unarmed warning fired]"
     printf '%s' "$why"
 }
 pw_why=$(pw_check "$STANDBY")
-[[ -z "$pw_why" ]] && ok "(11c) the pairing rule at startup: ARMED with TAKEOVER_DELAY 30, 60 or 74 (< the holder's default gap 45 + 30) REFUSES to start - DRY_RUN is no exception; 75, 90, 120 start; a spare that is NOT armed starts at any delay and warns once below 75" || bad "(11c) pairing floor:$pw_why"
+[[ -z "$pw_why" ]] && ok "(11c) the pairing rule at startup: ARMED with TAKEOVER_DELAY 30, 45 or 59 (< the holder's default gap 30 + 30) REFUSES to start - DRY_RUN is no exception; 60, 90, 120 start; a spare that is NOT armed starts at any delay and warns once below 60" || bad "(11c) pairing floor:$pw_why"
 pc_rows=""; pc_ok=1
-for spec in "floor-70:s/\"\$TAKEOVER_DELAY\" -lt 75 \]\] \&\& { log_error \"AG_ARMED_TAKE=true/\"\$TAKEOVER_DELAY\" -lt 70 ]] \&\& { log_error \"AG_ARMED_TAKE=true/" \
+for spec in "floor-55:s/\"\$TAKEOVER_DELAY\" -lt 60 \]\] \&\& { log_error \"AG_ARMED_TAKE=true/\"\$TAKEOVER_DELAY\" -lt 55 ]] \&\& { log_error \"AG_ARMED_TAKE=true/" \
             "no-exit:s/Armed cold take)\"; exit 1; }/Armed cold take)\"; : ; }/" \
-            "dry-run-exempt:s/\[\[ \"\$AG_ARMED_TAKE\" == \"true\" \&\& \"\$TAKEOVER_DELAY\" -lt 75 \]\]/[[ \"\$AG_ARMED_TAKE\" == \"true\" \&\& \"\$DRY_RUN\" != \"true\" \&\& \"\$TAKEOVER_DELAY\" -lt 75 ]]/"; do
+            "dry-run-exempt:s/\[\[ \"\$AG_ARMED_TAKE\" == \"true\" \&\& \"\$TAKEOVER_DELAY\" -lt 60 \]\]/[[ \"\$AG_ARMED_TAKE\" == \"true\" \&\& \"\$DRY_RUN\" != \"true\" \&\& \"\$TAKEOVER_DELAY\" -lt 60 ]]/"; do
     lab="${spec%%:*}"; expr="${spec#*:}"; m="$WORK/pw-$lab.sh"
     if mutate "$STANDBY" "$expr" "$m" >/dev/null; then [[ -n "$(pw_check "$m")" ]] && pc_rows="$pc_rows $lab:red" || { pc_ok=0; pc_rows="$pc_rows $lab:GREEN"; }; else pc_ok=0; pc_rows="$pc_rows $lab:not-applied"; fi
 done
-[[ $pc_ok -eq 1 ]] && ok "(11c-ctl) the floor lowered to 70, the exit removed and a DRY_RUN exemption each turn (11c) red:$pc_rows" || bad "(11c-ctl) a mutant keeps (11c) green or did not apply:$pc_rows"
+[[ $pc_ok -eq 1 ]] && ok "(11c-ctl) the floor lowered to 55, the exit removed and a DRY_RUN exemption each turn (11c) red:$pc_rows" || bad "(11c-ctl) a mutant keeps (11c) green or did not apply:$pc_rows"
 mg_stmt=$(grep -F -m1 -e '_validate_numeric AG_TAKE_MARGIN_SLOTS' "$STANDBY" | sed 's/^[[:space:]]*//; s/[[:space:]]*#.*$//')
 mg_run() {   # mg_run <value> -> the exit status of the validator statement
     (

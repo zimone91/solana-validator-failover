@@ -16,8 +16,8 @@ All notable changes are documented here. Versions follow the project's internal 
     reads (the veto, then the margin).
   - **The take is voter-first (G4):** `authorized-voter add` first, then `set-identity --do-not-require-vote-history` (agave and Jito-Solana 4.4.0). A failed or timed-out voter add stops the take
     (`TAKEOVER BLOCKED — authorized-voter add failed`). Reason (A8): an identity before its voter opens a HotSpare / NonVoting window, measured on 2026-10-06 and on the testnet pair on 2026-11-02.
-  - **The holder's gap rule:** `HOLDER_GAP_DEMOTE_SECS=45` (floor 30): a staked holder whose monitor did not run for that long (a frozen or suspended host) demotes itself right after the cycle's
-    identity read. Pairing rule: the spare's `TAKEOVER_DELAY` ≥ that + 30; `TAKEOVER_DELAY` is now 90 (was 60) - pinned by the `facts` job together with the other armed-take defaults. An armed spare whose `TAKEOVER_DELAY` is below 75 refuses to start (`DRY_RUN` is no exception); one that is not armed logs a warning.
+  - **The holder's gap rule:** `HOLDER_GAP_DEMOTE_SECS=30` (floor 20): a staked holder whose monitor did not run for that long (a frozen or suspended host) demotes itself right after the cycle's
+    identity read. Pairing rule: the spare's `TAKEOVER_DELAY` ≥ that + 30; `TAKEOVER_DELAY` stays 60 (the standby's floor) = that sum - pinned by the `facts` job together with the other armed-take defaults. An armed spare whose `TAKEOVER_DELAY` is below 60 refuses to start (`DRY_RUN` is no exception); one that is not armed logs a warning.
   - **Unit and ceremony:** the monitor unit carries an `ExecStop=` that re-sends a lost TERM; `failover arm` refuses a real arm without a readable `LEDGER_PATH` (precondition `P6-ledger`) and
     verifies that the rendered monitor unit carries the `ExecStop=`; both deploy scripts now write the ledger directory they detect into `LEDGER_PATH`.
 

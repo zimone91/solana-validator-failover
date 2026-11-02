@@ -141,7 +141,7 @@ ev_mut() {
         !done && $0 !~ /^[[:space:]]*#/ && index($0, a) { if (w == "before") printf "%s", blk; print; if (w == "after") printf "%s", blk; done = 1; next }
         { print } END { exit(done ? 0 : 1) }' "$1" > "$4"
 }
-ST_CENSUS="solana-primary-failover.sh[_selffence_hard_stop:0/3 switch_to_staked:2/3 switch_to_unstaked:2/3 ]solana-standby-failover.sh[give_back_identity:2/3 take_staked_identity:3/9 ]deploy-failover.sh[(top):0/2 ]failover-arm.sh[_retire_legacy_monitors:0/2 ]failover-fence.sh[_admin_remove_all:0/1 _admin_set_identity_unstaked:1/2 _sustained_identity_repoll:0/1 main:0/2 ]"
+ST_CENSUS="solana-primary-failover.sh[_selffence_hard_stop:0/3 switch_to_staked:2/3 switch_to_unstaked:2/3 ]solana-standby-failover.sh[give_back_identity:2/3 take_staked_identity:3/8 ]deploy-failover.sh[(top):0/2 ]failover-arm.sh[_retire_legacy_monitors:0/2 ]failover-fence.sh[_admin_remove_all:0/1 _admin_set_identity_unstaked:1/2 _sustained_identity_repoll:0/1 main:0/2 ]"
 take_sites=$(setid_census $SHIPPED); arg_bad=$(setid_badargs $SHIPPED); st_xc=$(setid_xcheck $SHIPPED)
 if [[ "$take_sites" == "$ST_CENSUS" && -z "$arg_bad" && -z "$st_xc" ]]; then
     ok "(0a) N-is-all, on bash's own parse of the eight shipped scripts: EVERY set-identity token is pinned by file, function and kind — a COMMAND word (its quotes and backslashes removed) or TEXT inside a string or a here-document (the primary wizard's two are its env template's comments) — the only COMMAND tokens are switch_to_staked's two (agave + fdctl — primary) and take_staked_identity's THREE (standby: fdctl, the armed cold take's agave call - its one flag variable before the key - and the retained agave call) to \"\$STAKED_KEYPAIR\", and switch_to_unstaked's, give_back_identity's and the fence's to \"\$UNSTAKED_KEYPAIR\"; nothing in install.sh / the deploy wizards / the arm can set an identity; bash sourcing the daemons' seams, the arm and the fence scripts leaves exactly the functions the parse lists, each with its printed body"
@@ -1189,12 +1189,12 @@ out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledge
 _watchdog_pet
 if [[ $_rc -eq 124 || $_rc -eq 137 || ( $_rc -ne 0 && "$out" != *"already present"* ) ]]; then
 add_detail="timed out (${SETIDENTITY_TIMEOUT}s)"; [[ $_rc -ne 124 && $_rc -ne 137 ]] && add_detail="${out:-rc ${_rc}}"
-log_error "[take] authorized-voter add failed (${add_detail}) — set-identity NOT attempted (voter first: a wedged or refusing socket must not be followed by an identity change)"
+log_error "[take] the voter add failed (${add_detail}) — set-identity NOT attempted (voter first: a wedged or refusing socket must not be followed by an identity change)"
 LAST_TAKEOVER_TIME=$(mono_now); save_state
-alert "authorized-voter add failed (${add_detail}) - set-identity was NOT attempted: ${reason}" "${CURRENT_IDENTITY:-unknown}" "TAKEOVER BLOCKED — authorized-voter add failed"
+alert "the voter add failed (${add_detail}) - the identity change was NOT attempted: ${reason}" "${CURRENT_IDENTITY:-unknown}" "TAKEOVER BLOCKED — authorized-voter add failed"
 return 1
 fi
-[[ $_rc -ne 0 ]] && log_info "[take] authorized-voter add: the voter is already loaded - continuing to set-identity"
+[[ $_rc -ne 0 ]] && log_info "[take] the voter add found the voter already loaded - continuing to set-identity"
 _vh_log_around_take before "$_ag_vh_before"
 out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" set-identity "$_AG_COLD_FLAG" "$STAKED_KEYPAIR" 2>&1); _rc=$?
 [[ -n "$out" ]] && log_info "set-identity: $out"

@@ -300,12 +300,12 @@ standby|P|1|it never takes (not armed)
 standby|P|1|cold take: empty history, floor = own root
 readme|P|1|(`AG_ARMED_TAKE=true`, off by default
 readme|P|1|What an **armed** spare runs instead is the *cold take*
-readme|P|1|(default **90s**; the floor is 60s
+readme|P|1|(default **60s** = the PRIMARY
 readme|P|1|`AG_ARMED_TAKE=false` (the default) only pages
 readme|P|1|(`AG_ARMED_TAKE=true`), the standby takes it cold, voter first
 templates|P|1|ONLY the literal `true` arms it
-templates|P|1|HOLDER_GAP_DEMOTE_SECS + 30 (shipped 90 >= 45 + 30;
-templates|P|1|an armed spare below 75 REFUSES to start
+templates|P|1|HOLDER_GAP_DEMOTE_SECS + 30 (shipped 60 >= 30 + 30;
+templates|P|1|an armed spare below 60 REFUSES to start
 templates|P|1|the on-chain lastVote understates the real one by up to ~8 slots: 170 + 8 = 178, rounded up to 200
 notifications|P|1|`TAKEOVER BLOCKED — authorized-voter add failed`
 notifications|P|1|`[DRY RUN] WOULD TAKE STAKED (Alpenglow cold take)`
@@ -316,8 +316,8 @@ safety|P|1|so 170 + 8 = 178, rounded up to **200**
 safety|P|1|`authorized-voter add` of the staked keypair first
 safety|P|1|`TAKEOVER BLOCKED — authorized-voter add failed`
 safety|P|1|`validator/src/commands/set_identity/mod.rs`
-safety|P|1|`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 90 >= 45 + 30)
-safety|P|1|an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 75 s
+safety|P|1|`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 60 >= 30 + 30)
+safety|P|1|an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 60 s
 safety|P|1|two bounded local reads, the veto, then the margin
 safety|P|1|3 + 36 + 10 + 11 = 60 s, which does not converge either
 safety|P|1|duplicates, not equivocation;
@@ -434,19 +434,19 @@ ctl9 p-standby-blocked-status "$STANDBY" 's/"TAKEOVER BLOCKED — authorized-vot
 ctl9 p-standby-armed-banner "$STANDBY" 's/ALPENGLOW, ARMED — this spare WILL take the staked identity by itself/ALPENGLOW/' cs
 ctl9 p-standby-live-mode "$STANDBY" 's/LIVE MODE — STANDBY will perform a real takeover/LIVE MODE/' cs
 ctl9 p-readme-armed-default "$README" 's/`AG_ARMED_TAKE=false` (the default) only pages/AG_ARMED_TAKE only pages/' cr
-ctl9 p-readme-delay-90 "$README" 's/(default \*\*90s\*\*; the floor is 60s/(default **60s**; the floor is 60s/' cr
+ctl9 p-readme-delay-60 "$README" 's/(default \*\*60s\*\* = the PRIMARY/(default **90s** = the PRIMARY/' cr
 ctl9 p-readme-coldtake "$README" 's/What an \*\*armed\*\* spare runs instead is the \*cold take\*/What an armed spare runs instead is a take/' cr
 ctl9 p-template-literal-true "$ENVS" 's/ONLY the literal `true` arms it/any value arms it/' ct
-ctl9 p-template-pairing "$ENVS" 's/HOLDER_GAP_DEMOTE_SECS + 30 (shipped 90 >= 45 + 30;/HOLDER_GAP_DEMOTE_SECS (shipped;/' ct
+ctl9 p-template-pairing "$ENVS" 's/HOLDER_GAP_DEMOTE_SECS + 30 (shipped 60 >= 30 + 30;/HOLDER_GAP_DEMOTE_SECS (shipped;/' ct
 ctl9 p-notif-blocked "$NOTIF" 's/| `TAKEOVER BLOCKED — authorized-voter add failed` |/| `TAKEOVER BLOCKED` |/' cn
 ctl9 p-notif-dry-cold "$NOTIF" 's/| `\[DRY RUN\] WOULD TAKE STAKED (Alpenglow cold take)` |/| `[DRY RUN] WOULD TAKE STAKED` |/' cn
 ctl9 p-safety-armed-section "$SAFETY" 's/^### Armed cold take (opt-in, rc1)$/### Cold take/' cq
 ctl9 p-safety-margin-200 "$SAFETY" 's/so 170 + 8 = 178, rounded up to \*\*200\*\*/so 170 + 8 = 178, rounded up to **180**/' cq
 ctl9 p-safety-duplicates "$SAFETY" 's/exit is not a guarantee when the forks diverge/exit is a guarantee/' cq
 ctl9 p-safety-unit-work "$SAFETY" 's/That line is in the monitor skeleton (AG-3.5)/That is unit work, not part of this release./' cq
-ctl9 p-safety-pairing "$SAFETY" 's/`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 90 >= 45 + 30)/`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 60 >= 45 + 30)/' cq
-ctl9 p-safety-refuse "$SAFETY" 's/an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 75 s/an armed spare warns at start when its `TAKEOVER_DELAY` is below 75 s/' cq
-ctl9 p-template-refuse "$ENVS" 's/an armed spare below 75 REFUSES to start/an armed spare below 75 warns at start/' ct
+ctl9 p-safety-pairing "$SAFETY" 's/`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 60 >= 30 + 30)/`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 90 >= 30 + 30)/' cq
+ctl9 p-safety-refuse "$SAFETY" 's/an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 60 s/an armed spare warns at start when its `TAKEOVER_DELAY` is below 60 s/' cq
+ctl9 p-template-refuse "$ENVS" 's/an armed spare below 60 REFUSES to start/an armed spare below 60 warns at start/' ct
 ctl9 p-safety-envfile "$SAFETY" 's/systemd does not expand `\$HOME` in an `EnvironmentFile=`/systemd expands `$HOME` in an `EnvironmentFile=`/' cq
 ctl9 p-readme-version "$README" 's/\*\*v0\.7 needs agave \/ Jito-Solana `4\.4\.0` or newer\*\*/v0.7 runs on any agave/' cr
 ctl9 p-readme-27s "$README" 's/up to about 27 s at the decision point/up to about 15 s at the decision point/' cr

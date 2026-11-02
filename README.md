@@ -25,7 +25,7 @@ None of the versions above meets that floor; v0.7 itself is being exercised on t
 #### How safe is it — honestly
 
 The failing node fences **itself** (dead RPC, frozen slot, or its own votes not landing) and drops to an
-unstaked identity within ~30s. Only then, after a 90s delay plus an on-chain check that the vote account
+unstaked identity within ~30s. Only then, after a 60s floor plus an on-chain check that the vote account
 really stopped, does the spare page you that the identity is free to be moved (v0.7: an unarmed spare never moves it itself, an armed one takes it cold; the take it used to make
 is the retained path). Live-tested end to end on testnet (the retained path): [test evidence](docs/SAFETY.md#what-has-been-tested).
 
@@ -58,8 +58,8 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
 > because they decide *when the page is sent, or the take made*, and the code is the base for a later release.
 
 - The PRIMARY **relinquishes first** (self-fences to unstaked) before any spare can take.
-- The STANDBY takes only after `TAKEOVER_DELAY` (default **90s**; the floor is 60s = the PRIMARY's ~30s self-fence + a 30s
-  cross-node margin, and 90 pairs with the holder's gap rule: `TAKEOVER_DELAY` ≥ `HOLDER_GAP_DEMOTE_SECS` 45 + 30) **and** a vote-liveness check that the previous holder's vote account has stopped
+- The STANDBY takes only after `TAKEOVER_DELAY` (default **60s** = the PRIMARY's ~30s self-fence + a 30s
+  cross-node margin, which is also the sum that pairs with the holder's gap rule: `TAKEOVER_DELAY` ≥ `HOLDER_GAP_DEMOTE_SECS` 30 + 30) **and** a vote-liveness check that the previous holder's vote account has stopped
   advancing. A hand-edited delay below the safe floor **refuses to start**. The last read before the
   take is the spare's **own** node (v0.7): one bounded read (`curl -m 2` + a watchdog pet) that
   withdraws the take if its own node shows the holder voting, cannot answer, or is not advancing; the
@@ -184,7 +184,7 @@ Key knobs: `STAKED_KEYPAIR`, `UNSTAKED_KEYPAIR`, `VOTE_PUBKEY`, `TAKEOVER_DELAY`
 (local → paid → public), and notifications. Full reference: [docs/DEPLOYMENT-MANUAL.md](docs/DEPLOYMENT-MANUAL.md).
 `failover arm` (the fence ceremony) refuses a real arm until `LEDGER_PATH` in the env file names the validator's ledger directory - the fence has no detection of its own - and the monitor unit it installs carries an
 `ExecStop=` that re-sends a lost TERM. The standby's take switch is separate: `AG_ARMED_TAKE=false` (the default) only pages; `true` arms the cold take, with `AG_TAKE_MARGIN_SLOTS` (default 200) as its readiness margin and the
-pairing rule `TAKEOVER_DELAY` ≥ the holder's `HOLDER_GAP_DEMOTE_SECS` + 30 (shipped 90 ≥ 45 + 30) - [docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1).
+pairing rule `TAKEOVER_DELAY` ≥ the holder's `HOLDER_GAP_DEMOTE_SECS` + 30 (shipped 60 ≥ 30 + 30) - [docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1).
 
 On a host armed with the v0.7 fence, the daemon also re-verifies its own effective fence
 properties every `FENCE_ROT_CHECK_SECS` (default 60 s): drift that verifiably kills the fence
