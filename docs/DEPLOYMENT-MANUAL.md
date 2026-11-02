@@ -270,8 +270,9 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   128 at agave's default distance — the daemon is silent): it cannot tighten Tier-1.
   To bound how far behind a spare may be when it takes (the own view's residuals 2 and 6 in
   `docs/SAFETY.md`: a spare lagging L seconds can take a holder that resumed within those L seconds), lower
-  the validator's own `--health-check-slot-distance`. The default is 128 (≈ 51 s at 2.5 slots/s — in time the
-  bound is the distance ÷ the cluster's slot rate: 64 slots are 25.6 s at 2.5 slots/s, 32 s at 2.0); measured
+  the validator's own `--health-check-slot-distance`. The default is 128 (up to ≈ 51 s: the slowest rate of the slot-params table, 2.5 slots/s, gives the
+  UPPER bound, and about 27 s at Alpenglow's measured 4.667 — in time the bound is the distance ÷ the cluster's slot rate:
+  64 slots are 25.6 s at 2.5 slots/s, 32 s at 2.0); measured
   at the shipped defaults, 2.5 slots/s and a constant lag, at 64 slots a holder resuming inside the episode is
   taken at most 25 s into its voting, at 38 slots at most 15 s. The distance bounds the lag at the take
   cycle's Tier-1 check (the cycle's start) — a lag that grows during a slow take cycle is not bounded by it —

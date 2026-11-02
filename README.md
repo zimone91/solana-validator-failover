@@ -60,7 +60,7 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
   residuals 6 and 7). **The mirror world** (Block 6.3's too): with `TIER2` splicing or lagging (showing the
   holder frozen) while the spare's own node lags as well, a holder that resumed within that lag is taken
   while it votes — up to the lag the spare's own `--health-check-slot-distance` admits at the take cycle's
-  Tier-1 check (128 slots by default, ≈ 51 s at 2.5 slots/s: the distance ÷ the cluster's slot rate; a lag
+  Tier-1 check (128 slots by default, up to ≈ 51 s: the distance ÷ the cluster's slot rate, taken at the slowest rate of the slot-params table, 2.5 slots/s — about 27 s at Alpenglow's measured 4.667; a lag
   that grows during a slow take cycle is not bounded by it), so a lower distance on the spare's validator
   narrows it. **The starvation** — introduced by Block 6.3.1's own-view veto, an availability regression (never a
   double-sign): Block 6.3 has no veto and takes these holders. A `TIER2` that fails slowly — times out, or answers
@@ -189,7 +189,7 @@ See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 ```bash
 cd tests && bash run_all.sh
 ```
-57 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
+58 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
 mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Seven older controls compare
 against an earlier release's file, which this repository does not ship; they print `⏭ SKIP` instead of passing (Block 6.4
 moves them onto the harness's `mutate()`). Network clients reached

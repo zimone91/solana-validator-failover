@@ -268,29 +268,34 @@ ask_choice "Install mode" "simple" "simple" "advanced"
 INSTALL_MODE="$REPLY"
 if [[ "$INSTALL_MODE" == "advanced" ]]; then ADVANCED=true; else ADVANCED=false; fi
 
+# v0.7 (AG-1.6; G11): the fast-delinquency preset lives HERE, once; every line below reads it. Alpenglow's healthy vote lag measured p50 2, p90 8,
+# max 9 slots (665 mainnet accounts, 2026-11-01), so the old preset 15 sat close to the tail of the lag it is compared with; 24 is the floor of
+# the existing N6 band (24-48: a lag a healthy holder does not reach). 0 = off. The rule the tests pin: a preset is 0 or >= 24.
+MAX_DELINQ_PRESET=24
+
 # Set recommended defaults based on role.
 # v0.6.6 (N1): TAKEOVER_DELAY must be >= PRIMARY self-fence worst case (30) + margin (30) = 60 so the
 # PRIMARY relinquishes BEFORE this spare can take (no cross-node double-stake). Fast-detect
-# (MAX_DELINQUENT_SLOTS=15) shaves the delinquency head-start D — safe, because the invariant does NOT
+# (MAX_DELINQUENT_SLOTS, the preset above) shaves the delinquency head-start D — safe, because the invariant does NOT
 # rely on D (the binding gate is still TAKEOVER_DELAY).
 if [[ "$CFG_ROLE" == "STANDBY" ]]; then
     ROLE_TAKEOVER_DELAY=60
     ROLE_CHECK_INTERVAL=3
     ROLE_GOSSIP_VERIFY=true
-    ROLE_MAX_DELINQ_SLOTS=15
+    ROLE_MAX_DELINQ_SLOTS=$MAX_DELINQ_PRESET
     ROLE_NODE_SUFFIX="-STANDBY"
     ok "Role: STANDBY (safe-fast takeover, gossip verified)"
     echo ""
-    echo -e "  ${CYAN}Preset: TAKEOVER_DELAY=60s, CHECK_INTERVAL=3s, GOSSIP_VERIFY=true, MAX_DELINQUENT_SLOTS=15${NC}"
+    echo -e "  ${CYAN}Preset: TAKEOVER_DELAY=60s, CHECK_INTERVAL=3s, GOSSIP_VERIFY=true, MAX_DELINQUENT_SLOTS=${MAX_DELINQ_PRESET}${NC}"
 else
     ROLE_TAKEOVER_DELAY=120
     ROLE_CHECK_INTERVAL=5
     ROLE_GOSSIP_VERIFY=false
-    ROLE_MAX_DELINQ_SLOTS=15
+    ROLE_MAX_DELINQ_SLOTS=$MAX_DELINQ_PRESET
     ROLE_NODE_SUFFIX="-BACKUP"
     ok "Role: BACKUP (delayed takeover, gossip OFF, vote-liveness fence ON)"
     echo ""
-    echo -e "  ${CYAN}Preset: TAKEOVER_DELAY=120s, CHECK_INTERVAL=5s, GOSSIP_VERIFY=false, MAX_DELINQUENT_SLOTS=15${NC}"
+    echo -e "  ${CYAN}Preset: TAKEOVER_DELAY=120s, CHECK_INTERVAL=5s, GOSSIP_VERIFY=false, MAX_DELINQUENT_SLOTS=${MAX_DELINQ_PRESET}${NC}"
     echo ""
     echo -e "  ${YELLOW}Why GOSSIP_VERIFY=false for BACKUP?${NC}"
     echo -e "  If STANDBY took identity and then crashed, gossip still shows staked on"
@@ -479,23 +484,23 @@ done
 # Normalize to base-10 so a leading-zero entry is stored in the env as a plain decimal.
 CFG_WINDOW_SIZE=$((10#$CFG_WINDOW_SIZE)); CFG_WINDOW_THRESHOLD=$((10#$CFG_WINDOW_THRESHOLD))
 
-# v0.6.9 (Phase A): expert knob — SHOWN only in advanced mode; simple uses the safe preset 15.
+# v0.6.9 (Phase A): expert knob — SHOWN only in advanced mode; simple uses the safe preset (MAX_DELINQ_PRESET).
 if [[ "$ADVANCED" == "true" ]]; then
 echo ""
 echo -e "  ${BOLD}Fast delinquency detection:${NC}"
-echo -e "  By default, Solana RPC marks a validator 'delinquent' after ~150 slots (~60s)."
+echo -e "  By default, Solana RPC marks a validator 'delinquent' after 128 slots without a vote: 26 to 51 s (200-400 ms slots), about 27 s at Alpenglow's rate."
 echo -e "  With this option, STANDBY checks lastVote directly — if it's N slots behind,"
 echo -e "  it counts as delinquent immediately. Much faster detection."
-echo -e "  ${YELLOW}Preset 15 (v0.6.6): shaves the detection head-start D. Safe — the cross-node${NC}"
+echo -e "  ${YELLOW}Preset ${MAX_DELINQ_PRESET} (v0.7): shaves the detection head-start D. Safe — the cross-node${NC}"
 echo -e "  ${YELLOW}timing invariant does NOT rely on D (the binding gate is TAKEOVER_DELAY). 0 = off.${NC}"
 echo ""
 
 # v0.6.7: why-note only — detection SPEED, not a double-sign value, so no danger warning either way.
-echo -e "  ${CYAN}Recommended 15 — detects a stopped PRIMARY quickly without affecting safety; 0 disables fast-detect (slower failover).${NC}"
-ask_numeric "Fast delinquency (slots behind, 0=off, 15=fast preset)" "${MAX_DELINQUENT_SLOTS:-$ROLE_MAX_DELINQ_SLOTS}" 0
+echo -e "  ${CYAN}Recommended ${MAX_DELINQ_PRESET} — detects a stopped PRIMARY quickly without affecting safety; 0 disables fast-detect (slower failover).${NC}"
+ask_numeric "Fast delinquency (slots behind, 0=off, ${MAX_DELINQ_PRESET}=fast preset)" "${MAX_DELINQUENT_SLOTS:-$ROLE_MAX_DELINQ_SLOTS}" 0
 CFG_MAX_DELINQ_SLOTS="$REPLY"
 else
-    CFG_MAX_DELINQ_SLOTS=15   # simple-mode safe default (verified preset)
+    CFG_MAX_DELINQ_SLOTS=$MAX_DELINQ_PRESET   # simple-mode safe default (the preset above)
 fi
 
 echo ""
