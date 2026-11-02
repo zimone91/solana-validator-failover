@@ -5,7 +5,7 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
-- **AG-3 (rc1) — the armed cold take under Alpenglow, opt-in; the holder's gap rule; unit and ceremony hygiene.** A standby with `AG_ARMED_TAKE=true`
+- **AG-3 (rc1) — the armed cold take under Alpenglow, opt-in; the holder's gap rule and hung-validator rung; unit and ceremony hygiene.** A standby with `AG_ARMED_TAKE=true`
   (default `false`; only the literal `true` arms, anything else is not armed and says so once at start) takes the staked identity itself - cold - when every gate
   of the page has said "take now" and a readiness margin also holds. The primary never takes, armed or not. Every figure and limit:
   [docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1).
