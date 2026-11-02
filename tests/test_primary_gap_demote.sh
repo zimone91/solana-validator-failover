@@ -41,6 +41,12 @@
 #   (19) HOLDER_UNREACHABLE_STOP_SECS=29 refuses to start   (20) _validator_pid: the unit's MainPID (canonical, > 1, alive) first, pgrep after
 #   (21) structure: _hung_check in the unreachable branch before the display, _hung_reset right after the readable identity; the standby has none of it
 # RED ON THE BASE (aa49329 + this suite): no _hung_check, so no hung holder is ever stopped, a 29 s knob is accepted, _validator_pid ignores MainPID.
+#   (23) THE RUNG'S TIMELINE (claim = check for the figures in SAFETY and the knob comment; AG-3.6d): the REAL main loop, _hung_check and _selffence_hard_stop over a FILE clock, the mocked
+#        calls running to their own bounds (curl -m, timeout T + K): the clock reads 0 / 12 / 23 / 34 s (the first unreadable cycle also takes the baseline read), the default knob decides
+#        on the 4th reading and the validator is dead 48 to 51 s after the hang (fast branch), 50 to 53 s / 70 to 73 s (normal ladder, stop 2 s / wedged); knobs 13..23 decide at 23;
+#        Frankendancer (5 s RPC read): 0 / 9 / 17 / 25 / 33, dead 44 to 47 s; the external read's cost moves it second for second.
+# (23) is NOT red on the base: it pins what the code already does (the texts of AG-3.6b had the clock 0 / 11 / 22 / 33 and 49 to 55 s / 70 to 75 s, from a world in which the external read
+# costs nothing); its red is its seven mutants - a bound moved in the code moves the timeline.
 #
 # harness: tests/lib/harness.sh - ok/bad+banners, paths, mutate(), extract_region.
 set +e
@@ -555,6 +561,147 @@ else
 fi
 
 
+# ── (23) the rung's TIMELINE, from the code: the real loop and the real ladder over a simulated clock (the figures in SAFETY and in the knob comment are claims; this is their check) ──
+echo ""; echo "─── (23) the rung's timeline: the real main loop and the real ladder over a file clock - the clock reads 0 / 12 / 23 / 34 s, the validator is dead 48 to 51 s after the hang (fast branch), 70 to 73 s (normal ladder, stop wedged) ───"
+rung_timeline() {   # rung_timeline <script> <knob> <phi> <fast|healthy|wedged> <external read s> [agave|frankendancer] -> "stamp=<s after the hang> n=<the decision's clock> start=<the ladder starts, s after the hang> down=<the validator is dead, s after the hang>"
+    local script="$1" knob="$2" phi="$3" ladder="$4" sample="${5:-1}" vt="${6:-agave}" cs region
+    cs=$(cut_src "$script"); region=$(extract_region "$script" '^while \$_running; do' '^done$') || { echo "NO-REGION"; return 0; }
+    (
+        set +e
+        EVF=$(mktemp); CLK=$(mktemp); echo 0 > "$CLK"; rm -f "$CLK.dead"; export EVF CLK
+        trap 'rm -f "$EVF" "$CLK" "$CLK.dead"' EXIT
+        # shellcheck disable=SC1090
+        source "$cs" 2>/dev/null
+        eval "run_loop() {
+$region
+}"
+        # the clock is a FILE: every bounded call below advances it by what the real call would take, so the $( ) subshells of the loop count too
+        mono_now() { cat "$CLK"; }
+        adv() { echo $(( $(cat "$CLK") + $1 )) > "$CLK"; }
+        ev() { printf '%s\n' "$*" >> "$EVF"; }
+        STAKED_PUBKEY="$STK"; UNSTAKED_PUBKEY="$UNS"; UNSTAKED_KEYPAIR="$EVF"; LEDGER_PATH="$EVF.ledger"; VALIDATOR_TYPE="$vt"; VALIDATOR_SERVICE=solana
+        LOCAL_RPC="http://127.0.0.1:8899"; SOLANA_PATH="$EVF.bin"
+        TG_ENABLED=false; DRY_RUN=false; ALERT_THROTTLE=600; PRIMARY_SELF_FENCE=true      # CHECK_INTERVAL, TURBO_INTERVAL, SETIDENTITY_TIMEOUT, HARD_STOP_REVERIFY_SECS: the shipped defaults
+        CONNECTIVITY_RETRIES=99; MAX_VOTE_LATENCY=0; DELINQUENCY_RETRIES=1; STARTUP_GRACE=30; RECOVERY_MODE=manual
+        HOLDER_UNREACHABLE_STOP_SECS="$knob"; SELF_FENCE_HARD_STOP=true
+        CYCLE=0; _last_heartbeat=$(date +%s); HEARTBEAT_INTERVAL=2000000000; _last_known_identity="$STK"
+        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _vat_cycle() { :; }; _fence_rot_check() { :; }; _g2_step() { :; }; _elapsed_step() { :; }
+        flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }; _watchdog_pet() { :; }; send_telegram() { return 0; }; send_webhook() { :; }
+        log_info() { :; }; log_error() { :; }
+        log_warn() { case "$1" in *"[hung] the validator's identity is unreadable while STAKED"*) ev "STAMP $(mono_now)" ;; esac; }
+        alert() { return 0; }; alert_info() { :; }; alert_warn() { :; }
+        check_internet() { return 0; }; check_self_fence_isolation() { return 1; }; check_identity_collision() { return 0; }; tier1_check_delinquency() { return 1; }
+        tier1_get_vote_latency() { echo 1; }; verify_latency_tiered() { return 0; }; _vat_hold() { return 1; }
+        window_push() { :; }; window_count() { echo 0; }; window_triggered() { return 1; }; window_mostly_clear() { return 1; }; window_reset() { :; }
+        switch_to_unstaked() { return 0; }
+        # the shipped calls, over the mocked world: curl and timeout run to their own -m / T bound (a SIGSTOPped validator accepts the connection and never answers)
+        curl() { local m=0; while [[ $# -gt 0 ]]; do case "$1" in -m) m="$2"; shift ;; esac; shift; done; adv "$m"; return 28; }
+        timeout() {   # timeout [-k K] T cmd... - K is the kill grace: a command that ignores TERM runs T + K s
+            local k=0 t
+            [[ "$1" == "-k" ]] && { k="$2"; shift 2; }
+            t="$1"; shift
+            case "$*" in
+                *contact-info*) adv "$t"; return 124 ;;   # the admin socket of a hung validator: the read runs into its bound
+                *systemctl\ stop*)
+                    case "$ladder" in
+                        healthy) adv 2; echo "$(mono_now)" > "$CLK.dead"; return 0 ;;   # the stop takes 2 s and works
+                        *)       adv $(( t + k )); return 124 ;;                       # wedged: the bound, then the kill grace
+                    esac ;;
+            esac
+            return 0
+        }
+        _hung_local_slot_real=$(declare -f _hung_local_slot | sed '1s/_hung_local_slot/_hung_local_slot_real/'); eval "$_hung_local_slot_real"
+        _hung_local_slot() { ev "SLOT $(mono_now)"; _hung_local_slot_real; }
+        get_staked_liveness_sample() { local d; adv "$sample"; d=$(mono_now); printf '5000 %s T2\n' $(( 9000 + d )); }   # the external read: lastVote frozen, the tip advancing
+        eval "$(declare -f get_local_identity | sed '1s/get_local_identity/_gli_real/')"
+        get_local_identity() { if [[ $CYCLE -eq 0 ]]; then echo "$STAKED_PUBKEY"; else _gli_real; fi; }   # cycle 0 is healthy; then the hang: the read runs into its bound
+        case "$ladder" in fast) PSTATE=T ;; *) PSTATE=S ;; esac
+        _proc_state() { printf '%s' "$PSTATE"; }
+        pgrep() { [[ -e "$CLK.dead" ]] || echo 4242; return 0; }
+        kill() { if [[ "$1" == "-9" ]]; then echo "$(mono_now)" > "$CLK.dead"; fi; return 0; }   # a hung process ignores TERM; only SIGKILL ends it
+        sleep() { adv "$1"; }
+        eval "$(declare -f _selffence_hard_stop | sed '1s/_selffence_hard_stop/_orig_hs/')"
+        _selffence_hard_stop() { ev "LADDER_START $(mono_now)"; _orig_hs "$@"; local rc=$?; ev "LADDER_END $(mono_now) rc=$rc"; return $rc; }
+        _watchdog_sleep() { adv "$1"; CYCLE=$(( CYCLE + 1 )); [[ -e "$CLK.dead" && $(cat "$CLK") -ge $(cat "$CLK.dead") ]] && _running=false; [[ $CYCLE -gt 40 ]] && _running=false; }
+        _current_interval=$CHECK_INTERVAL
+        # the hang H is PHI s before the first cycle that finds it: cycle 0 is healthy and ends with its sleep, cycle 1 starts at CHECK_INTERVAL
+        local t1=$CHECK_INTERVAL H stamp slot lad down
+        H=$(( t1 - phi ))
+        _running=true; run_loop
+        stamp=$(grep '^STAMP' "$EVF" | head -1 | cut -d' ' -f2); slot=$(grep '^SLOT' "$EVF" | head -1 | cut -d' ' -f2); lad=$(grep '^LADDER_START' "$EVF" | head -1 | cut -d' ' -f2)
+        down=$(cat "$CLK.dead" 2>/dev/null)
+        if [[ -n "$stamp" && -n "$slot" && -n "$lad" && -n "$down" ]]; then
+            printf 'stamp=%s n=%s start=%s down=%s\n' $(( stamp - H )) $(( slot - stamp )) $(( lad - H )) $(( down - H ))
+        else
+            printf 'NO-DECISION stamp=[%s] slot=[%s] ladder=[%s] down=[%s]\n' "$stamp" "$slot" "$lad" "$down"
+        fi
+    )
+}
+tl_ok=1; tl_bad=""
+tl_expect() {   # tl_expect <expected line> <script> <rung_timeline args...>
+    local want="$1" got; shift
+    got=$(rung_timeline "$@")
+    [[ "$got" == "$want" ]] || { tl_ok=0; tl_bad="$tl_bad [$* -> $got, want $want]"; }
+}
+# (23a) the default knob 30 on the fast branch (state T): the hang lands 0..3 s before a cycle starts; the first failed read ends 8..11 s after it; the clock reads 0 / 12 / 23 / 34 (the first cycle also takes the 1 s baseline read)
+for phi in 0 1 2 3; do tl_expect "stamp=$((8 + phi)) n=34 start=$((48 + phi)) down=$((48 + phi))" "$PRIMARY" 30 $phi fast 1; done
+if [[ $tl_ok -eq 1 ]]; then
+    ok "(23a) HOLDER_UNREACHABLE_STOP_SECS=30, a stopped validator (state T), the hang 0..3 s before a cycle: the first failed identity read ends 8 to 11 s after the hang, the rung decides on the 4th reading (n=34, the clock 0 / 12 / 23 / 34), and the validator is dead 48 to 51 s after the hang (the fast branch kills at once)"
+else
+    bad "(23a) the default rung timeline moved:$tl_bad"
+fi
+# (23b) the normal ladder: a stop that works in 2 s, and a stop that is wedged for its whole bound (timeout -k 5 15 = 20 s, then the mask and the 2 s after SIGTERM before SIGKILL)
+tl_ok=1; tl_bad=""
+for phi in 0 3; do
+    tl_expect "stamp=$((8 + phi)) n=34 start=$((48 + phi)) down=$((50 + phi))" "$PRIMARY" 30 $phi healthy 1
+    tl_expect "stamp=$((8 + phi)) n=34 start=$((48 + phi)) down=$((70 + phi))" "$PRIMARY" 30 $phi wedged 1
+done
+if [[ $tl_ok -eq 1 ]]; then
+    ok "(23b) the normal ladder (state S): the validator is dead 50 to 53 s after the hang when 'systemctl stop' returns after 2 s, 70 to 73 s when it is wedged for its whole bound (15 s + 5 s kill grace, then SIGTERM, 2 s, SIGKILL)"
+else
+    bad "(23b) the normal ladder's timeline moved:$tl_bad"
+fi
+# (23c) the clock is quantised: every knob from 13 to 23 acts on the 3rd reading (n=23), every knob from 24 to 34 on the 4th (n=34)
+tl_ok=1; tl_bad=""
+for k in 13 20 22 23; do tl_expect "stamp=8 n=23 start=37 down=37" "$PRIMARY" $k 0 fast 1; done
+for k in 24 30 34; do tl_expect "stamp=8 n=34 start=48 down=48" "$PRIMARY" $k 0 fast 1; done
+tl_expect "stamp=8 n=45 start=59 down=59" "$PRIMARY" 35 0 fast 1
+if [[ $tl_ok -eq 1 ]]; then
+    ok "(23c) the rung's clock moves in whole readings: a knob of 13, 20, 22 or 23 decides at n=23 (the 20 floor is in the same band as 13), 24 to 34 at n=34, 35 at n=45"
+else
+    bad "(23c) the quantisation moved:$tl_bad"
+fi
+# (23d) Frankendancer: the identity read is an RPC bounded at 5 s, so the cycles are 8 s apart: the clock reads 0 / 9 / 17 / 25 / 33
+tl_ok=1; tl_bad=""
+for phi in 0 3; do
+    tl_expect "stamp=$((5 + phi)) n=33 start=$((44 + phi)) down=$((44 + phi))" "$PRIMARY" 30 $phi fast 1 frankendancer
+    tl_expect "stamp=$((5 + phi)) n=33 start=$((44 + phi)) down=$((66 + phi))" "$PRIMARY" 30 $phi wedged 1 frankendancer
+done
+tl_expect "stamp=5 n=25 start=36 down=36" "$PRIMARY" 22 0 fast 1 frankendancer
+if [[ $tl_ok -eq 1 ]]; then
+    ok "(23d) Frankendancer (the identity read is a 5 s RPC): the clock reads 0 / 9 / 17 / 25 / 33, the default knob decides at n=33 and the validator is dead 44 to 47 s after the hang (fast), 66 to 69 s (stop wedged); a knob of 22 decides at n=25"
+else
+    bad "(23d) the Frankendancer timeline moved:$tl_bad"
+fi
+# (23e) the external read of the vote account is the one figure the code cannot bound by itself (two providers, a network): every second it takes beyond 1 s moves the whole timeline by a second
+tl_ok=1; tl_bad=""
+tl_expect "stamp=8 n=33 start=46 down=46" "$PRIMARY" 30 0 fast 0
+tl_expect "stamp=8 n=35 start=50 down=50" "$PRIMARY" 30 0 fast 2
+if [[ $tl_ok -eq 1 ]]; then
+    ok "(23e) the external read's cost moves the numbers (the figure the texts call 'about 1 s'): free = n=33, dead 46 s after the hang; 2 s = n=35, dead 50 s"
+else
+    bad "(23e) the external-read sensitivity moved:$tl_bad"
+fi
+p_timeline_all() {   # p_timeline_all <script> - one case from each of (23a)-(23d): the mutants of the figures' sources (the bounds in the code) turn it red
+    local s="$1"
+    [[ "$(rung_timeline "$s" 30 0 fast 1)" == "stamp=8 n=34 start=48 down=48" ]] \
+      && [[ "$(rung_timeline "$s" 30 3 healthy 1)" == "stamp=11 n=34 start=51 down=53" ]] \
+      && [[ "$(rung_timeline "$s" 30 0 wedged 1)" == "stamp=8 n=34 start=48 down=70" ]] \
+      && [[ "$(rung_timeline "$s" 22 0 fast 1)" == "stamp=8 n=23 start=37 down=37" ]] \
+      && [[ "$(rung_timeline "$s" 30 3 fast 1 frankendancer)" == "stamp=8 n=33 start=47 down=47" ]]
+}
+
+
 # ── (12) controls ─────────────────────────────────────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (12) CONTROLS (mutate()): each mutant must turn its case red ───"
 ctl_ok=1; ctl_rows=""
@@ -631,6 +778,14 @@ ctl_rc fast-no-mask "$LG"'s/^        sc_out=""; sc_rc=1$/        sc_out=""; sc_r
 ctl_rc fast-keeps-sigterm "$LG"'s/^        if \[\[ -z "\$_hs_fast" \]\]; then .*$/        if true; then/' p_fast_T
 ctl_rc fast-no-reverify "$LG"'s/^    _watchdog_sleep "\${HARD_STOP_REVERIFY_SECS:-15}".*$/    :/' p_fast_verified
 ctl_rc proc-state-wrong-letter '/^_proc_state() {/,/^}/ s/\${_st:0:1}/${_st:2:1}/' p_proc_state
+# the rung's timeline (23): the bounds the figures in the texts come from - a bound moved in the code moves the timeline, the case turns red
+ctl_rc tl-local-read-3 '/^_hung_local_slot() {/,/^}/ s/-m 5/-m 3/' p_timeline_all
+ctl_rc tl-identity-bound-6 's/timeout 8 "\$SOLANA_PATH\/agave-validator"/timeout 6 "$SOLANA_PATH\/agave-validator"/' p_timeline_all
+ctl_rc tl-frankendancer-bound-3 '/^get_local_identity() {/,/^}/ s/curl -s -m 5/curl -s -m 3/' p_timeline_all
+ctl_rc tl-stop-bound-10 "$LG"'s/timeout -k 5 15 systemctl stop/timeout -k 5 10 systemctl stop/' p_timeline_all
+ctl_rc tl-term-grace-4 "$LG"'s/^            sleep 2; pid=\$(_validator_pid)/            sleep 4; pid=$(_validator_pid)/' p_timeline_all
+ctl_rc tl-check-interval-5 's/^CHECK_INTERVAL=3 /CHECK_INTERVAL=5 /' p_timeline_all
+ctl_rc tl-fast-branch-gone "$LG"'s/case "\$_hs_st" in T|D) _hs_fast=1;/case "$_hs_st" in Z) _hs_fast=1;/' p_timeline_all
 [[ $ctl_ok -eq 1 ]] && ok "(12) every mutant of the rule turns its case red:$ctl_rows" || bad "(12) a control is not red (NOT-APPLIED = its sed matched nothing):$ctl_rows"
 
 results_banner

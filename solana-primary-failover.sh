@@ -258,16 +258,20 @@ HOLDER_GAP_DEMOTE_SECS=30
 # last seen STAKED, AND it is still the same validator process (its unit not starting or stopping), AND LOCAL getSlot is silent, AND one
 # external read of the vote account (TIER2_RPC, then TIER3_RPC) shows lastVote NOT growing while the cluster tip does, the validator is
 # hung and not voting: it is HARD-STOPPED through the self-fence ladder. Anything else - an external read that does not answer, lastVote
-# growing, a local RPC that answers, a restarted process - is NOT stopped (a voting validator with a wedged admin socket is left alone: a
+# growing, a local RPC that answers, a process that changed during the episode - is NOT stopped (a voting validator with a wedged admin socket is left alone: a
 # restart costs minutes of missed votes): a page, throttled by ALERT_THROTTLE. DRY_RUN=true pages what it would stop and stops nothing.
 # Floor 20. Needs VOTE_PUBKEY (the external read looks the vote account up).
 # THE LADDER'S TWO BRANCHES: a process in state T (stopped) or D (uninterruptible sleep) cannot handle SIGTERM, so `systemctl stop` would only wait
 # out its timeout - the ladder skips it and goes straight to mask --runtime, SIGKILL, verify. Any other state (or a state that cannot be read)
 # takes the normal ladder: systemctl stop first, then mask --runtime if that failed, SIGTERM, SIGKILL, verify.
-# TIMING: unreadable cycles are about 11 s apart (the 8 s identity read + CHECK_INTERVAL), so the rung acts on the first unreadable cycle at or
-# after this many seconds (30-41 s after the first one), then LOCAL getSlot (up to 5 s) and one external read (about 1 s); the kill follows at
-# once on the fast branch. The clock moves in whole cycles (0, 11, 22, 33 s): 30 is the third cycle, 22 would be the second. From the hang the validator is down
-# in 49 to 55 s (fast branch) or 70 to 75 s (normal ladder); the spare's earliest take (TAKEOVER_DELAY 60 from the anchor, plus the gates) is 65 to 73 s after the last vote. Raise the one, raise the other.
+# TIMING (the real loop and the real ladder over a simulated clock: tests/test_primary_gap_demote.sh (23)): unreadable cycles are 11 s apart (the 8 s identity
+# read + CHECK_INTERVAL 3) and the first one also takes the baseline read of the vote account (about 1 s), so the rung's clock reads 0, 12, 23, 34 s and it acts
+# on the first reading at or after this many seconds: 30 is the fourth (34 s after the first unreadable cycle), 22 would be the third (23 s; so would any value
+# from 13 to 23). That cycle then spends up to 5 s on LOCAL getSlot and about 1 s on the external read; the fast branch kills at once. From the hang the validator
+# is dead 48 to 51 s later on the fast branch, 50 to 53 s on the normal ladder when `systemctl stop` returns after 2 s, 70 to 73 s when it is wedged for its whole
+# bound (the reads at their bounds, the host's own work counted as zero: every second the external read takes beyond 1 s adds a second; Frankendancer reads the
+# identity over a 5 s RPC: 0, 9, 17, 25, 33 s, dead 44 to 47 s). The spare's earliest take (TAKEOVER_DELAY 60 from the anchor, plus the gates) is 65 to 73 s after
+# the last vote. Raise the one, raise the other.
 HOLDER_UNREACHABLE_STOP_SECS=30
 # v0.6.8 (B1): bound the demote/promote admin-socket calls. set-identity / authorized-voter run on the
 # SAME admin RPC socket that get_local_identity wraps in `timeout 8` ("can hang indefinitely under heavy
@@ -6609,7 +6613,9 @@ _hung_rebase() { _hung_lv=$_hs_lv; _hung_lv_tip=$_hs_ref; _hung_lv_tier=$_hs_tie
 # HARD-STOP the validator when it is provably hung (the same process, its unit not busy, LOCAL getSlot silent, lastVote unchanged for >=
 # VOTE_LIVENESS_MIN_INTERVAL while the cluster tip advanced, both reads from the same provider) - otherwise NOT, with the reason in a throttled
 # page. Every doubt (an external read that fails, a view that did not advance, a lastVote that grows or goes backwards, a process that changed)
-# is a "not stopped": a voting validator is never killed, and a restarted one never either. The kill is _selffence_hard_stop, untouched.
+# is a "not stopped": a voting validator is never killed. LIMIT: the pid is taken at the FIRST unreadable cycle, so a validator that restarted before it (and is
+# still loading its ledger: unit active, local RPC silent, lastVote frozen) is the episode's process and is stopped after the knob like a hung one - it came up on the
+# unstaked identity, nothing staked is lost, the page names the facts. The kill is _selffence_hard_stop, untouched.
 _hung_check() {
     local now n why="" busy pid1 slot age old facts verdict rc
     [[ "$_last_known_identity" == "$STAKED_PUBKEY" && ${_hung_done:-0} -eq 0 ]] || return 0
