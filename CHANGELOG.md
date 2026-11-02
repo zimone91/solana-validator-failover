@@ -18,6 +18,10 @@ All notable changes are documented here. Versions follow the project's internal 
     (`TAKEOVER BLOCKED — authorized-voter add failed`). Reason (A8): an identity before its voter opens a HotSpare / NonVoting window, measured on 2026-10-06 and on the testnet pair on 2026-11-02.
   - **The holder's gap rule:** `HOLDER_GAP_DEMOTE_SECS=30` (floor 20): a staked holder whose monitor did not run for that long (a frozen or suspended host) demotes itself right after the cycle's
     identity read. Pairing rule: the spare's `TAKEOVER_DELAY` ≥ that + 30; `TAKEOVER_DELAY` stays 60 (the standby's floor) = that sum - pinned by the `facts` job together with the other armed-take defaults. An armed spare whose `TAKEOVER_DELAY` is below 60 refuses to start (`DRY_RUN` is no exception); one that is not armed logs a warning.
+  - **The hung holder's rung (AG-3.8):** `HOLDER_UNREACHABLE_STOP_SECS=30` (floor 20): a validator last seen STAKED whose identity stays unreadable for that long is hard-stopped by its own daemon when it is
+    still the same process, LOCAL `getSlot` is silent and the vote account's `lastVote` is frozen while the cluster tip advances (`HOLDER HUNG — HARD STOP`); any doubt is a page, never a kill
+    (`HOLDER UNREACHABLE — not stopped`). A process in state T or D skips `systemctl stop` (the fast branch of the ladder). Reason, measured on the pair (S11a): at 4c6bbc5 the daemon never fenced a SIGSTOPped
+    holder - it paged once, kept the identity and voted again on SIGCONT. The unit's `MainPID` is now the validator pid the ladder kills (pgrep stays the fallback).
   - **Unit and ceremony:** the monitor unit carries an `ExecStop=` that re-sends a lost TERM; `failover arm` refuses a real arm without a readable `LEDGER_PATH` (precondition `P6-ledger`) and
     verifies that the rendered monitor unit carries the `ExecStop=`; both deploy scripts now write the ledger directory they detect into `LEDGER_PATH`.
 

@@ -318,6 +318,14 @@ safety|P|1|`TAKEOVER BLOCKED — authorized-voter add failed`
 safety|P|1|`validator/src/commands/set_identity/mod.rs`
 safety|P|1|`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 60 >= 30 + 30)
 safety|P|1|an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 60 s
+safety|P|1|`HOLDER_UNREACHABLE_STOP_SECS` (default 30 s, floor 20)
+safety|P|1|`HOLDER HUNG — HARD STOP 🚨` names the three facts and the branch taken
+safety|P|1|since AG-3.8 the unreachable path has its own rung
+safety|P|1|a knob of 22 would mean the second
+safety|P|1|the fast branch kills at least about 10 s before it
+readme|P|1|hard-stopped by its own daemon after
+templates|P|1|HOLDER_UNREACHABLE_STOP_SECS=30) hard-stops a mute validator
+templates|P|1|22 would be the second
 safety|P|1|two bounded local reads, the veto, then the margin
 safety|P|1|3 + 36 + 10 + 11 = 60 s, which does not converge either
 safety|P|1|duplicates, not equivocation;
@@ -420,6 +428,7 @@ ctl9 p-notif-mark "$NOTIF" 's/| `RECOVERED TO STAKED ✅` \/ `RECOVERY FAILED �
 ca() { claims_for arm "$1"; }
 ctl9 p-arm-summary "$ARM" '/Alpenglow mode (v0.7): the pairing (P5), the vantage checks (P6) and this summary condition only the retained take path/d' ca
 ct() { claims_for templates "$1" "$ENV_P"; }
+cpt() { claims_for templates "$ENVS" "$1"; }   # the mutated PRIMARY template + the untouched standby one
 ctl9 p-template-header "$ENVS" 's/^# v0\.7 ALPENGLOW MODE (always on): by default FO never takes the staked identity automatically:/# MODE:/' ct
 cx() { claims_for splitbrain "$1"; }
 ctl9 p-splitbrain-note "$SPLIT" 's/Alpenglow note (v0\.7)/Alpenglow note (research pending)/' cx
@@ -447,6 +456,14 @@ ctl9 p-safety-unit-work "$SAFETY" 's/That line is in the monitor skeleton (AG-3.
 ctl9 p-safety-pairing "$SAFETY" 's/`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 60 >= 30 + 30)/`HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 90 >= 30 + 30)/' cq
 ctl9 p-safety-refuse "$SAFETY" 's/an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 60 s/an armed spare warns at start when its `TAKEOVER_DELAY` is below 60 s/' cq
 ctl9 p-template-refuse "$ENVS" 's/an armed spare below 60 REFUSES to start/an armed spare below 60 warns at start/' ct
+ctl9 p-safety-rung "$SAFETY" 's/`HOLDER_UNREACHABLE_STOP_SECS` (default 30 s, floor 20)/`HOLDER_UNREACHABLE_STOP_SECS` (default 45 s, floor 30)/' cq
+ctl9 p-safety-rung-page "$SAFETY" 's/`HOLDER HUNG — HARD STOP 🚨` names the three facts and the branch taken/the hard stop is silent/' cq
+ctl9 p-safety-rung-row "$SAFETY" 's/since AG-3.8 the unreachable path has its own rung/the unreachable path pages and never stops anything/' cq
+ctl9 p-safety-rung-quant "$SAFETY" 's/a knob of 22 would mean the second/a knob of 22 would work like 30/' cq
+ctl9 p-safety-rung-margin "$SAFETY" 's/the fast branch kills at least about 10 s before it/the fast branch kills well after it/' cq
+ctl9 p-readme-rung "$README" 's/hard-stopped by its own daemon after/paged after/' cr
+ctl9 p-template-rung "$ENVS" 's/HOLDER_UNREACHABLE_STOP_SECS=30) hard-stops a mute validator/HOLDER_UNREACHABLE_STOP_SECS=30) pages a mute validator/' ct
+ctl9 p-template-rung-quant "$ENV_P" 's/22 would be the second/22 would be the same/' cpt
 ctl9 p-safety-envfile "$SAFETY" 's/systemd does not expand `\$HOME` in an `EnvironmentFile=`/systemd expands `$HOME` in an `EnvironmentFile=`/' cq
 ctl9 p-readme-version "$README" 's/\*\*v0\.7 needs agave \/ Jito-Solana `4\.4\.0` or newer\*\*/v0.7 runs on any agave/' cr
 ctl9 p-readme-27s "$README" 's/up to about 27 s at the decision point/up to about 15 s at the decision point/' cr

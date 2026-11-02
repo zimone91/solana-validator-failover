@@ -266,7 +266,8 @@ HOLDER_GAP_DEMOTE_SECS=30
 # takes the normal ladder: systemctl stop first, then mask --runtime if that failed, SIGTERM, SIGKILL, verify.
 # TIMING: unreadable cycles are about 11 s apart (the 8 s identity read + CHECK_INTERVAL), so the rung acts on the first unreadable cycle at or
 # after this many seconds (30-41 s after the first one), then LOCAL getSlot (up to 5 s) and one external read (about 1 s); the kill follows at
-# once on the fast branch. The spare's TAKEOVER_DELAY (shipped 60) must stay above the whole of it. Raise the one, raise the other.
+# once on the fast branch. The clock moves in whole cycles (0, 11, 22, 33 s): 30 is the third cycle, 22 would be the second. From the hang the validator is down
+# in 49 to 55 s (fast branch) or 70 to 75 s (normal ladder); the spare's earliest take (TAKEOVER_DELAY 60 from the anchor, plus the gates) is 65 to 73 s after the last vote. Raise the one, raise the other.
 HOLDER_UNREACHABLE_STOP_SECS=30
 # v0.6.8 (B1): bound the demote/promote admin-socket calls. set-identity / authorized-voter run on the
 # SAME admin RPC socket that get_local_identity wraps in `timeout 8` ("can hang indefinitely under heavy
