@@ -3,6 +3,11 @@
 > **Status:** read the honest-limits note in the [README](../README.md) and the safety model in
 > [SAFETY.md](SAFETY.md) before arming anything. `DRY_RUN=true` is the shipped default everywhere.
 
+> **v0.7 — ALPENGLOW MODE (always on).** FO never takes the staked identity automatically: the standby's take, the primary's `RECOVERY_MODE=rpc` re-take and the pre-warm are
+> withheld, and a take that every gate approves is **paged once per episode** (`TAKEOVER WITHHELD — Alpenglow mode`). The staked identity moves by the operator's *warm swap* —
+> see **Manual switch-back** below and [SAFETY.md — Alpenglow](SAFETY.md#alpenglow-mode-v07). Everywhere this manual describes a spare *taking* the identity, the takeover timelines,
+> `ALLOW_UNFENCED_TAKEOVER`, `RECOVERY_MODE=rpc` or give-back, it describes the **retained path**, which v0.7 does not run: the same gates decide when the *page* is sent.
+
 > **v0.6.9 changes (vs v0.6.8) — `DRY_RUN=true` default unchanged.**
 > **"Post-failover symmetry" hardening** — the protection the PRIMARY demote path already had is
 > evened out across the states the system lives in *after* a failover. **H1 (the big one):** the
@@ -130,7 +135,7 @@
 │  T2/T3: confirm only on trigger  │     │  T2/T3: confirm only on trigger  │
 │                                  │     │  Fence: liveness (gossip advis.) │
 │  Identity: STAKED                │────→│  Identity: UNSTAKED              │
-│  (normal operation)              │     │  (hot spare)                     │
+│  (normal operation)              │     │  (monitoring spare)              │
 └──────────────────────────────────┘     └──────────────────────────────────┘
                                                           │
                                          ┌────────────────▼────────────────┐
@@ -157,7 +162,7 @@ Normal operation: **0 external RPC calls**. Everything via LOCAL RPC.
 1. PRIMARY: Internet lost → parallel pings fail 3x → switch to unstaked (~9s). OR isolated from the
    supermajority (LOCAL confirmed slot frozen / LOCAL JSON-RPC silent) → **self-fence** to unstaked at
    ~30s (`SELF_FENCE_ISOLATION_SECS`/`SELF_FENCE_NOANSWER_SECS`) — it relinquishes BEFORE any spare takes.
-2. STANDBY: LOCAL RPC sees delinquent → sliding window 7/10 → external confirm → **fence (vote-liveness authoritative; gossip advisory)** → takes staked (~70s: `TAKEOVER_DELAY=60` after the PRIMARY has relinquished at ~30s, with a 30s cross-node margin)
+2. STANDBY: LOCAL RPC sees delinquent → sliding window 7/10 → external confirm → **fence (vote-liveness authoritative; gossip advisory)** → in Alpenglow mode **pages** that the staked identity is free to be moved (the retained path took it, ~70s: `TAKEOVER_DELAY=60` after the PRIMARY has relinquished at ~30s, with a 30s cross-node margin)
 3. BACKUP: Same with 120s delay + the **vote-liveness** fence (no longer blind). Only activates if STANDBY also stopped voting (~130s)
 4. PRIMARY (rpc mode): checks T2/T3 → sees STANDBY holds/votes the identity → stays unstaked
 
@@ -216,11 +221,11 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   - **The daemon emits an URGENT alert at startup** if the validator was started on the staked
     identity. It does **not** refuse to run — refusing would leave the node unmonitored; a loud,
     persistent page is the safer choice.
-  - **Recommended fix — the Anza `identity.json` symlink.** Point `solana.service`'s startup
-    `--identity` at a soft link (e.g. `identity.json`) that targets the **unstaked** keypair, and
-    repoint it on each transition. A restart then always fails safe to unstaked. If your
-    validator's unit is managed by your own deployment tooling, make that startup-flag change
-    through that tooling so it survives redeploys.
+  - **The fix — this node's own unstaked keypair, never re-pointed.** The validator's startup
+    `--identity` is this node's own **unstaked** keypair file — a fixed path, not a link that is moved at
+    each transition — so every restart comes up unstaked, whatever happened last. The staked identity is
+    only ever set at runtime (the warm swap, below). If your validator's unit is managed by your own
+    deployment tooling, make that startup-flag change through that tooling so it survives redeploys.
 - **`staked ≠ unstaked`.** Each node has a unique unstaked keypair; the staked keypair is
   shared. The scripts refuse to start (and deploy refuses to finish) if the two are equal,
   or if either pubkey cannot be derived.
@@ -239,20 +244,18 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   external RPCs to sample `lastVote`, so a both-externals-down takeover blocked regardless. The one
   explicit emergency local-only path is `ALLOW_UNFENCED_TAKEOVER=true` with `VOTE_LIVENESS_VERIFY=false`,
   which disables the split-brain fence entirely.)*
-- **Automatic `set-identity` runs WITHOUT `--require-tower`;** PRIMARY still deletes the
-  staked tower when it goes unstaked. `--require-tower` is correct only in the operator-
-  driven switch-back, where the live tower is copied with the identity (see Manual
-  switch-back).
-  - **Why no-tower `set-identity` is safe here (the on-chain floor).** Without a local tower,
-    agave does **not** vote from an empty tower — it seeds the lockout floor from the **on-chain
-    vote account** (`initialize_lockouts_from_bank`), i.e. the vote account's *last landed* vote.
-    That floor is a real safety net, but it lags **in-flight votes** (submitted but not yet landed),
-    so a no-tower takeover is double-sign-safe **only while the previous holder is genuinely not
-    voting** — which is exactly what the delinquency-confirm + vote-liveness fences are built to ensure
-    (they are strong evidence, not proof — see SPLIT-BRAIN-RESIDUAL.md). This
-    is why vote-liveness is mandatory and `TAKEOVER_DELAY` covers the in-flight-vote window. A
-    *corrupt/wrong* tower does not silently fall back — agave exits; only a truly-missing/too-old
-    tower rebuilds from the bank.
+- **FO never touches the vote-history file (v0.7, Alpenglow).** Alpenglow replaces the tower with a
+  vote-history file, `vote_history-<STAKED_PUBKEY>.bin`, in the ledger directory. FO classifies it
+  (absent / present / older than the episode) and logs its sha256 after a demote; it never deletes,
+  moves, copies, truncates or rewrites it — **a vote-history file is never deleted**. (Before v0.7 the
+  PRIMARY deleted the staked tower when it went unstaked; that deletion is gone.) The staked identity
+  moves only by the **warm swap** (see *Manual switch-back*), and FO withholds every automatic take.
+  - **Why the file matters.** It is the record of the slots the identity has voted on. A node that
+    starts voting the staked identity from an older record (or none) can vote on a slot the previous
+    holder already voted on — a double-sign — and FO cannot see from outside whether the old holder's
+    last real vote is above the new holder's root (the on-chain `lastVote` is only a lower bound of
+    it). The warm swap makes the new holder start from the old holder's current record. A `set-identity`
+    runs WITHOUT `--require-tower`: that is a TowerBFT flag and Alpenglow has no tower.
 - **Delinquency threshold = 128 slots** (`DELINQUENT_VALIDATOR_SLOT_DISTANCE`; `getHealth` uses the
   same 128). A vote account is `current` iff `lastVote > tip − 128`, else `delinquent`. Reason in
   **slots, not seconds** — mainnet slot time varies and `lastVote` (the detection reads use
@@ -406,6 +409,13 @@ mkdir -p /root/failover-deploy && cd /root/failover-deploy
 bash deploy-failover-standby.sh
 # Deploy asks: STANDBY or BACKUP role — sets defaults automatically
 ```
+
+### Arming the fence (v0.7): set `LEDGER_PATH` explicitly
+
+Set `LEDGER_PATH` in `failover.env` to the validator's ledger directory **before** `failover arm`. The shipped env writes it empty; the daemons fill it in from the running validator's `--ledger`,
+but the fence (`failover-fence.sh`, run by the unit's `OnFailure=`) has no such detection: with the value empty, every admin-socket call it makes fails to connect and it falls to its stop path
+(the validator is stopped instead of demoted). Note also that the daemons detect the ledger only from the long form `--ledger`: a validator started with the short form `-l` makes them exit 1 at startup
+and ask for `LEDGER_PATH` — set it there too. (The fence reading the ledger the way the daemons do, and `arm` refusing a ledger it cannot resolve, are tracked for the release that decides what stays armed.)
 
 ### Update existing (no re-deploy)
 
@@ -695,6 +705,8 @@ timeline is identical to v0.6.6 (~70s).
 
 ## Expected timelines
 
+> **Alpenglow mode (v0.7):** these are the *retained* take path's timelines — v0.7 sends the page at the moment the take would have been made, and nobody takes.
+
 > **v0.7 (Block 6.3.1):** every take below ends with the spare's own-view veto — one bounded read of
 > its own node (`curl -m 2` + a watchdog pet) that withdraws the take if the holder shows voting there,
 > the read fails, or the spare's own head is not advancing — and the spare samples its own head through
@@ -790,8 +802,8 @@ Expected: `[DRY RUN] Would switch to UNSTAKED`, then `Internet recovered`.
 sed -i 's/DRY_RUN=true/DRY_RUN=false/' /opt/solana-failover/failover.env
 systemctl restart solana-failover
 # Test, then restore manually (path-as-argument, NOT stdin redirection):
-agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-validator-keypair.json
 agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/mainnet-validator-keypair.json
+agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-validator-keypair.json
 ```
 
 ### Phase 4 — Full integration (PRIMARY + STANDBY)
@@ -802,18 +814,9 @@ Both `DRY_RUN=false`. On PRIMARY:
 iptables -I OUTPUT 1 ! -o lo -j DROP; sleep 120; iptables -D OUTPUT ! -o lo -j DROP
 ```
 
-After test, restore (see [Manual switch-back](#manual-switch-back-standby--primary-after-an-incident) for the tower-aware procedure):
-
-```bash
-# On STANDBY — give back (hand the live tower to PRIMARY for vote continuity):
-scp /root/solana/ledger/tower-1_9-<STAKED_PUBKEY>.bin root@PRIMARY:/root/solana/ledger/
-agave-validator --ledger /root/solana/ledger authorized-voter remove-all
-agave-validator --ledger /root/solana/ledger set-identity /path/to/unstaked.json
-
-# On PRIMARY — take back (tower now present → assert it with --require-tower):
-agave-validator --ledger /root/solana/ledger set-identity --require-tower /root/solana/mainnet-validator-keypair.json
-agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/mainnet-validator-keypair.json
-```
+After test, restore with the warm swap — the four steps of [Manual switch-back](#manual-switch-back-standby--primary-after-an-incident): demote the node that holds the staked identity,
+check the vote-history file's sha256 twice, copy it to the other node with a sha check, then `authorized-voter add` and `set-identity` there. (In v0.7 FO does not make the take in this phase:
+it pages `TAKEOVER WITHHELD — Alpenglow mode`, and the swap is yours.)
 
 ---
 
@@ -827,9 +830,10 @@ residual partition case — see SPLIT-BRAIN-RESIDUAL.md):
 agave-validator --ledger /root/solana/ledger authorized-voter remove-all
 agave-validator --ledger /root/solana/ledger set-identity /path/to/unstaked.json
 
-# Step 2: PRIMARY → force staked
-agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-validator-keypair.json
+# Step 2: bring the staked identity back on the node whose vote-history file is the CURRENT one (usually the node that held it last) —
+# if that is not PRIMARY, do the warm swap (Manual switch-back) instead. Voter first, then identity:
 agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/mainnet-validator-keypair.json
+agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-validator-keypair.json
 ```
 
 ---
@@ -850,29 +854,32 @@ PRIMARY (production runs `RECOVERY_MODE=manual`). Once the incident is resolved:
 > systemctl start solana                # boots on the UNSTAKED startup identity (F2 invariant)
 > ```
 
-1. **On the node currently holding the staked identity (usually STANDBY)** — copy the
-   *live* tower to PRIMARY so vote lockouts move with the identity, then drop to unstaked:
+1. **Demote the old holder FIRST** (usually the STANDBY that holds the staked identity), then read the vote-history file's sha256 twice — equal both times means the file has stopped changing:
 
    ```bash
-   scp /root/solana/ledger/tower-1_9-<STAKED_PUBKEY>.bin root@PRIMARY:/root/solana/ledger/
    agave-validator --ledger /root/solana/ledger authorized-voter remove-all
    agave-validator --ledger /root/solana/ledger set-identity /root/solana/unstaked-standby.json
+   sha256sum /root/solana/ledger/vote_history-<STAKED_PUBKEY>.bin; sleep 5; sha256sum /root/solana/ledger/vote_history-<STAKED_PUBKEY>.bin
    ```
 
-2. **On PRIMARY** — bring the staked identity back. Because you just copied the tower, use
-   `--require-tower` so agave refuses to vote if it is missing. This is the **one place
-   `--require-tower` is correct** — you deliberately moved the tower; the automatic
-   codepaths omit it because they have none:
+2. **Copy the file to the new holder** (PRIMARY) and check the sha256 there against step 1:
 
    ```bash
-   agave-validator --ledger /root/solana/ledger set-identity --require-tower /root/solana/mainnet-validator-keypair.json
-   agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/mainnet-validator-keypair.json
+   scp /root/solana/ledger/vote_history-<STAKED_PUBKEY>.bin root@PRIMARY:/root/solana/ledger/
+   ssh root@PRIMARY sha256sum /root/solana/ledger/vote_history-<STAKED_PUBKEY>.bin
    ```
 
-> Why not let PRIMARY auto-recover with its OLD tower? After a long outage PRIMARY's own
-> tower is stale; reusing it risks voting on slots STANDBY already voted (double-sign).
-> PRIMARY therefore **deletes its staked tower** when it goes unstaked, and switch-back
-> uses the *current* tower copied from the node that held the identity.
+3. **On the new holder** — the voter first, then the identity, with no extra flags:
+
+   ```bash
+   agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/mainnet-validator-keypair.json
+   agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-validator-keypair.json
+   ```
+
+> Why a warm swap and not a quick `set-identity`? Under Alpenglow the vote-history file is the record of the slots the identity has voted on. A node that starts voting the staked identity
+> from an older record — or none — can vote on a slot the previous holder already voted on (a double-sign), and nobody can see from outside whether the old holder's last real vote is above
+> the new holder's root. Demoting first stops the file changing; the two equal sha256 reads prove it stopped; the copy hands the new holder the current record. **A vote-history file is never
+> deleted** — by FO or by you — and FO itself never moves or rewrites one.
 
 ---
 

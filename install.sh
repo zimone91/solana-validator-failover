@@ -54,7 +54,7 @@ if [ -z "$ROLE" ]; then
   [ -t 0 ] || die "no TTY — run: FAILOVER_ROLE=primary|standby sh -c \"\$(curl -sSfL https://zim.one/failover/$VERSION)\""
   printf '  Which role is THIS server?\n'
   printf '    1) PRIMARY  — your staked node\n'
-  printf '    2) STANDBY  — hot spare (or BACKUP)\n'
+  printf '    2) STANDBY  — monitoring spare (or BACKUP): pages, never takes the identity (Alpenglow mode)\n'
   printf '  Choose [1/2]: '
   read -r ans || die "aborted"
   case "$ans" in

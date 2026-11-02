@@ -5,6 +5,28 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## Unreleased (v0.7 line)
 
+- **AG-1 — Alpenglow mode: FO never takes the staked identity automatically.** Always on, no knob; every figure and limit is in
+  [docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07).
+  - **The stop:** the standby's `take_staked_identity` and the primary's `switch_to_staked` (`RECOVERY_MODE=rpc`) return right after the
+    own-view veto, before the `DRY_RUN` branch and every admin-socket call; the pre-warm (`PREWARM_VOTER_ADD`) is inert. One page per
+    episode, `TAKEOVER WITHHELD` / `RECOVERY WITHHELD — Alpenglow mode`, with the holder's silence, this node's finalized slot and
+    `getHealth` class, its version against `MIN_VALIDATOR_VERSION` (default 4.4.0), the VAT admission, the vote-history state and the
+    operator path; repeated at most once per `ALERT_THROTTLE`.
+  - **The tripwire** reads the right feature account (`A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS`, Feature account, base64) and only reports.
+  - **Vote history:** `vote_history-<staked pubkey>.bin` is classified and logged (sha256 after a confirmed demote), never touched; the
+    primary demote no longer deletes the tower (the knobs `TOWER_PATH` and friends are gone).
+  - **VAT admission:** `getVoteAccounts.epochVoteAccount` (with `keepUnstakedDelinquents`) is read on a schedule; a *vote-based* demote
+    is withheld, with a page, while the vote account is not in the epoch's vote set — a VAT lapse looks like a dead holder.
+  - **Readiness:** the running version from `getVersion` (`solana-core`), and the class of every local `getHealth` answer
+    (`ok` / `behind N` / `unknown` / `unreadable`; Alpenglow answers Unknown while votor has seen no finalized slot).
+  - **Slots and seconds:** every conversion on an Alpenglow path comes from the slot-params table's two ends (2.5 and 5 slots/s;
+    4.667 measured); the wizard's `MAX_DELINQUENT_SLOTS` preset is 24 (was 15).
+  - **Texts:** the startup `--identity` is this node's own unstaked keypair, never re-pointed (the `identity.json` symlink advice is gone);
+    the tower / `--require-tower` switch-back is the warm swap; every text that promised an automatic takeover says what Alpenglow mode
+    does or is marked *retained path*.
+  - **Tests:** the TERM-trap race of (12e) fails fast and by name instead of running to the suite cap
+    ([docs/SAFETY.md](docs/SAFETY.md), *Known bash behaviour*).
+
 - **Block 6.3.1 — the spare's own view: detection on the slow reliable view (finalized), a veto on the fast one
   (confirmed).** The spare's own node (`LOCAL_RPC`, the one input no `TIER2`/`TIER3` intermediary can splice)
   now testifies at every take, and every piece is veto-only: it can turn a take into a hold, never the reverse.

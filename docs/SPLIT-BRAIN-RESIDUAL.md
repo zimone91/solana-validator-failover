@@ -175,7 +175,12 @@ slashing. The residual above is exactly a vote-equivocation event.
 > mitigation, and the isolation/flap/egress-only testnet scenarios ([SAFETY.md](SAFETY.md#what-has-been-tested))
 > are the validation gate.
 
-> **Alpenglow note (research pending):** Alpenglow replaces TowerBFT (and the tower file) with
-> Votor/BLS certificates. This design deliberately never transfers tower files, which ages well —
-> but the vote-liveness fence and delinquency semantics (`lastVote`, lockouts) will need to be
-> re-derived against Votor before this tool is certified on an Alpenglow cluster.
+> **Alpenglow note (v0.7):** Alpenglow replaces TowerBFT (and the tower file) with Votor/BLS certificates
+> and a **vote-history file** in the ledger directory (`vote_history-<staked pubkey>.bin`). The design above
+> assumed the spare takes over from the chain's last landed vote and that no state moves between nodes; under
+> Alpenglow that is a *cold swap*, whose safety FO cannot see from outside, so **v0.7 never takes the staked
+> identity automatically** (Alpenglow mode): a take every gate approves is withheld and paged, and the operator
+> does the *warm swap* — the old holder demoted first, the history file copied with a sha check, then
+> `authorized-voter add` and `set-identity` on the new holder ([SAFETY.md — Alpenglow](SAFETY.md#alpenglow-mode-v07)).
+> The vote-liveness fence and the delinquency semantics (`lastVote`) still decide *when the page is sent*; re-deriving them
+> against Votor, for a release that takes again, is open work.

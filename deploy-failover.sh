@@ -153,7 +153,7 @@ done
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
 echo -e "  ${BOLD}${CYAN}Solana Failover  ·  PRIMARY  ·  v0.6.10${NC}"
-echo -e "  Automatic staked-identity hot-swap for Solana validators"
+echo -e "  Staked-identity failover monitor for Solana validators — Alpenglow mode: it detects and pages, the swap is yours"
 echo ""
 echo -e "  ${DIM}Author:${NC}     zim.one  ·  https://zim.one"
 echo -e "  ${DIM}Validator:${NC}  ${CYAN}2zykwzzo1pd3H2oSj5j5SRLTvmpa9Nr2S2Bh8tTVd5Tq${NC}"
@@ -270,9 +270,9 @@ if [[ -n "$STARTUP_IDENTITY" && -f "$STARTUP_IDENTITY" ]]; then
     STARTUP_IDENTITY_PUB=$("$SOLANA_PATH/solana-keygen" pubkey "$STARTUP_IDENTITY" 2>/dev/null) || true
     if [[ "${STARTUP_IDENTITY_PUB:-}" == "$STAKED_PUB" ]]; then
         if [[ "$ALLOW_STAKED_STARTUP_IDENTITY" == "true" ]]; then
-            warn "⚠️ Validator startup --identity is STAKED — proceeding ONLY because --allow-staked-startup-identity was given. A solana.service restart boots this node VOTING (double-sign-on-restart). Repoint the startup --identity to the UNSTAKED key (Anza identity.json symlink) ASAP."
+            warn "⚠️ Validator startup --identity is STAKED — proceeding ONLY because --allow-staked-startup-identity was given. A solana.service restart boots this node VOTING (double-sign-on-restart). Fix it ASAP: the validator's startup --identity is this node's own UNSTAKED keypair, never re-pointed: every restart comes up unstaked."
         else
-            fail "Validator startup --identity is the STAKED key: a solana.service restart would boot this node VOTING (double-sign-on-restart). Set the startup --identity to the UNSTAKED keypair (Anza identity.json symlink recommended), or re-run with --allow-staked-startup-identity to override."
+            fail "Validator startup --identity is the STAKED key: a solana.service restart would boot this node VOTING (double-sign-on-restart). Fix it: the validator's startup --identity is this node's own UNSTAKED keypair, never re-pointed: every restart comes up unstaked. (Or re-run with --allow-staked-startup-identity to override.)"
         fi
     elif [[ -n "${STARTUP_IDENTITY_PUB:-}" ]]; then
         ok "Startup --identity is not the staked key — fail-safe"

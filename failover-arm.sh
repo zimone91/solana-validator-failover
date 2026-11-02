@@ -867,6 +867,10 @@ _arm_pairing_summary() {
             _arm_warn "pairing summary: UNPAIRED SPARE — no valid pairing token stored: holder not attested, and the ARMED daemon pages CRITICAL at every start until paired. This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not — the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold; from the release that wires the gate, an unpaired spare's silence-based take is disabled. Pair: run 'failover arm' on the HOLDER first (upgrade order: holder first), copy the token line it prints, then re-run this arm with ARM_PAIRING_TOKEN='<that line>'."
         ;;
     esac
+    # v0.7 (AG-1.7): what the pairing above is FOR. Alpenglow mode: FO never takes the staked identity automatically, so the attestation (P5), the vantage
+    # preconditions (P6) and this summary condition only the RETAINED take path, which v0.7 never runs; what the arm installs and checks is the holder's fence
+    # and the spare's observation (the page of a take that every gate approves).
+    [[ -n "$_ARM_PAIR_SUMMARY" ]] && _arm_log "Alpenglow mode (v0.7): the pairing (P5), the vantage checks (P6) and this summary condition only the retained take path, which v0.7 never runs - FO never takes the staked identity automatically; a take every gate approves is WITHHELD and paged (docs/SAFETY.md, Alpenglow)."
     return 0
 }
 

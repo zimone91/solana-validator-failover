@@ -296,7 +296,7 @@ _DEFAULT_STATE_FILE="$STATE_FILE"   # v0.6.9 (B5): the shipped default, captured
 STATE_MAX_AGE_SECS=900
 # v0.6.9 (H3): if the persisted state says we were STAKED and the startup "waiting for local validator"
 # loop exceeds this many seconds, page 🚨 (PRIMARY UNREACHABLE WHILE STAKED semantics: the daemon cannot
-# self-demote an unreachable validator; a spare may take over — intervene). Once per startup.
+# self-demote an unreachable validator; in Alpenglow mode no spare takes over by itself - the identity stays here until an operator moves it — intervene). Once per startup.
 STARTUP_STAKED_UNREACHABLE_ALERT_SECS=60
 
 # ========================= LOAD EXTERNAL CONFIG ===============================
@@ -2498,7 +2498,7 @@ _ag_take_withheld() {
         notadmitted|unstaked) _vat="${_vat} - the holder's silence is likely a VAT lapse, not a death" ;;
     esac
     _vh=$(_vh_class "$_ep")
-    _t="${_why} - every gate FO has says the take would happen now, and in Alpenglow mode FO never takes the staked identity automatically: nothing was done."
+    _t="${_why} - every gate FO has said the take would happen now, and in Alpenglow mode FO never takes the staked identity automatically: nothing was done."
     _t="${_t} Holder silent ${_since}."
     _t="${_t} This node: finalized slot ${_slot}; getHealth ${_health}; validator ${_ver}."
     _t="${_t} VAT admission: ${_vat}."
@@ -3508,7 +3508,7 @@ _proof_startup_check() {
     if [[ "${ALLOW_UNFENCED_TAKEOVER:-false}" == "true" ]]; then
         # the 6.1 half of the lever integration: the every-START scream (the per-take half is
         # the gate's `bypassed` outcome above).
-        alert "ALLOW_UNFENCED_TAKEOVER=true on an ARMED spare — every take will BYPASS the relinquish-proof gate (no proof the holder relinquished; double-sign risk). Unset the lever unless this is a deliberate, temporary override." "${STAKED_PUBKEY:-unknown}" "PROOF GATE BYPASS ARMED 🚨"
+        alert "ALLOW_UNFENCED_TAKEOVER=true on an ARMED spare — every take will BYPASS the relinquish-proof gate (no proof the holder relinquished; double-sign risk) — in Alpenglow mode (v0.7) no take is made at all, so nothing is bypassed today; this is the retained path's lever. Unset the lever unless this is a deliberate, temporary override." "${STAKED_PUBKEY:-unknown}" "PROOF GATE BYPASS ARMED 🚨"
     fi
     _g2_register   # v0.7 (Block 6.2): register the verified-demote provider (armed+spare already gated above; self-gates on PRIMARY_UNSTAKED_PUBKEY + vantage config) BEFORE the posture lines below, so they print the real registry
     _elapsed_register   # v0.7 (Block 6.3): register the watchdog-elapsed provider — ONLY over a token that classifies ok at _derive_proof_floors (silent otherwise: the §2.7 posture below is the loud part) — BEFORE the posture lines, so the PAIRED line prints the measured registry
@@ -5334,7 +5334,7 @@ _fence_rot_check() {
                     # act-then-alert: the demote path performs the safety action FIRST and carries
                     # its own alerting; the reason below IS the demote page's text.
                     _last_rot_demote_try=$_rot_now
-                    _rot_graceful_demote "Fence rot persisted ${FENCE_ROT_GRACE}s while ARMED+STAKED: ${_rot_found}. Graceful demote — the spare takes over via the verified-demote proof; the healthy side continues."
+                    _rot_graceful_demote "Fence rot persisted ${FENCE_ROT_GRACE}s while ARMED+STAKED: ${_rot_found}. Graceful demote — this node no longer holds the staked identity; in Alpenglow mode no spare takes it by itself, so an operator moves it (warm swap, docs/SAFETY.md)."
                 elif [[ -n "$UNSTAKED_PUBKEY" && "$_rot_id" == "$UNSTAKED_PUBKEY" ]]; then
                     if [[ ${_rot_unstaked_noted:-0} -eq 0 ]]; then
                         _rot_unstaked_noted=1
@@ -5457,9 +5457,9 @@ _selffence_hard_stop() {
     fi
     # v0.6.9 (H2): the ✅ page names the mask state + the exact unmask command for recovery.
     if [[ -n "$masked" ]]; then
-        alert "Demote set-identity wedged ($why); HARD-STOPPED the validator — confirmed DOWN (re-verified after ${HARD_STOP_REVERIFY_SECS:-15}s). Unit ${VALIDATOR_SERVICE:-solana} is MASKED (--runtime): recover with 'systemctl unmask --runtime ${VALIDATOR_SERVICE:-solana}' before restarting (scp tower, restart on the unstaked identity, confirm the spare took over)." "$STAKED_PUBKEY" "PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)"
+        alert "Demote set-identity wedged ($why); HARD-STOPPED the validator — confirmed DOWN (re-verified after ${HARD_STOP_REVERIFY_SECS:-15}s). Unit ${VALIDATOR_SERVICE:-solana} is MASKED (--runtime): recover with 'systemctl unmask --runtime ${VALIDATOR_SERVICE:-solana}' before restarting (restart on the unstaked identity; the staked identity moves only by the warm swap — docs/SAFETY.md, Alpenglow — and a vote-history file is never deleted)." "$STAKED_PUBKEY" "PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)"
     else
-        alert "Demote set-identity wedged ($why); HARD-STOPPED the validator — confirmed DOWN (re-verified after ${HARD_STOP_REVERIFY_SECS:-15}s). Node is down; recover manually (scp tower, restart on the unstaked identity, confirm the spare took over)." "$STAKED_PUBKEY" "PRIMARY SELF-FENCE — HARD STOP ✅"
+        alert "Demote set-identity wedged ($why); HARD-STOPPED the validator — confirmed DOWN (re-verified after ${HARD_STOP_REVERIFY_SECS:-15}s). Node is down; recover manually (restart on the unstaked identity; the staked identity moves only by the warm swap — docs/SAFETY.md, Alpenglow — and a vote-history file is never deleted)." "$STAKED_PUBKEY" "PRIMARY SELF-FENCE — HARD STOP ✅"
     fi
     return 0
 }
@@ -5588,10 +5588,10 @@ switch_to_staked() {
         _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
     else
         local out
-        # v0.6.0: NO --require-tower — split-brain safety is gossip-based and towers aren't
-        # transferred between nodes, so a rebuilt tower is the safe path. --require-tower would
-        # also block recovery. Manual switchback scp's it first. (v0.7 AG-1.3: a demote no longer deletes the tower — nothing
-        # here deletes, moves or rewrites a tower or a vote-history file; this retained path is withheld in AG mode.)
+        # v0.6.0: NO --require-tower on a set-identity (a TowerBFT flag; Alpenglow has no tower). (v0.7 AG-1.3: nothing here deletes, moves or rewrites
+        # a tower or a vote-history file; this retained path is withheld in AG mode.) A staked identity moves by the WARM SWAP (docs/SAFETY.md,
+        # Alpenglow): the old holder demoted first, the vote-history file's sha256 equal on two reads, a copy with a sha check, then on the new
+        # holder `authorized-voter add` and `set-identity`. A vote-history file is never deleted.
         # v0.6.8 (B1): bound but fail-safe (no escalation on the promote path).
         out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" set-identity "$STAKED_KEYPAIR" 2>&1); local _src=$?
         [[ -n "$out" ]] && log_info "set-identity: $out"
@@ -6213,7 +6213,7 @@ startup_checks() {
             startup_id_pub=$("$SOLANA_PATH/solana-keygen" pubkey "$startup_id_path" 2>/dev/null) || true
             if [[ -n "$startup_id_pub" && "$startup_id_pub" == "$STAKED_PUBKEY" ]]; then
                 log_error "Validator startup --identity resolves to the STAKED key — a restart boots this node VOTING (double-sign-on-restart risk)"
-                alert "Validator startup --identity is the STAKED key — a solana.service restart boots this node VOTING even while demoted (double-sign-on-restart). Fix the startup --identity to the unstaked key (Anza identity.json symlink recommended)." "$STAKED_PUBKEY" "STAKED STARTUP IDENTITY 🚨"
+                alert "Validator startup --identity is the STAKED key — a solana.service restart boots this node VOTING even while demoted (double-sign-on-restart). Fix it: the validator's startup --identity is this node's own UNSTAKED keypair, never re-pointed: every restart comes up unstaked." "$STAKED_PUBKEY" "STAKED STARTUP IDENTITY 🚨"
             fi
         fi
     fi
@@ -6223,7 +6223,7 @@ startup_checks() {
     # is voting the staked identity), in addition to the v0.6.2 full ip:port gossip corroboration.
     # 'manual' (operator-driven switch-back) remains the recommended default — the keep-the-warning
     # follow-up — because automatic re-take is inherently riskier than a human deciding to switch back.
-    [[ "$RECOVERY_MODE" == "rpc" ]] && log_warn "⚠️ RECOVERY_MODE=rpc: automatic re-take, fenced by vote-liveness + gossip corroboration — 'manual' is still the safer default"
+    [[ "$RECOVERY_MODE" == "rpc" ]] && log_warn "⚠️ RECOVERY_MODE=rpc: the retained automatic re-take path, fenced by vote-liveness + gossip corroboration — 'manual' is still the safer default (Alpenglow mode withholds the re-take, see the next line)"
     [[ "$RECOVERY_MODE" == "rpc" ]] && _ag_mode && log_warn "⚠️ RECOVERY_MODE=rpc cannot re-take in Alpenglow mode: the recovery pass keeps observing and its re-take is WITHHELD at the take (one page per episode); this node stays unstaked until an operator acts (docs/SAFETY.md, Alpenglow)"
     # Validate the vote-liveness knobs (octal-safe; same discipline as F6/C1) — only meaningful in
     # rpc mode, where a typo'd EPSILON/MIN_INTERVAL would weaken the recovery fence.
@@ -6331,7 +6331,7 @@ startup_checks() {
             wc=$((wc+1)); [[ $((wc%10)) -eq 0 ]] && log_warn "Still waiting... ($wc)"
             # v0.6.9 (H3): the persisted state says we were STAKED and the validator has been
             # unreachable since monitor startup — the daemon cannot self-demote an unreachable
-            # validator, and a spare may confirm delinquency and take over → page URGENT, once.
+            # validator, and a spare may confirm delinquency and (retained path; in Alpenglow mode it pages instead) take over → page URGENT, once.
             # FAILURE DIRECTION: toward paging the operator (holder path); a false page costs one 🚨.
             if [[ $_wait_alerted -eq 0 && "$_persisted_role" == "staked" \
                   && $(( $(date +%s) - _wait_start )) -ge $STARTUP_STAKED_UNREACHABLE_ALERT_SECS ]]; then
@@ -6344,7 +6344,7 @@ startup_checks() {
                 # evidence-gated; no-ops outside the armed unit.
                 _watchdog_extend_if_starting 2>/dev/null
                 log_warn "Persisted role STAKED + local validator unreachable ${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s+ at startup — sending URGENT alert"
-                alert "PRIMARY was STAKED at last save + local validator unreachable since monitor startup (>${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s) — the daemon cannot self-demote; STANDBY may take over. Intervene (stop the validator or confirm the spare took over)." "$STAKED_PUBKEY" "PRIMARY UNREACHABLE WHILE STAKED 🚨"
+                alert "PRIMARY was STAKED at last save + local validator unreachable since monitor startup (>${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s) — the daemon cannot self-demote; in Alpenglow mode no spare takes the identity by itself, so it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "PRIMARY UNREACHABLE WHILE STAKED 🚨"
                 _wait_alerted=1
                 _watchdog_extend_if_starting 2>/dev/null
             fi
@@ -6418,6 +6418,7 @@ startup_checks() {
     echo "  Vote latency:      $([ "$MAX_VOTE_LATENCY" -gt 0 ] && echo "${MAX_VOTE_LATENCY} slots" || echo "off")"
     echo "  Inet retries:      $CONNECTIVITY_RETRIES"
     echo "  Recovery:          $RECOVERY_MODE"
+    echo "  Mode:              ALPENGLOW — this node NEVER re-takes the staked identity itself (a re-take every gate approves is WITHHELD and paged); it still fences itself to unstaked (docs/SAFETY.md, Alpenglow)"
     if [[ "$PRIMARY_SELF_FENCE" == "true" ]]; then
         # v0.6.9 (H1): banner also shows the N6 vote-lag arming + the hard-stop state, mirrored on the standby.
         echo "  Self-fence:        on (isolation ${SELF_FENCE_ISOLATION_SECS}s; no-answer $([ "$SELF_FENCE_NOANSWER_SECS" -gt 0 ] && echo "${SELF_FENCE_NOANSWER_SECS}s" || echo "off"); vote-lag $([ "$SELF_FENCE_VOTE_LAG_SLOTS" -gt 0 ] && [ "$SELF_FENCE_VOTE_LAG_SECS" -gt 0 ] && echo "${SELF_FENCE_VOTE_LAG_SLOTS}sl/${SELF_FENCE_VOTE_LAG_SECS}s" || echo "off"); getHealth behind > $([ "$SELF_FENCE_MAX_BEHIND" -gt 0 ] && echo "${SELF_FENCE_MAX_BEHIND}" || echo "off"); hard-stop ${SELF_FENCE_HARD_STOP})"
@@ -6481,7 +6482,7 @@ while $_running; do
             # delinquency + frozen liveness and take over → double-sign on heal. Page URGENT, not warn.
             if [[ "$_last_known_identity" == "$STAKED_PUBKEY" ]]; then
                 log_warn "Local validator unreachable while STAKED — sending URGENT alert"
-                alert "PRIMARY staked + local validator unreachable — the daemon cannot self-demote; STANDBY may take over. Intervene (stop the validator or confirm STANDBY)." "$STAKED_PUBKEY" "PRIMARY UNREACHABLE WHILE STAKED 🚨"
+                alert "PRIMARY staked + local validator unreachable — the daemon cannot self-demote; in Alpenglow mode no spare takes the identity by itself, so it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "PRIMARY UNREACHABLE WHILE STAKED 🚨"
             else
                 log_warn "Local validator unreachable — sending alert"
                 alert_warn "⚠️ PRIMARY local validator unreachable! Failover monitoring paused."
