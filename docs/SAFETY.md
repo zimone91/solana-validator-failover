@@ -36,8 +36,9 @@ acceptable is an operator decision; FO does not make it.
   twin is `RECOVERY WITHHELD — Alpenglow mode 🚨` — and repeats it at most once per `ALERT_THROTTLE` while the episode lasts; between pages a decision point is a log line. The page
   carries what the operator needs: the take path's reason; the holder's silence since the episode's first liveness sample (its last vote and the cluster tip at that read, and
   the provider); this node's finalized slot and `getHealth` class; its validator version against the minimum; the VAT admission; the state of the vote-history file; and
-  the operator path, the warm swap below. A field that cannot be read prints `unavailable (<why>)` and the page still goes out. A gate that holds (a voting veto, an
-  aborting re-check, the delay) sends no Alpenglow page.
+  the operator path, the warm swap below. A field that cannot be read says so in its own word and the page still goes out: `unavailable (<why>)` for the finalized slot and the vote account,
+  `unreadable (<why>)` for `getHealth`, `not ready (the version is unreadable …)` for the version, `unknown (<why>)` for the VAT admission. A gate that holds
+  (a voting veto, an aborting re-check, the delay) sends no Alpenglow page.
 - `PREWARM_VOTER_ADD=true` is inert and `RECOVERY_MODE=rpc` cannot re-take; each says so once at startup.
 
 **What FO does not do.** It does not take, re-take or pre-warm. It does not delete, move, copy, truncate or rewrite a vote-history file or a tower file — a census of
@@ -77,15 +78,16 @@ the reason class where the node's `getAccountInfo` can show it (the BLS key, pen
 - The "remaining payments" page for a VAT balance running out (the runway) is not implemented: only the lapse itself is read and paged.
 - The top-2000 cut is not checked: an account outside the top 2,000 by stake is outside the set whatever its balance, and nothing in the account shows it. The VAT amount the page quotes
   (0.8 SOL per epoch on mainnet's 200 ms row) is a design figure; the row in force is not read.
-- The Alpenglow page reads five things from the node's own RPC — the finalized slot, `getHealth`, `getVersion`, the VAT batch and the vote account — each bounded at 3 s, so a decision point
-  can take up to 15 s; the page goes out whatever a read answers. The reads run after every gate has said take, and nothing follows them but the page.
+- The Alpenglow page reads five things from the node's own RPC — the finalized slot, `getHealth`, `getVersion`, the VAT batch and the vote account — each bounded at 3 s (15 s), and hashes
+  the vote-history file under `timeout -k 2 10` (12 s more; the hash of a file of a few hundred bytes takes milliseconds, so 12 s is the bound, not the typical time) - so a decision point
+  can take up to about 27 s; the page goes out whatever a read answers. The reads run after every gate has said take, and nothing follows them but the page.
 - The version minimum is not checked on frankendancer (no comparable field): *not checked (frankendancer)*, no page. The version is what the node's own RPC answers (`getVersion`, `solana-core`),
   never read from the executable.
 - A `getHealth` Unknown is named by the holder's self-fence and read as *not ready* by Tier-1, but it does not demote the holder; what stays armed on a holder under Alpenglow is a decision still to be made.
 - Under Alpenglow `confirmed` follows the finalized slot (measured on public RPC nodes only), so a cluster-wide finalization stall looks like isolation to the frozen-slot self-fence: every armed
   holder would demote after `SELF_FENCE_ISOLATION_SECS`, and in v0.7 nothing re-takes — the validator stays unstaked until an operator acts.
 - The fence script (`failover-fence.sh`) does not report the vote-history class, and has no ledger detection: arm with `LEDGER_PATH` set (the deployment manual, *Arming the fence*).
-- The wizard preset for `MAX_DELINQUENT_SLOTS` is 24 from v0.7; an existing env file keeps its value (15 sits close to the tail of Alpenglow's healthy vote lag).
+- The wizard preset for `MAX_DELINQUENT_SLOTS` is 24 from v0.7; an existing env file keeps its value (15 sits close to the tail of Alpenglow's healthy vote lag), and the standby says so once at start - a log line, no page - when the value is 1 to 23.
 - Every take-path figure in this document was measured at 2.5 or 3.7 slots/s and is not re-derived for the Alpenglow rate in this release.
 
 ## The cross-node invariant

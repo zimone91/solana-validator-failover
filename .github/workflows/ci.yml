@@ -346,6 +346,32 @@ jobs:
           hits=$(grep -rIlF -e "$flag" . --exclude-dir=.git || true)
           [ -z "$hits" ] || { echo "RED: the flag is named in: $hits"; exit 1; }
           echo "no file of the tree names the vote-history requirement flag"
+      - name: no shipped script deletes, moves, copies or rewrites a vote-history, tower or ledger path — the crude line grep (v0.7 AG-1 fix round)
+        # RULE: FO never deletes, moves, copies, truncates or redirects into a vote-history file, a tower file or the ledger (the warm swap is
+        # the operator's, with the file intact: docs/SAFETY.md, Alpenglow). In the eight shipped scripts no non-comment line combines a mutating
+        # verb (rm, mv, cp, truncate, tee, dd, ln, shred, install, unlink, rsync, scp, touch) with a vote_history / vote-history / tower /
+        # TOWER_PATH / LEDGER_PATH word, and none redirects (> or >>) into a target that carries one. A planted control runs first: five planted
+        # lines must each be flagged and three innocent ones (a comment, a log text that quotes the path, a read) must not - so the grep can go
+        # red, and does not cry wolf on the paths the scripts only name.
+        # LIMIT: the cheap second line of defence, by LINE. A path assembled in a variable, a verb on another line than its path and a
+        # destructive tool outside the list are not seen here; the real census is tests/test_tower_handling.sh (6), by bash's own parse with the
+        # variable taint, and it runs in the VM legs only - this step runs in GitHub CI on every push.
+        run: |
+          w=$(mktemp -d)
+          scan() {
+            for f in "$@"; do
+              grep -nE '(^|[^A-Za-z0-9_./-])(rm|mv|cp|truncate|tee|dd|ln|shred|install|unlink|rsync|scp|touch)( |$)' "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -E 'vote_history|vote-history|tower|TOWER_PATH|LEDGER_PATH' | sed "s|^|$f:|" || true
+              grep -nE "(^|[[:space:]0-9])>>?[[:space:]]*[\"']?[^&[:space:]]*(vote_history|vote-history|tower|TOWER_PATH|LEDGER_PATH)" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | sed "s|^|$f:|" || true
+            done
+          }
+          printf '%s\n' '    rm -f "$LEDGER_PATH/vote_history-$STAKED_PUBKEY.bin"' '    mv "$LEDGER_PATH/tower-1_9-$STAKED_PUBKEY.bin" /tmp/t' '    : > "$LEDGER_PATH/vote_history-X.bin"' '    truncate -s 0 "${LEDGER_PATH}/vote-history"' '    cp "$f" "$TOWER_PATH"' > "$w/planted"
+          printf '%s\n' '    # rm -f "$LEDGER_PATH/vote_history-X.bin" would be wrong' '    log_info "[vote-history] ${LEDGER_PATH:-<LEDGER_PATH empty>}/vote_history-${K:-<k unknown>}.bin is $(_vh_class)"' '    sha256sum "$LEDGER_PATH/vote_history-X.bin" > "$w/sum"' > "$w/innocent"
+          np=$(scan "$w/planted" | wc -l | tr -d ' '); ni=$(scan "$w/innocent" | wc -l | tr -d ' ')
+          rm -rf "$w"
+          [ "$np" = 5 ] && [ "$ni" = 0 ] || { echo "control: the grep flagged $np of 5 planted lines and $ni of 0 innocent ones"; exit 1; }
+          hits=$(scan solana-standby-failover.sh solana-primary-failover.sh failover-arm.sh deploy-failover.sh deploy-failover-standby.sh install.sh systemd/failover-fence.sh systemd/failover-fence-page-only.sh)
+          [ -z "$hits" ] || { printf '%s\n' "$hits"; echo "RED: a shipped script has a line that deletes, moves, copies, truncates or redirects into a vote-history, tower or ledger path (rule: this step's comment)"; exit 1; }
+          echo "no line of the eight shipped scripts puts a destructive verb or an output redirection on a vote-history, tower or ledger path (5 planted lines flagged, 3 innocent ones not)"
       - name: SHA256SUMS manifest matches the tree (regen — sha256sum <files> > SHA256SUMS)
         run: sha256sum -c SHA256SUMS
       - name: bash's /dev/tcp and /dev/udp redirections — the A5 test fixture only (v0.7 Block 6.3.1)

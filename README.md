@@ -12,10 +12,14 @@ in the code as the base for a later release, unreachable in v0.7, and marked as 
 external RPCs are not observable the gates hold for as long as the blindness lasts (by design: unobservable time counts as life)
 and the operator is paged (`TAKEOVER_STARVATION_ALERT_SECS`, default 300s).
 
-Built safety-first: the failing node **steps down before** the spare steps up, and every ambiguous
-state resolves toward *nobody holds the stake* rather than two nodes holding it.
+Built safety-first: the failing node **steps down first**, then the spare only **pages you** — the move of the stake is yours
+(the retained path made it; v0.7 never does) — and every ambiguous state resolves toward *nobody holds the stake* rather than
+two nodes holding it.
 
 **Author:** [zim.one](https://zim.one) · **Tested on:** agave & Jito-Solana `4.2.x` — live failover gate on `4.2.0-rc.0`, running armed in production on `4.2.1`; earlier releases validated on `3.1.x` / `4.0.x` / `4.1.x` · **Networks:** testnet · mainnet
+
+**v0.7 needs agave / Jito-Solana `4.4.0` or newer** (`MIN_VALIDATOR_VERSION`: on an older validator the spare pages `VALIDATOR VERSION NOT READY`).
+None of the versions above meets that floor; v0.7 itself is being exercised on the testnet pair (the Block 10 end-to-end run).
 
 #### How safe is it — honestly
 
@@ -106,7 +110,7 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
   recommends a third endpoint in a separate failure domain. What each layer does and does **not**
   catch — including an active protocol-aware intermediary, which it does not — is enumerated in
   [`docs/SAFETY.md`](docs/SAFETY.md). Un-armed hosts see none of this.
-- A promoted STANDBY that later isolates self-fences too, with a 600s re-take lockout.
+- A promoted STANDBY (the retained path: v0.7 never promotes one by itself) that later isolates self-fences too, with a 600s re-take lockout.
 
 **Where the strength comes from.** The protection is strongest where the failing node can detect its
 own trouble and step down — which covers dead RPC, a stalled slot, and an egress-only partition where
@@ -124,7 +128,8 @@ A spare's page (the take that Alpenglow mode withholds) also waits for its own-v
 when every local read takes 1 s with prompt tiers, up to +40 s in the measured cells with a slow tier as
 well; a spare whose local reads take 2 s or more never sends it, and pages the veto instead — so does one whose `TIER2` fails
 slowly (times out, or answers an error late) while `TIER3` is slow, the starvation above) after the delays
-shown.
+shown. Once every gate has said take, the page itself reads the node's own RPC five times (3 s each) and hashes the vote-history file
+(bounded at 12 s): up to about 27 s at the decision point, milliseconds on a healthy node.
 Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Requirements

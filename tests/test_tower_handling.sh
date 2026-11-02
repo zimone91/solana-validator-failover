@@ -17,7 +17,11 @@
 #       rsync, scp or touch, no in-place sed/perl/ed/ex, no find -delete/-exec, and no output redirection takes a path built from
 #       vote_history, the tower or LEDGER_PATH — directly, or through a variable assigned from one
 #   (7) CONTROLS (mutate()): the tower deletion put back, a history deletion / touch inside _vh_class, the log call dropped, and
-#       five planted mutations the census must see (rm, an aliased mv, a redirection, truncate, the old tower_file shape)
+#       five planted mutations the census must see (rm, an aliased mv, a redirection, truncate, the old tower_file shape);
+#       (7h) the cheap second line of defence, the crude line grep that .github/workflows/ci.yml runs in its facts job: its own run block,
+#       extracted and executed over a scratch copy of the eight scripts - green on the tree, red on a planted rm / redirection / mv in each
+#       of three scripts, and red when a mutant of the step blinds its own planted control (a verb dropped from its list, the redirection
+#       pattern broken)
 #   (8) the scripts pass bash -n (kept)
 # LIMITS, named: the census reads command WORDS and redirection targets — a path assembled in a variable through more than the
 # two assignment passes below, a verb assembled at run time, or a destructive tool outside the list (python3 -c, an awk system())
@@ -298,6 +302,45 @@ plant alias    '_vh_f="$LEDGER_PATH\/x.bin"; mv "$_vh_f" "$_vh_f.old"' 'mv'
 plant redirect ': > "$LEDGER_PATH\/vote_history-${STAKED_PUBKEY}.bin"' 'redirection to'
 plant truncate 'truncate -s 0 "$LEDGER_PATH\/vote_history-${STAKED_PUBKEY}.bin"' 'truncate'
 plant oldshape 'tower_file="${LEDGER_PATH}\/tower-1_9-${STAKED_PUBKEY}.bin"; [[ -f "$tower_file" ]] \&\& rm -f "$tower_file"' 'rm'
+
+# (7h) the facts step of the workflow file: the crude grep, by line. Its run block is cut out of the workflow and run in a scratch copy of the eight scripts.
+WF="$HARNESS_DIR/.github/workflows/ci.yml"
+FX_STEP='no shipped script deletes, moves, copies or rewrites a vote-history, tower or ledger path'
+fx_body() {   # fx_body <workflow file> -> the step's run block, de-indented ("" when the step is not there)
+    awk -v name="$FX_STEP" 'index($0, "      - name: " name) == 1 { f = 1; next } f && /^      - name:/ { exit } f && /^        run: \|$/ { r = 1; next } f && r { sub(/^          /, ""); print }' "$1"
+}
+fx_run() {   # fx_run <workflow file> [<script to plant a line in> <the line>] -> rc=<n>|<first line of output>
+    local yml="$1" pf="${2:-}" pl="${3:-}" d="$WORK/fx.$RANDOM" body f out rc
+    body=$(fx_body "$yml"); [[ -n "$body" ]] || { printf 'rc=NOSTEP|'; return 0; }
+    mkdir -p "$d/systemd"
+    for f in solana-standby-failover.sh solana-primary-failover.sh failover-arm.sh deploy-failover.sh deploy-failover-standby.sh install.sh systemd/failover-fence.sh systemd/failover-fence-page-only.sh; do
+        cp "$HARNESS_DIR/$f" "$d/$f"
+    done
+    [[ -n "$pf" ]] && printf '%s\n' "$pl" >> "$d/$pf"
+    out=$(cd "$d" && bash -e -c "$body" 2>&1); rc=$?
+    printf 'rc=%s|%s' "$rc" "$(printf '%s' "$out" | head -1 | cut -c1-120)"
+}
+fx_real=$(fx_run "$WF")
+[[ "$fx_real" == "rc=0|"* ]] && ok "(7h) the facts step's run block, extracted from the workflow file and run over a copy of the eight scripts: green (${fx_real#*|})" || bad "(7h) the facts step on the tree: $fx_real"
+fx_n=$(grep -c "^      - name: $FX_STEP" "$WF")
+[[ "$fx_n" == "1" ]] && ok "(7h-once) the step is in the facts job exactly once" || bad "(7h-once) the step is in the workflow file $fx_n times"
+fx_ok=1; fx_rows=""
+for spec in "solana-standby-failover.sh|    rm -f \"\$LEDGER_PATH/vote_history-\${STAKED_PUBKEY}.bin\"" "solana-primary-failover.sh|    : > \"\$LEDGER_PATH/vote_history-\${STAKED_PUBKEY}.bin\"" "systemd/failover-fence.sh|    mv \"\$LEDGER_PATH/tower-1_9-X.bin\" /tmp/x"; do
+    r=$(fx_run "$WF" "${spec%%|*}" "${spec#*|}")
+    if [[ "$r" == "rc=1|${spec%%|*}:"* ]]; then fx_rows="$fx_rows ${spec%%|*}:red"; else fx_ok=0; fx_rows="$fx_rows ${spec%%|*}:[$r]"; fi
+done
+[[ $fx_ok -eq 1 ]] && ok "(7h-planted) CONTROL: a planted rm (standby), a planted redirection (primary) and a planted mv (the fence script) each turn the step red, and its first output line names the planted script:$fx_rows" || bad "(7h-planted) a planted deletion did not turn the step red:$fx_rows"
+fx_ok=1; fx_rows=""
+fx_mutant() {   # fx_mutant <label> <sed expr> -> red when the mutant workflow's step exits 1 on the CLEAN tree (its own planted control caught the blinding)
+    local m="$WORK/c-fx-$1.yml" r
+    if mutate "$WF" "$2" "$m"; then
+        r=$(fx_run "$m")
+        if [[ "$r" == "rc=1|control:"* ]]; then fx_rows="$fx_rows $1:red"; else fx_ok=0; fx_rows="$fx_rows $1:[$r]"; fi
+    else fx_ok=0; fx_rows="$fx_rows $1:NOT-APPLIED"; fi
+}
+fx_mutant verb-dropped 's/(rm|mv|cp|truncate|tee|dd|ln|shred/(mv|cp|truncate|tee|dd|ln|shred/'
+fx_mutant redirect-broken 's/0-9])>>?/0-9])>>>/'
+[[ $fx_ok -eq 1 ]] && ok "(7h-blind) CONTROL: a step whose verb list lost 'rm', or whose redirection pattern is broken, is stopped by its OWN planted control (rc 1, 'control: ...') before it reads a script:$fx_rows" || bad "(7h-blind) the step's own control did not bite:$fx_rows"
 
 echo ""
 echo "─── 8. Scripts pass bash -n ───"

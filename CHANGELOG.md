@@ -26,6 +26,11 @@ All notable changes are documented here. Versions follow the project's internal 
     does or is marked *retained path*.
   - **Tests:** the TERM-trap race of (12e) fails fast and by name instead of running to the suite cap
     ([docs/SAFETY.md](docs/SAFETY.md), *Known bash behaviour*).
+  - **Review round:** the standby logs a `MAX_DELINQUENT_SLOTS` of 1–23 once at start (below the new preset; log only, no page — an existing env
+    file keeps its value); the page's decision point is documented as up to ≈ 27 s (five reads at 3 s each, plus the vote-history hash bounded at
+    12 s); three leftover promises of an automatic take are rewritten (README, the standby env template, the systemd README) and the README names
+    the version floor (`4.4.0`); `_vat_reason` no longer leaks a global when jq fails; the CI facts job gains a crude line grep for a deletion
+    under a vote-history, tower or ledger path (the suite census stays the real one).
 
 - **Block 6.3.1 — the spare's own view: detection on the slow reliable view (finalized), a veto on the fast one
   (confirmed).** The spare's own node (`LOCAL_RPC`, the one input no `TIER2`/`TIER3` intermediary can splice)

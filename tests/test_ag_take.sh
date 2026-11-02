@@ -6,6 +6,7 @@
 #     while the same episode lasts, and again after the episode closes (_own_view_reset clears the marker at EVERY episode-close site);
 #   - _prewarm_voter_add (the delay window - it runs BEFORE the take path and its veto) returns first, before the PREWARM_VOTER_ADD gate;
 #   - the daemons say at startup that PREWARM_VOTER_ADD=true / RECOVERY_MODE=rpc cannot act in Alpenglow mode (the daemon still starts);
+#   - the standby says at startup, in the log only, that a MAX_DELINQUENT_SLOTS of 1..23 is below the Alpenglow preset 24 (no page, the daemon still starts);
 #   - the agave flag that switches the vote-history requirement off is named in no file of the tree.
 # EVERY GATE BEFORE THE STOP RUNS AS TODAY (the episode, the delay, the external confirm, the fence, the fresh re-check, the veto): the page means
 # "every gate FO has said the take would happen now" - a gate that holds produces NO AG page.
@@ -20,7 +21,7 @@
 #   (4) the episode: one page, the decision points spaced by the cooldown, a repeat after ALERT_THROTTLE, a new page after the episode closes
 #   (5) PRIMARY (RECOVERY_MODE=rpc): the same, role "primary"; the stamp spaces the passes
 #   (6) _prewarm_voter_add: no admin call, one log line, _prewarm_reset never armed; the shadowed world adds - and DRY_RUN with and without the shadow
-#   (7) the startup warnings
+#   (7) the startup warnings, and the standby's drift note for a MAX_DELINQUENT_SLOTS below the preset (log only; 6 controls)
 #   (8) STRUCTURE by bash's text: the stop's place in each take function, the prewarm's first statement, the marker's three writers, the page's
 #       reads (LOCAL, curl -m 3, one spelling), the flag string named nowhere, the shadow census of the other suites
 #   (9) CONTROLS (mutate()): each stop removed, the marker never cleared, a page at every decision point, the stop after the DRY_RUN branch /
@@ -422,7 +423,7 @@ else
 fi
 
 # ── (7) the startup warnings ──────────────────────────────────────────────────────────────────────
-echo ""; echo "─── (7) startup: PREWARM_VOTER_ADD=true / RECOVERY_MODE=rpc say they cannot act in Alpenglow mode ───"
+echo ""; echo "─── (7) startup: PREWARM_VOTER_ADD=true / RECOVERY_MODE=rpc say they cannot act in Alpenglow mode; a MAX_DELINQUENT_SLOTS below the preset is said once ───"
 sw_run() {   # sw_run <script> <anchor> <var=val> <real|off> -> the number of warnings the ONE shipped statement prints
     local line; line=$(grep -F -m1 -e "$2" "$1")
     [[ -n "$line" ]] || { echo "NOSTMT"; return 0; }
@@ -450,6 +451,71 @@ n_p=$(grep -c 'cannot re-take in Alpenglow mode' "$PRIMARY")
 sp_stmt=$(grep -F -m1 'cannot re-take in Alpenglow mode' "$PRIMARY"); ss_stmt=$(grep -F -m1 'INERT in Alpenglow mode' "$STANDBY")
 [[ "$sp_stmt" != *"exit"* && "$ss_stmt" != *"exit"* && "$sp_stmt" != *"return"* ]] \
     && ok "(7c) neither statement exits or returns: an unmonitored primary is worse than one that cannot re-take" || bad "(7c) a startup statement can end the daemon: [$sp_stmt] [$ss_stmt]"
+
+# The standby's drift note (AG-1 review round, Q4): an existing config keeps a MAX_DELINQUENT_SLOTS below the wizard's preset 24 - said once at start, LOG ONLY.
+dn_run() {   # dn_run <script> <MAX_DELINQUENT_SLOTS> <real|off> -> the WARN / PAGE lines the ONE shipped function prints, and its return code (RC n)
+    (
+        set +e
+        load_seam "$1"
+        log_warn(){ printf 'WARN %s\n' "$1"; }
+        alert(){ printf 'PAGE %s\n' "$1"; }
+        alert_warn(){ printf 'PAGE %s\n' "$1"; }
+        MAX_DELINQUENT_SLOTS="$2"
+        [[ "$3" == "off" ]] && HARNESS_AG_REAL=0 harness_ag_off
+        _delinq_drift_note
+        echo "RC $?"
+    ) 2>&1 | grep -E '^(WARN|PAGE|RC) '
+}
+dn_secs() { awk -v n="$1" 'BEGIN { printf "%.1f", n / 5 }'; }   # the seconds the text must carry, computed apart from the daemon: n slots at the fastest rate, 5 slots/s
+dn_struct() {   # dn_struct <script> -> 0 when startup_checks calls the note exactly once, AFTER validate_numeric_config, and the function can neither exit, page nor fail
+    local sc fb calls v_ln d_ln defs
+    sc=$(sed -n '/^startup_checks() {/,/^}/p' "$1" | grep -v '^[[:space:]]*#')
+    fb=$(sed -n '/^_delinq_drift_note() {/,/^}/p' "$1" | grep -v '^[[:space:]]*#')
+    calls=$(printf '%s\n' "$sc" | grep -cE '^[[:space:]]*_delinq_drift_note([[:space:]]|$)')
+    v_ln=$(printf '%s\n' "$sc" | grep -nE -m1 '^[[:space:]]*validate_numeric_config([[:space:]]|$)' | cut -d: -f1)
+    d_ln=$(printf '%s\n' "$sc" | grep -nE -m1 '^[[:space:]]*_delinq_drift_note([[:space:]]|$)' | cut -d: -f1)
+    defs=$(grep -c '^_delinq_drift_note() {' "$1")
+    [[ "$calls" == "1" && "$defs" == "1" && -n "$v_ln" && -n "$d_ln" && "$v_ln" -lt "$d_ln" && -n "$fb" ]] || return 1
+    [[ "$fb" != *"exit"* && "$fb" != *"alert"* && "$fb" != *"return 1"* ]]
+}
+dn_ok=1; dn_why=""; dn_rows=""
+for n in 1 15 23; do
+    o=$(dn_run "$STANDBY" "$n" real); s=$(dn_secs "$n"); w=$(printf '%s\n' "$o" | grep -m1 '^WARN ')
+    if [[ "$(printf '%s\n' "$o" | grep -c '^WARN ')" == "1" && "$(printf '%s\n' "$o" | grep -c '^PAGE ')" == "0" && "$o" == *"RC 0"* \
+          && "$w" == *"MAX_DELINQUENT_SLOTS=$n is below the Alpenglow preset 24"* && "$w" == *"a lag spike of ≥ $n slots (≈ $s s) counts as delinquency"* && "$w" == *"Log only"* ]]; then
+        dn_rows="$dn_rows $n:warns(${s}s)"
+    else
+        dn_ok=0; dn_why="$dn_why $n:[$(printf '%s' "$o" | tr '\n' ';' | cut -c1-120)]"
+    fi
+done
+for n in 0 24 25 100; do
+    o=$(dn_run "$STANDBY" "$n" real)
+    if [[ "$(printf '%s\n' "$o" | grep -c '^WARN ')" == "0" && "$o" == *"RC 0"* ]]; then dn_rows="$dn_rows $n:silent"; else dn_ok=0; dn_why="$dn_why $n:[$(printf '%s' "$o" | tr '\n' ';' | cut -c1-120)]"; fi
+done
+o=$(dn_run "$STANDBY" 15 off)
+if [[ "$(printf '%s\n' "$o" | grep -c '^WARN ')" == "0" && "$o" == *"RC 0"* ]]; then dn_rows="$dn_rows 15-with-_ag_mode-shadowed-off:silent"; else dn_ok=0; dn_why="$dn_why 15-shadowed-off:[$(printf '%s' "$o" | tr '\n' ';' | cut -c1-120)]"; fi
+[[ $dn_ok -eq 1 ]] && ok "(7d) the standby's MAX_DELINQUENT_SLOTS drift note: ONE log line for 1..23 (it names the value, the preset 24, the slots and the seconds computed apart as slots/5), nothing for 0 and for 24 and above, nothing when _ag_mode is shadowed off, never a page, rc 0:$dn_rows" \
+    || bad "(7d) drift note:$dn_why"
+if dn_struct "$STANDBY" && [[ "$(grep -c '_delinq_drift_note' "$PRIMARY")" == "0" ]]; then
+    ok "(7e) startup_checks calls the note exactly once, after validate_numeric_config has normalized the knob; the function cannot exit, page or return 1; the primary has no such function (the knob exists in the standby only)"
+else
+    bad "(7e) drift note structure: standby=$(dn_struct "$STANDBY" && echo ok || echo BAD) primary mentions=$(grep -c '_delinq_drift_note' "$PRIMARY")"
+fi
+dn_mut() {   # dn_mut <label> <sed expr> <MAX_DELINQUENT_SLOTS> <real|off> -> the dn_run output of the MUTANT, or NOT-APPLIED when the expression changed nothing
+    local m="$WORK/dn-$1.sh"
+    mutate "$STANDBY" "$2" "$m" >/dev/null || { echo NOT-APPLIED; return 0; }
+    dn_run "$m" "$3" "$4"
+}
+dn_cok=1; dn_c=""
+o=$(dn_mut upper '/^_delinq_drift_note() {/,/^}/ s/ -lt \$_preset ]]/ -le $_preset ]]/' 24 real);      [[ "$o" == *"WARN "* ]]   && dn_c="$dn_c upper-bound-24-warns:red"   || { dn_cok=0; dn_c="$dn_c upper-bound:${o:0:12}"; }
+o=$(dn_mut lower '/^_delinq_drift_note() {/,/^}/ s/ -ge 1 / -ge 0 /' 0 real);                          [[ "$o" == *"WARN "* ]]   && dn_c="$dn_c lower-bound-0-warns:red"    || { dn_cok=0; dn_c="$dn_c lower-bound:${o:0:12}"; }
+o=$(dn_mut shadow '/^_delinq_drift_note() {/,/^}/ s/^    _ag_mode || return 0$/    :/' 15 off);             [[ "$o" == *"WARN "* ]]   && dn_c="$dn_c shadow-ignored:red"         || { dn_cok=0; dn_c="$dn_c shadow:${o:0:12}"; }
+o=$(dn_mut preset '/^_delinq_drift_note() {/,/^}/ s/local _preset=24 /local _preset=15 /' 15 real);     [[ "$o" != *"WARN "* && "$o" != "NOT-APPLIED" ]] && dn_c="$dn_c preset-moved:red" || { dn_cok=0; dn_c="$dn_c preset:${o:0:12}"; }
+o=$(dn_mut secs '/^_delinq_drift_note() {/,/^}/ s/MAX_DELINQUENT_SLOTS \* 10 \/ _AG_SLOTS_PER_S_FAST/MAX_DELINQUENT_SLOTS * 10 \/ 4/' 15 real); [[ "$o" == *"WARN "* && "$o" != *"(≈ 3.0 s)"* ]] && dn_c="$dn_c seconds-wrong:red" || { dn_cok=0; dn_c="$dn_c seconds:${o:0:12}"; }
+o=$(dn_mut page '/^_delinq_drift_note() {/,/^}/ s/^    log_warn "/    alert "/' 15 real);                         [[ "$o" == *"PAGE "* ]]   && dn_c="$dn_c page-instead-of-log:red"  || { dn_cok=0; dn_c="$dn_c page:${o:0:12}"; }
+m_nc="$WORK/dn-nocall.sh"
+if mutate "$STANDBY" '/^startup_checks() {/,/^}/ s/^    _delinq_drift_note .*$/    :/' "$m_nc" >/dev/null && ! dn_struct "$m_nc"; then dn_c="$dn_c call-removed:red"; else dn_cok=0; dn_c="$dn_c call-removed:NOT-RED"; fi
+[[ $dn_cok -eq 1 ]] && ok "(7f) controls: each mutant of the note turns its case red:$dn_c" || bad "(7f) a drift-note control is not red:$dn_c"
 
 # ── (8) STRUCTURE ─────────────────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (8) structure: the stop's place, the prewarm's first statement, the marker's writers, the page's reads, the flag, the shadow census ───"
@@ -522,42 +588,54 @@ done
 # ── (9) CONTROLS ──────────────────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (9) CONTROLS (mutate()): every mutant must turn its case red ───"
 ctl_ok=1; ctl_rows=""
+mw_state() { cat "$WORK/mw.state" 2>/dev/null; }   # what the last mut_world did: applied | not-applied (the file survives the $(...) subshell the controls run it in)
+mw_label() { [[ "$(mw_state)" == "applied" ]] && echo GREEN || echo NOT-APPLIED; }   # a control that is not red: GREEN = the mutant ran and the case did not bite; NOT-APPLIED = the sed expression matched nothing
 mut_world() {   # mut_world <label> <standby|primary> <sed expr> [knob …] -> echo the mutant world's output (rc 1 if the mutation changed nothing)
     local lab="$1" role="$2" expr="$3" m="$WORK/mut-$1-$2.sh" src="$STANDBY"; shift 3
     [[ "$role" == "primary" ]] && src="$PRIMARY"
+    echo not-applied > "$WORK/mw.state"
     mutate "$src" "$expr" "$m" || return 1
+    echo applied > "$WORK/mw.state"
     if [[ "$role" == "primary" ]]; then ag_pr "$m" "$@"; else ag_sb "$m" "$@"; fi
 }
 c=$(mut_world sb-stop standby '/^take_staked_identity() {/,/^}/ s/^    if _ag_mode; then$/    if false; then/') && [[ "$(evn "$c" 'ADMIN agave-validator .*set-identity')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
-    && ctl_rows="$ctl_rows sb-stop:red" || { ctl_ok=0; ctl_rows="$ctl_rows sb-stop:GREEN"; }
+    && ctl_rows="$ctl_rows sb-stop:red" || { ctl_ok=0; ctl_rows="$ctl_rows sb-stop:$(mw_label)"; }
 c=$(mut_world pr-stop primary '/^switch_to_staked() {/,/^}/ s/^    if _ag_mode; then$/    if false; then/') && [[ "$(evn "$c" 'ADMIN agave-validator .*set-identity')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
-    && ctl_rows="$ctl_rows pr-stop:red" || { ctl_ok=0; ctl_rows="$ctl_rows pr-stop:GREEN"; }
+    && ctl_rows="$ctl_rows pr-stop:red" || { ctl_ok=0; ctl_rows="$ctl_rows pr-stop:$(mw_label)"; }
 c=$(mut_world prewarm standby '/^_prewarm_voter_add() {/,/^}/ s/^    if _ag_mode; then$/    if false; then/' PREWARM_VOTER_ADD=true HZ=$(( DELAY - 10 ))) && [[ "$(evn "$c" 'ADMIN agave-validator .*authorized-voter add')" == "1" ]] \
-    && ctl_rows="$ctl_rows prewarm-stop:red" || { ctl_ok=0; ctl_rows="$ctl_rows prewarm-stop:GREEN"; }
+    && ctl_rows="$ctl_rows prewarm-stop:red" || { ctl_ok=0; ctl_rows="$ctl_rows prewarm-stop:$(mw_label)"; }
 c=$(mut_world marker standby 's/^    _ag_page_ts=0   # v0\.7 (AG-1\.2).*$/    :/' HZ=400 CLOSE_AT="130") && [[ "$(agp "$c")" == "1" ]] \
-    && ctl_rows="$ctl_rows marker-never-cleared:red" || { ctl_ok=0; ctl_rows="$ctl_rows marker-never-cleared:GREEN"; }
+    && ctl_rows="$ctl_rows marker-never-cleared:red" || { ctl_ok=0; ctl_rows="$ctl_rows marker-never-cleared:$(mw_label)"; }
 c=$(mut_world throttle standby '/^_ag_take_withheld() {/,/^}/ s/ -lt \${ALERT_THROTTLE:-600} \]\]; then$/ -lt 0 ]]; then/' HZ=900) && [[ "$(agp "$c")" -ge 6 ]] \
-    && ctl_rows="$ctl_rows page-every-decision:red" || { ctl_ok=0; ctl_rows="$ctl_rows page-every-decision:GREEN"; }
+    && ctl_rows="$ctl_rows page-every-decision:red" || { ctl_ok=0; ctl_rows="$ctl_rows page-every-decision:$(mw_label)"; }
 c=$(mut_world after-dry standby '/^take_staked_identity() {/,/^}/ s/^    if _ag_mode; then$/    if _ag_mode \&\& [[ "$DRY_RUN" != "true" ]]; then/' DRY_RUN=true) && [[ "$(evn "$c" 'PAGE .*WOULD TAKE')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
-    && ctl_rows="$ctl_rows stop-below-DRY_RUN:red" || { ctl_ok=0; ctl_rows="$ctl_rows stop-below-DRY_RUN:GREEN"; }
+    && ctl_rows="$ctl_rows stop-below-DRY_RUN:red" || { ctl_ok=0; ctl_rows="$ctl_rows stop-below-DRY_RUN:$(mw_label)"; }
 c=$(mut_world after-key standby '/^take_staked_identity() {/,/^}/ s/^    if _ag_mode; then$/    if _ag_mode \&\& [[ -s "$STAKED_KEYPAIR" ]]; then/' KP=empty) && [[ "$(evn "$c" 'PAGE .*TAKEOVER BLOCKED')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
-    && ctl_rows="$ctl_rows stop-below-keypair:red" || { ctl_ok=0; ctl_rows="$ctl_rows stop-below-keypair:GREEN"; }
+    && ctl_rows="$ctl_rows stop-below-keypair:red" || { ctl_ok=0; ctl_rows="$ctl_rows stop-below-keypair:$(mw_label)"; }
 c=$(mut_world pr-after-dry primary '/^switch_to_staked() {/,/^}/ s/^    if _ag_mode; then$/    if _ag_mode \&\& [[ "$DRY_RUN" != "true" ]]; then/' DRY_RUN=true) && [[ "$(evn "$c" 'PAGE .*WOULD RECOVER')" -ge 1 && "$(evn "$c" 'PAGE .*WITHHELD')" == "0" ]] \
-    && ctl_rows="$ctl_rows primary-stop-below-DRY_RUN:red" || { ctl_ok=0; ctl_rows="$ctl_rows primary-stop-below-DRY_RUN:GREEN"; }
+    && ctl_rows="$ctl_rows primary-stop-below-DRY_RUN:red" || { ctl_ok=0; ctl_rows="$ctl_rows primary-stop-below-DRY_RUN:$(mw_label)"; }
 c=$(mut_world nostamp standby '/^take_staked_identity() {/,/^}/ s/^        LAST_TAKEOVER_TIME=\$(mono_now); save_state$/        :/' HZ=900) && [[ "$(dp "$c")" -ge 30 ]] \
-    && ctl_rows="$ctl_rows no-pacing-stamp:red" || { ctl_ok=0; ctl_rows="$ctl_rows no-pacing-stamp:GREEN"; }
+    && ctl_rows="$ctl_rows no-pacing-stamp:red" || { ctl_ok=0; ctl_rows="$ctl_rows no-pacing-stamp:$(mw_label)"; }
 c=$(mut_world nostamp-pr primary '/^switch_to_staked() {/,/^}/ s/^        LAST_SWITCH_TIME=\$(mono_now); save_state$/        :/' HZ=900) && [[ "$(dp "$c")" -ge 30 ]] \
-    && ctl_rows="$ctl_rows primary-no-pacing-stamp:red" || { ctl_ok=0; ctl_rows="$ctl_rows primary-no-pacing-stamp:GREEN"; }
+    && ctl_rows="$ctl_rows primary-no-pacing-stamp:red" || { ctl_ok=0; ctl_rows="$ctl_rows primary-no-pacing-stamp:$(mw_label)"; }
 c=$(mut_world nohist standby 's/^    _t="${_t} Vote history .*$/    :/') && ! has "$(page_of "$c")" "Vote history" \
-    && ctl_rows="$ctl_rows history-field-dropped:red" || { ctl_ok=0; ctl_rows="$ctl_rows history-field-dropped:GREEN"; }
+    && ctl_rows="$ctl_rows history-field-dropped:red" || { ctl_ok=0; ctl_rows="$ctl_rows history-field-dropped:$(mw_label)"; }
 c=$(mut_world nover standby 's/^    _t="${_t} This node: finalized slot ${_slot}; getHealth ${_health}; validator ${_ver}."$/    _t="${_t} This node: finalized slot ${_slot}; getHealth ${_health}."/') && ! has "$(page_of "$c")" "validator ok" \
-    && ctl_rows="$ctl_rows version-field-dropped:red" || { ctl_ok=0; ctl_rows="$ctl_rows version-field-dropped:GREEN"; }
+    && ctl_rows="$ctl_rows version-field-dropped:red" || { ctl_ok=0; ctl_rows="$ctl_rows version-field-dropped:$(mw_label)"; }
 c=$(mut_world noreset standby 's/^    _ag_page_ts=\$_now$/    :/' HZ=400) && [[ "$(agp "$c")" -ge 3 ]] \
-    && ctl_rows="$ctl_rows marker-never-set:red" || { ctl_ok=0; ctl_rows="$ctl_rows marker-never-set:GREEN"; }
+    && ctl_rows="$ctl_rows marker-never-set:red" || { ctl_ok=0; ctl_rows="$ctl_rows marker-never-set:$(mw_label)"; }
 if [[ $ctl_ok -eq 1 ]]; then
     ok "(9) every mutant turns its case red:$ctl_rows"
 else
-    bad "(9) a control is GREEN (the case does not bite):$ctl_rows"
+    bad "(9) a control is not red (GREEN = the mutant ran and the case does not bite; NOT-APPLIED = the sed expression matched nothing, so nothing was tested):$ctl_rows"
 fi
+# the labeller itself: an expression that matches nothing is NOT-APPLIED (never GREEN), one that applies is GREEN until the case turns red
+c=$(mut_world self-none standby 's/^this line is in no daemon at all$/x/' HZ=5) && sc_rc=0 || sc_rc=1
+sc_none=$(mw_label)
+c=$(mut_world self-some standby 's/^_AG_SLOTS_PER_S_FAST=5$/_AG_SLOTS_PER_S_FAST=5   # applied/' HZ=5) && sc_rc2=0 || sc_rc2=1
+sc_some=$(mw_label)
+[[ $sc_rc -eq 1 && "$sc_none" == "NOT-APPLIED" && $sc_rc2 -eq 0 && "$sc_some" == "GREEN" ]] \
+    && ok "(9z) the controls' labeller: an expression that matches nothing is labelled NOT-APPLIED (not GREEN), a mutant that ran is labelled GREEN until its case turns red" \
+    || bad "(9z) labeller: no-match rc=$sc_rc label=$sc_none; applied rc=$sc_rc2 label=$sc_some"
 
 results_banner
