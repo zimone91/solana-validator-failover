@@ -665,6 +665,478 @@ b74_ctl sb-gate-ignored "$STANDBY" '/^_prewarm_voter_add() {/,/^}/ s/^    if ! _
 # ══ B7.4 END ═════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 # ══ B7.5 BEGIN ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+echo ""; echo "─── (B7.5) DRY_RUN page storms: one dry page per ALERT_THROTTLE per reason; the standby's cooldown / lockout WARN at most once per 60 s ───"
+# The mainnet monitor-only phase (DRY_RUN=true) runs the SAME decisions as a live node and only swaps the mutation for a log line and a page. A decision that holds
+# for many cycles - the offline node (every ~5 s cycle), the self-fence's getHealth path (every 3 s), its frozen-slot path (every 30 s) - used to page every time
+# it was reached. The primary's switch_to_unstaked is the ONE function every demote goes through (the internet-lost path, the four self-fence signals, the gap
+# rule, the vote-latency and delinquency escalations, the fence-rot demote): its DRY_RUN branch now logs EVERY call and pages once per ALERT_THROTTLE per reason
+# (the reason with its digits stripped; a table of keys). The standby's two per-cycle WARN lines (the takeover cooldown, the re-take lockout) are WARN once per
+# 60 s and INFO in between. Names below are all b75_* (one file, five sections). Worlds:
+#   b75_calls  - the REAL switch_to_unstaked over a simulated clock, one call per spec line (the exact throttle semantics)
+#   b75_loop   - the REAL main-loop region of the primary (the gap-demote suite's technique) with the REAL check_self_fence_isolation and switch_to_unstaked over
+#                a plan of cycles and a mocked LOCAL RPC: the wiring, end to end (offline, getHealth behind, frozen slot, silent RPC, own-vote lag)
+#   b75_sb     - the REAL attempt_takeover of the standby, one call per simulated second (turbo), the log levels of the two sites
+b75_n()  { printf '%s\n' "$1" | grep -c -E "$2"; }                                                                          # b75_n <events> <regex> - how many event lines match
+b75_at() { printf '%s\n' "$1" | grep -E "$2" | awk '{ printf "%s%s", (n++ ? "," : ""), $2 } END { print "" }'; }          # b75_at <events> <regex> - the 2nd field (the time) of the matching lines, comma-joined
+b75_spec() { printf '%s\t%s\n' "$@"; }                                                                                     # b75_spec <t> <reason> [<t> <reason> ...] -> the spec lines of b75_calls
+b75_plan() { local i s=""; for ((i = 0; i < $1; i++)); do s="$s $2"; done; printf '%s' "${s# }"; }                          # b75_plan <n> <token> -> n copies of the token
+b75_ri() { printf 'Internet lost (%sx) — no tier verification needed' "$1"; }                                               # the main loop's reason: the failure count changes every cycle
+b75_rb() { printf 'self-fence: local getHealth behind %s slots (> 150) — isolated from supermajority' "$1"; }               # the self-fence (2) reason: the slot count changes
+b75_rf() { printf 'self-fence: local confirmed slot frozen %ss — isolated from supermajority' "$1"; }                       # the self-fence (1b) reason: the seconds change
+b75_spec_same() { local a=() i; for ((i = 0; i < 20; i++)); do a[${#a[@]}]=$(( i * 5 )); a[${#a[@]}]="$(b75_ri $(( i + 1 )))"; done; b75_spec "${a[@]}"; }   # 20 calls, 5 s apart, one reason with a new number each time
+b75_why=""
+
+# ── world 1: the real switch_to_unstaked over a simulated clock ───────────────────────────────────────────────────────
+b75_calls() {   # b75_calls <script> <spec> [VAR=val ...] -> P <t> <status>|<reason> (a page) / L <t> (a dry log line) / R <t> <rc> (a call's return) / ADMIN <argv> / N <keys in the throttle table>
+    local script="$1" spec="$2" cs b75_t b75_r b75_rc kv; shift 2
+    cs=$(cut_src "$script")
+    (
+        set +e
+        # shellcheck disable=SC1090
+        source "$cs" 2>/dev/null
+        EV=$(mktemp); KP=$(mktemp); echo '[1]' > "$KP"
+        trap 'rm -rf "$EV" "$EV.bin" "$KP"' EXIT
+        mkdir -p "$EV.bin"; printf '#!/bin/bash\necho "ADMIN $*" >> "%s"\nexit 0\n' "$EV" > "$EV.bin/agave-validator"; chmod +x "$EV.bin/agave-validator"
+        SOLANA_PATH="$EV.bin"; LEDGER_PATH="$EV.ledger"; VALIDATOR_TYPE=agave; SETIDENTITY_TIMEOUT=15
+        STAKED_PUBKEY="$STK"; UNSTAKED_PUBKEY="$UNS"; UNSTAKED_KEYPAIR="$KP"; CURRENT_IDENTITY="$STK"
+        DRY_RUN=true; ALERT_THROTTLE=600; TG_ENABLED=false; UNDEF=0
+        for kv in "$@"; do eval "$kv"; done
+        [[ "$UNDEF" == "1" ]] && unset -f _dry_page_throttled
+        B=100000; _SIM_NOW=$B
+        mono_now() { echo "$_SIM_NOW"; }
+        log_info() { :; }; log_error() { :; }; _watchdog_pet() { :; }; sleep() { :; }; save_state() { :; }
+        timeout() { [[ "$1" == "-k" ]] && shift 2; shift; "$@"; }
+        get_local_identity() { echo "$STK"; }
+        log_warn() { case "$1" in "[DRY RUN] Would switch to UNSTAKED"*) printf 'L %s\n' $(( _SIM_NOW - B )) >> "$EV" ;; esac; }
+        alert() { printf 'P %s %s|%s\n' $(( _SIM_NOW - B )) "$3" "$1" >> "$EV"; }
+        while IFS=$'\t' read -r b75_t b75_r; do
+            [[ -n "$b75_t" ]] || continue
+            _SIM_NOW=$(( B + b75_t ))
+            switch_to_unstaked "$b75_r"; b75_rc=$?
+            printf 'R %s %s\n' "$b75_t" "$b75_rc" >> "$EV"
+        done <<< "$spec"
+        printf 'N %s\n' "${#_dry_page_keys[@]}" >> "$EV"
+        cat "$EV"
+    )
+}
+
+# ── world 2: the real main-loop region of the primary over a plan (token = S <flags>; i = the internet check fails that cycle) ──────────────────────────────
+b75_loop() {   # b75_loop <script> <plan> [VAR=val ...] -> CYCLE k / PAGE <t> <status> / TXT <t> <text> / DRYLOG <dry log line> / ADMIN <argv>;  SF = the mocked LOCAL RPC: ok behind frozen flap vlag mixed
+    local script="$1" plan="$2" cs region kv; shift 2
+    cs=$(cut_src "$script")
+    region=$(extract_region "$script" '^while \$_running; do' '^done$') || { echo "NO-REGION"; return 0; }
+    (
+        set +e
+        # shellcheck disable=SC1090
+        source "$cs" 2>/dev/null
+        eval "run_loop() {
+$region
+}"
+        EV=$(mktemp); KP=$(mktemp); echo '[1]' > "$KP"
+        trap 'rm -rf "$EV" "$EV.bin" "$KP"' EXIT
+        mkdir -p "$EV.bin"; printf '#!/bin/bash\necho "ADMIN $*" >> "%s"\nexit 0\n' "$EV" > "$EV.bin/agave-validator"; chmod +x "$EV.bin/agave-validator"
+        SOLANA_PATH="$EV.bin"
+        ev() { printf '%s\n' "$*" >> "$EV"; }
+        read -r -a PLAN <<< "$plan"
+        IDX=0; CYC=0
+        STAKED_PUBKEY="$STK"; UNSTAKED_PUBKEY="$UNS"; UNSTAKED_KEYPAIR="$KP"; LEDGER_PATH="$EV.ledger"; VALIDATOR_TYPE=agave; LOCAL_RPC="http://mock-local"
+        TG_ENABLED=false; DRY_RUN=true; ALERT_THROTTLE=600; PRIMARY_SELF_FENCE=true; CHECK_INTERVAL=3; TURBO_INTERVAL=1; _current_interval=3
+        CONNECTIVITY_RETRIES=1; MAX_VOTE_LATENCY=0; DELINQUENCY_RETRIES=1; STARTUP_GRACE=30; RECOVERY_MODE=manual; SETIDENTITY_TIMEOUT=15
+        SELF_FENCE_ISOLATION_SECS=30; SELF_FENCE_MAX_BEHIND=150; SELF_FENCE_NOANSWER_SECS=30
+        SELF_FENCE_VOTE_LAG_SLOTS=32; SELF_FENCE_VOTE_LAG_SECS=20; SELF_FENCE_VOTE_LAG_RESET_CYCLES=3; VOTE_PUBKEY=""
+        T_BASE=1700000000; _SIM_NOW=$T_BASE; ICOST=2; SF=ok
+        for kv in "$@"; do eval "$kv"; done
+        mono_now() { echo "$_SIM_NOW"; }
+        tok_has() { local t="${PLAN[$IDX]}"; [[ "${t:1}" == *"$1"* ]]; }
+        _last_heartbeat=$(date +%s); HEARTBEAT_INTERVAL=2000000000; _last_known_identity="$STK"
+        rotate_log() { CYC=$(( CYC + 1 )); [[ $CYC -gt $(( ${#PLAN[@]} + 5 )) ]] && _running=false; }   # a safety valve: the loop can never outlive its plan
+        heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _vat_cycle() { :; }; _fence_rot_check() { :; }; _g2_step() { :; }; _elapsed_step() { :; }
+        flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }; _watchdog_pet() { :; }; send_telegram() { return 0; }; send_webhook() { :; }
+        log_info() { :; }; log_error() { :; }
+        log_warn() { case "$1" in "[DRY RUN]"*) ev "DRYLOG ${1:0:90}" ;; esac; }
+        alert() { ev "PAGE $(( _SIM_NOW - T_BASE )) $3"; ev "TXT $(( _SIM_NOW - T_BASE )) ${1:0:140}"; return 0; }
+        alert_info() { :; }; alert_warn() { :; }
+        get_local_identity() { echo "$STAKED_PUBKEY"; }
+        check_internet() { tok_has i && return 1; return 0; }
+        check_identity_collision() { return 0; }
+        tier1_check_delinquency() { return 1; }
+        tier1_get_vote_latency() { echo 1; }
+        verify_latency_tiered() { return 0; }
+        _vat_hold() { return 1; }
+        window_push() { :; }; window_count() { echo 0; }; window_triggered() { return 1; }; window_mostly_clear() { return 1; }; window_reset() { :; }
+        timeout() { [[ "$1" == "-k" ]] && shift 2; shift; "$@"; }
+        sleep() { :; }
+        curl() {   # the LOCAL requests of the self-fence (the only reads the cycle makes), answered by SF from the cycle index
+            local d="" c=$IDX cm own
+            while [[ $# -gt 0 ]]; do if [[ "$1" == "-d" ]]; then d="$2"; shift 2; continue; fi; shift; done
+            case "$d" in
+                *getSlot*)
+                    if [[ "$SF" == "flap" && $(( c % 15 )) -ge 3 ]]; then return 7; fi
+                    if [[ "$SF" == "frozen" || "$SF" == "mixed" ]]; then printf '{"jsonrpc":"2.0","result":1000000,"id":1}'; else printf '{"jsonrpc":"2.0","result":%s,"id":1}' $(( 1000000 + 8 * c )); fi ;;
+                *getHealth*)
+                    if [[ "$SF" == "behind" ]] || { [[ "$SF" == "mixed" ]] && [[ $(( c % 12 )) -eq 11 ]]; }; then
+                        printf '{"jsonrpc":"2.0","error":{"code":-32005,"message":"Node is behind","data":{"numSlotsBehind":%s}},"id":1}' $(( 20000 + 7 * c ))
+                    else printf '{"jsonrpc":"2.0","result":"ok","id":1}'; fi ;;
+                *getVoteAccounts*)
+                    cm=$(( 2000000 + 8 * c )); own=$(( cm - 5 ))
+                    if [[ "$SF" == "vlag" && $(( c % 20 )) -ge 4 ]]; then own=$(( cm - 500 )); fi
+                    printf '{"jsonrpc":"2.0","result":{"current":[{"votePubkey":"Cluster111","lastVote":%s},{"votePubkey":"%s","lastVote":%s}],"delinquent":[]},"id":1}' "$cm" "$VOTE_PUBKEY" "$own" ;;
+                *) return 7 ;;
+            esac
+        }
+        _watchdog_sleep() {   # every cycle ends here (_cycle_sleep): the clock moves, the next cycle starts or the loop ends
+            _SIM_NOW=$(( _SIM_NOW + $1 ))
+            tok_has i && _SIM_NOW=$(( _SIM_NOW + ICOST ))   # an offline cycle also paid for its failed connectivity probe
+            IDX=$(( IDX + 1 ))
+            if [[ $IDX -ge ${#PLAN[@]} ]]; then _running=false; else ev "CYCLE $IDX"; fi
+        }
+        _selffence_reset
+        ev "CYCLE 0"
+        _running=true; run_loop
+        cat "$EV"
+    )
+}
+
+# ── world 3: the standby's real attempt_takeover, one call per simulated second (the turbo cadence) ───────────────────────────────────────────────────────
+b75_sb() {   # b75_sb <script> <seconds> [LOCK=<s> CD=<s> T0=<clock> ...] -> W <t> <text> / I <t> <text> (the two sites' texts at WARN / INFO) / R <t> <rc>;  LOCK = the re-take lockout armed with that many s, CD = the takeover cooldown
+    local script="$1" secs="$2" cs t kv; shift 2
+    cs=$(cut_src "$script")
+    (
+        set +e
+        # shellcheck disable=SC1090
+        source "$cs" 2>/dev/null
+        EV=$(mktemp); trap 'rm -f "$EV"' EXIT
+        TG_ENABLED=false; DRY_RUN=true; ALERT_THROTTLE=600; T0=1700000000; LOCK=0; CD=0
+        for kv in "$@"; do eval "$kv"; done
+        _SIM_NOW=$T0
+        mono_now() { echo "$_SIM_NOW"; }
+        log_error() { :; }; alert() { :; }; alert_warn() { :; }; alert_info() { :; }; send_telegram() { return 0; }; send_webhook() { :; }; _watchdog_pet() { :; }; save_state() { :; }
+        log_warn() { case "$1" in "Re-take locked out"*|"Takeover cooldown"*) printf 'W %s %s\n' $(( _SIM_NOW - T0 )) "$1" >> "$EV" ;; esac; }
+        log_info() { case "$1" in "Re-take locked out"*|"Takeover cooldown"*) printf 'I %s %s\n' $(( _SIM_NOW - T0 )) "$1" >> "$EV" ;; esac; }
+        SELF_FENCE_DEMOTE_TIME=0; SELF_FENCE_RETAKE_COOLDOWN=600; LAST_TAKEOVER_TIME=0; TAKEOVER_COOLDOWN=120; _last_lockout_log=0
+        if [[ $LOCK -gt 0 ]]; then SELF_FENCE_DEMOTE_TIME=$T0; SELF_FENCE_RETAKE_COOLDOWN=$LOCK; fi
+        if [[ $CD -gt 0 ]]; then LAST_TAKEOVER_TIME=$T0; TAKEOVER_COOLDOWN=$CD; fi
+        FIRST_DELINQUENT_TIME=$T0; LAST_LIVENESS_ACTIVE_TIME=0; _last_blind_end=0; _own_bank_active_time=0; _delinq_window="1111111111"; VOTE_LIVENESS_VERIFY=false
+        for ((t = 0; t <= secs; t++)); do
+            _SIM_NOW=$(( T0 + t ))
+            attempt_takeover >/dev/null 2>&1; printf 'R %s %s\n' "$t" "$?" >> "$EV"
+        done
+        cat "$EV"
+    )
+}
+
+# ── the cases, as predicates over a script (the same predicate runs on the shipped daemon and, in (B7.5-23), on every mutant) ──────────────────────────────
+b75_p_same() {   # (1) 20 calls of one reason whose number changes every time: 20 log lines, ONE page (the first), every call returns 0, no admin call
+    local ev; ev=$(b75_calls "$1" "$(b75_spec_same)")
+    b75_why="pages=$(b75_n "$ev" '^P ') at [$(b75_at "$ev" '^P ')] logs=$(b75_n "$ev" '^L ') rc0=$(b75_n "$ev" '^R [0-9]+ 0$') admin=$(b75_n "$ev" '^ADMIN')"
+    [[ "$(b75_n "$ev" '^P ')" == "1" ]] || return 1
+    [[ "$(b75_at "$ev" '^P ')" == "0" ]] || return 1
+    [[ "$ev" == *"P 0 [DRY RUN] WOULD SWITCH TO UNSTAKED|Internet lost (1x) — no tier verification needed"* ]] || return 1
+    [[ "$(b75_n "$ev" '^L ')" == "20" ]] || return 1
+    [[ "$(b75_n "$ev" '^R [0-9]+ 0$')" == "20" ]] || return 1
+    [[ "$(b75_n "$ev" '^ADMIN')" == "0" ]] || return 1
+    return 0
+}
+b75_p_window() {   # (2) the window: a repeat exactly ALERT_THROTTLE after the last page pages (>=), one second earlier does not; the stamp is the LAST page's; the knob is honoured (30; 0 = every call)
+    local e1 e2 e3
+    e1=$(b75_calls "$1" "$(b75_spec 0 "$(b75_ri 1)" 599 "$(b75_ri 2)" 600 "$(b75_ri 3)" 1199 "$(b75_ri 4)" 1200 "$(b75_ri 5)")")
+    e2=$(b75_calls "$1" "$(b75_spec 0 "$(b75_ri 1)" 29 "$(b75_ri 2)" 30 "$(b75_ri 3)" 59 "$(b75_ri 4)" 60 "$(b75_ri 5)")" ALERT_THROTTLE=30)
+    e3=$(b75_calls "$1" "$(b75_spec 0 "$(b75_ri 1)" 0 "$(b75_ri 2)" 1 "$(b75_ri 3)")" ALERT_THROTTLE=0)
+    b75_why="600: pages at [$(b75_at "$e1" '^P ')] logs $(b75_n "$e1" '^L ') / 30: pages at [$(b75_at "$e2" '^P ')] / 0: pages $(b75_n "$e3" '^P ')"
+    [[ "$(b75_at "$e1" '^P ')" == "0,600,1200" ]] || return 1
+    [[ "$(b75_n "$e1" '^L ')" == "5" ]] || return 1
+    [[ "$(b75_at "$e2" '^P ')" == "0,30,60" ]] || return 1
+    [[ "$(b75_n "$e3" '^P ')" == "3" ]] || return 1
+    return 0
+}
+b75_p_keys() {   # (3) a different reason pages at once; a table of keys (not one stamp): two reasons that alternate are one page each per window, and again after it
+    local e1 e2 a=() i
+    e1=$(b75_calls "$1" "$(b75_spec 0 "$(b75_rb 100)" 1 "$(b75_rf 31)" 2 "$(b75_rb 200)" 3 "$(b75_rf 61)" 600 "$(b75_rb 300)" 601 "$(b75_rf 91)" 602 "$(b75_rb 400)")")
+    for ((i = 0; i < 20; i++)); do
+        a[${#a[@]}]=$i
+        if (( i % 2 )); then a[${#a[@]}]="$(b75_rf $(( 30 + i )))"; else a[${#a[@]}]="$(b75_rb $(( 100 + i )))"; fi
+    done
+    e2=$(b75_calls "$1" "$(b75_spec "${a[@]}")")
+    b75_why="A@0 B@1 A@2 B@3 A@600 B@601 A@602: pages at [$(b75_at "$e1" '^P ')] logs $(b75_n "$e1" '^L ') / 20 alternating calls: pages $(b75_n "$e2" '^P ') logs $(b75_n "$e2" '^L ')"
+    [[ "$(b75_at "$e1" '^P ')" == "0,1,600,601" ]] || return 1
+    [[ "$(b75_n "$e1" '^L ')" == "7" ]] || return 1
+    [[ "$(b75_n "$e2" '^P ')" == "2" ]] || return 1
+    [[ "$(b75_n "$e2" '^L ')" == "20" ]] || return 1
+    return 0
+}
+b75_p_digits() {   # (4) the key is the reason without its digits: the same text with other numbers is the same reason; other words are another one; the page carries the reason as written
+    local ev; ev=$(b75_calls "$1" "$(b75_spec 0 "$(b75_rb 12345)" 3 "$(b75_rb 99)" 6 "$(b75_rb 7)" 9 "$(b75_rf 31)" 12 "$(b75_rf 61)")")
+    b75_why="pages at [$(b75_at "$ev" '^P ')] logs $(b75_n "$ev" '^L ')"
+    [[ "$(b75_at "$ev" '^P ')" == "0,9" ]] || return 1
+    [[ "$ev" == *"P 0 [DRY RUN] WOULD SWITCH TO UNSTAKED|self-fence: local getHealth behind 12345 slots (> 150) — isolated from supermajority"* ]] || return 1
+    [[ "$ev" == *"P 9 [DRY RUN] WOULD SWITCH TO UNSTAKED|self-fence: local confirmed slot frozen 31s — isolated from supermajority"* ]] || return 1
+    [[ "$(b75_n "$ev" '^L ')" == "5" ]] || return 1
+    return 0
+}
+b75_p_empty() {   # (5) a reason with nothing left once its digits go has no key to throttle by: it pages every time (a page too many, never one too few)
+    local ev; ev=$(b75_calls "$1" "$(b75_spec 0 "123" 1 "456" 2 "7")")
+    b75_why="pages=$(b75_n "$ev" '^P ') logs=$(b75_n "$ev" '^L ')"
+    [[ "$(b75_n "$ev" '^P ')" == "3" ]] || return 1
+    [[ "$(b75_n "$ev" '^L ')" == "3" ]] || return 1
+    return 0
+}
+b75_p_bound() {   # (6) the table is bounded: 40 different reasons page once each, nothing is held back, and the table never grows past 16 keys
+    local a=() i s="" ev n
+    for ((i = 1; i <= 40; i++)); do s="${s}x"; a[${#a[@]}]=$i; a[${#a[@]}]="reason $s"; done
+    ev=$(b75_calls "$1" "$(b75_spec "${a[@]}")")
+    n=$(printf '%s\n' "$ev" | sed -n 's/^N //p')
+    b75_why="pages=$(b75_n "$ev" '^P ') rc0=$(b75_n "$ev" '^R [0-9]+ 0$') table=${n:-?}"
+    [[ "$(b75_n "$ev" '^P ')" == "40" ]] || return 1
+    [[ "$(b75_n "$ev" '^R [0-9]+ 0$')" == "40" ]] || return 1
+    [[ "${n:-0}" -ge 1 && "${n:-0}" -le 16 ]] || return 1
+    return 0
+}
+b75_p_live() {   # (7) DRY_RUN=false: the real demote acts on EVERY call (remove-all + set-identity each time); nothing of the dry branch runs
+    local ev; ev=$(b75_calls "$1" "$(b75_spec 0 "$(b75_ri 3)" 1 "$(b75_ri 4)" 2 "$(b75_ri 5)" 3 "$(b75_ri 6)" 4 "$(b75_ri 7)")" DRY_RUN=false)
+    b75_why="remove-all=$(b75_n "$ev" '^ADMIN .*remove-all') set-identity=$(b75_n "$ev" '^ADMIN .*set-identity') dry-logs=$(b75_n "$ev" '^L ') dry-pages=$(b75_n "$ev" '^P [0-9]+ \[DRY RUN\]')"
+    [[ "$(b75_n "$ev" '^ADMIN .*authorized-voter remove-all')" == "5" ]] || return 1
+    [[ "$(b75_n "$ev" '^ADMIN .*set-identity')" == "5" ]] || return 1
+    [[ "$(b75_n "$ev" '^L ')" == "0" ]] || return 1
+    [[ "$(b75_n "$ev" '^P [0-9]+ \[DRY RUN\]')" == "0" ]] || return 1
+    return 0
+}
+b75_p_undef() {   # (8) fail toward paging: the predicate gone (unset -f), the dry demote pages on every call and still logs and returns 0
+    local ev; ev=$(b75_calls "$1" "$(b75_spec_same)" UNDEF=1)
+    b75_why="pages=$(b75_n "$ev" '^P ') logs=$(b75_n "$ev" '^L ') rc0=$(b75_n "$ev" '^R [0-9]+ 0$')"
+    [[ "$(b75_n "$ev" '^P ')" == "20" ]] || return 1
+    [[ "$(b75_n "$ev" '^L ')" == "20" ]] || return 1
+    [[ "$(b75_n "$ev" '^R [0-9]+ 0$')" == "20" ]] || return 1
+    return 0
+}
+b75_p_off20() {   # (9) the offline node through the real loop: 20 cycles, check_internet fails each one -> 20 log lines, ONE page (the first reason), no admin call, the plan ran to its end
+    local ev; ev=$(b75_loop "$1" "$(b75_plan 20 Si)")
+    b75_why="cycles=$(b75_n "$ev" '^CYCLE ') dry-logs=$(b75_n "$ev" '^DRYLOG ') pages=$(b75_n "$ev" '^PAGE ') admin=$(b75_n "$ev" '^ADMIN')"
+    [[ "$(b75_n "$ev" '^CYCLE ')" == "20" ]] || return 1
+    [[ "$(b75_n "$ev" '^DRYLOG ')" == "20" ]] || return 1
+    [[ "$(b75_n "$ev" '^PAGE ')" == "1" ]] || return 1
+    [[ "$ev" == *"PAGE 0 [DRY RUN] WOULD SWITCH TO UNSTAKED"* ]] || return 1
+    [[ "$ev" == *"TXT 0 Internet lost (1x) — no tier verification needed"* ]] || return 1
+    [[ "$(b75_n "$ev" '^ADMIN')" == "0" ]] || return 1
+    return 0
+}
+b75_p_offwin() {   # (10) the same offline node over 150 s with ALERT_THROTTLE=60 (a cycle = 3 s sleep + 2 s probe): the page repeats once per window - at 0, 60, 120 s - and every cycle is logged
+    local ev; ev=$(b75_loop "$1" "$(b75_plan 30 Si)" ALERT_THROTTLE=60)
+    b75_why="dry-logs=$(b75_n "$ev" '^DRYLOG ') pages at [$(b75_at "$ev" '^PAGE ')]"
+    [[ "$(b75_n "$ev" '^DRYLOG ')" == "30" ]] || return 1
+    [[ "$(b75_at "$ev" '^PAGE ')" == "0,60,120" ]] || return 1
+    return 0
+}
+b75_p_behind() {   # (11) self-fence (2), getHealth behind: fires on EVERY cycle (the tracker is re-armed by the dry success), the number in the reason changes every cycle -> 20 log lines, ONE page
+    local ev; ev=$(b75_loop "$1" "$(b75_plan 20 S)" SF=behind)
+    b75_why="cycles=$(b75_n "$ev" '^CYCLE ') dry-logs=$(b75_n "$ev" '^DRYLOG ') pages=$(b75_n "$ev" '^PAGE ') admin=$(b75_n "$ev" '^ADMIN')"
+    [[ "$(b75_n "$ev" '^CYCLE ')" == "20" ]] || return 1
+    [[ "$(b75_n "$ev" '^DRYLOG ')" == "20" ]] || return 1
+    [[ "$(b75_n "$ev" '^PAGE ')" == "1" ]] || return 1
+    [[ "$ev" == *"PAGE 0 [DRY RUN] WOULD SWITCH TO UNSTAKED"* ]] || return 1
+    [[ "$ev" == *"TXT 0 self-fence: local getHealth behind 20000 slots (> 150)"* ]] || return 1
+    [[ "$(b75_n "$ev" '^ADMIN')" == "0" ]] || return 1
+    return 0
+}
+b75_p_frozen() {   # (12) self-fence (1b), frozen slot: fires every ~33 s (30 s of freeze, then the tracker starts over) -> 4 fires in 45 cycles, ONE page
+    local ev f; ev=$(b75_loop "$1" "$(b75_plan 45 S)" SF=frozen); f=$(b75_n "$ev" '^DRYLOG ')
+    b75_why="fires=$f pages=$(b75_n "$ev" '^PAGE ') admin=$(b75_n "$ev" '^ADMIN')"
+    [[ "$f" -ge 3 ]] || return 1
+    [[ "$(b75_n "$ev" '^PAGE ')" == "1" ]] || return 1
+    [[ "$ev" == *"TXT "*" self-fence: local confirmed slot frozen 30s"* ]] || return 1
+    [[ "$(b75_n "$ev" '^ADMIN')" == "0" ]] || return 1
+    return 0
+}
+b75_p_silent() {   # (13) self-fence (1a), the LOCAL RPC goes silent after answering (three times in 45 cycles): ONE dry page; the self-fence's own page 'PRIMARY SELF-FENCE - LOCAL RPC SILENT' is sent every time, as ever
+    local ev f; ev=$(b75_loop "$1" "$(b75_plan 45 S)" SF=flap); f=$(b75_n "$ev" '^DRYLOG ')
+    b75_why="fires=$f dry-pages=$(b75_n "$ev" '^PAGE [0-9]+ \[DRY RUN\]') own-pages=$(b75_n "$ev" '^PAGE [0-9]+ PRIMARY SELF-FENCE — LOCAL RPC SILENT') admin=$(b75_n "$ev" '^ADMIN')"
+    [[ "$f" -ge 3 ]] || return 1
+    [[ "$(b75_n "$ev" '^PAGE [0-9]+ \[DRY RUN\]')" == "1" ]] || return 1
+    [[ "$(b75_n "$ev" '^PAGE [0-9]+ PRIMARY SELF-FENCE — LOCAL RPC SILENT')" == "$f" ]] || return 1
+    [[ "$(b75_n "$ev" '^ADMIN')" == "0" ]] || return 1
+    return 0
+}
+b75_p_vlag() {   # (14) self-fence (3), the own vote lags (healthy 4 cycles, then 16 lagging, twice in 45 cycles): ONE dry page; the own page 'VOTES NOT LANDING' is sent every time
+    local ev f; ev=$(b75_loop "$1" "$(b75_plan 45 S)" SF=vlag VOTE_PUBKEY=VotePubkey111); f=$(b75_n "$ev" '^DRYLOG ')
+    b75_why="fires=$f dry-pages=$(b75_n "$ev" '^PAGE [0-9]+ \[DRY RUN\]') own-pages=$(b75_n "$ev" '^PAGE [0-9]+ PRIMARY SELF-FENCE — VOTES NOT LANDING') admin=$(b75_n "$ev" '^ADMIN')"
+    [[ "$f" -ge 2 ]] || return 1
+    [[ "$(b75_n "$ev" '^PAGE [0-9]+ \[DRY RUN\]')" == "1" ]] || return 1
+    [[ "$(b75_n "$ev" '^PAGE [0-9]+ PRIMARY SELF-FENCE — VOTES NOT LANDING')" == "$f" ]] || return 1
+    [[ "$(b75_n "$ev" '^ADMIN')" == "0" ]] || return 1
+    return 0
+}
+b75_p_mixed() {   # (15) a partition that is frozen AND behind: the two signals fire in turn (frozen, behind, frozen, behind ...) -> 6 fires in 45 cycles, ONE page for each reason (two), not one per change of reason
+    local ev f; ev=$(b75_loop "$1" "$(b75_plan 45 S)" SF=mixed); f=$(b75_n "$ev" '^DRYLOG ')
+    b75_why="fires=$f pages=$(b75_n "$ev" '^PAGE ') frozen-pages=$(b75_n "$ev" '^TXT [0-9]+ self-fence: local confirmed slot frozen') behind-pages=$(b75_n "$ev" '^TXT [0-9]+ self-fence: local getHealth behind')"
+    [[ "$f" -ge 4 ]] || return 1
+    [[ "$(b75_n "$ev" '^PAGE ')" == "2" ]] || return 1
+    [[ "$(b75_n "$ev" '^TXT [0-9]+ self-fence: local confirmed slot frozen')" == "1" ]] || return 1
+    [[ "$(b75_n "$ev" '^TXT [0-9]+ self-fence: local getHealth behind')" == "1" ]] || return 1
+    return 0
+}
+b75_p_liveloop() {   # (16) the live node through the real loop (DRY_RUN=false, offline, 20 cycles): the real demote acts on every cycle - its admin calls are never throttled - and no dry line or page exists
+    local ev; ev=$(b75_loop "$1" "$(b75_plan 20 Si)" DRY_RUN=false)
+    b75_why="remove-all=$(b75_n "$ev" '^ADMIN .*authorized-voter remove-all') set-identity=$(b75_n "$ev" '^ADMIN .*set-identity') dry-logs=$(b75_n "$ev" '^DRYLOG ') dry-pages=$(b75_n "$ev" '^PAGE [0-9]+ \[DRY RUN\]')"
+    [[ "$(b75_n "$ev" '^ADMIN .*authorized-voter remove-all')" == "20" ]] || return 1
+    [[ "$(b75_n "$ev" '^ADMIN .*set-identity')" == "20" ]] || return 1
+    [[ "$(b75_n "$ev" '^DRYLOG ')" == "0" ]] || return 1
+    [[ "$(b75_n "$ev" '^PAGE [0-9]+ \[DRY RUN\]')" == "0" ]] || return 1
+    return 0
+}
+b75_p_sb_lock() {   # (17) the standby's re-take lockout over 131 turbo cycles (t = 0..130): WARN at 0, 60, 120; the other 128 cycles INFO with the same text (the remaining seconds count down); the take stays refused (rc 1)
+    local ev; ev=$(b75_sb "$1" 130 LOCK=600)
+    b75_why="warn at [$(b75_at "$ev" '^W ')] info=$(b75_n "$ev" '^I ') refused=$(b75_n "$ev" '^R [0-9]+ 1$')"
+    [[ "$(b75_at "$ev" '^W ')" == "0,60,120" ]] || return 1
+    [[ "$(b75_n "$ev" '^I ')" == "128" ]] || return 1
+    [[ "$(b75_n "$ev" '^R [0-9]+ 1$')" == "131" ]] || return 1
+    [[ "$ev" == *"W 60 Re-take locked out after self-fence: 540s remaining — we fenced OURSELVES"* ]] || return 1
+    [[ "$ev" == *"I 5 Re-take locked out after self-fence: 595s remaining — we fenced OURSELVES"* ]] || return 1
+    return 0
+}
+b75_p_sb_cd() {   # (18) the standby's takeover cooldown over 131 turbo cycles: WARN at 0, 60, 120; the other 128 cycles INFO with the same text; the take stays refused (rc 1)
+    local ev; ev=$(b75_sb "$1" 130 CD=300)
+    b75_why="warn at [$(b75_at "$ev" '^W ')] info=$(b75_n "$ev" '^I ') refused=$(b75_n "$ev" '^R [0-9]+ 1$')"
+    [[ "$(b75_at "$ev" '^W ')" == "0,60,120" ]] || return 1
+    [[ "$(b75_n "$ev" '^I ')" == "128" ]] || return 1
+    [[ "$(b75_n "$ev" '^R [0-9]+ 1$')" == "131" ]] || return 1
+    [[ "$ev" == *"W 60 Takeover cooldown: 240s remaining since last attempt"* ]] || return 1
+    [[ "$ev" == *"I 5 Takeover cooldown: 295s remaining since last attempt"* ]] || return 1
+    return 0
+}
+b75_p_sb_20() {   # (19) 20 turbo cycles: ONE WARN (the first) and 19 INFO for each of the two sites
+    local e1 e2
+    e1=$(b75_sb "$1" 19 LOCK=600); e2=$(b75_sb "$1" 19 CD=300)
+    b75_why="lockout: warn [$(b75_at "$e1" '^W ')] info $(b75_n "$e1" '^I ') / cooldown: warn [$(b75_at "$e2" '^W ')] info $(b75_n "$e2" '^I ')"
+    [[ "$(b75_at "$e1" '^W ')" == "0" && "$(b75_n "$e1" '^I ')" == "19" ]] || return 1
+    [[ "$(b75_at "$e2" '^W ')" == "0" && "$(b75_n "$e2" '^I ')" == "19" ]] || return 1
+    return 0
+}
+b75_p_sb_young() {   # (20) the FIRST call of a site is a WARN at once, even on a host whose clock reads 5 s (a stamp of 0 means 'never', not 'a minute ago')
+    local e1 e2
+    e1=$(b75_sb "$1" 2 LOCK=600 T0=5); e2=$(b75_sb "$1" 2 CD=300 T0=5)
+    b75_why="lockout: warn [$(b75_at "$e1" '^W ')] info $(b75_n "$e1" '^I ') / cooldown: warn [$(b75_at "$e2" '^W ')] info $(b75_n "$e2" '^I ')"
+    [[ "$(b75_at "$e1" '^W ')" == "0" && "$(b75_n "$e1" '^I ')" == "2" ]] || return 1
+    [[ "$(b75_at "$e2" '^W ')" == "0" && "$(b75_n "$e2" '^I ')" == "2" ]] || return 1
+    return 0
+}
+b75_p_sb_sep() {   # (21) one stamp per site: the lockout (t = 0..99) WARNs at 0 and 60, the cooldown that follows (t = 100..169) WARNs at its own first call (100) and 60 s later (160)
+    local ev lk cd
+    ev=$(b75_sb "$1" 170 LOCK=100 CD=300)
+    lk=$(printf '%s\n' "$ev" | grep 'Re-take locked out'); cd=$(printf '%s\n' "$ev" | grep 'Takeover cooldown')
+    b75_why="lockout warn at [$(b75_at "$lk" '^W ')] cooldown warn at [$(b75_at "$cd" '^W ')]"
+    [[ "$(b75_at "$lk" '^W ')" == "0,60" ]] || return 1
+    [[ "$(b75_at "$cd" '^W ')" == "100,160" ]] || return 1
+    return 0
+}
+b75_p_struct() {   # (22) structure: the throttle helper reads the monotonic clock only (no wall clock, no patsub), derives the key with tr; switch_to_unstaked logs, asks it in its dry branch only, then pages; ONE site pages the dry demote
+    local f="$1" fn sw sf n_site l_log l_ask l_alert l_live
+    fn=$(sed -n '/^_dry_page_throttled() {/,/^}/p' "$f" | grep -v '^[[:space:]]*#')
+    sw=$(sed -n '/^switch_to_unstaked() {/,/^}/p' "$f" | grep -v '^[[:space:]]*#')
+    sf=$(sed -n '/^check_self_fence_isolation() {/,/^}/p' "$f" | grep -v '^[[:space:]]*#')
+    n_site=$(grep -v '^[[:space:]]*#' "$f" | grep -c '"\[DRY RUN\] WOULD SWITCH TO UNSTAKED"')
+    l_log=$(printf '%s\n' "$sw" | grep -n 'log_warn "\[DRY RUN\] Would switch to UNSTAKED' | head -1 | cut -d: -f1)
+    l_ask=$(printf '%s\n' "$sw" | grep -n 'if ! _dry_page_throttled "\$reason"; then' | head -1 | cut -d: -f1)
+    l_alert=$(printf '%s\n' "$sw" | grep -n 'alert "\$reason" "\$UNSTAKED_PUBKEY" "\[DRY RUN\] WOULD SWITCH TO UNSTAKED"' | head -1 | cut -d: -f1)
+    l_live=$(printf '%s\n' "$sw" | grep -n 'SWITCHING TO UNSTAKED' | head -1 | cut -d: -f1)
+    b75_why="helper-lines=$(printf '%s\n' "$fn" | grep -c .) mono=$(printf '%s\n' "$fn" | grep -c 'mono_now') wall=$(printf '%s\n' "$fn" | grep -c 'date +%s') patsub=$(printf '%s\n' "$fn" | grep -c -E '\$\{[A-Za-z_0-9]+//') tr=$(printf '%s\n' "$fn" | grep -c -F "tr -d '0-9'") asks=$(printf '%s\n' "$sw" | grep -c '_dry_page_throttled') page-sites=$n_site self-fence-dry=$(printf '%s\n' "$sf" | grep -c '\[DRY RUN\]') order=[log:${l_log:-?} ask:${l_ask:-?} page:${l_alert:-?} live:${l_live:-?}]"
+    [[ -n "$fn" && -n "$sw" ]] || return 1
+    [[ "$(printf '%s\n' "$fn" | grep -c 'mono_now')" == "1" ]] || return 1
+    [[ "$(printf '%s\n' "$fn" | grep -c 'date +%s')" == "0" ]] || return 1
+    [[ "$(printf '%s\n' "$fn" | grep -c -E '\$\{[A-Za-z_0-9]+//')" == "0" ]] || return 1
+    [[ "$(printf '%s\n' "$fn" | grep -c -F "tr -d '0-9'")" == "1" ]] || return 1
+    [[ "$(printf '%s\n' "$sw" | grep -c '_dry_page_throttled')" == "1" ]] || return 1
+    [[ -n "$l_log" && -n "$l_ask" && -n "$l_alert" && -n "$l_live" ]] || return 1
+    [[ $l_log -lt $l_ask && $l_ask -lt $l_alert && $l_alert -lt $l_live ]] || return 1
+    [[ "$n_site" == "1" ]] || return 1
+    [[ "$(printf '%s\n' "$sf" | grep -c '\[DRY RUN\]')" == "0" ]] || return 1
+    return 0
+}
+
+# ── (B7.5-1..8) the throttle itself: the real switch_to_unstaked over a simulated clock ──────────────────────────────────────────────────────────────────
+echo ""; echo "─── (B7.5-1..8) the dry demote: every call is logged, one page per ALERT_THROTTLE per reason (digit-stripped key, a table of keys), the live path untouched ───"
+if b75_p_same "$PRIMARY"; then ok "(B7.5-1) 20 DRY_RUN demotes of one reason whose number changes every call ('Internet lost (1x)' ... '(20x)'): 20 '[DRY RUN] Would switch' log lines, ONE '[DRY RUN] WOULD SWITCH TO UNSTAKED' page (the first, with the first reason), every call returns 0 (DRY_RUN's logged success), no admin call"; else bad "(B7.5-1) same reason, changing number: $b75_why"; fi
+if b75_p_window "$PRIMARY"; then ok "(B7.5-2) the window is >=: calls at 0, 599, 600, 1199, 1200 s page at 0, 600, 1200 (the stamp is the LAST page's, not the first); ALERT_THROTTLE=30 pages at 0, 30, 60; ALERT_THROTTLE=0 pages every call"; else bad "(B7.5-2) window: $b75_why"; fi
+if b75_p_keys "$PRIMARY"; then ok "(B7.5-3) a different reason pages at once and each reason has its own window: A@0 B@1 A@2 B@3 A@600 B@601 A@602 pages at 0, 1, 600, 601; twenty calls alternating between two reasons are two pages (a single stamp would page on every change)"; else bad "(B7.5-3) per-reason windows: $b75_why"; fi
+if b75_p_digits "$PRIMARY"; then ok "(B7.5-4) the key is the reason with its digits stripped: 'behind 12345 slots', '99', '7' are one reason (one page, at 0, carrying '12345'); 'frozen 31s' and '61s' another (one page, at 9); 5 log lines"; else bad "(B7.5-4) key: $b75_why"; fi
+if b75_p_empty "$PRIMARY"; then ok "(B7.5-5) a reason that is nothing but digits has no key: it pages on every call (3 calls, 3 pages) - a page too many, never one too few"; else bad "(B7.5-5) empty key: $b75_why"; fi
+if b75_p_bound "$PRIMARY"; then ok "(B7.5-6) the table is bounded: 40 different reasons page once each (40 pages, every call 0) and the table holds at most 16 keys"; else bad "(B7.5-6) bound: $b75_why"; fi
+if b75_p_live "$PRIMARY"; then ok "(B7.5-7) DRY_RUN=false: five calls of one reason within a second make ten admin calls (authorized-voter remove-all + set-identity each time) - the throttle is the dry branch's alone; no dry log line, no dry page"; else bad "(B7.5-7) live path: $b75_why"; fi
+if b75_p_undef "$PRIMARY"; then ok "(B7.5-8) fail toward paging: with the predicate unset (unset -f _dry_page_throttled) the dry demote pages on every call, still logs and still returns 0"; else bad "(B7.5-8) undefined predicate: $b75_why"; fi
+
+# ── (B7.5-9..16) through the real main loop, the real self-fence and the real switch_to_unstaked ───────────────────────────────────────────────────────────
+echo ""; echo "─── (B7.5-9..16) the real loop: offline, getHealth behind, frozen slot, silent RPC, own-vote lag, a partition, and the live node ───"
+if b75_p_off20 "$PRIMARY"; then ok "(B7.5-9) 20 offline cycles in DRY_RUN (check_internet fails each one): 20 '[DRY RUN] Would switch to UNSTAKED' log lines, ONE page ('Internet lost (1x)'), zero admin calls"; else bad "(B7.5-9) offline x20: $b75_why"; fi
+if b75_p_offwin "$PRIMARY"; then ok "(B7.5-10) the offline node over 150 s with ALERT_THROTTLE=60: 30 log lines, pages at 0, 60 and 120 s - once per window"; else bad "(B7.5-10) offline over windows: $b75_why"; fi
+if b75_p_behind "$PRIMARY"; then ok "(B7.5-11) the self-fence's getHealth path (2) fires on every cycle (the number of slots behind changes each time): 20 log lines, ONE page, no admin call"; else bad "(B7.5-11) self-fence behind: $b75_why"; fi
+if b75_p_frozen "$PRIMARY"; then ok "(B7.5-12) the frozen-slot path (1b) fires every ~33 s: 3+ fires in 45 cycles, ONE page, no admin call"; else bad "(B7.5-12) self-fence frozen: $b75_why"; fi
+if b75_p_silent "$PRIMARY"; then ok "(B7.5-13) the silent-RPC path (1a): ONE dry page over 3+ fires; the self-fence's own 'PRIMARY SELF-FENCE — LOCAL RPC SILENT' page is still sent at every fire (not a dry page, not touched)"; else bad "(B7.5-13) self-fence silent: $b75_why"; fi
+if b75_p_vlag "$PRIMARY"; then ok "(B7.5-14) the own-vote-lag path (3): ONE dry page over 2+ fires; the self-fence's own 'PRIMARY SELF-FENCE — VOTES NOT LANDING' page is still sent at every fire"; else bad "(B7.5-14) self-fence vote lag: $b75_why"; fi
+if b75_p_mixed "$PRIMARY"; then ok "(B7.5-15) a partition that is both frozen and behind (the two paths fire in turn): 4+ fires, TWO pages in all - one 'frozen', one 'behind' - not one per alternation"; else bad "(B7.5-15) frozen+behind: $b75_why"; fi
+if b75_p_liveloop "$PRIMARY"; then ok "(B7.5-16) the live node (DRY_RUN=false) offline for 20 cycles: 20 authorized-voter remove-all and 20 set-identity calls - the real demote is never throttled - and no dry line or page"; else bad "(B7.5-16) live loop: $b75_why"; fi
+
+# ── (B7.5-17..21) the standby: the two per-cycle WARN lines ──────────────────────────────────────────────────────────────────────────────────────────────
+echo ""; echo "─── (B7.5-17..21) the standby's takeover cooldown and re-take lockout: WARN at most once per 60 s per site, INFO in between ───"
+if b75_p_sb_lock "$STANDBY"; then ok "(B7.5-17) the re-take lockout over 131 turbo cycles: WARN at t = 0, 60, 120; 128 INFO lines with the same text (595s remaining, 594s, ...); attempt_takeover keeps returning 1"; else bad "(B7.5-17) lockout: $b75_why"; fi
+if b75_p_sb_cd "$STANDBY"; then ok "(B7.5-18) the takeover cooldown over 131 turbo cycles: WARN at t = 0, 60, 120; 128 INFO lines with the same text (295s remaining since last attempt, ...); attempt_takeover keeps returning 1"; else bad "(B7.5-18) cooldown: $b75_why"; fi
+if b75_p_sb_20 "$STANDBY"; then ok "(B7.5-19) 20 turbo cycles: ONE WARN and 19 INFO for each of the two sites"; else bad "(B7.5-19) 20 cycles: $b75_why"; fi
+if b75_p_sb_young "$STANDBY"; then ok "(B7.5-20) the first call of each site is a WARN at once on a host whose clock reads 5 s (a stamp of 0 means 'never logged')"; else bad "(B7.5-20) young clock: $b75_why"; fi
+if b75_p_sb_sep "$STANDBY"; then ok "(B7.5-21) one stamp per site: the lockout (t = 0..99) WARNs at 0 and 60, the cooldown that follows WARNs at its own first call (100) and 60 s later (160) - the lockout's last WARN does not use up the cooldown's"; else bad "(B7.5-21) separate stamps: $b75_why"; fi
+
+# ── (B7.5-22) structure and docs ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+echo ""; echo "─── (B7.5-22) structure: monotonic clock only, one dry-demote page site, the docs entry ───"
+if b75_p_struct "$PRIMARY"; then ok "(B7.5-22a) _dry_page_throttled reads mono_now once, no wall-clock read, no patsub, the key from tr -d '0-9'; switch_to_unstaked logs, THEN asks it (once, in the dry branch), THEN pages, and the live path is below; the dry demote page has one site in the file and the self-fence function sends no dry page of its own"; else bad "(B7.5-22a) structure: $b75_why"; fi
+b75_p_docs() { local row; row=$(grep -F '`[DRY RUN] WOULD SWITCH TO UNSTAKED`' "$HARNESS_DIR/docs/NOTIFICATIONS.md" | head -1); [[ "$row" == *'`ALERT_THROTTLE`'* && "$row" == *"per reason"* ]]; }
+if b75_p_docs; then ok "(B7.5-22b) docs/NOTIFICATIONS.md: the '[DRY RUN] WOULD SWITCH TO UNSTAKED' entry says the page is sent once per ALERT_THROTTLE per reason"; else bad "(B7.5-22b) docs/NOTIFICATIONS.md does not say the dry page is throttled per reason"; fi
+
+# ── (B7.5-23) controls: every mutant of the rule turns a case red ────────────────────────────────────────────────────────────────────────────────────────
+echo ""; echo "─── (B7.5-23) CONTROLS (mutate()): each mutant must turn its case red ───"
+b75_ctl_ok=1; b75_ctl_rows=""; b75_cache=""
+b75_ctl() {   # b75_ctl <label> <script> <sed expr> <predicate> - the predicate holds on the shipped script and FAILS on the mutant (a mutant must still parse)
+    local label="$1" script="$2" expr="$3" pred="$4" m="$WORK/b75-mut-$1.sh" key rv mv
+    key="$pred@${script##*/}"
+    if ! mutate "$script" "$expr" "$m"; then b75_ctl_ok=0; b75_ctl_rows="$b75_ctl_rows $label:NOT-APPLIED"; return; fi
+    if ! "${BASH:-bash}" -n "$m" 2>/dev/null; then b75_ctl_ok=0; b75_ctl_rows="$b75_ctl_rows $label:DOES-NOT-PARSE"; return; fi
+    case " $b75_cache " in
+        *" $key=y "*) rv=y ;;
+        *" $key=n "*) rv=n ;;
+        *) if "$pred" "$script"; then rv=y; else rv=n; fi; b75_cache="$b75_cache $key=$rv" ;;
+    esac
+    if "$pred" "$m"; then mv=y; else mv=n; fi
+    if [[ "$rv" == "y" && "$mv" == "n" ]]; then b75_ctl_rows="$b75_ctl_rows $label:red"; else b75_ctl_ok=0; b75_ctl_rows="$b75_ctl_rows $label:[shipped=$rv,mutant=$mv]"; fi
+}
+# the dry demote - each mutant of the rule, against the exact-semantics world (and, for the first two, against the real loop as well)
+b75_ctl throttle-removed          "$PRIMARY" 's/^        if ! _dry_page_throttled "\$reason"; then$/        if true; then/' b75_p_same
+b75_ctl throttle-removed-loop     "$PRIMARY" 's/^        if ! _dry_page_throttled "\$reason"; then$/        if true; then/' b75_p_off20
+b75_ctl throttle-removed-behind   "$PRIMARY" 's/^        if ! _dry_page_throttled "\$reason"; then$/        if true; then/' b75_p_behind
+b75_ctl polarity-flipped          "$PRIMARY" 's/^        if ! _dry_page_throttled "\$reason"; then$/        if _dry_page_throttled "$reason"; then/' b75_p_same
+b75_ctl polarity-flipped-undef    "$PRIMARY" 's/^        if ! _dry_page_throttled "\$reason"; then$/        if _dry_page_throttled "$reason"; then/' b75_p_undef
+b75_ctl key-not-stripped          "$PRIMARY" "s/tr -d '0-9'/cat/" b75_p_same
+b75_ctl key-not-stripped-loop     "$PRIMARY" "s/tr -d '0-9'/cat/" b75_p_off20
+b75_ctl key-ignored               "$PRIMARY" 's/^        if \[\[ "\${_dry_page_keys\[\$_i\]}" == "\$_key" \]\]; then$/        if [[ -n "${_dry_page_keys[$_i]}" ]]; then/' b75_p_keys
+b75_ctl key-ignored-mixed         "$PRIMARY" 's/^        if \[\[ "\${_dry_page_keys\[\$_i\]}" == "\$_key" \]\]; then$/        if [[ -n "${_dry_page_keys[$_i]}" ]]; then/' b75_p_mixed
+b75_ctl window-gt-not-ge          "$PRIMARY" 's/\(_dry_page_stamps\[\$_i\]} )) \)-ge /\1-gt /' b75_p_window
+b75_ctl stamp-not-refreshed       "$PRIMARY" '/^            _dry_page_stamps\[\$_i\]=\$_now$/d' b75_p_window
+b75_ctl empty-key-guard-removed   "$PRIMARY" '/^    \[\[ -n "\$_key" \]\] || return 1$/d' b75_p_empty
+b75_ctl table-unbounded           "$PRIMARY" '/^    \[\[ \${#_dry_page_keys\[@\]} -lt 16 \]\] || { _dry_page_keys=(); _dry_page_stamps=(); }$/d' b75_p_bound
+b75_ctl throttled-call-returns-1  "$PRIMARY" 's/^        if ! _dry_page_throttled "\$reason"; then$/        _dry_page_throttled "$reason" \&\& return 1; if true; then/' b75_p_same
+b75_ctl throttle-on-live-path     "$PRIMARY" 's/^    \[\[ ! -s "\$UNSTAKED_KEYPAIR" \]\] && {$/    _dry_page_throttled "$reason" \&\& return 0; [[ ! -s "$UNSTAKED_KEYPAIR" ]] \&\& {/' b75_p_live
+b75_ctl throttle-on-live-path-loop "$PRIMARY" 's/^    \[\[ ! -s "\$UNSTAKED_KEYPAIR" \]\] && {$/    _dry_page_throttled "$reason" \&\& return 0; [[ ! -s "$UNSTAKED_KEYPAIR" ]] \&\& {/' b75_p_liveloop
+b75_ctl log-line-throttled-too    "$PRIMARY" 's/^        log_warn "\[DRY RUN\] Would switch to UNSTAKED.*$/        :/; s/^            alert "\$reason" "\$UNSTAKED_PUBKEY" "\[DRY RUN\] WOULD SWITCH TO UNSTAKED"$/            log_warn "[DRY RUN] Would switch to UNSTAKED — $reason"; alert "$reason" "$UNSTAKED_PUBKEY" "[DRY RUN] WOULD SWITCH TO UNSTAKED"/' b75_p_same
+b75_ctl log-line-throttled-loop   "$PRIMARY" 's/^        log_warn "\[DRY RUN\] Would switch to UNSTAKED.*$/        :/; s/^            alert "\$reason" "\$UNSTAKED_PUBKEY" "\[DRY RUN\] WOULD SWITCH TO UNSTAKED"$/            log_warn "[DRY RUN] Would switch to UNSTAKED — $reason"; alert "$reason" "$UNSTAKED_PUBKEY" "[DRY RUN] WOULD SWITCH TO UNSTAKED"/' b75_p_off20
+# the structure (22a): a wall-clock read in the helper, a second site that pages the dry demote on its own
+b75_ctl helper-reads-wall-clock   "$PRIMARY" '/^_dry_page_throttled() {/,/^}/ s/^    _now=\$(mono_now)$/    _now=$(date +%s)/' b75_p_struct
+b75_ctl second-dry-page-site      "$PRIMARY" 's/^_gap_demote() {$/_gap_demote() { alert "x" "y" "[DRY RUN] WOULD SWITCH TO UNSTAKED";/' b75_p_struct
+# the standby's two sites
+b75_ctl sb-cooldown-60-to-0       "$STANDBY" 's/\$(( now - _last_cooldown_log )) -ge 60/$(( now - _last_cooldown_log )) -ge 0/' b75_p_sb_cd
+b75_ctl sb-lockout-60-to-0        "$STANDBY" 's/\$(( now - _last_lockout_log )) -ge 60/$(( now - _last_lockout_log )) -ge 0/' b75_p_sb_lock
+b75_ctl sb-cooldown-info-dropped  "$STANDBY" '/_gate_msg="Takeover cooldown/,/^        fi$/ s/^            log_info "\$_gate_msg"$/            :/' b75_p_sb_cd
+b75_ctl sb-lockout-info-dropped   "$STANDBY" '/_gate_msg="Re-take locked out/,/^        fi$/ s/^            log_info "\$_gate_msg"$/            :/' b75_p_sb_lock
+b75_ctl sb-cooldown-stays-warn    "$STANDBY" '/_gate_msg="Takeover cooldown/,/^        fi$/ s/^            log_info "\$_gate_msg"$/            log_warn "$_gate_msg"/' b75_p_sb_cd
+b75_ctl sb-lockout-stays-warn     "$STANDBY" '/_gate_msg="Re-take locked out/,/^        fi$/ s/^            log_info "\$_gate_msg"$/            log_warn "$_gate_msg"/' b75_p_sb_lock
+b75_ctl sb-cooldown-stamp-unset   "$STANDBY" '/^            _last_cooldown_log=\$now$/d' b75_p_sb_cd
+b75_ctl sb-cooldown-shares-stamp  "$STANDBY" 's/_last_cooldown_log/_last_lockout_log/g' b75_p_sb_sep
+b75_ctl sb-cooldown-no-sentinel   "$STANDBY" 's/\[\[ \${_last_cooldown_log:-0} -eq 0 || /[[ /' b75_p_sb_young
+b75_ctl sb-lockout-no-sentinel    "$STANDBY" 's/\[\[ \${_last_lockout_log:-0} -eq 0 || /[[ /' b75_p_sb_young
+[[ $b75_ctl_ok -eq 1 ]] && ok "(B7.5-23) every mutant of the rule turns its case red:$b75_ctl_rows" || bad "(B7.5-23) a control is not red (NOT-APPLIED = its sed matched nothing; DOES-NOT-PARSE = the mutant is not bash):$b75_ctl_rows"
 # ══ B7.5 END ═════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 results_banner

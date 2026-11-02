@@ -5602,12 +5602,46 @@ _selffence_hard_stop() {
     return 0
 }
 
+# v0.7 (B7.5): the DRY_RUN page throttle - this daemon only, outside every byte-identical block. A node in the mainnet monitor-only phase (DRY_RUN=true) reaches the demote
+# on every cycle its condition holds (offline: each cycle; the self-fence's getHealth path: each 3 s; its frozen-slot path: each 30 s), and every call used to be a page:
+# a storm, and the page queue (_pending_alert keeps only the last undelivered page) delivered one more on reconnect. The dry branch of switch_to_unstaked now LOGS every
+# call and PAGES once per ALERT_THROTTLE per reason. The key of a reason is the reason with its digits stripped (the failure count, the seconds and the slot numbers change
+# on every call: "Internet lost (3x)" and "(4x)" are one condition); a different reason pages at once, and each key has its own stamp (a partition that is both frozen and
+# behind fires its two paths in turn: one page each per window, not one per change). In memory (a restart pages again); the stamps are mono_now stamps (no wall-clock
+# read, no patsub). _dry_page_throttled returns 0 = hold this page, 1 = page now (and the page is stamped): the call site asks `if ! ...`, so a missing predicate pages -
+# it fails toward paging. A reason with no key left (nothing but digits) pages every time, and the table is bounded (16 keys, then it starts over): a page too many,
+# never one too few. The live demote is never throttled and no caller sees a change: the dry branch still returns 0 - DRY_RUN's logged success.
+_dry_page_keys=()
+_dry_page_stamps=()
+_dry_page_throttled() {
+    local _now _key _i=0
+    _now=$(mono_now)
+    _key=$(printf '%s' "$1" | tr -d '0-9')
+    [[ -n "$_key" ]] || return 1
+    while [[ $_i -lt ${#_dry_page_keys[@]} ]]; do
+        if [[ "${_dry_page_keys[$_i]}" == "$_key" ]]; then
+            [[ $(( _now - ${_dry_page_stamps[$_i]} )) -ge ${ALERT_THROTTLE:-600} ]] || return 0
+            _dry_page_stamps[$_i]=$_now
+            return 1
+        fi
+        _i=$(( _i + 1 ))
+    done
+    [[ ${#_dry_page_keys[@]} -lt 16 ]] || { _dry_page_keys=(); _dry_page_stamps=(); }
+    _dry_page_keys[${#_dry_page_keys[@]}]=$_key
+    _dry_page_stamps[${#_dry_page_stamps[@]}]=$_now
+    return 1
+}
+
 switch_to_unstaked() {
     local reason="$1"
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_warn "[DRY RUN] Would switch to UNSTAKED — $reason"
-        alert "$reason" "$UNSTAKED_PUBKEY" "[DRY RUN] WOULD SWITCH TO UNSTAKED"; return 0
+        # v0.7 (B7.5): the log line is every call; the page is once per ALERT_THROTTLE per reason (_dry_page_throttled, above)
+        if ! _dry_page_throttled "$reason"; then
+            alert "$reason" "$UNSTAKED_PUBKEY" "[DRY RUN] WOULD SWITCH TO UNSTAKED"
+        fi
+        return 0
     fi
 
     [[ ! -s "$UNSTAKED_KEYPAIR" ]] && {

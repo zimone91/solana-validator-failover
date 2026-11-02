@@ -41,6 +41,17 @@ All notable changes are documented here. Versions follow the project's internal 
   - **B7.4 — fail-closed polarity at the two remaining Alpenglow stops:** the primary's re-take (`switch_to_staked`) asks `_ag_primary_retake_allowed` and the standby's pre-warm (`_prewarm_voter_add`) asks `_ag_prewarm_allowed`,
     both `return 1` (never) in rc1 and both used as `if ! …`: an undefined predicate withholds, as the standby's take has done since AG-3.1 (the AG-1 form, `if _ag_mode`, let it fall through). `_ag_mode` itself is unchanged.
 
+- **B7.5 (rc1) — the `DRY_RUN` monitor-only phase does not storm the operator.** A node on `DRY_RUN=true` runs the same decisions as a live one and only swaps the mutation for a
+  log line and a page; a decision that holds for many cycles used to page on every one of them (the offline node every ≈ 5 s, the self-fence's `getHealth` path every 3 s, its
+  frozen-slot path every ≈ 33 s).
+  - **The primary's dry demote** (`switch_to_unstaked`, the one function every demote goes through: internet lost, the four self-fence signals, the holder gap rule, the vote-latency
+    and delinquency escalations, the fence-rot demote) logs `[DRY RUN] Would switch to UNSTAKED — …` on every call and sends the `[DRY RUN] WOULD SWITCH TO UNSTAKED` page once per
+    `ALERT_THROTTLE` (600 s) per reason. The reason with its digits stripped is the key, so a changing count or slot number is the same reason; a different reason pages at once and
+    each reason has its own window (a partition that is both frozen and behind pages twice, not once per alternation). In memory, on the monotonic clock; the live demote is never
+    throttled and the dry branch still returns 0. The self-fence's own pages (`LOCAL RPC SILENT`, `VOTES NOT LANDING`) are untouched.
+  - **The standby's `Takeover cooldown: Ns remaining since last attempt`** (a WARN on every turbo cycle, 1 s, for the whole cooldown) and **`Re-take locked out after self-fence: Ns remaining`**
+    (already one WARN per 60 s; the cycles in between logged nothing) are WARN at most once per 60 s per line - the first call at once - and the same text at INFO in between.
+
 - **AG-1 — Alpenglow mode: FO never takes the staked identity automatically.** Always on, no knob; every figure and limit is in
   [docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07).
   - **The stop:** the standby's `take_staked_identity` and the primary's `switch_to_staked` (`RECOVERY_MODE=rpc`) return right after the
