@@ -240,6 +240,17 @@ SELF_FENCE_VOTE_LAG_SECS=20
 # vote burst per < SECS) from zeroing the timer every cycle so N6 never fires (wedged-but-alive hole).
 # >= 2 (1/0 = no hysteresis); ~3 is safe and still clears promptly on genuine recovery.
 SELF_FENCE_VOTE_LAG_RESET_CYCLES=3
+# v0.7 (AG-3.4): the HOLDER'S GAP RULE. A frozen host (VM pause, live migration, suspend, a stalled hypervisor) resumes the validator and this
+# monitor together, and the monitor's pending sleep has expired. When the time since the END of its previous cycle is >= this many seconds while
+# the node holds the STAKED identity, a spare may have taken it during the freeze: demote FIRST (switch_to_unstaked, before check_internet, the
+# manual-change detection and the self-fence) - the holder votes never, not "one cycle". Not a restart rule: a restarted monitor has no stamp
+# (H3 handles restarts). PAIRING RULE - P cannot read the spare's env, so the rule lives in both env examples and docs/SAFETY.md and the defaults
+# are pinned by the facts job: the spare's TAKEOVER_DELAY must be >= HOLDER_GAP_DEMOTE_SECS + 30 (the spare's earliest take after the holder's
+# last vote is TAKEOVER_DELAY plus its gates; a holder frozen longer than the delay may wake after a take and must demote before it votes;
+# 90 >= 45 + 30). Validated >= 30 at startup (a normal gap is one sleep plus the loop-top hooks and the identity read: seconds, with every bounded
+# read at its bound still under 30) and >= 27 + the longer of CHECK_INTERVAL / TURBO_INTERVAL (the same 27 s margin when the interval is raised).
+# FAILURE DIRECTION: an over-eager gap demotes a healthy holder (availability), it never lets a second one vote.
+HOLDER_GAP_DEMOTE_SECS=45
 # v0.6.8 (B1): bound the demote/promote admin-socket calls. set-identity / authorized-voter run on the
 # SAME admin RPC socket that get_local_identity wraps in `timeout 8` ("can hang indefinitely under heavy
 # load or compacting ledger") — but the demote itself was UN-timeout'd, so a wedged socket could freeze
@@ -476,6 +487,9 @@ STAT_FALSE_POSITIVES=0
 ALERT_THROTTLE=600                        # 10 minutes
 _last_unreachable_alert=0
 _last_switch_fail_alert=0                 # v0.6.0: throttle repeated failed-switch alerts
+_cycle_end_ts=0                           # v0.7 (AG-3.4): mono stamp of the END of the previous cycle (0 = none: first cycle / restarted monitor)
+_gap_pending=0                            # v0.7 (AG-3.4): a gap >= HOLDER_GAP_DEMOTE_SECS was seen; stays 1 until the staked holder is confirmed demoted (or found unstaked)
+_gap_secs=0                               # v0.7 (AG-3.4): the length of that gap, for the demote's reason text
 
 # ========================= SIGNAL HANDLING ====================================
 
@@ -6068,6 +6082,14 @@ validate_numeric_config() {
     _validate_numeric STARTUP_STAKED_UNREACHABLE_ALERT_SECS 1  # v0.6.9 (H3): startup staked-unreachable page threshold
     _validate_numeric ALPENGLOW_GATE_CHECK_HOURS 0             # v0.7 (pre-Block-4, №9): tripwire probe cadence in hours (0 = off, drift-announced)
     _validate_semver MIN_VALIDATOR_VERSION                 # v0.7 (AG-1.5): the AG readiness minimum must be a semantic version
+    _validate_numeric HOLDER_GAP_DEMOTE_SECS 30                # v0.7 (AG-3.4): the holder's gap rule (floor 30, below it a normal cycle's hooks could read as a gap; drift-announced)
+    # v0.7 (AG-3.4): the gap must also clear the longest legitimate between-cycle sleep by the same 27 s the floor leaves at the default interval (30 - 3):
+    # otherwise EVERY cycle of a slow-interval config would read as a freeze and demote a healthy holder, again and again.
+    local _gap_floor=$(( 27 + ( CHECK_INTERVAL > TURBO_INTERVAL ? CHECK_INTERVAL : TURBO_INTERVAL ) ))
+    if [[ $HOLDER_GAP_DEMOTE_SECS -lt $_gap_floor ]]; then
+        log_error "Bad HOLDER_GAP_DEMOTE_SECS: require an integer >= ${_gap_floor} (= 27 + the longer of CHECK_INTERVAL=${CHECK_INTERVAL} / TURBO_INTERVAL=${TURBO_INTERVAL}) (got ${HOLDER_GAP_DEMOTE_SECS}) — a normal cycle's sleep would read as a frozen host"
+        exit 1
+    fi
     _validate_numeric FENCE_ROT_CHECK_SECS 10                  # v0.7 (Block 5.4): armed fence-rot sweep cadence (floor 10; drift-announced)
     _validate_numeric FENCE_ROT_GRACE 0                         # v0.7 (Block 5.4): numeric shape first; the REAL floor is dynamic, just below
     # v0.7 (Block 5.4): FENCE_ROT_GRACE floor = max(600, ALERT_THROTTLE) — two reasons, both
@@ -6177,6 +6199,7 @@ announce_config_drift() {
     # ── [config-drift] end shared table ──
     # ── [config-drift] role-specific safety knobs ──
     _drift_check RECOVERY_DELAY 300 high "rpc-mode recovery re-takes the staked identity sooner after going unstaked — less settle time before an automatic re-take"
+    _drift_check HOLDER_GAP_DEMOTE_SECS 45 low "a frozen holder that wakes after a spare took the identity keeps voting longer before the gap demote — pair it with the spare's TAKEOVER_DELAY >= HOLDER_GAP_DEMOTE_SECS + 30"
 }
 
 # ========================= STARTUP ============================================
@@ -6441,6 +6464,45 @@ startup_checks() {
     [[ $STARTUP_GRACE -gt 0 ]] && { log_info "Grace: ${STARTUP_GRACE}s"; _watchdog_sleep "$STARTUP_GRACE"; }   # v0.7 (Block 5.2): grace chunked under the armed unit (plain sleep otherwise)
 }
 
+# v0.7 (AG-3.4): the three pieces of the holder's gap rule (HOLDER_GAP_DEMOTE_SECS above). They live outside every shared twin block: only this
+# daemon is a holder.
+# _cycle_sleep - the sleep that ENDS a cycle (every `continue` path and the loop tail): stamp the end of the cycle's work, then the chunked
+# _watchdog_sleep. One helper for all five sites, so a path added later cannot forget the stamp - a census in tests/test_primary_gap_demote.sh pins
+# that the only raw _watchdog_sleep left in the loop is the mid-cycle manual-change grace (that wait sits INSIDE a cycle: it is not a gap).
+_cycle_sleep() {
+    _cycle_end_ts=$(mono_now)
+    _watchdog_sleep "$@"
+}
+# _gap_latch - the FIRST statement of every cycle, before any hook or read (one /proc/uptime read, no I/O): the time since the previous cycle's end
+# is the time this monitor did not run. >= HOLDER_GAP_DEMOTE_SECS latches _gap_pending (kept until acted on: the identity may be unreadable on the
+# wake cycle - the unreachable branch refreshes the stamp - and the demote must not be lost with the gap). No stamp = nothing.
+_gap_latch() {
+    local _g
+    [[ ${_cycle_end_ts:-0} -gt 0 ]] || return 0
+    _g=$(( $(mono_now) - _cycle_end_ts ))
+    if [[ $_g -ge $HOLDER_GAP_DEMOTE_SECS ]]; then
+        _gap_pending=1; _gap_secs=$_g
+        log_warn "[gap] this monitor did not run for ${_g}s (>= HOLDER_GAP_DEMOTE_SECS=${HOLDER_GAP_DEMOTE_SECS}): host frozen or suspended - a spare may have taken the staked identity"
+    fi
+    return 0
+}
+# _gap_demote - right after the identity read and its -z branch, BEFORE check_internet, the manual-change detection and the self-fence: a pending gap
+# on a node that holds the STAKED identity demotes it at once (switch_to_unstaked: DRY_RUN pages "[DRY RUN] WOULD SWITCH TO UNSTAKED" and touches
+# nothing). A failed demote stays pending and is retried every cycle (the gap itself is a one-shot signal). Unstaked (or any other identity) at the
+# wake: one INFO line, nothing to demote.
+_gap_demote() {
+    [[ ${_gap_pending:-0} -eq 1 ]] || return 0
+    if [[ "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]]; then
+        if switch_to_unstaked "holder gap: this monitor did not run for ${_gap_secs} s (host frozen or suspended) — a spare may have taken the identity"; then
+            _gap_pending=0
+        fi
+    else
+        log_info "[gap] this monitor did not run for ${_gap_secs}s, but the identity is ${CURRENT_IDENTITY:0:8}, not the staked one - nothing to demote"
+        _gap_pending=0
+    fi
+    return 0
+}
+
 display_status() {
     [[ ! -t 1 ]] && return
     local l; [[ "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]] && l="STAKED" || l="UNSTAKED"
@@ -6461,9 +6523,11 @@ else
 fi
 log_info "[version] minimum validator version ${MIN_VALIDATOR_VERSION} (read from LOCAL_RPC getVersion once the validator answers; the AG page reads it fresh)"
 log_info "[vat] vote-set admission of ${VOTE_PUBKEY:-<no VOTE_PUBKEY>} is read from LOCAL_RPC at finalized: on the first cycle after an epoch change, at most every 10 min while not admitted or unknown, and right before a vote-based demote"
+log_info "[gap] holder gap rule: a STAKED holder demotes itself when this monitor did not run for >= ${HOLDER_GAP_DEMOTE_SECS}s (host frozen or suspended); the spare's TAKEOVER_DELAY must be >= ${HOLDER_GAP_DEMOTE_SECS} + 30 (docs/SAFETY.md)"
 
 while $_running; do
     STAT_CHECKS=$((STAT_CHECKS + 1))
+    _gap_latch   # v0.7 (AG-3.4): FIRST statement of the cycle - how long did this monitor NOT run? (no I/O; the demote itself waits for the identity read below)
     rotate_log
     heartbeat_ping   # v0.6.4: external watchdog ping — top of loop, before any `continue`
     _alpenglow_gate_check   # v0.7 (pre-Block-4, №9): read-only Alpenglow gate probe — self-gates on cadence; top of loop, NEVER inside a takeover/recovery/verdict path (act-then-alert untouched: this network read is nowhere near a mutation)
@@ -6494,10 +6558,12 @@ while $_running; do
         fi
         display_status "N/A"
         _watchdog_pet   # §5 end-of-cycle pet (Block 5.2): the cycle's last op returned — no-op outside the armed unit
-        _watchdog_sleep "$CHECK_INTERVAL"   # FF-B3 (fix round): chunked under the armed unit — ANY legal interval is safe (plain sleep un-armed)
+        _cycle_sleep "$CHECK_INTERVAL"   # FF-B3 (fix round): chunked under the armed unit — ANY legal interval is safe (plain sleep un-armed); AG-3.4: stamps the end of the cycle
         continue
     fi
     _last_unreachable_alert=0
+
+    _gap_demote   # v0.7 (AG-3.4): a pending gap + STAKED = demote NOW, before check_internet, the manual-change detection and the self-fence
 
     # v0.7 (Block 5.2, §2.2): the FIRST CLEAN CYCLE (identity readable again) clears the
     # fence's fenced-demoted marker — this hunk owns only the marker's LIFECYCLE; the
@@ -6553,7 +6619,7 @@ while $_running; do
         fi
         display_status "NO INET"
         _watchdog_pet   # §5 end-of-cycle pet (Block 5.2): the cycle's last op returned — no-op outside the armed unit
-        _watchdog_sleep "$CHECK_INTERVAL"; continue   # FF-B3 (fix round): chunked under the armed unit (plain sleep un-armed)
+        _cycle_sleep "$CHECK_INTERVAL"; continue   # FF-B3 (fix round): chunked under the armed unit (plain sleep un-armed); AG-3.4: stamps the end of the cycle
     fi
 
     [[ $CONNECTIVITY_FAIL_COUNT -gt 0 ]] && { alert_info "✅ PRIMARY internet recovered after $CONNECTIVITY_FAIL_COUNT fail(s)"; flush_pending_alerts; }
@@ -6574,7 +6640,7 @@ while $_running; do
             if check_self_fence_isolation; then
                 display_status "SELF-FENCED"
                 _watchdog_pet   # §5 end-of-cycle pet (Block 5.2): the cycle's last op returned — no-op outside the armed unit
-                _watchdog_sleep "$_current_interval"; continue   # FF-B3 (fix round): chunked under the armed unit (plain sleep un-armed)
+                _cycle_sleep "$_current_interval"; continue   # FF-B3 (fix round): chunked under the armed unit (plain sleep un-armed); AG-3.4: stamps the end of the cycle
             fi
         fi
 
@@ -6601,7 +6667,7 @@ while $_running; do
                         LATENCY_FAIL_COUNT=0
                         display_status "$latency_str"
                         _watchdog_pet   # §5 end-of-cycle pet (Block 5.2): the cycle's last op returned — no-op outside the armed unit
-                        _watchdog_sleep "$_current_interval"; continue   # FF-B3 (fix round): chunked under the armed unit (plain sleep un-armed)
+                        _cycle_sleep "$_current_interval"; continue   # FF-B3 (fix round): chunked under the armed unit (plain sleep un-armed); AG-3.4: stamps the end of the cycle
                     fi
                 else
                     LATENCY_FAIL_COUNT=0
@@ -6711,7 +6777,7 @@ while $_running; do
 
     display_status "$latency_str"
     _watchdog_pet   # §5 end-of-cycle pet (Block 5.2): the cycle's last op returned — no-op outside the armed unit
-    _watchdog_sleep "$_current_interval"   # FF-B3 (fix round): chunked under the armed unit — ANY legal interval is safe (plain sleep un-armed)
+    _cycle_sleep "$_current_interval"   # FF-B3 (fix round): chunked under the armed unit — ANY legal interval is safe (plain sleep un-armed); AG-3.4: stamps the end of the cycle
 done
 
 # v0.7 (Block 6.3 fix round, M5 — INT-4): an ABORTED main loop must not exit 0. The only shutdown
