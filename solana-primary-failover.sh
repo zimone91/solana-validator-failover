@@ -247,10 +247,11 @@ SELF_FENCE_VOTE_LAG_RESET_CYCLES=3
 # (H3 handles restarts). PAIRING RULE - P cannot read the spare's env, so the rule lives in both env examples and docs/SAFETY.md and the defaults
 # are pinned by the facts job: the spare's TAKEOVER_DELAY must be >= HOLDER_GAP_DEMOTE_SECS + 30 (the spare's earliest take after the holder's
 # last vote is TAKEOVER_DELAY plus its gates; a holder frozen longer than the delay may wake after a take and must demote before it votes;
-# 90 >= 45 + 30). Validated >= 30 at startup (a normal gap is one sleep plus the loop-top hooks and the identity read: seconds, with every bounded
-# read at its bound still under 30) and >= 27 + the longer of CHECK_INTERVAL / TURBO_INTERVAL (the same 27 s margin when the interval is raised).
+# 60 >= 30 + 30). Validated >= 20 at startup (a normal gap is one sleep plus the loop-top hooks and the identity read: a few seconds; a stall
+# of this host's own scheduler that outlasts the knob reads as a freeze) and >= 17 + the longer of CHECK_INTERVAL / TURBO_INTERVAL (the floor 20
+# less the default interval 3: the same margin when the interval is raised).
 # FAILURE DIRECTION: an over-eager gap demotes a healthy holder (availability), it never lets a second one vote.
-HOLDER_GAP_DEMOTE_SECS=45
+HOLDER_GAP_DEMOTE_SECS=30
 # v0.6.8 (B1): bound the demote/promote admin-socket calls. set-identity / authorized-voter run on the
 # SAME admin RPC socket that get_local_identity wraps in `timeout 8` ("can hang indefinitely under heavy
 # load or compacting ledger") — but the demote itself was UN-timeout'd, so a wedged socket could freeze
@@ -6082,12 +6083,12 @@ validate_numeric_config() {
     _validate_numeric STARTUP_STAKED_UNREACHABLE_ALERT_SECS 1  # v0.6.9 (H3): startup staked-unreachable page threshold
     _validate_numeric ALPENGLOW_GATE_CHECK_HOURS 0             # v0.7 (pre-Block-4, №9): tripwire probe cadence in hours (0 = off, drift-announced)
     _validate_semver MIN_VALIDATOR_VERSION                 # v0.7 (AG-1.5): the AG readiness minimum must be a semantic version
-    _validate_numeric HOLDER_GAP_DEMOTE_SECS 30                # v0.7 (AG-3.4): the holder's gap rule (floor 30, below it a normal cycle's hooks could read as a gap; drift-announced)
-    # v0.7 (AG-3.4): the gap must also clear the longest legitimate between-cycle sleep by the same 27 s the floor leaves at the default interval (30 - 3):
+    _validate_numeric HOLDER_GAP_DEMOTE_SECS 20                # v0.7 (AG-3.4): the holder's gap rule (floor 20, below it a normal cycle's hooks could read as a gap; drift-announced)
+    # v0.7 (AG-3.4): the gap must also clear the longest legitimate between-cycle sleep by the same 17 s the floor leaves at the default interval (20 - 3):
     # otherwise EVERY cycle of a slow-interval config would read as a freeze and demote a healthy holder, again and again.
-    local _gap_floor=$(( 27 + ( CHECK_INTERVAL > TURBO_INTERVAL ? CHECK_INTERVAL : TURBO_INTERVAL ) ))
+    local _gap_floor=$(( 17 + ( CHECK_INTERVAL > TURBO_INTERVAL ? CHECK_INTERVAL : TURBO_INTERVAL ) ))
     if [[ $HOLDER_GAP_DEMOTE_SECS -lt $_gap_floor ]]; then
-        log_error "Bad HOLDER_GAP_DEMOTE_SECS: require an integer >= ${_gap_floor} (= 27 + the longer of CHECK_INTERVAL=${CHECK_INTERVAL} / TURBO_INTERVAL=${TURBO_INTERVAL}) (got ${HOLDER_GAP_DEMOTE_SECS}) — a normal cycle's sleep would read as a frozen host"
+        log_error "Bad HOLDER_GAP_DEMOTE_SECS: require an integer >= ${_gap_floor} (= 17 + the longer of CHECK_INTERVAL=${CHECK_INTERVAL} / TURBO_INTERVAL=${TURBO_INTERVAL}) (got ${HOLDER_GAP_DEMOTE_SECS}) — a normal cycle's sleep would read as a frozen host"
         exit 1
     fi
     _validate_numeric FENCE_ROT_CHECK_SECS 10                  # v0.7 (Block 5.4): armed fence-rot sweep cadence (floor 10; drift-announced)
@@ -6199,7 +6200,7 @@ announce_config_drift() {
     # ── [config-drift] end shared table ──
     # ── [config-drift] role-specific safety knobs ──
     _drift_check RECOVERY_DELAY 300 high "rpc-mode recovery re-takes the staked identity sooner after going unstaked — less settle time before an automatic re-take"
-    _drift_check HOLDER_GAP_DEMOTE_SECS 45 low "a frozen holder that wakes after a spare took the identity keeps voting longer before the gap demote — pair it with the spare's TAKEOVER_DELAY >= HOLDER_GAP_DEMOTE_SECS + 30"
+    _drift_check HOLDER_GAP_DEMOTE_SECS 30 low "a frozen holder that wakes after a spare took the identity keeps voting longer before the gap demote — pair it with the spare's TAKEOVER_DELAY >= HOLDER_GAP_DEMOTE_SECS + 30"
 }
 
 # ========================= STARTUP ============================================
@@ -6312,6 +6313,7 @@ startup_checks() {
     validate_numeric_config   # v0.6.5 (F4): reject/normalize all remaining numeric knobs
 
     announce_config_drift     # v0.7 (Block 3, slice 3.5): env safety knobs laxer than THIS version's defaults — one line each (visibility, never force)
+    log_info "[gap] holder gap rule: a STAKED holder demotes itself when this monitor did not run for >= ${HOLDER_GAP_DEMOTE_SECS}s (host frozen or suspended); the spare's TAKEOVER_DELAY must be >= ${HOLDER_GAP_DEMOTE_SECS} + 30 (docs/SAFETY.md)"   # v0.7 (AG-3.4): said once at start, inside startup_checks (a top-level statement would move the main section's shape pinned by test_own_view)
 
     _enforce_one_arm_state    # v0.7 (Block 5 skeleton, №1): refuse DRY_RUN=true + REAL fence unit — CRITICAL + exit 1; structurally inert while no fence unit exists (every host today). Runs AFTER marker consumption (fix round HOLD-1): on a fenced node this refusal must not preempt HOLD.
     _rot_capture_intent       # v0.7 (Block 5.4): fence-intent anchor for the rot sweep — armed-unit only (structurally inert on every host today); captured HERE, at startup, so runtime real→none / real→page-only is classifiable as "the fence is GONE" (a first-sweep capture would bless an early deletion as intent)
@@ -6523,7 +6525,6 @@ else
 fi
 log_info "[version] minimum validator version ${MIN_VALIDATOR_VERSION} (read from LOCAL_RPC getVersion once the validator answers; the AG page reads it fresh)"
 log_info "[vat] vote-set admission of ${VOTE_PUBKEY:-<no VOTE_PUBKEY>} is read from LOCAL_RPC at finalized: on the first cycle after an epoch change, at most every 10 min while not admitted or unknown, and right before a vote-based demote"
-log_info "[gap] holder gap rule: a STAKED holder demotes itself when this monitor did not run for >= ${HOLDER_GAP_DEMOTE_SECS}s (host frozen or suspended); the spare's TAKEOVER_DELAY must be >= ${HOLDER_GAP_DEMOTE_SECS} + 30 (docs/SAFETY.md)"
 
 while $_running; do
     STAT_CHECKS=$((STAT_CHECKS + 1))
