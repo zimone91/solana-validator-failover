@@ -35,6 +35,350 @@ done
 [[ -z "$b7_missing" ]] && ok "(0) both daemons, the fence script and the arm ceremony are present" || bad "(0) missing:$b7_missing"
 
 # ══ B7.1 BEGIN ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+# (B7.1) _validator_pid is the validator, never an admin-client child of the daemon (TASK-BLOCK7-RC1 item 1; the AG-1 D0 finding F7). The daemon's own bounded admin calls
+# (agave-validator --ledger L set-identity | authorized-voter | contact-info | monitor | exit | wait-for-restart-window) carry the validator's process name and run while the
+# hard stop runs: `pgrep | head -1` can answer one of them, and the hard stop would kill the client and call a still-STAKED hung holder "still running" (HARD STOP FAILED);
+# in the fence script and the arm ceremony the pid is mapped to a systemd unit through /proc/<pid>/cgroup, so a client of the MONITOR unit would be taken for the validator's unit.
+# The function: the unit's MainPID first (the daemons: P since AG-3.8, S is new), then pgrep per process name (agave-validator, fdctl on a Frankendancer box, solana-validator), every
+# hit's argv read from ${PROC_ROOT:-/proc}/<pid>/cmdline (the fence and the arm: ${FENCE_PROC_ROOT:-/proc}): a hit with one of the six words as an ARGUMENT AFTER argv[0], as a
+# whole word, is a client and is passed over; the first hit with --ledger and no such word wins, else the first hit that is not a client; a cmdline that cannot be read proves
+# nothing (that hit counts as not-a-client, so with no readable cmdline at all the answer is the first pgrep hit, as before); only clients alive = no validator = empty.
+#   (01) MainPID (canonical, > 1, alive) wins and pgrep is not asked (P; S is new)   (02) a MainPID that is empty / 0 / 1 / '007' / 'abc' / negative / too long / dead falls to pgrep WITH the exclusion
+#   (03) a client of each of the six words, listed BEFORE the validator, is passed over (P S F A)   (04) only clients alive -> empty, rc 0, no byte printed
+#   (05) --ledger and no client word wins over a hit that carries neither, in either order   (06) whole words only: --identity /keys/<word>.json, --ledger /mnt/<word> ... are not clients
+#   (07) the word after --ledger is its VALUE (a relative ledger directory called `monitor`), argv[0] is not an argument   (08) unreadable cmdlines: the old first-hit answer is the floor
+#   (09) the process names go through the same selection, in the old order and with the old number of pgrep calls   (10) the pid prints with no newline, rc 0
+#   (11) the fence and the arm never ask the unit (no systemctl call)   (12) the REAL hard stop (P S) kills the validator, not the unkillable client listed first, and confirms DOWN
+#   (13) the fence's and the arm's _detect_validator_unit names the VALIDATOR's unit when a client of the monitor unit is listed first
+#   (14) twins: P and S carry one body, F and A are byte-identical, and the selection part is one text in all four   (15) structure by text   (16) CONTROLS (mutate()): every mutant turns its case red
+# RED ON THE BASE (0730a78 + this section, the scripts unchanged): (01) on the standby only - the primary has had the MainPID path since AG-3.8 - and (02) (03) (04) (05) (08) (09) (11) (12) (13) (14a) (14c) (15),
+# and every control of (16) (NOT-APPLIED: the lines they mutate do not exist yet). The hard stop of (12) on the base: rc=1, 'HARD STOP FAILED', events STOP,MASK,KILL 4001,KILL -9 4001 - the client, never the validator.
+# NOT red on the base: (06) (07a) (07b) (10) (14b) - they pin what the code already does (a sole hit is answered whole; the fence and the arm are already byte-identical); their red is their mutants.
+echo ""; echo "─── (B7.1) _validator_pid: the unit's MainPID first, pgrep after with the daemon's own admin clients passed over (P S F A) ───"
+B71_FENCE="$HARNESS_DIR/systemd/failover-fence.sh"; B71_ARM="$HARNESS_DIR/failover-arm.sh"
+B71_AV="/home/sol/.local/share/solana/install/active_release/bin/agave-validator"
+B71_FD="/opt/firedancer/bin/fdctl"
+B71_WORDS="set-identity authorized-voter contact-info monitor exit wait-for-restart-window"
+B71_DIR="$WORK/b71"; mkdir -p "$B71_DIR"
+b71_why=""
+
+# ── fixtures: a fake /proc, the argv of a client and of the validator ───────────────────────────────────────────────────
+b71_root() { mktemp -d "$B71_DIR/r.XXXXXX"; }
+b71_proc() {   # b71_proc <root> <pid> [argv...] - <root>/<pid>/cmdline holds the argv NUL-terminated, as /proc/<pid>/cmdline does; no argv = a pid whose cmdline cannot be read
+    local root="$1" pid="$2"; shift 2
+    mkdir -p "$root/$pid" || return 1
+    [[ $# -eq 0 ]] || printf '%s\0' "$@" > "$root/$pid/cmdline"
+}
+b71_adm() {    # b71_adm <root> <pid> <word> - the daemon's own bounded admin call: agave-validator --ledger L <word> ...
+    local root="$1" pid="$2" word="$3" extra
+    case "$word" in
+        set-identity) extra="/keys/unstaked.json" ;;
+        authorized-voter) extra="add /keys/staked.json" ;;
+        exit) extra="--force" ;;
+        wait-for-restart-window) extra="--min-idle-time 60" ;;
+        *) extra="" ;;
+    esac
+    # shellcheck disable=SC2086
+    b71_proc "$root" "$pid" "$B71_AV" --ledger /mnt/ledger "$word" $extra
+}
+b71_val() {    # b71_val <root> <pid> - the validator: --ledger among the usual options, no client word
+    b71_proc "$1" "$2" "$B71_AV" --identity /keys/unstaked.json --vote-account /keys/vote.json --ledger /mnt/ledger --accounts /mnt/accounts --log /var/log/solana/validator.log --entrypoint entrypoint.mainnet-beta.solana.com:8001 --limit-ledger-size 50000000
+}
+
+# ── the runners ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+b71_fnsrc() {  # b71_fnsrc <fence|arm script> -> a file holding its _validator_pid and _detect_validator_unit, cached by path
+    local s="$1" k
+    k="$B71_DIR/fn.$(printf '%s' "$s" | cksum | cut -d' ' -f1)"
+    if [[ ! -s "$k" ]]; then
+        { extract_region "$s" '^_validator_pid() {' '^}$'; extract_region "$s" '^_detect_validator_unit() {' '^}$'; } > "$k"
+    fi
+    printf '%s' "$k"
+}
+b71_run() {    # b71_run <daemon|fence> <script> <MainPID text> <agave pids> <fdctl pids> <solana-validator pids> <proc root> [VALIDATOR_TYPE]
+               # -> "<pid>|rc=<rc>|bytes=<n>|pgrep=<names asked, in order>|systemctl=<calls>": the REAL function over mocks at the I/O boundary only (timeout, systemctl, pgrep) and a fake /proc
+    local kind="$1" script="$2" mp="$3" pa="$4" pf="$5" ps="$6" root="$7" vt="${8:-agave}" src log
+    if [[ "$kind" == "daemon" ]]; then src=$(seam_cut "$script"); else src=$(b71_fnsrc "$script"); fi
+    log=$(mktemp "$B71_DIR/run.XXXXXX")
+    (
+        set +e
+        # shellcheck disable=SC1090
+        source "$src" 2>/dev/null
+        timeout() { shift; "$@"; }
+        systemctl() { echo "$*" >> "$log.sc"; printf '%s\n' "$mp"; }
+        pgrep() { local l; echo "$2" >> "$log.pg"; case "$2" in agave-validator) l="$pa" ;; fdctl) l="$pf" ;; solana-validator) l="$ps" ;; *) l="" ;; esac; [[ -n "$l" ]] || return 1; printf '%s\n' $l; }
+        VALIDATOR_TYPE="$vt"; PROC_ROOT="$root"; FENCE_PROC_ROOT="$root"; unset VALIDATOR_UNIT
+        _validator_pid > "$log.out"; rc=$?
+        printf '%s|rc=%s|bytes=%s|pgrep=%s|systemctl=%s' "$(cat "$log.out")" "$rc" "$(wc -c < "$log.out" | tr -d ' ')" "$(tr '\n' ',' < "$log.pg" 2>/dev/null)" "$(grep -c . "$log.sc" 2>/dev/null || echo 0)"
+    )
+}
+b71_pid_of() { printf '%s' "${1%%|*}"; }
+b71_hardstop() {   # b71_hardstop <script> -> rc=<rc>|status=<the last alert's status>|events=<STOP,MASK,KILL <argv>,...>
+                   # the REAL _selffence_hard_stop, no unit (MainPID empty); the daemon's own set-identity client (4001: it survives every signal, a call wedged in the kernel) is listed BEFORE the validator (4002)
+    local script="$1" src root ev
+    src=$(seam_cut "$script"); root=$(b71_root); ev=$(mktemp "$B71_DIR/hs.XXXXXX")
+    b71_adm "$root" 4001 set-identity; b71_val "$root" 4002
+    printf '4001\n4002\n' > "$ev.live"
+    (
+        set +e
+        # shellcheck disable=SC1090
+        source "$src" 2>/dev/null
+        STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VALIDATOR_TYPE="agave"; VALIDATOR_SERVICE="solana"
+        SELF_FENCE_HARD_STOP=true; HARD_STOP_REVERIFY_SECS=7; TG_ENABLED=false; PROC_ROOT="$root"
+        log_info(){ :; }; log_warn(){ :; }; log_error(){ :; }; send_telegram(){ return 0; }; send_webhook(){ :; }
+        _STATUS=""; alert(){ _STATUS="$3"; }
+        timeout(){
+            case "$*" in
+                *systemctl\ stop*) echo STOP >> "$ev"; return 124 ;;
+                *systemctl\ mask*) echo MASK >> "$ev"; return 0 ;;
+            esac
+            return 0
+        }
+        pgrep(){ [[ "$2" == "agave-validator" ]] && cat "$ev.live"; return 0; }
+        kill(){ local a last=""; for a in "$@"; do last="$a"; done; echo "KILL $*" >> "$ev"; if [[ "$last" == "4002" ]]; then grep -v '^4002$' "$ev.live" > "$ev.live.n"; mv "$ev.live.n" "$ev.live"; fi; return 0; }
+        sleep(){ :; }
+        _selffence_hard_stop "test wedge"; rc=$?
+        printf 'rc=%s|status=%s|events=%s' "$rc" "$_STATUS" "$(tr '\n' ',' < "$ev")"
+    )
+}
+
+# ── the predicates: each takes <script> <kind>, returns 0 when the script behaves as specified, and leaves its reason in $b71_why ─────────────────────────
+b71_p_mainpid() {   # (01) a live MainPID wins; pgrep is not asked; one bounded show
+    local script="$1" kind="$2" r out
+    [[ "$kind" == "daemon" ]] || return 0
+    r=$(b71_root); b71_adm "$r" 4001 set-identity; b71_val "$r" 4002
+    out=$(b71_run daemon "$script" "$$" "4001 4002" "" "" "$r"); b71_why="$out"
+    [[ "$(b71_pid_of "$out")" == "$$" && "$(field "$out" pgrep)" == "" && "$(field "$out" systemctl)" == "1" ]]
+}
+b71_p_mainpid_unusable() {   # (02) an unusable MainPID falls to pgrep, and the pgrep answer passes the client over
+    local script="$1" kind="$2" r out mp got=""
+    [[ "$kind" == "daemon" ]] || return 0
+    r=$(b71_root); b71_adm "$r" 4001 set-identity; b71_val "$r" 4002
+    for mp in "" 0 1 007 abc -5 2147483000 99999999999999999999; do
+        out=$(b71_run daemon "$script" "$mp" "4001 4002" "" "" "$r")
+        [[ "$(b71_pid_of "$out")" == "4002" ]] || got="$got '$mp'->$(b71_pid_of "$out")"
+    done
+    b71_why="$got"; [[ -z "$got" ]]
+}
+b71_p_words() {   # (03) a client of each word (arg 3: one word only), listed BEFORE the validator, is passed over
+    local script="$1" kind="$2" words="${3:-$B71_WORDS}" w r out got=""
+    for w in $words; do
+        r=$(b71_root); b71_adm "$r" 4001 "$w"; b71_val "$r" 4002
+        out=$(b71_run "$kind" "$script" "" "4001 4002" "" "" "$r")
+        [[ "$(b71_pid_of "$out")" == "4002" ]] || got="$got $w->$(b71_pid_of "$out")"
+    done
+    b71_why="$got"; [[ -z "$got" ]]
+}
+b71_p_only_admin() {   # (04) only clients alive: no validator - empty, rc 0, no byte; an agave box asks agave-validator, then solana-validator (the old shape)
+    local script="$1" kind="$2" r out
+    r=$(b71_root); b71_adm "$r" 4001 monitor; b71_adm "$r" 4002 set-identity
+    out=$(b71_run "$kind" "$script" "" "4001 4002" "" "" "$r"); b71_why="$out"
+    [[ "$(b71_pid_of "$out")" == "" && "$(field "$out" rc)" == "0" && "$(field "$out" bytes)" == "0" && "$(field "$out" pgrep)" == "agave-validator,solana-validator," ]]
+}
+b71_p_ledger() {   # (05) --ledger and no client word wins over a hit that carries neither, in either order
+    local script="$1" kind="$2" r out1 out2
+    r=$(b71_root); b71_proc "$r" 4001 "$B71_AV" --help; b71_val "$r" 4002
+    out1=$(b71_run "$kind" "$script" "" "4001 4002" "" "" "$r"); out2=$(b71_run "$kind" "$script" "" "4002 4001" "" "" "$r")
+    b71_why="client-first=$(b71_pid_of "$out1") validator-first=$(b71_pid_of "$out2")"
+    [[ "$(b71_pid_of "$out1")" == "4002" && "$(b71_pid_of "$out2")" == "4002" ]]
+}
+b71_p_wholeword() {   # (06) a path or value that CONTAINS a client word is not a client: the sole hit is answered
+    local script="$1" kind="$2" w r out got=""
+    for w in $B71_WORDS; do
+        r=$(b71_root)
+        b71_proc "$r" 4002 "$B71_AV" --identity "/keys/$w.json" --log "$w.log" --ledger "/mnt/$w" --accounts "/data/$w/accounts" --snapshots "/data/x-$w"
+        out=$(b71_run "$kind" "$script" "" "4002" "" "" "$r")
+        [[ "$(b71_pid_of "$out")" == "4002" ]] || got="$got $w->'$(b71_pid_of "$out")'"
+    done
+    b71_why="$got"; [[ -z "$got" ]]
+}
+b71_p_ledgerval() {   # (07) the word after --ledger is its value: a relative ledger directory called like a client word is not a client
+    local script="$1" kind="$2" w r out got=""
+    for w in $B71_WORDS; do
+        r=$(b71_root); b71_proc "$r" 4002 "$B71_AV" --identity /keys/unstaked.json --ledger "$w" --log -
+        out=$(b71_run "$kind" "$script" "" "4002" "" "" "$r")
+        [[ "$(b71_pid_of "$out")" == "4002" ]] || got="$got $w->'$(b71_pid_of "$out")'"
+    done
+    b71_why="$got"; [[ -z "$got" ]]
+}
+b71_p_argv0() {   # (07) argv[0] is not an argument: a bare client word in argv[0] does not make a client
+    local script="$1" kind="$2" w r out got=""
+    for w in $B71_WORDS; do
+        r=$(b71_root); b71_proc "$r" 4002 "$w" --identity /keys/unstaked.json --ledger /mnt/ledger
+        out=$(b71_run "$kind" "$script" "" "4002" "" "" "$r")
+        [[ "$(b71_pid_of "$out")" == "4002" ]] || got="$got $w->'$(b71_pid_of "$out")'"
+    done
+    b71_why="$got"; [[ -z "$got" ]]
+}
+b71_p_unreadable() {   # (08) a cmdline that cannot be read proves nothing: the first pgrep hit is the floor; a readable client is still passed over, evidence still wins
+    local script="$1" kind="$2" r out got=""
+    r=$(b71_root)                                                                                              # no entry for either pid
+    out=$(b71_run "$kind" "$script" "" "4001 4002" "" "" "$r"); [[ "$(b71_pid_of "$out")" == "4001" ]] || got="$got none->$(b71_pid_of "$out")"
+    out=$(b71_run "$kind" "$script" "" "4001 4002" "" "" "$B71_DIR/no-such-proc"); [[ "$(b71_pid_of "$out")" == "4001" ]] || got="$got noroot->$(b71_pid_of "$out")"
+    r=$(b71_root); b71_adm "$r" 4001 monitor; b71_proc "$r" 4002                                              # a readable client first, the validator unreadable
+    out=$(b71_run "$kind" "$script" "" "4001 4002" "" "" "$r"); [[ "$(b71_pid_of "$out")" == "4002" ]] || got="$got client+unreadable->$(b71_pid_of "$out")"
+    r=$(b71_root); b71_proc "$r" 4001; b71_val "$r" 4002                                                       # an unreadable hit first, the validator readable with --ledger
+    out=$(b71_run "$kind" "$script" "" "4001 4002" "" "" "$r"); [[ "$(b71_pid_of "$out")" == "4002" ]] || got="$got unreadable+validator->$(b71_pid_of "$out")"
+    r=$(b71_root); b71_proc "$r" 4001; b71_proc "$r" 4002 "$B71_AV" --help                                    # an unreadable hit first, a readable one with no evidence: the first non-client
+    out=$(b71_run "$kind" "$script" "" "4001 4002" "" "" "$r"); [[ "$(b71_pid_of "$out")" == "4001" ]] || got="$got unreadable+noevidence->$(b71_pid_of "$out")"
+    b71_why="$got"; [[ -z "$got" ]]
+}
+b71_p_names() {   # (09) fdctl (Frankendancer only) and solana-validator go through the same selection, in the old order, with the old number of pgrep calls
+    local script="$1" kind="$2" r out got="" fdadm fdval
+    r=$(b71_root)
+    b71_proc "$r" 4001 "$B71_FD" set-identity --config /etc/firedancer/config.toml /keys/unstaked.json --force
+    b71_proc "$r" 4002 "$B71_FD" run --config /etc/firedancer/config.toml
+    b71_proc "$r" 4003 /usr/bin/solana-validator --ledger /mnt/ledger monitor
+    b71_proc "$r" 4004 /usr/bin/solana-validator --ledger /mnt/ledger --identity /keys/unstaked.json
+    b71_adm "$r" 4005 contact-info; b71_val "$r" 4006
+    out=$(b71_run "$kind" "$script" "" "" "4001 4002" "" "$r" frankendancer)
+    [[ "$(b71_pid_of "$out")" == "4002" && "$(field "$out" pgrep)" == "agave-validator,fdctl," ]] || got="$got fdctl->$out"
+    out=$(b71_run "$kind" "$script" "" "" "4001 4002" "" "$r" agave)
+    [[ "$(b71_pid_of "$out")" == "" && "$(field "$out" pgrep)" == "agave-validator,solana-validator," ]] || got="$got fdctl-on-agave->$out"
+    out=$(b71_run "$kind" "$script" "" "" "" "4003 4004" "$r" agave)
+    [[ "$(b71_pid_of "$out")" == "4004" && "$(field "$out" pgrep)" == "agave-validator,solana-validator," ]] || got="$got solana-validator->$out"
+    out=$(b71_run "$kind" "$script" "" "" "" "4003 4004" "$r" frankendancer)
+    [[ "$(b71_pid_of "$out")" == "4004" && "$(field "$out" pgrep)" == "agave-validator,fdctl,solana-validator," ]] || got="$got solana-validator-on-fd->$out"
+    out=$(b71_run "$kind" "$script" "" "4005 4006" "" "4003 4004" "$r" agave)
+    [[ "$(b71_pid_of "$out")" == "4006" && "$(field "$out" pgrep)" == "agave-validator," ]] || got="$got agave-first->$out"
+    out=$(b71_run "$kind" "$script" "" "4005" "" "4003 4004" "$r" agave)
+    [[ "$(b71_pid_of "$out")" == "4004" && "$(field "$out" pgrep)" == "agave-validator,solana-validator," ]] || got="$got agave-clients-only->$out"
+    b71_why="$got"; [[ -z "$got" ]]
+}
+b71_p_shape() {   # (10) the pid prints with no newline, rc 0 - found and not found
+    local script="$1" kind="$2" r out1 out2
+    r=$(b71_root); b71_val "$r" 4002
+    out1=$(b71_run "$kind" "$script" "" "4002" "" "" "$r"); out2=$(b71_run "$kind" "$script" "" "" "" "" "$r")
+    b71_why="found=$out1 none=$out2"
+    [[ "$(b71_pid_of "$out1")" == "4002" && "$(field "$out1" rc)" == "0" && "$(field "$out1" bytes)" == "4" && "$(b71_pid_of "$out2")" == "" && "$(field "$out2" rc)" == "0" && "$(field "$out2" bytes)" == "0" ]]
+}
+b71_p_nounit() {   # (11) the fence and the arm never ask the unit: no systemctl call, whatever the unit would have said
+    local script="$1" kind="$2" r out
+    [[ "$kind" == "fence" ]] || return 0
+    r=$(b71_root); b71_adm "$r" 4001 set-identity; b71_val "$r" 4002
+    out=$(b71_run fence "$script" "$$" "4001 4002" "" "" "$r"); b71_why="$out"
+    [[ "$(b71_pid_of "$out")" == "4002" && "$(field "$out" systemctl)" == "0" ]]
+}
+b71_p_hardstop() {   # (12) the REAL hard stop kills the validator, never the client listed first, and confirms DOWN
+    local script="$1" kind="$2" out
+    [[ "$kind" == "daemon" ]] || return 0
+    out=$(b71_hardstop "$script"); b71_why="$out"
+    [[ "$(field "$out" rc)" == "0" && "$(field "$out" events)" == *"KILL 4002"* && "$(field "$out" events)" != *"4001"* && "$(field "$out" status)" == *"HARD STOP ✅"* ]]
+}
+b71_p_unit() {   # (13) _detect_validator_unit names the VALIDATOR's unit, not the monitor's, when the daemon's client (in the monitor unit's cgroup) is listed first
+    local script="$1" kind="$2" r src out
+    [[ "$kind" == "fence" ]] || return 0
+    r=$(b71_root); b71_adm "$r" 4001 set-identity; b71_val "$r" 4002
+    printf '0::/system.slice/solana-failover-monitor.service\n' > "$r/4001/cgroup"; printf '0::/system.slice/sol.service\n' > "$r/4002/cgroup"
+    src=$(b71_fnsrc "$script")
+    out=$( ( source "$src" 2>/dev/null; pgrep() { printf '4001\n4002\n'; }; FENCE_PROC_ROOT="$r"; VALIDATOR_TYPE=agave; unset VALIDATOR_UNIT; _detect_validator_unit ) )
+    b71_why="unit='$out'"; [[ "$out" == "sol.service" ]]
+}
+b71_body() { sed -n '/^_validator_pid() {/,/^}$/p' "$1"; }
+b71_sel() {   # the selection part of the function, as one text: the daemons' MainPID lines and the proc-root name normalised away
+    b71_body "$1" | sed -e '/MainPID/d' -e '/kill -0/d' -e 's/FENCE_PROC_ROOT/PROC_ROOT/' -e 's/^    local p n c /    local n c /'
+}
+b71_p_same() {   # (14) two scripts carry the same _validator_pid, byte for byte (P/S, F/A)
+    b71_why="$(b71_body "$1" | wc -c | tr -d ' ')B vs $(b71_body "$2" | wc -c | tr -d ' ')B"
+    [[ -n "$(b71_body "$1")" && "$(b71_body "$1")" == "$(b71_body "$2")" ]]
+}
+b71_p_same_sel() {   # (14) the selection part is one text in two scripts
+    b71_why="$(b71_sel "$1" | wc -c | tr -d ' ')B vs $(b71_sel "$2" | wc -c | tr -d ' ')B"
+    [[ -n "$(b71_sel "$1")" && "$(b71_sel "$1")" == "$(b71_sel "$2")" ]]
+}
+b71_p_struct() {   # (15) by text: no `head -1` (the first-hit shape), ONE pgrep site; the fence and the arm name no unit; the daemons ask the unit once, bounded
+    local script="$1" kind="$2" body why=""
+    body=$(b71_body "$script" | grep -v '^[[:space:]]*#')
+    [[ -n "$body" ]] || { b71_why="no function"; return 1; }
+    [[ "$(printf '%s\n' "$body" | grep -c 'head -1')" == "0" ]] || why="$why head-1"
+    [[ "$(printf '%s\n' "$body" | grep -c 'pgrep ')" == "1" ]] || why="$why pgrep-sites=$(printf '%s\n' "$body" | grep -c 'pgrep ')"
+    if [[ "$kind" == "daemon" ]]; then
+        [[ "$(printf '%s\n' "$body" | grep -c 'timeout 5 systemctl show -p MainPID --value "${VALIDATOR_SERVICE:-solana}"')" == "1" ]] || why="$why mainpid-show"
+        [[ "$(printf '%s\n' "$body" | grep -c 'kill -0')" == "1" ]] || why="$why kill-0"
+    else
+        [[ "$(printf '%s\n' "$body" | grep -c -E 'systemctl|MainPID|VALIDATOR_SERVICE')" == "0" ]] || why="$why unit-named"
+    fi
+    b71_why="$why"; [[ -z "$why" ]]
+}
+
+# ── the checks ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+b71_fnsrc "$B71_FENCE" > /dev/null; b71_fnsrc "$B71_ARM" > /dev/null   # in THIS shell: an empty extraction is a FAIL of the suite, not a silent no-op
+b71_chk() {   # b71_chk <text> <predicate> <targets: P S F A> - one ok when the predicate holds on every target, else one bad naming the targets that fail and why
+    local text="$1" pred="$2" targets="$3" t script kind why=""
+    for t in $targets; do
+        case "$t" in P) script="$PRIMARY"; kind=daemon ;; S) script="$STANDBY"; kind=daemon ;; F) script="$B71_FENCE"; kind=fence ;; A) script="$B71_ARM"; kind=fence ;; esac
+        b71_why=""
+        "$pred" "$script" "$kind" || why="$why [$t: $b71_why]"
+    done
+    [[ -z "$why" ]] && ok "$text" || bad "$text -$why"
+}
+b71_chk "(B7.1-01) the unit's MainPID (canonical, > 1, alive) wins over pgrep, pgrep is not asked, one bounded show - the primary and the standby (S is new)" b71_p_mainpid "P S"
+b71_chk "(B7.1-02) a MainPID that is empty, 0, 1, '007', 'abc', negative, 20 digits or dead falls to pgrep, and the pgrep answer passes the daemon's own set-identity client over - P S" b71_p_mainpid_unusable "P S"
+b71_chk "(B7.1-03) a client of EACH of the six words (set-identity authorized-voter contact-info monitor exit wait-for-restart-window), listed before the validator, is passed over - P S F A" b71_p_words "P S F A"
+b71_chk "(B7.1-04) only admin clients alive -> no validator: empty, rc 0, no byte printed, agave-validator then solana-validator asked - P S F A" b71_p_only_admin "P S F A"
+b71_chk "(B7.1-05) --ledger and no client word wins over a hit that carries neither, whichever pgrep lists first - P S F A" b71_p_ledger "P S F A"
+b71_chk "(B7.1-06) whole words only: --identity /keys/<word>.json, --log <word>.log, --ledger /mnt/<word> ... are not clients (the sole hit is answered) - P S F A" b71_p_wholeword "P S F A"
+b71_chk "(B7.1-07a) the word after --ledger is its value: a relative ledger directory called like a client word is not a client - P S F A" b71_p_ledgerval "P S F A"
+b71_chk "(B7.1-07b) argv[0] is not an argument: a bare client word in argv[0] does not make a client - P S F A" b71_p_argv0 "P S F A"
+b71_chk "(B7.1-08) unreadable cmdlines prove nothing: no /proc entry at all -> the first pgrep hit (the old answer); a readable client is still passed over; --ledger evidence still wins - P S F A" b71_p_unreadable "P S F A"
+b71_chk "(B7.1-09) fdctl (Frankendancer only) and solana-validator go through the same selection, in the old order, one pgrep per name asked - P S F A" b71_p_names "P S F A"
+b71_chk "(B7.1-10) the pid prints with no newline and rc 0, found and not found - P S F A" b71_p_shape "P S F A"
+b71_chk "(B7.1-11) the fence and the arm never ask the unit: no systemctl call even with a live MainPID-shaped answer on offer (the fence does not know VALIDATOR_SERVICE) - F A" b71_p_nounit "F A"
+b71_chk "(B7.1-12) the REAL hard stop with no unit and the daemon's own set-identity client listed first kills the VALIDATOR (never the client), and confirms DOWN - P S" b71_p_hardstop "P S"
+b71_chk "(B7.1-13) _detect_validator_unit answers the VALIDATOR's unit when a client in the monitor unit's cgroup is listed first - F A" b71_p_unit "F A"
+if b71_p_same "$PRIMARY" "$STANDBY"; then ok "(B7.1-14a) the primary and the standby carry ONE _validator_pid body ($(b71_body "$PRIMARY" | wc -l | tr -d ' ') lines)"; else bad "(B7.1-14a) P and S _validator_pid bodies differ ($b71_why)"; fi
+if b71_p_same "$B71_FENCE" "$B71_ARM"; then ok "(B7.1-14b) the fence script and the arm ceremony carry byte-identical _validator_pid bodies"; else bad "(B7.1-14b) F and A _validator_pid bodies differ ($b71_why)"; fi
+if b71_p_same_sel "$PRIMARY" "$B71_FENCE" && b71_p_same_sel "$STANDBY" "$B71_ARM" && b71_p_same_sel "$PRIMARY" "$B71_ARM"; then ok "(B7.1-14c) the selection part (everything but the daemons' MainPID lines and the proc-root name) is ONE text in all four"; else bad "(B7.1-14c) the selection part differs between a daemon and the fence side ($b71_why)"; fi
+b71_chk "(B7.1-15) by text: no 'head -1', ONE pgrep site; the daemons ask the unit once (timeout 5, kill -0), the fence and the arm name no unit - P S F A" b71_p_struct "P S F A"
+
+# ── (16) CONTROLS: every mutant turns its case red (mutate() cannot silently no-op) ─────────────────────────────────────────────────────────
+b71_ok=1; b71_rows=""
+b71_ctl() {   # b71_ctl <label> <target: P S F A> <sed expr> <predicate> [more args] - the predicate holds on the shipped script and FAILS on the mutant
+    local label="$1" t="$2" expr="$3" pred="$4" script kind m rv mv rvk; shift 4
+    case "$t" in P) script="$PRIMARY"; kind=daemon ;; S) script="$STANDBY"; kind=daemon ;; F) script="$B71_FENCE"; kind=fence ;; A) script="$B71_ARM"; kind=fence ;; esac
+    m="$B71_DIR/mut-$label-$t.sh"
+    if ! mutate "$script" "$expr" "$m"; then b71_ok=0; b71_rows="$b71_rows $label/$t:NOT-APPLIED"; return; fi
+    b71_body "$m" | "${BASH:-bash}" -n 2>/dev/null || { b71_ok=0; b71_rows="$b71_rows $label/$t:MUTANT-DOES-NOT-PARSE"; return; }   # red for the wrong reason is not red
+    rvk="$B71_DIR/rv.$(printf '%s|%s|%s' "$pred" "$t" "$*" | cksum | cut -d' ' -f1)"   # the shipped script's answer is computed once per (predicate, target, args)
+    if [[ -f "$rvk" ]]; then rv=$(cat "$rvk"); else "$pred" "$script" "$kind" "$@" && rv=y || rv=n; echo "$rv" > "$rvk"; fi
+    "$pred" "$m" "$kind" "$@" && mv=y || mv=n
+    if [[ "$rv" == "y" && "$mv" == "n" ]]; then b71_rows="$b71_rows $label/$t:red"; else b71_ok=0; b71_rows="$b71_rows $label/$t:[shipped=$rv,mutant=$mv]"; fi
+}
+b71_ctl_pair() {   # b71_ctl_pair <label> <fixed target> <mutated target> <sed expr> <predicate> - the predicate over (fixed script, mutant) holds on the shipped pair and FAILS on the mutant
+    local label="$1" ta="$2" tb="$3" expr="$4" pred="$5" sa sb m rv mv
+    case "$ta" in P) sa="$PRIMARY" ;; S) sa="$STANDBY" ;; F) sa="$B71_FENCE" ;; A) sa="$B71_ARM" ;; esac
+    case "$tb" in P) sb="$PRIMARY" ;; S) sb="$STANDBY" ;; F) sb="$B71_FENCE" ;; A) sb="$B71_ARM" ;; esac
+    m="$B71_DIR/mut-$label-$tb.sh"
+    if ! mutate "$sb" "$expr" "$m"; then b71_ok=0; b71_rows="$b71_rows $label:NOT-APPLIED"; return; fi
+    b71_body "$m" | "${BASH:-bash}" -n 2>/dev/null || { b71_ok=0; b71_rows="$b71_rows $label:MUTANT-DOES-NOT-PARSE"; return; }
+    "$pred" "$sa" "$sb" && rv=y || rv=n; "$pred" "$sa" "$m" && mv=y || mv=n
+    if [[ "$rv" == "y" && "$mv" == "n" ]]; then b71_rows="$b71_rows $label:red"; else b71_ok=0; b71_rows="$b71_rows $label:[shipped=$rv,mutant=$mv]"; fi
+}
+B71R='/^_validator_pid() {/,/^}/ '     # every expression below is scoped to the function: nothing else in the script moves
+for b71_t in P S F A; do
+    b71_ctl exclusion-removed "$b71_t" "$B71R"'s/^            \[\[ -z "\$sub" \]\] || continue$/            :/' b71_p_words
+    for b71_w in $B71_WORDS; do
+        b71_ctl "word-$b71_w-missing" "$b71_t" "$B71R"'s/\([ |]\)'"$b71_w"'\([|)]\)/\1zz-'"$b71_w"'\2/' b71_p_words "$b71_w"
+    done
+    b71_ctl substring-not-whole-word "$b71_t" "$B71R"'s/^\( *\)set-identity|authorized-voter|contact-info|monitor|exit|wait-for-restart-window)/\1*set-identity*|*authorized-voter*|*contact-info*|*monitor*|*exit*|*wait-for-restart-window*)/' b71_p_wholeword
+    b71_ctl ledger-preference-removed "$b71_t" "$B71R"'s/^            \[\[ -z "\$led" \]\] || { pick=\$c; break; }$/            :/' b71_p_ledger
+    b71_ctl unreadable-hit-skipped "$b71_t" "$B71R"'s/^            if \[\[ -r "\$f" \]\]; then$/            [[ -r "$f" ]] || continue; if [[ -r "$f" ]]; then/' b71_p_unreadable
+    b71_ctl ledger-value-not-skipped "$b71_t" "$B71R"'s/^                    \[\[ -z "\$sk" \]\] || { sk=""; continue; }$/                    :/' b71_p_ledgerval
+    b71_ctl argv0-compared "$b71_t" "$B71R"'s/^                    \[\[ \$i -gt 1 \]\] || continue$/                    :/' b71_p_argv0
+    b71_ctl fdctl-ungated "$b71_t" "$B71R"'s/^        \[\[ "\$n" == "fdctl" && "\$VALIDATOR_TYPE" != "frankendancer" \]\] && continue$/        :/' b71_p_names
+    b71_ctl head1-shape-back "$b71_t" "$B71R"'s/for c in \$(pgrep -x "\$n" 2>\/dev\/null); do/for c in $(pgrep -x "$n" 2>\/dev\/null | head -1); do/' b71_p_struct
+    b71_ctl newline-printed "$b71_t" "$B71R"'s/printf .%s. "\$pick"/echo "$pick"/' b71_p_shape
+    b71_ctl rc-nonzero-when-none "$b71_t" "$B71R"'s/^    return 0$/    return 1/' b71_p_shape
+done
+for b71_t in P S; do
+    b71_ctl mainpid-not-preferred "$b71_t" "$B71R"'{ /kill -0/d; }' b71_p_mainpid
+    b71_ctl mainpid-alive-check-removed "$b71_t" "$B71R"'s/ \&\& kill -0 "\$p" 2>\/dev\/null//' b71_p_mainpid_unusable
+    b71_ctl mainpid-unbounded "$b71_t" "$B71R"'s/p=\$(timeout 5 systemctl show/p=$(systemctl show/' b71_p_struct
+done
+b71_ctl_pair identity-ps-broken P S "$B71R"'s/^        first=""; pick=""$/        first=""; pick=""  /' b71_p_same
+b71_ctl_pair identity-fa-broken F A "$B71R"'s/^        first=""; pick=""$/        first=""; pick=""  /' b71_p_same
+b71_ctl_pair selection-fence-word-dropped P F "$B71R"'s/|monitor|exit|/|zz-monitor|exit|/' b71_p_same_sel
+[[ $b71_ok -eq 1 ]] && ok "(B7.1-16) every mutant turns its case red:$b71_rows" || bad "(B7.1-16) a control is not red (NOT-APPLIED = its sed matched nothing):$b71_rows"
 # ══ B7.1 END ═════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 # ══ B7.2 BEGIN ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
