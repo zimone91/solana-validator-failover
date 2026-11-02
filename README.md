@@ -43,7 +43,8 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
   own unstaked identity within ~30s; a STANDBY then **pages** you after a cross-node safety delay that the staked identity is
   free to be moved — in Alpenglow mode (v0.7) it takes it itself only when armed (`AG_ARMED_TAKE=true`).
 - Detects the failure modes that matter: dead local RPC, frozen slot, **egress-only partition** (own
-  votes not landing while the node still looks healthy), and on-chain delinquency.
+  votes not landing while the node still looks healthy), and on-chain delinquency. A **hung** staked validator (stopped or deadlocked: its admin socket and RPC mute, its `lastVote` frozen) is
+  hard-stopped by its own daemon after `HOLDER_UNREACHABLE_STOP_SECS` (30 s of unreadable identity, plus the reads); any doubt is a page, never a kill.
 - **Fails safe by design:** ambiguity resolves toward *unstaked / stop / page the operator*, not toward
   taking the identity. (Design intent — see the residual risks below and in `docs/SAFETY.md`.)
 
