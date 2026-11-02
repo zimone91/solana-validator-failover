@@ -17,9 +17,9 @@
 #   (4) gap >= bound + UNSTAKED at the wake -> one INFO line, no demote; the pending gap is cleared (a later STAKED cycle does not fire)
 #   (5) DRY_RUN -> the REAL switch_to_unstaked pages "[DRY RUN] WOULD SWITCH TO UNSTAKED", zero admin calls, and the stamp still refreshes
 #   (6) the stamp refreshes on EVERY cycle-ending path: the unreachable, internet, self-fence and latency `continue` paths (a cycle pair of
-#       30 s freezes on each path then a normal cycle -> no fire)
-#   (7) startup: HOLDER_GAP_DEMOTE_SECS < 30 refuses to start, and so does a gap that does not clear the longer of CHECK_INTERVAL /
-#       TURBO_INTERVAL by 27 s (the default 45 passes; a non-numeric value is refused)
+#       20 s freezes on each path then a normal cycle -> no fire)
+#   (7) startup: HOLDER_GAP_DEMOTE_SECS < 20 refuses to start, and so does a gap that does not clear the longer of CHECK_INTERVAL /
+#       TURBO_INTERVAL by 17 s (the default 30 passes; a non-numeric value is refused)
 #   (8) a FAILED demote stays pending and is retried on the next cycle (the gap is a one-shot signal; the demote must not be)
 #   (9) a gap seen on a cycle whose identity read fails is not lost: the demote fires on the next readable STAKED cycle
 #   (10) the mid-cycle manual-change grace (STARTUP_GRACE) is not a gap: it sits inside a cycle
@@ -119,11 +119,11 @@ p_no_stamp_guard() { [[ "$(gap_demotes "$1")" == "0" ]]; }
 
 # ── (2) gap < bound -> no fire; the >= boundary ───────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (2) a gap below the bound holds; the boundary is >= ───"
-ev2a=$(gap_world "$PRIMARY" "S+30 S"); ev2b=$(gap_world "$PRIMARY" "S+41 S"); ev2c=$(gap_world "$PRIMARY" "S+42 S")
+ev2a=$(gap_world "$PRIMARY" "S+10 S"); ev2b=$(gap_world "$PRIMARY" "S+26 S"); ev2c=$(gap_world "$PRIMARY" "S+27 S")
 if [[ "$(gap_demotes "$ev2a")" == "0" && "$(gap_demotes "$ev2b")" == "0" && "$(gap_demotes "$ev2c")" == "1" ]]; then
-    ok "(2) HOLDER_GAP_DEMOTE_SECS=45, sleep 3: a 30 s freeze (gap 33) and a 41 s freeze (gap 44) do nothing; a 42 s freeze (gap 45 = the bound) fires - the rule is >="
+    ok "(2) HOLDER_GAP_DEMOTE_SECS=30, sleep 3: a 10 s freeze (gap 13) and a 26 s freeze (gap 29) do nothing; a 27 s freeze (gap 30 = the bound) fires - the rule is >="
 else
-    bad "(2) boundary: gap33=$(gap_demotes "$ev2a") gap44=$(gap_demotes "$ev2b") gap45=$(gap_demotes "$ev2c")"
+    bad "(2) boundary: gap13=$(gap_demotes "$ev2a") gap29=$(gap_demotes "$ev2b") gap30=$(gap_demotes "$ev2c")"
 fi
 p_boundary() { [[ "$(gap_demotes "$1")" == "1" ]]; }
 
@@ -170,16 +170,16 @@ fi
 # ── (6) the stamp refreshes on every cycle-ending path ────────────────────────────────────────────────────────────────
 echo ""; echo "─── (6) the end-of-cycle stamp is refreshed on the unreachable, internet, self-fence and latency paths (and the tail) ───"
 p6_ok=1; p6_rows=""
-for pair in "unreachable:S X+30 X+30 S" "internet:S Si+30 Si+30 S" "self-fence:S Sf+30 Sf+30 S" "latency:S Sl+30 Sl+30 S"; do
+for pair in "unreachable:S X+20 X+20 S" "internet:S Si+20 Si+20 S" "self-fence:S Sf+20 Sf+20 S" "latency:S Sl+20 Sl+20 S"; do
     lab=${pair%%:*}; plan=${pair#*:}
     e6=$(gap_world "$PRIMARY" "$plan")
     if [[ "$(gap_demotes "$e6")" == "0" && "$(n_of "$e6" '^CYCLE')" == "4" ]]; then p6_rows="$p6_rows $lab"; else p6_ok=0; p6_rows="$p6_rows $lab:[demotes=$(gap_demotes "$e6") cycles=$(n_of "$e6" '^CYCLE')]"; fi
 done
-[[ $p6_ok -eq 1 ]] && ok "(6) two 30 s-frozen cycles on each cycle-ending path then a normal cycle: no gap demote (each path stamps its own end; a path that did not would show the OLDER stamp and read 69 s):$p6_rows" || bad "(6) a path does not refresh the stamp:$p6_rows"
+[[ $p6_ok -eq 1 ]] && ok "(6) two 20 s-frozen cycles on each cycle-ending path then a normal cycle: no gap demote (each path stamps its own end; a path that did not would show the OLDER stamp and read 49 s):$p6_rows" || bad "(6) a path does not refresh the stamp:$p6_rows"
 p_no_demote() { [[ "$(gap_demotes "$1")" == "0" ]]; }
 
 # ── (7) startup validation ────────────────────────────────────────────────────────────────────────────────────────────
-echo ""; echo "─── (7) startup: HOLDER_GAP_DEMOTE_SECS has a floor of 30 and must clear the cycle interval by 27 s ───"
+echo ""; echo "─── (7) startup: HOLDER_GAP_DEMOTE_SECS has a floor of 20 and must clear the cycle interval by 17 s ───"
 rc_of() {  # rc_of <script> VAR=val... -> the exit status of validate_numeric_config under the overrides
     local script="$1"; shift
     (
@@ -192,21 +192,21 @@ rc_of() {  # rc_of <script> VAR=val... -> the exit status of validate_numeric_co
         echo $?
     )
 }
-r_def=$(rc_of "$PRIMARY"); r_29=$(rc_of "$PRIMARY" 'HOLDER_GAP_DEMOTE_SECS=29'); r_30=$(rc_of "$PRIMARY" 'HOLDER_GAP_DEMOTE_SECS=30'); r_abc=$(rc_of "$PRIMARY" 'HOLDER_GAP_DEMOTE_SECS=abc')
-r_29fast=$(rc_of "$PRIMARY" 'HOLDER_GAP_DEMOTE_SECS=29' 'CHECK_INTERVAL=1' 'TURBO_INTERVAL=1'); r_ci20=$(rc_of "$PRIMARY" 'CHECK_INTERVAL=20'); r_ci18=$(rc_of "$PRIMARY" 'CHECK_INTERVAL=18')
-r_ci20raised=$(rc_of "$PRIMARY" 'CHECK_INTERVAL=20' 'HOLDER_GAP_DEMOTE_SECS=47')
-if [[ "$r_def" == "0" && "$r_29" == "1" && "$r_30" == "0" && "$r_abc" == "1" ]]; then
-    ok "(7a) the default 45 passes, 30 passes, 29 refuses to start, 'abc' refuses to start"
+r_def=$(rc_of "$PRIMARY"); r_19=$(rc_of "$PRIMARY" 'HOLDER_GAP_DEMOTE_SECS=19'); r_20=$(rc_of "$PRIMARY" 'HOLDER_GAP_DEMOTE_SECS=20'); r_abc=$(rc_of "$PRIMARY" 'HOLDER_GAP_DEMOTE_SECS=abc')
+r_19fast=$(rc_of "$PRIMARY" 'HOLDER_GAP_DEMOTE_SECS=19' 'CHECK_INTERVAL=1' 'TURBO_INTERVAL=1'); r_ci14=$(rc_of "$PRIMARY" 'CHECK_INTERVAL=14'); r_ci13=$(rc_of "$PRIMARY" 'CHECK_INTERVAL=13')
+r_ci14raised=$(rc_of "$PRIMARY" 'CHECK_INTERVAL=14' 'HOLDER_GAP_DEMOTE_SECS=31')
+if [[ "$r_def" == "0" && "$r_19" == "1" && "$r_20" == "0" && "$r_abc" == "1" ]]; then
+    ok "(7a) the default 30 passes, 20 passes, 19 refuses to start, 'abc' refuses to start"
 else
-    bad "(7a) knob: default=$r_def 29=$r_29 30=$r_30 abc=$r_abc"
+    bad "(7a) knob: default=$r_def 19=$r_19 20=$r_20 abc=$r_abc"
 fi
-p_29_refused() { [[ "$(rc_of "$1" 'HOLDER_GAP_DEMOTE_SECS=29' 'CHECK_INTERVAL=1' 'TURBO_INTERVAL=1')" == "1" ]]; }
-if [[ "$r_29fast" == "1" && "$r_ci20" == "1" && "$r_ci18" == "0" && "$r_ci20raised" == "0" ]]; then
-    ok "(7b) the interval relation: 29 is refused even at CHECK_INTERVAL=1 (the floor of 30), CHECK_INTERVAL=20 with the default 45 is refused (needs >= 47: every cycle would read as a freeze), 18 passes (needs 45), 20 with 47 passes"
+p_19_refused() { [[ "$(rc_of "$1" 'HOLDER_GAP_DEMOTE_SECS=19' 'CHECK_INTERVAL=1' 'TURBO_INTERVAL=1')" == "1" ]]; }
+if [[ "$r_19fast" == "1" && "$r_ci14" == "1" && "$r_ci13" == "0" && "$r_ci14raised" == "0" ]]; then
+    ok "(7b) the interval relation (17 + the longer interval): 19 is refused even at CHECK_INTERVAL=1 (the floor of 20), CHECK_INTERVAL=14 with the default 30 is refused (needs >= 31: every cycle would read as a freeze), 13 passes (needs 30), 14 with 31 passes"
 else
-    bad "(7b) relation: 29@1=$r_29fast ci20=$r_ci20 ci18=$r_ci18 ci20+47=$r_ci20raised"
+    bad "(7b) relation: 19@1=$r_19fast ci14=$r_ci14 ci13=$r_ci13 ci14+31=$r_ci14raised"
 fi
-p_interval_relation() { [[ "$(rc_of "$1" 'CHECK_INTERVAL=20')" == "1" ]]; }
+p_interval_relation() { [[ "$(rc_of "$1" 'CHECK_INTERVAL=14')" == "1" ]]; }
 
 # ── (8) a failed demote is retried ────────────────────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (8) a failed demote stays pending and is retried on the next cycle ───"
@@ -291,20 +291,20 @@ ctl_rc() {   # ctl_rc <label> <sed expr> <predicate over a script> - the predica
     if [[ "$rv" == "y" && "$mv" == "n" ]]; then ctl_rows="$ctl_rows $label:red"; else ctl_ok=0; ctl_rows="$ctl_rows $label:[shipped=$rv,mutant=$mv]"; fi
 }
 ctl no-stamp-guard '/^    \[\[ \${_cycle_end_ts:-0} -gt 0 \]\] || return 0$/d' "S" p_no_stamp_guard
-ctl gt-not-ge 's/\$_g -ge \$HOLDER_GAP_DEMOTE_SECS/$_g -gt $HOLDER_GAP_DEMOTE_SECS/' "S+42 S" p_boundary
+ctl gt-not-ge 's/\$_g -ge \$HOLDER_GAP_DEMOTE_SECS/$_g -gt $HOLDER_GAP_DEMOTE_SECS/' "S+27 S" p_boundary
 ctl demote-below-internet '/^    _gap_demote   # v0.7 (AG-3.4)/d; s/^    CONNECTIVITY_FAIL_COUNT=0$/    CONNECTIVITY_FAIL_COUNT=0; _gap_demote/' "S S+100 S S" p_first_demote
 ctl demote-after-self-fence '/^    _gap_demote   # v0.7 (AG-3.4)/d; s/^        check_identity_collision || true$/        check_identity_collision || true; _gap_demote/' "S S+100 S S" p_first_demote
 ctl demote-never '/^    _gap_demote   # v0.7 (AG-3.4)/d' "S S+100 S S" p_demote_once
 ctl unstaked-demotes '/^_gap_demote() {/,/^}/ s/^    if \[\[ "\$CURRENT_IDENTITY" == "\$STAKED_PUBKEY" \]\]; then$/    if true; then/' "U U+100 U S" p_unstaked_info
-ctl stamp-unreachable 's/^        _cycle_sleep "\$CHECK_INTERVAL"   # FF-B3/        _watchdog_sleep "$CHECK_INTERVAL"   # FF-B3/' "S X+30 X+30 S" p_no_demote
-ctl stamp-internet 's/^        _cycle_sleep "\$CHECK_INTERVAL"; continue/        _watchdog_sleep "$CHECK_INTERVAL"; continue/' "S Si+30 Si+30 S" p_no_demote
-ctl stamp-self-fence 's/^                _cycle_sleep "\$_current_interval"; continue/                _watchdog_sleep "$_current_interval"; continue/' "S Sf+30 Sf+30 S" p_no_demote
-ctl stamp-latency 's/^                        _cycle_sleep "\$_current_interval"; continue/                        _watchdog_sleep "$_current_interval"; continue/' "S Sl+30 Sl+30 S" p_no_demote
+ctl stamp-unreachable 's/^        _cycle_sleep "\$CHECK_INTERVAL"   # FF-B3/        _watchdog_sleep "$CHECK_INTERVAL"   # FF-B3/' "S X+20 X+20 S" p_no_demote
+ctl stamp-internet 's/^        _cycle_sleep "\$CHECK_INTERVAL"; continue/        _watchdog_sleep "$CHECK_INTERVAL"; continue/' "S Si+20 Si+20 S" p_no_demote
+ctl stamp-self-fence 's/^                _cycle_sleep "\$_current_interval"; continue/                _watchdog_sleep "$_current_interval"; continue/' "S Sf+20 Sf+20 S" p_no_demote
+ctl stamp-latency 's/^                        _cycle_sleep "\$_current_interval"; continue/                        _watchdog_sleep "$_current_interval"; continue/' "S Sl+20 Sl+20 S" p_no_demote
 ctl stamp-tail 's/^    _cycle_sleep "\$_current_interval"   # FF-B3/    _watchdog_sleep "$_current_interval"   # FF-B3/' "S S+100 S S" p_demote_once
 ctl stamp-at-cycle-start 's/^    _cycle_end_ts=\$(mono_now)$/    :/; s/^    _gap_latch   # v0.7 (AG-3.4): FIRST/    _gap_latch; _cycle_end_ts=$(mono_now)   # v0.7 (AG-3.4): FIRST/' "U S S" p_grace_not_gap STARTUP_GRACE=60
 ctl latch-after-identity-read '/^    _gap_latch   # v0.7 (AG-3.4)/d; s/^    _gap_demote   # v0.7 (AG-3.4)/    _gap_latch; _gap_demote   # v0.7 (AG-3.4)/' "S S+100 X S S" p_latch_survives
 ctl no-retry 's/^        if switch_to_unstaked \("holder gap: .*"\); then$/        switch_to_unstaked \1; if true; then/' "S S+100 S S S" p_retry DEMOTE_FAILS=1
-ctl_rc no-floor 's/_validate_numeric HOLDER_GAP_DEMOTE_SECS 30 /_validate_numeric HOLDER_GAP_DEMOTE_SECS 0 /' p_29_refused
+ctl_rc no-floor 's/_validate_numeric HOLDER_GAP_DEMOTE_SECS 20 /_validate_numeric HOLDER_GAP_DEMOTE_SECS 0 /' p_19_refused
 ctl_rc no-interval-relation 's/^    if \[\[ \$HOLDER_GAP_DEMOTE_SECS -lt \$_gap_floor \]\]; then$/    if false; then/' p_interval_relation
 ctl_rc census-one-site-reverted 's/^        _cycle_sleep "\$CHECK_INTERVAL"; continue/        _watchdog_sleep "$CHECK_INTERVAL"; continue/' struct_ok
 ctl_sb() {   # ctl_sb <label> <sed expr> - the standby predicate (sb_gap_clean) holds on the shipped script and FAILS on the mutant
