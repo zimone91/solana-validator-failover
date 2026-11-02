@@ -321,11 +321,28 @@ safety|P|1|an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 60
 safety|P|1|`HOLDER_UNREACHABLE_STOP_SECS` (default 30 s, floor 20)
 safety|P|1|`HOLDER HUNG — HARD STOP 🚨` names the three facts and the branch taken
 safety|P|1|since AG-3.8 the unreachable path has its own rung
-safety|P|1|a knob of 22 would mean the second
+safety|P|1|a knob of 22 would mean the third
+safety|P|1|clock reads 0, 12, 23, 34 s
+safety|P|1|the validator is dead 48 to 51 s after the hang
+safety|P|1|70 to 73 s when it is wedged for its whole bound
+safety|P|1|**A limit of the process test:**
+safety|A|0|0, 11, 22, 33
+safety|A|0|49 to 55 s
+safety|A|0|70 to 75 s
 safety|P|1|the fast branch kills at least about 10 s before it
 readme|P|1|hard-stopped by its own daemon after
 templates|P|1|HOLDER_UNREACHABLE_STOP_SECS=30) hard-stops a mute validator
-templates|P|1|22 would be the second
+templates|P|1|22 would be the third
+templates|P|1|clock reads 0, 12, 23, 34 s
+templates|P|1|not voting 48 to 51 s after the hang on its fast branch
+templates|A|0|0 / 11 / 22 / 33
+templates|A|0|49 to 55 s
+templates|A|0|70 to 75 s
+primary|P|1|clock reads 0, 12, 23, 34 s
+primary|P|1|LIMIT: the pid is taken at the FIRST unreadable cycle
+primary|A|0|(0, 11, 22, 33 s)
+primary|A|0|49 to 55 s
+primary|A|0|a restarted one never either
 safety|P|1|two bounded local reads, the veto, then the margin
 safety|P|1|3 + 36 + 10 + 11 = 60 s, which does not converge either
 safety|P|1|duplicates, not equivocation;
@@ -459,11 +476,19 @@ ctl9 p-template-refuse "$ENVS" 's/an armed spare below 60 REFUSES to start/an ar
 ctl9 p-safety-rung "$SAFETY" 's/`HOLDER_UNREACHABLE_STOP_SECS` (default 30 s, floor 20)/`HOLDER_UNREACHABLE_STOP_SECS` (default 45 s, floor 30)/' cq
 ctl9 p-safety-rung-page "$SAFETY" 's/`HOLDER HUNG — HARD STOP 🚨` names the three facts and the branch taken/the hard stop is silent/' cq
 ctl9 p-safety-rung-row "$SAFETY" 's/since AG-3.8 the unreachable path has its own rung/the unreachable path pages and never stops anything/' cq
-ctl9 p-safety-rung-quant "$SAFETY" 's/a knob of 22 would mean the second/a knob of 22 would work like 30/' cq
+ctl9 p-safety-rung-quant "$SAFETY" 's/a knob of 22 would mean the third/a knob of 22 would work like 30/' cq
+ctl9 p-safety-rung-clock "$SAFETY" 's/clock reads 0, 12, 23, 34 s/clock reads 0, 11, 22, 33 s/' cq
+ctl9 p-safety-rung-dead "$SAFETY" 's/the validator is dead 48 to 51 s after the hang/the validator is dead 49 to 55 s after the hang/' cq
+ctl9 p-safety-rung-wedged "$SAFETY" 's/70 to 73 s when it is wedged for its whole bound/70 to 75 s when it is wedged for its whole bound/' cq
+ctl9 p-safety-rung-limit "$SAFETY" 's/\*\*A limit of the process test:\*\*/**A note:**/' cq
+ctl9 p-primary-rung-clock "$PRIMARY" 's/clock reads 0, 12, 23, 34 s/clock reads 0, 11, 22, 33 s/' cp_
+ctl9 p-primary-rung-limit "$PRIMARY" 's/LIMIT: the pid is taken at the FIRST unreadable cycle/the pid is taken at the first unreadable cycle/' cp_
 ctl9 p-safety-rung-margin "$SAFETY" 's/the fast branch kills at least about 10 s before it/the fast branch kills well after it/' cq
 ctl9 p-readme-rung "$README" 's/hard-stopped by its own daemon after/paged after/' cr
 ctl9 p-template-rung "$ENVS" 's/HOLDER_UNREACHABLE_STOP_SECS=30) hard-stops a mute validator/HOLDER_UNREACHABLE_STOP_SECS=30) pages a mute validator/' ct
-ctl9 p-template-rung-quant "$ENV_P" 's/22 would be the second/22 would be the same/' cpt
+ctl9 p-template-rung-quant "$ENV_P" 's/22 would be the third/22 would be the same/' cpt
+ctl9 p-template-rung-clock "$ENV_P" 's/clock reads 0, 12, 23, 34 s/clock reads 0, 11, 22, 33 s/' cpt
+ctl9 p-standby-template-dead "$ENVS" 's/not voting 48 to 51 s after the hang on its fast branch/not voting 49 to 55 s after the hang on its fast branch/' ct
 ctl9 p-safety-envfile "$SAFETY" 's/systemd does not expand `\$HOME` in an `EnvironmentFile=`/systemd expands `$HOME` in an `EnvironmentFile=`/' cq
 ctl9 p-readme-version "$README" 's/\*\*v0\.7 needs agave \/ Jito-Solana `4\.4\.0` or newer\*\*/v0.7 runs on any agave/' cr
 ctl9 p-readme-27s "$README" 's/up to about 27 s at the decision point/up to about 15 s at the decision point/' cr
