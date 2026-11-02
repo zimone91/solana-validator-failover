@@ -1395,6 +1395,15 @@ the daemon pages rather than guesses (`TAKEOVER_STARVATION_ALERT_SECS`, default 
   absolute-path command, an output redirection, `history -w`, `kill`, a per-command `CANARY_LOG=`) — not
   as a general sandbox, and nothing about any other file or heredoc spelling
   (`tests/test_installer_guardrails.sh`).
+- **Known bash behaviour: a TERM can be dropped, or run its trap twice.** The daemons end on `trap cleanup SIGTERM SIGINT SIGHUP`. Measured with a bare
+  loop of command substitutions, nothing of this project in it (2,400 TERMs per bash): bash 3.2.57 ran the trap TWICE in 61 runs (a forked `$( )` child ran it as
+  well: two log lines, two pages); bash 5.2.37 LOST the trap in 19 and bash 5.2.21 (Ubuntu 24.04) in 5 — the shell caught the TERM, never ran the trap and kept
+  looping, until a second TERM ended it at once; bash 5.1.16 (Ubuntu 22.04) did neither. Through the real standby loop on 5.2.21, 1 of 320 TERMs was lost (the
+  primary loop: 0 of 320). The test suite now names a lost TERM and fails fast instead of running to its time cap (`test_elapsed_provider` (12e): a bounded 10 s
+  wait, a second TERM, a red named `TERM trap lost (bash 5.2 race)`); the daemons are not changed. What it means for operations: a `systemctl stop` whose TERM is
+  lost runs to the unit's stop timeout, ends in SIGKILL and sends no 'stopped' page, and the daemon keeps monitoring — and acting — until then. **Required
+  before any monitor or fence unit is armed:** the unit's `ExecStop=` re-sends TERM, a few times, while `$MAINPID` lives (each TERM is an independent chance: two
+  consecutive losses are about 1e-5 at the measured rate). That is unit work, not part of this release.
 - Tests are function-level with mocked I/O: they exercise the real decision functions, but do **not**
   prove cross-process ordering between two live systemd services. A chaos/E2E gate on real nodes is
   required before unattended operation.
