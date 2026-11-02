@@ -497,21 +497,35 @@ if [[ -n "$lw_stmt" && "$(lw_run true)" == "1" && "$(lw_run false)" == "0" ]]; t
 else
     bad "(11b) armed notice: stmt=[${lw_stmt:0:60}] armed=$(lw_run true) unarmed=$(lw_run false)"
 fi
-pw_stmt=$(grep -F -m1 -e 'AG_ARMED_TAKE=true with TAKEOVER_DELAY=' "$STANDBY")
-pw_run() {   # pw_run <armed> <delay> -> the number of WARN lines the pairing statement prints
-    (
-        set +e
-        load_seam "$STANDBY"
-        log_warn(){ printf 'WARN %s\n' "$1"; }
-        AG_ARMED_TAKE="$1"; TAKEOVER_DELAY="$2"
-        eval "$pw_stmt"
-    ) | grep -c '^WARN '
+pw_check() {   # pw_check <script> -> empty when the pairing floor behaves, else why not. ARMED + a delay below 75 refuses to start (DRY_RUN no exception); not armed only warns below 75
+    local sc="$1" st su d why=""
+    st=$(grep -F -m1 -e 'AG_ARMED_TAKE=true with TAKEOVER_DELAY=' "$sc"); su=$(grep -F -m1 -e 'this spare is not armed, so it only pages' "$sc")
+    [[ -n "$st" && -n "$su" ]] || { printf 'statements missing'; return 0; }
+    pw_rc() {   # pw_rc <armed> <delay> [dry_run] -> the exit status of the refusal statement
+        # a statement that does not refuse falls through to the marker; one that exits does not - the list's own status (1 when its [[ ]] is false) says nothing
+        ( set +e; load_seam "$sc"; log_error(){ :; }; AG_ARMED_TAKE="$1"; TAKEOVER_DELAY="$2"; DRY_RUN="${3:-false}"; n=$( ( eval "$st"; echo CONT ) 2>/dev/null | grep -c CONT ); [[ "$n" -eq 0 ]] && echo 1 || echo 0 ) | tail -1
+    }
+    pu_n() {    # pu_n <armed> <delay> -> the number of WARN lines the unarmed-floor statement prints
+        ( set +e; load_seam "$sc"; log_warn(){ printf 'WARN %s\n' "$1"; }; AG_ARMED_TAKE="$1"; TAKEOVER_DELAY="$2"; eval "$su" ) | grep -c '^WARN '
+    }
+    for d in 30 60 74; do [[ "$(pw_rc true $d)" == "1" ]] || why="$why [armed $d: no refusal]"; done
+    [[ "$(pw_rc true 60 true)" == "1" ]] || why="$why [armed 60 DRY_RUN=true: no refusal]"
+    for d in 75 90 120; do [[ "$(pw_rc true $d)" == "0" ]] || why="$why [armed $d refused]"; done
+    for d in 30 60 74; do [[ "$(pw_rc false $d)" == "0" ]] || why="$why [unarmed $d refused]"; [[ "$(pu_n false $d)" == "1" ]] || why="$why [unarmed $d: no warning]"; done
+    for d in 75 90; do [[ "$(pu_n false $d)" == "0" ]] || why="$why [unarmed $d warned]"; done
+    [[ "$(pu_n true 60)" == "0" ]] || why="$why [armed 60: the unarmed warning fired]"
+    printf '%s' "$why"
 }
-pw_ok=1; pw_why=""
-for d in 60 74; do [[ "$(pw_run true $d)" == "1" ]] || { pw_ok=0; pw_why="$pw_why [armed $d]"; }; done
-for d in 75 90 120; do [[ "$(pw_run true $d)" == "0" ]] || { pw_ok=0; pw_why="$pw_why [armed $d]"; }; done
-for d in 30 60; do [[ "$(pw_run false $d)" == "0" ]] || { pw_ok=0; pw_why="$pw_why [unarmed $d]"; }; done
-[[ -n "$pw_stmt" && $pw_ok -eq 1 ]] && ok "(11c) the pairing rule at startup: armed with TAKEOVER_DELAY 60 or 74 (< the holder's default gap 45 + 30) warns once; 75, 90, 120 are silent; unarmed is silent at any delay" || bad "(11c) pairing warning: stmt=[${pw_stmt:0:60}]$pw_why"
+pw_why=$(pw_check "$STANDBY")
+[[ -z "$pw_why" ]] && ok "(11c) the pairing rule at startup: ARMED with TAKEOVER_DELAY 30, 60 or 74 (< the holder's default gap 45 + 30) REFUSES to start - DRY_RUN is no exception; 75, 90, 120 start; a spare that is NOT armed starts at any delay and warns once below 75" || bad "(11c) pairing floor:$pw_why"
+pc_rows=""; pc_ok=1
+for spec in "floor-70:s/\"\$TAKEOVER_DELAY\" -lt 75 \]\] \&\& { log_error \"AG_ARMED_TAKE=true/\"\$TAKEOVER_DELAY\" -lt 70 ]] \&\& { log_error \"AG_ARMED_TAKE=true/" \
+            "no-exit:s/Armed cold take)\"; exit 1; }/Armed cold take)\"; : ; }/" \
+            "dry-run-exempt:s/\[\[ \"\$AG_ARMED_TAKE\" == \"true\" \&\& \"\$TAKEOVER_DELAY\" -lt 75 \]\]/[[ \"\$AG_ARMED_TAKE\" == \"true\" \&\& \"\$DRY_RUN\" != \"true\" \&\& \"\$TAKEOVER_DELAY\" -lt 75 ]]/"; do
+    lab="${spec%%:*}"; expr="${spec#*:}"; m="$WORK/pw-$lab.sh"
+    if mutate "$STANDBY" "$expr" "$m" >/dev/null; then [[ -n "$(pw_check "$m")" ]] && pc_rows="$pc_rows $lab:red" || { pc_ok=0; pc_rows="$pc_rows $lab:GREEN"; }; else pc_ok=0; pc_rows="$pc_rows $lab:not-applied"; fi
+done
+[[ $pc_ok -eq 1 ]] && ok "(11c-ctl) the floor lowered to 70, the exit removed and a DRY_RUN exemption each turn (11c) red:$pc_rows" || bad "(11c-ctl) a mutant keeps (11c) green or did not apply:$pc_rows"
 mg_stmt=$(grep -F -m1 -e '_validate_numeric AG_TAKE_MARGIN_SLOTS' "$STANDBY" | sed 's/^[[:space:]]*//; s/[[:space:]]*#.*$//')
 mg_run() {   # mg_run <value> -> the exit status of the validator statement
     (
