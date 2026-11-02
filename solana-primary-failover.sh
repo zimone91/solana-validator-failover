@@ -252,6 +252,22 @@ SELF_FENCE_VOTE_LAG_RESET_CYCLES=3
 # less the default interval 3: the same margin when the interval is raised).
 # FAILURE DIRECTION: an over-eager gap demotes a healthy holder (availability), it never lets a second one vote.
 HOLDER_GAP_DEMOTE_SECS=30
+# v0.7 (AG-3.8): the HUNG HOLDER'S RUNG. A validator that is alive but mute (SIGSTOP, a deadlock, a wedged runtime) keeps the staked identity
+# and leaves this monitor nothing to demote with: its admin socket does not answer, so the identity read fails on every cycle and the
+# self-fence (which needs that read) never runs. When the identity read has failed continuously for this many seconds while the node was
+# last seen STAKED, AND it is still the same validator process (its unit not starting or stopping), AND LOCAL getSlot is silent, AND one
+# external read of the vote account (TIER2_RPC, then TIER3_RPC) shows lastVote NOT growing while the cluster tip does, the validator is
+# hung and not voting: it is HARD-STOPPED through the self-fence ladder. Anything else - an external read that does not answer, lastVote
+# growing, a local RPC that answers, a restarted process - is NOT stopped (a voting validator with a wedged admin socket is left alone: a
+# restart costs minutes of missed votes): a page, throttled by ALERT_THROTTLE. DRY_RUN=true pages what it would stop and stops nothing.
+# Floor 20. Needs VOTE_PUBKEY (the external read looks the vote account up).
+# THE LADDER'S TWO BRANCHES: a process in state T (stopped) or D (uninterruptible sleep) cannot handle SIGTERM, so `systemctl stop` would only wait
+# out its timeout - the ladder skips it and goes straight to mask --runtime, SIGKILL, verify. Any other state (or a state that cannot be read)
+# takes the normal ladder: systemctl stop first, then mask --runtime if that failed, SIGTERM, SIGKILL, verify.
+# TIMING: unreadable cycles are about 11 s apart (the 8 s identity read + CHECK_INTERVAL), so the rung acts on the first unreadable cycle at or
+# after this many seconds (30-41 s after the first one), then LOCAL getSlot (up to 5 s) and one external read (about 1 s); the kill follows at
+# once on the fast branch. The spare's TAKEOVER_DELAY (shipped 60) must stay above the whole of it. Raise the one, raise the other.
+HOLDER_UNREACHABLE_STOP_SECS=30
 # v0.6.8 (B1): bound the demote/promote admin-socket calls. set-identity / authorized-voter run on the
 # SAME admin RPC socket that get_local_identity wraps in `timeout 8` ("can hang indefinitely under heavy
 # load or compacting ledger") — but the demote itself was UN-timeout'd, so a wedged socket could freeze
@@ -491,6 +507,13 @@ _last_switch_fail_alert=0                 # v0.6.0: throttle repeated failed-swi
 _cycle_end_ts=0                           # v0.7 (AG-3.4): mono stamp of the END of the previous cycle (0 = none: first cycle / restarted monitor)
 _gap_pending=0                            # v0.7 (AG-3.4): a gap >= HOLDER_GAP_DEMOTE_SECS was seen; stays 1 until the staked holder is confirmed demoted (or found unstaked)
 _gap_secs=0                               # v0.7 (AG-3.4): the length of that gap, for the demote's reason text
+_hung_since=0                             # v0.7 (AG-3.8): mono stamp of the first unreadable cycle of this episode (0 = none; cleared when the identity reads again)
+_hung_pid0=""                             # v0.7 (AG-3.8): the validator pid at that cycle ("" = none found: the rung stays off for this episode)
+_hung_lv=""; _hung_lv_tip=""; _hung_lv_tier=""; _hung_lv_ts=0   # v0.7 (AG-3.8): the external lastVote baseline - value, the same read's cluster tip and provider, and when it was last seen to change
+_hung_done=0                              # v0.7 (AG-3.8): 1 = the ladder confirmed the validator DOWN in this episode
+_hung_page_ts=0                           # v0.7 (AG-3.8): mono time of the last "not stopped" / dry-run page
+_hung_try_ts=0                            # v0.7 (AG-3.8): mono time of the last ladder run that did not confirm a stop (the retry waits ALERT_THROTTLE)
+_hs_branch=""                             # v0.7 (AG-3.8): which branch the last _selffence_hard_stop took ("fast: ..." or "normal ladder ...") - the hung-holder page names it
 
 # ========================= SIGNAL HANDLING ====================================
 
@@ -2675,8 +2698,12 @@ attempt_safe_recovery() {
 # ========================= IDENTITY SWITCHING =================================
 
 # v0.6.8 (S4): pid of the running validator (any client), or empty if none is running.
+# v0.7 (AG-3.8): the validator unit's MainPID first (a canonical uint > 1 that is alive) - the process systemd runs and the hard stop must
+# kill, not whichever agave-validator pgrep lists first; pgrep stays the fallback (no unit, MainPID 0, a stopped or restarting unit).
 _validator_pid() {
-    local p; p=$(pgrep -x agave-validator 2>/dev/null | head -1)
+    local p; p=$(timeout 5 systemctl show -p MainPID --value "${VALIDATOR_SERVICE:-solana}" 2>/dev/null)
+    if _canon_uint "$p" && [[ $p -gt 1 ]] && kill -0 "$p" 2>/dev/null; then printf '%s' "$p"; return 0; fi
+    p=$(pgrep -x agave-validator 2>/dev/null | head -1)
     [[ -z "$p" && "$VALIDATOR_TYPE" == "frankendancer" ]] && p=$(pgrep -x fdctl 2>/dev/null | head -1)
     [[ -z "$p" ]] && p=$(pgrep -x solana-validator 2>/dev/null | head -1)
     printf '%s' "$p"
@@ -5409,6 +5436,17 @@ _rot_graceful_demote() { switch_to_unstaked "$1"; }
 # timer and stop retrying while the node may still be staked-and-voting. Returns 0 ONLY when the validator
 # is confirmed DOWN; returns 1 if hard-stop is disabled, if the validator survives SIGKILL, or if nothing
 # was provably stopped (systemctl failed AND no known validator process found) — caller keeps retrying/paging.
+# v0.7 (AG-3.8): the state letter of a process from /proc/<pid>/status (T stopped, D uninterruptible sleep, S sleeping, R running, ...); EMPTY when the
+# pid is not a number or the file cannot be read (no /proc, no such process, an unexpected shape) - the caller then takes the NORMAL ladder.
+# PROC_ROOT is the test seam for the /proc directory.
+_proc_state() {
+    local _l _st="" _f="${PROC_ROOT:-/proc}/$1/status"
+    [[ "$1" =~ ^[0-9]+$ && -r "$_f" ]] || return 0
+    while IFS= read -r _l; do
+        case "$_l" in State:*) _st="${_l#State:}"; _st="${_st#"${_st%%[![:space:]]*}"}"; printf '%s' "${_st:0:1}"; return 0 ;; esac
+    done 2>/dev/null < "$_f"
+    return 0
+}
 _selffence_hard_stop() {
     local why="$1"
     if [[ "${SELF_FENCE_HARD_STOP:-true}" != "true" ]]; then
@@ -5417,9 +5455,22 @@ _selffence_hard_stop() {
         return 1
     fi
     log_error "[self-fence] demote wedged ($why) — HARD-STOPPING the validator so the staked identity stops voting"
-    local sc_out sc_rc pid_found="" pid masked="" mask_out mask_rc
-    sc_out=$(timeout -k 5 15 systemctl stop "${VALIDATOR_SERVICE:-solana}" 2>&1); sc_rc=$?
-    [[ -n "$sc_out" ]] && log_info "systemctl stop: $sc_out"
+    local sc_out sc_rc pid_found="" pid masked="" mask_out mask_rc _hs_st="" _hs_fast=""
+    # v0.7 (AG-3.8): a validator in state T (stopped) or D (uninterruptible sleep) cannot handle SIGTERM, so `systemctl stop` would only wait out its
+    # timeout (15 s + 5 s kill-after) before the mask and the kill below. Read the state of the unit's process FIRST: T or D skips the stop and goes
+    # straight to mask --runtime -> SIGKILL -> verify -> re-verify. Any other state, and a state that cannot be read (no /proc entry, no pid, an unexpected
+    # shape), takes the NORMAL ladder: the failure direction is the existing ladder, never a skipped stop.
+    pid=$(_validator_pid)
+    [[ -n "$pid" ]] && _hs_st=$(_proc_state "$pid")
+    _hs_branch="normal ladder (process state ${_hs_st:-unknown})"
+    case "$_hs_st" in T|D) _hs_fast=1; _hs_branch="fast: process state ${_hs_st}, systemctl stop skipped" ;; esac
+    if [[ -n "$_hs_fast" ]]; then
+        sc_out=""; sc_rc=1
+        log_warn "[self-fence] validator pid $pid is in state $_hs_st (stopped or uninterruptible): it cannot handle SIGTERM — skipping 'systemctl stop', going straight to mask --runtime + SIGKILL"
+    else
+        sc_out=$(timeout -k 5 15 systemctl stop "${VALIDATOR_SERVICE:-solana}" 2>&1); sc_rc=$?
+        [[ -n "$sc_out" ]] && log_info "systemctl stop: $sc_out"
+    fi
     _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
     # v0.6.9 (H2): systemctl stop did NOT cleanly succeed → the unit is still Restart=always, so a
     # direct SIGTERM/SIGKILL below would be undone by systemd after RestartSec (the validator resurrects
@@ -5441,11 +5492,18 @@ _selffence_hard_stop() {
     # Fallback (non-systemd / stuck unit): SIGTERM the validator PID, then SIGKILL if it ignores it.
     pid=$(_validator_pid)
     if [[ -n "$pid" ]]; then
-        pid_found=1; kill "$pid" 2>/dev/null || true; log_warn "[self-fence] sent SIGTERM to validator pid $pid"
-        sleep 2; pid=$(_validator_pid)
+        pid_found=1
+        if [[ -z "$_hs_fast" ]]; then   # the fast branch has no SIGTERM: a stopped or uninterruptible process cannot handle it
+            kill "$pid" 2>/dev/null || true; log_warn "[self-fence] sent SIGTERM to validator pid $pid"
+            sleep 2; pid=$(_validator_pid)
+        fi
     fi
     if [[ -n "$pid" ]]; then
-        kill -9 "$pid" 2>/dev/null || true; log_warn "[self-fence] SIGTERM ignored — sent SIGKILL to validator pid $pid"
+        if [[ -n "$_hs_fast" ]]; then
+            kill -9 "$pid" 2>/dev/null || true; log_warn "[self-fence] fast branch (state $_hs_st) — sent SIGKILL to validator pid $pid"
+        else
+            kill -9 "$pid" 2>/dev/null || true; log_warn "[self-fence] SIGTERM ignored — sent SIGKILL to validator pid $pid"
+        fi
         sleep 1; pid=$(_validator_pid)
     fi
     # VERIFY (S4): only report success if the validator is provably down.
@@ -6091,6 +6149,7 @@ validate_numeric_config() {
         log_error "Bad HOLDER_GAP_DEMOTE_SECS: require an integer >= ${_gap_floor} (= 17 + the longer of CHECK_INTERVAL=${CHECK_INTERVAL} / TURBO_INTERVAL=${TURBO_INTERVAL}) (got ${HOLDER_GAP_DEMOTE_SECS}) — a normal cycle's sleep would read as a frozen host"
         exit 1
     fi
+    _validate_numeric HOLDER_UNREACHABLE_STOP_SECS 20          # v0.7 (AG-3.8): the hung-holder rung (floor 20: a stall shorter than that is not a hang; drift-announced)
     _validate_numeric FENCE_ROT_CHECK_SECS 10                  # v0.7 (Block 5.4): armed fence-rot sweep cadence (floor 10; drift-announced)
     _validate_numeric FENCE_ROT_GRACE 0                         # v0.7 (Block 5.4): numeric shape first; the REAL floor is dynamic, just below
     # v0.7 (Block 5.4): FENCE_ROT_GRACE floor = max(600, ALERT_THROTTLE) — two reasons, both
@@ -6201,6 +6260,7 @@ announce_config_drift() {
     # ── [config-drift] role-specific safety knobs ──
     _drift_check RECOVERY_DELAY 300 high "rpc-mode recovery re-takes the staked identity sooner after going unstaked — less settle time before an automatic re-take"
     _drift_check HOLDER_GAP_DEMOTE_SECS 30 low "a frozen holder that wakes after a spare took the identity keeps voting longer before the gap demote — pair it with the spare's TAKEOVER_DELAY >= HOLDER_GAP_DEMOTE_SECS + 30"
+    _drift_check HOLDER_UNREACHABLE_STOP_SECS 30 low "a hung staked holder stays up longer before its own daemon stops it — the spare's TAKEOVER_DELAY (shipped 60) must stay above this value plus one unreachable cycle, the reads and the stop ladder"
 }
 
 # ========================= STARTUP ============================================
@@ -6314,6 +6374,7 @@ startup_checks() {
 
     announce_config_drift     # v0.7 (Block 3, slice 3.5): env safety knobs laxer than THIS version's defaults — one line each (visibility, never force)
     log_info "[gap] holder gap rule: a STAKED holder demotes itself when this monitor did not run for >= ${HOLDER_GAP_DEMOTE_SECS}s (host frozen or suspended); the spare's TAKEOVER_DELAY must be >= ${HOLDER_GAP_DEMOTE_SECS} + 30 (docs/SAFETY.md)"   # v0.7 (AG-3.4): said once at start, inside startup_checks (a top-level statement would move the main section's shape pinned by test_own_view)
+    log_info "[hung] hung-holder rung: a STAKED validator whose identity stays unreadable for >= ${HOLDER_UNREACHABLE_STOP_SECS}s is hard-stopped when it is the same process, LOCAL getSlot is silent and the vote account's lastVote is not growing; any doubt is a page, never a kill (docs/SAFETY.md)"
 
     _enforce_one_arm_state    # v0.7 (Block 5 skeleton, №1): refuse DRY_RUN=true + REAL fence unit — CRITICAL + exit 1; structurally inert while no fence unit exists (every host today). Runs AFTER marker consumption (fix round HOLD-1): on a fenced node this refusal must not preempt HOLD.
     _rot_capture_intent       # v0.7 (Block 5.4): fence-intent anchor for the rot sweep — armed-unit only (structurally inert on every host today); captured HERE, at startup, so runtime real→none / real→page-only is classifiable as "the fence is GONE" (a first-sweep capture would bless an early deletion as intent)
@@ -6505,6 +6566,134 @@ _gap_demote() {
     return 0
 }
 
+# v0.7 (AG-3.8): the HUNG HOLDER'S RUNG (HOLDER_UNREACHABLE_STOP_SECS above) - also outside every shared twin block: only this daemon is a holder.
+# _hung_reset - the identity reads again: the episode is over (the next unreadable cycle starts a new one).
+_hung_reset() {
+    _hung_since=0; _hung_pid0=""; _hung_lv=""; _hung_lv_tip=""; _hung_lv_tier=""; _hung_lv_ts=0
+    _hung_done=0; _hung_page_ts=0; _hung_try_ts=0
+}
+# _hung_local_slot - LOCAL getSlot(confirmed), the self-fence's own request: prints the slot when the local RPC answered a canonical one, nothing when it
+# was silent or answered garbage (garbage from our own node is no proof of life). Read-only.
+_hung_local_slot() {
+    local s
+    s=$(curl -s -m 5 "$LOCAL_RPC" -X POST -H "Content-Type: application/json" \
+        -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"confirmed"}]}' 2>/dev/null \
+        | jq -r '.result // empty' 2>/dev/null)
+    _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
+    if _canon_uint "$s"; then printf '%s' "$s"; fi
+    return 0
+}
+# _hung_unit_busy - prints the ActiveState and returns 0 while the validator unit is starting, stopping or reloading: a restart or a stop is in
+# progress, which is not a hang and is not this rung's to interrupt. Read-only.
+_hung_unit_busy() {
+    local st
+    st=$(timeout 5 systemctl show -p ActiveState --value "${VALIDATOR_SERVICE:-solana}" 2>/dev/null)
+    case "$st" in activating|deactivating|reloading) printf '%s' "$st"; return 0 ;; esac
+    return 1
+}
+# _hung_sample - ONE external read of the staked vote account (get_staked_liveness_sample: TIER2_RPC, then TIER3_RPC). Sets _hs_lv, _hs_ref (the
+# same payload's cluster tip - the freshness reference) and _hs_tier (which provider answered) and returns 0; returns 1 when nobody answered. Called
+# directly, never in $( ), so the caller sees the three variables.
+_hung_sample() {
+    local smp rest
+    _hs_lv=""; _hs_ref=""; _hs_tier=""
+    smp=$(get_staked_liveness_sample) || return 1
+    _hs_lv="${smp%% *}"; rest="${smp#* }"; _hs_ref="${rest%% *}"; _hs_tier="${rest#* }"
+    _canon_uint "$_hs_lv" && _canon_uint "$_hs_ref" || return 1
+    return 0
+}
+_hung_rebase() { _hung_lv=$_hs_lv; _hung_lv_tip=$_hs_ref; _hung_lv_tier=$_hs_tier; _hung_lv_ts=$1; }   # the sample just read becomes the baseline, "last seen to change" at mono time $1
+# _hung_check - called on every cycle whose identity read failed (the unreachable branch). Only for a node last seen STAKED. The first such cycle
+# starts the episode (the clock, the validator's pid, the first lastVote sample); from HOLDER_UNREACHABLE_STOP_SECS on, every such cycle decides:
+# HARD-STOP the validator when it is provably hung (the same process, its unit not busy, LOCAL getSlot silent, lastVote unchanged for >=
+# VOTE_LIVENESS_MIN_INTERVAL while the cluster tip advanced, both reads from the same provider) - otherwise NOT, with the reason in a throttled
+# page. Every doubt (an external read that fails, a view that did not advance, a lastVote that grows or goes backwards, a process that changed)
+# is a "not stopped": a voting validator is never killed, and a restarted one never either. The kill is _selffence_hard_stop, untouched.
+_hung_check() {
+    local now n why="" busy pid1 slot age old facts verdict rc
+    [[ "$_last_known_identity" == "$STAKED_PUBKEY" && ${_hung_done:-0} -eq 0 ]] || return 0
+    now=$(mono_now)
+    if [[ ${_hung_since:-0} -eq 0 ]]; then
+        _hung_since=$now
+        _hung_pid0=$(_validator_pid)
+        log_warn "[hung] the validator's identity is unreadable while STAKED (validator pid ${_hung_pid0:-none}): the hung-holder rung counts from now - after ${HOLDER_UNREACHABLE_STOP_SECS}s it hard-stops the validator if it is the same process, LOCAL getSlot is silent and the vote account's lastVote is not growing"
+        if _hung_sample; then _hung_rebase "$now"; fi
+        return 0
+    fi
+    n=$(( now - _hung_since ))
+    if [[ $n -lt $HOLDER_UNREACHABLE_STOP_SECS ]]; then
+        if [[ -z "$_hung_lv" ]] && _hung_sample; then _hung_rebase "$now"; fi   # no baseline yet (the external read failed at the first cycle): try again
+        return 0
+    fi
+    if [[ -z "$_hung_pid0" ]]; then
+        why="no validator process was found at the first unreadable cycle"
+    elif busy=$(_hung_unit_busy); then
+        why="the validator unit is ${busy} (a start or stop is in progress)"
+    else
+        pid1=$(_validator_pid)
+        if [[ -z "$pid1" ]]; then
+            why="the validator process is gone (nothing to stop)"
+        elif [[ "$pid1" != "$_hung_pid0" ]]; then
+            why="the validator process changed (pid ${_hung_pid0} to ${pid1}): it restarted, it is not hung"
+        else
+            slot=$(_hung_local_slot)
+            if [[ -n "$slot" ]]; then
+                why="LOCAL getSlot answers (slot ${slot}): the validator is up"
+            elif ! _hung_sample; then
+                why="no external RPC answered the vote-account read"
+            elif [[ -z "$_hung_lv" ]]; then
+                _hung_rebase "$now"
+                why="no earlier lastVote sample to compare with (the first one, ${_hs_lv}, is taken now)"
+            elif [[ "$_hs_tier" != "$_hung_lv_tier" ]]; then
+                old=$_hung_lv_tier; _hung_rebase "$now"
+                why="the answering RPC changed (${old} to ${_hs_tier}): samples of two providers are not compared"
+            elif [[ $_hs_ref -le $_hung_lv_tip ]]; then
+                why="the external view did not advance (cluster tip ${_hs_ref}): it may be cached or lagging"
+            elif [[ $_hs_lv -lt $_hung_lv ]]; then
+                why="lastVote went backwards (${_hung_lv} to ${_hs_lv}): an inconsistent external view"
+            elif [[ $(( _hs_lv - _hung_lv )) -gt ${VOTE_LIVENESS_EPSILON:-0} ]]; then
+                old=$_hung_lv; _hung_rebase "$now"
+                why="lastVote grows (${old} to ${_hs_lv}): the validator is voting"
+            else
+                age=$(( now - _hung_lv_ts ))
+                [[ $age -ge $VOTE_LIVENESS_MIN_INTERVAL ]] || why="lastVote has been unchanged for only ${age}s (it must hold for ${VOTE_LIVENESS_MIN_INTERVAL}s)"
+            fi
+        fi
+    fi
+    if [[ -n "$why" ]]; then
+        log_warn "[hung] holder unreachable ${n}s - NOT stopping: ${why}"
+        if [[ ${_hung_page_ts:-0} -eq 0 || $(( now - _hung_page_ts )) -ge ${ALERT_THROTTLE:-600} ]]; then
+            _hung_page_ts=$now
+            alert_warn "HOLDER UNREACHABLE — not stopped (${why}): the validator's identity has been unreadable for ${n}s while it was last seen STAKED, and it is not proven hung and not voting. Nothing was stopped; the staked identity may still be voting. Look at the node; the staked identity moves only by the warm swap (docs/SAFETY.md)."
+        fi
+        return 0
+    fi
+    facts="the identity has been unreadable for ${n}s (validator pid ${pid1}), LOCAL getSlot is silent, and lastVote ${_hs_lv} has not moved for ${age}s while the cluster tip advanced (${_hung_lv_tip} to ${_hs_ref})"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_warn "[DRY RUN] Would HARD-STOP the hung validator - ${facts}"
+        if [[ ${_hung_page_ts:-0} -eq 0 || $(( now - _hung_page_ts )) -ge ${ALERT_THROTTLE:-600} ]]; then
+            _hung_page_ts=$now
+            alert "Hung holder: ${facts}. DRY_RUN=true: nothing was stopped; a live daemon would HARD-STOP the validator now (systemctl stop, mask --runtime, SIGTERM/SIGKILL, verify)." "$STAKED_PUBKEY" "[DRY RUN] WOULD HARD-STOP the hung validator"
+        fi
+        return 0
+    fi
+    if [[ ${_hung_try_ts:-0} -gt 0 && $(( now - _hung_try_ts )) -lt ${ALERT_THROTTLE:-600} ]]; then
+        log_warn "[hung] the last hard stop did not confirm the validator down; the next attempt waits ALERT_THROTTLE (${ALERT_THROTTLE:-600}s)"
+        return 0
+    fi
+    log_error "[hung] HARD-STOPPING the hung validator - ${facts}"
+    _selffence_hard_stop "holder unreachable ${n}s, local RPC silent, lastVote frozen"; rc=$?
+    verdict="the validator is HARD-STOPPED and confirmed DOWN; restart it on the UNSTAKED identity (the staked identity moves only by the warm swap - docs/SAFETY.md)"
+    if [[ $rc -eq 0 ]]; then
+        _hung_done=1
+    else
+        _hung_try_ts=$(mono_now)
+        verdict="the hard stop did NOT confirm the validator down - see the PRIMARY SELF-FENCE page(s); the staked identity may still be held by a hung process. INTERVENE NOW"
+    fi
+    alert "Hung holder: ${facts}. Ladder branch: ${_hs_branch:-unknown}. ${verdict}." "$STAKED_PUBKEY" "HOLDER HUNG — HARD STOP 🚨"
+    return 0
+}
+
 display_status() {
     [[ ! -t 1 ]] && return
     local l; [[ "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]] && l="STAKED" || l="UNSTAKED"
@@ -6557,12 +6746,14 @@ while $_running; do
         else
             log_warn "Local validator unreachable"
         fi
+        _hung_check   # v0.7 (AG-3.8): a STAKED validator that stays mute and does not vote is hard-stopped by its own daemon (bounded reads + the existing ladder; act-then-alert inside)
         display_status "N/A"
         _watchdog_pet   # §5 end-of-cycle pet (Block 5.2): the cycle's last op returned — no-op outside the armed unit
         _cycle_sleep "$CHECK_INTERVAL"   # FF-B3 (fix round): chunked under the armed unit — ANY legal interval is safe (plain sleep un-armed); AG-3.4: stamps the end of the cycle
         continue
     fi
     _last_unreachable_alert=0
+    _hung_reset   # v0.7 (AG-3.8): the identity reads again - the hung-holder episode (its clock, pid and lastVote baseline) is over
 
     _gap_demote   # v0.7 (AG-3.4): a pending gap + STAKED = demote NOW, before check_internet, the manual-change detection and the self-fence
 
