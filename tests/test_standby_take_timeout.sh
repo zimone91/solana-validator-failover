@@ -18,6 +18,7 @@
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+harness_ag_off   # AG-1.2: these worlds test the RETAINED take path - AG mode is shadowed off (tests/lib/harness.sh)
 V068="$HARNESS_DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
 
 # run one scenario in a fresh subshell against the given script copy; echo observables
@@ -28,7 +29,7 @@ scenario() {
     set +e
     SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$script" > "$SRC"
     # shellcheck disable=SC1090
-    source "$SRC"; rm -f "$SRC"
+    source "$SRC"; rm -f "$SRC"; harness_ag_off
     STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VOTE_PUBKEY="V1"
     SOLANA_PATH="/mock"; LEDGER_PATH="/mock/ledger"; VALIDATOR_TYPE="agave"; VALIDATOR_SERVICE="solana"
     SETIDENTITY_TIMEOUT=15; SELF_FENCE_HARD_STOP="$hardstop"; HARD_STOP_REVERIFY_SECS=0

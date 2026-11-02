@@ -271,8 +271,13 @@ jobs:
           # take cycle's added own-head samples and the recovery ladder's sampled tail call the existing
           # sampler (mono_now only), the Tier-1 health verdict and its clamp read no clock, and none adds a
           # patsub site; the pet census is unchanged (the sampler's one pet serves every new call site).
-          [ "$d_pri" = "21" ] || { echo "primary 'date +%s' lines: $d_pri != pinned 21 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
-          [ "$d_sby" = "22" ] || { echo "standby 'date +%s' lines: $d_sby != pinned 22 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
+          # v0.7 AG-1.2: 21→22 / 22→23 — the ONE new site per daemon is the episode wall-time in _ag_take_withheld (the [ag] twin block): the
+          # AG page hands _vh_class the wall time of the episode's first liveness sample, because the vote-history file's mtime is wall
+          # time and "older than the episode" is compared against it. A DISPLAY value: no timer, gate or decision reads it (the page's
+          # episode marker and every pacing stamp are mono_now); the monotonic-timer rule is untouched. Patsub stays 4/4 (the block uses
+          # prefix removal only).
+          [ "$d_pri" = "22" ] || { echo "primary 'date +%s' lines: $d_pri != pinned 22 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
+          [ "$d_sby" = "23" ] || { echo "standby 'date +%s' lines: $d_sby != pinned 23 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$p_pri" = "4" ]  || { echo "primary patsub \${var//} lines: $p_pri != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$p_sby" = "4" ]  || { echo "standby patsub \${var//} lines: $p_sby != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
       - name: the Alpenglow feature id matches the agave and jito sources; AG mode is unconditional (v0.7 AG-1.1)
@@ -331,6 +336,16 @@ jobs:
           done
           [ "$bad" = 0 ] || { echo "RED: the MIN_VALIDATOR_VERSION default moved in one place (rule: this step's comment)"; exit 1; }
           echo "MIN_VALIDATOR_VERSION is 4.4.0 in both daemons, their drift tables and both env templates"
+      - name: the agave flag that switches the vote-history requirement off is named in no file of the tree (v0.7 AG-1.2)
+        # RULE: FO never tells an operator to take the staked identity cold. The flag that lets a validator start or set-identity without
+        # its vote-history file is named in NO file of the tree - script, comment, message, doc or test (an operator who reads it in FO's
+        # own text may apply it, and a cold take is exactly the double-vote the warm swap exists to prevent). It is assembled from two
+        # halves here, so this file does not carry it either. A legitimate change (a reviewed decision to document it) updates this step.
+        run: |
+          flag="do-not-require""-vote-history"
+          hits=$(grep -rIlF -e "$flag" . --exclude-dir=.git || true)
+          [ -z "$hits" ] || { echo "RED: the flag is named in: $hits"; exit 1; }
+          echo "no file of the tree names the vote-history requirement flag"
       - name: SHA256SUMS manifest matches the tree (regen — sha256sum <files> > SHA256SUMS)
         run: sha256sum -c SHA256SUMS
       - name: bash's /dev/tcp and /dev/udp redirections — the A5 test fixture only (v0.7 Block 6.3.1)

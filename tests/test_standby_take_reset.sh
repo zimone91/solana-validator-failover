@@ -17,6 +17,7 @@
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+harness_ag_off   # AG-1.2: these worlds test the RETAINED take path - AG mode is shadowed off (tests/lib/harness.sh)
 V068="$HARNESS_DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
 
 # Arm a stale votelag restore-pending (as load_state would from a prior staked tenure), do a REAL take,
@@ -28,7 +29,7 @@ run_b1() {   # $1=script
     set +e
     SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$script" > "$SRC"
     # shellcheck disable=SC1090
-    source "$SRC"; rm -f "$SRC"
+    source "$SRC"; rm -f "$SRC"; harness_ag_off
     STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VOTE_PUBKEY="V1"
     LOCAL_RPC="http://mock-local"; TIER2_RPC="http://mock-t2"; TIER3_RPC="http://mock-t3"
     SOLANA_PATH="/mock"; LEDGER_PATH="/mock/ledger"; VALIDATOR_TYPE="agave"; VALIDATOR_SERVICE="solana"

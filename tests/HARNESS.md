@@ -73,6 +73,16 @@ offending lines are printed for diagnosis. Two consequences:
   here-document opened inside a here-document body's `$( )`; a backtick nested in backticks; aliases. bash 5.2 prints
   an if-condition's here-document after the then-branch's first statement, which the lexer would read as body text:
   `bp_parse` refuses such a print (every parse census red; the daemons use none).
+- `harness_ag_off` (AG-1.2) — **the AG-mode shadow.** In the shipped daemons `_ag_mode` returns 0 unconditionally and the take
+  paths (`take_staked_identity`, `switch_to_staked`, `_prewarm_voter_add`) stop on it: a page, never a take. A suite that tests the
+  RETAINED take path — the gates, the veto, the DRY_RUN branch, the keypair test, the `set-identity` calls, the cooldown — calls
+  `harness_ag_off` once per world, AFTER the daemon's functions are defined; it is registered, so `load_seam` re-applies it after
+  every source (a suite that sources a cut file itself calls it after that `source`). Without it every "no take happens" assertion
+  would pass because AG mode withheld the take — green for the wrong reason (`test_ag_take.sh` (6d) shows the pair: the DRY_RUN
+  pre-warm makes no admin call with and without the shadow, for different reasons). `HARNESS_AG_REAL=1` makes it a no-op;
+  `AG_REACH_LOG=<file>` appends `SHADOW <suite> <caller>` for every call. The census (`test_ag_take.sh` (8f)) pins which suites carry
+  the shadow; the dynamic census (a full run in which the daemons' `_ag_mode` logs `REAL <suite> <caller>` — `AG_REACH_LOG` set,
+  the one line patched in a copy) found every world that reaches an AG check: none may reach the real one but `test_ag_take.sh`'s.
 - `dump_freshness` — **the sole reader of the freshness triple**
   (`_liveness_first_provider` / `_liveness_obs_since` / `_last_blind_end`) in suites; run_all
   stage (3) enforces this mechanically (a `$`-dereference in any suite = red). Priming WRITES in

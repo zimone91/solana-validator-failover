@@ -20,10 +20,11 @@
 # harness: tests/lib/harness.sh — ok/bad+banners, paths. Cut + sink subset + `date +%s` clock stay local.
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+harness_ag_off   # AG-1.2: these worlds test the RETAINED take path - AG mode is shadowed off (tests/lib/harness.sh)
 
 SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$PRIMARY" > "$SRC"
 # shellcheck disable=SC1090
-source "$SRC"; rm -f "$SRC"
+source "$SRC"; rm -f "$SRC"; harness_ag_off
 mono_now() { date +%s; }   # v0.7 (Block 3): tests prime timers via `date +%s` — keep the mono helper on the same clock
 
 # --- fixtures ---

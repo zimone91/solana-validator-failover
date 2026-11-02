@@ -173,6 +173,19 @@ load_seam() {           # cut + source + automatic re-application of installed s
     harness_reshim
 }
 
+# ── AG mode shadow (AG-1.2) ─────────────────────────────────────────────────────────────────────────────────
+# AG mode is unconditional in the shipped daemons (_ag_mode returns 0) and the take paths stop on it: a page, never a take. A suite that tests the
+# RETAINED take path (the gates, the veto, the DRY_RUN branch, the keypair test, the set-identity calls, the cooldown) calls this ONCE per world, AFTER
+# the daemon's functions are defined, so its assertions keep meaning what they say - without it every "no take" would pass because AG mode withheld
+# the take (green for the wrong reason). Registered: load_seam re-applies it after every source. HARNESS_AG_REAL=1 skips it (the AG suite's worlds
+# run the REAL _ag_mode). AG_REACH_LOG=<file> appends "<suite> <caller>" for every call (the dynamic census of the worlds that reach an AG check).
+harness_ag_off() {
+    _harness_register harness_ag_off
+    [[ "${HARNESS_AG_REAL:-0}" == "1" ]] && return 0
+    _ag_mode() { [[ -n "${AG_REACH_LOG:-}" ]] && printf 'SHADOW %s %s\n' "${0##*/}" "${FUNCNAME[1]:-?}" >> "$AG_REACH_LOG"; return 1; }
+    return 0
+}
+
 # ── clock shims (the two byte-identical shims of the sim family) ────────────────────────────────
 # Simulated clock: the suite drives _SIM_NOW; `date +%s` and mono_now both read it (the daemons
 # thread every timer through one of the two). test_monotonic_timers deliberately does NOT use
