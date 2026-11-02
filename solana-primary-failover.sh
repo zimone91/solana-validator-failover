@@ -2557,6 +2557,12 @@ _ag_take_withheld() {
 }
 # ── [ag] end shared block ──
 
+# ── v0.7 (B7.4): the primary's re-take stop - P only, outside the [ag] block ──────────────────────────────────────────────────────────────────
+# _ag_primary_retake_allowed - rc 0 only if the primary may re-take the staked identity. In rc1 NEVER: the primary does not take in Alpenglow mode (RECOVERY_MODE=rpc stays withheld). A POSITIVE
+# predicate, used as `if ! _ag_primary_retake_allowed; then <withhold>; return 1; fi` at the one re-take site (switch_to_staked): an UNDEFINED predicate (rc 127) is "not allowed". The AG-1 form,
+# `if _ag_mode; then <withhold>; fi`, let a missing definition fall through to the re-take - the polarity the standby's take site has had since AG-3.1 (`if ! _ag_take_allowed`).
+_ag_primary_retake_allowed() { return 1; }
+
 
 # v0.7 (Block 6.3.1 fix round 1, R3): the recovery ladder's inter-pass sleep — its last OWN_HEAD_H seconds
 # (all of it when shorter) spent sampling the own head every 2 s ([own-view] _own_head_sample), so the next
@@ -5641,7 +5647,7 @@ switch_to_staked() {
     # has said "re-take now" (the cooldown, the recovery ladder, the vote-liveness fence, the gossip advisory, the fresh re-check, the own-view veto); the
     # re-take does not begin: no keypair check, no DRY_RUN report, no admin-socket call - one page per episode (_ag_take_withheld). The stamp spaces the
     # decision points: attempt_safe_recovery's anchor is max(LAST_SWITCH_TIME, ...), so the next pass waits RECOVERY_DELAY again.
-    if _ag_mode; then
+    if ! _ag_primary_retake_allowed; then
         LAST_SWITCH_TIME=$(mono_now); save_state
         _ag_take_withheld "primary" "$reason"
         return 1

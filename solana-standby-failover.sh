@@ -1423,7 +1423,8 @@ peer_has_relinquished() {
 _prewarm_voter_add() {
     # v0.7 (AG-1.2): FIRST - before the PREWARM_VOTER_ADD gate. This call sits in the delay window, ahead of take_staked_identity and its veto, so the
     # stop after the veto does not reach it (D0 F1): in AG mode FO never adds the staked voter. _prewarm_done stays 0, so _prewarm_reset is never armed.
-    if _ag_mode; then
+    # B7.4: the stop asks a positive predicate (`if ! _ag_prewarm_allowed`) - an undefined predicate is "not allowed".
+    if ! _ag_prewarm_allowed; then
         if [[ "${PREWARM_VOTER_ADD:-false}" == "true" && ${_ag_pv_logged:-0} -eq 0 ]]; then
             _ag_pv_logged=1
             log_warn "[prewarm] Alpenglow mode: PREWARM_VOTER_ADD=true is inert - FO never adds the staked voter (no authorized-voter call)"
@@ -2505,6 +2506,11 @@ _ag_take_withheld() {
     return 0
 }
 # ── [ag] end shared block ──
+
+# ── v0.7 (B7.4): the standby's pre-warm stop - S only, outside the [ag] block ────────────────────────────────────────────────────────────────
+# _ag_prewarm_allowed - rc 0 only if FO may add the staked voter ahead of the take (PREWARM_VOTER_ADD). In rc1 NEVER: the armed cold take adds the voter itself, inside the take, after every gate. A POSITIVE
+# predicate, used as `if ! _ag_prewarm_allowed; then <inert>; return 0; fi` as the FIRST statement of _prewarm_voter_add: an UNDEFINED predicate (rc 127) is "not allowed" (AG-1's `if _ag_mode` let it fall through).
+_ag_prewarm_allowed() { return 1; }
 
 # ── v0.7 (AG-3): the ARMED cold take - S only (the primary never takes: G10; P's switch_to_staked stays withheld) ──────────────────────────────────────────
 # Outside the [ag] shared block on purpose: the block is byte-identical in both daemons and the primary has no armed take. The standby's take site asks _ag_take_allowed.

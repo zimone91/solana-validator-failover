@@ -25,6 +25,10 @@ All notable changes are documented here. Versions follow the project's internal 
   - **Unit and ceremony:** the monitor unit carries an `ExecStop=` that re-sends a lost TERM; `failover arm` refuses a real arm without a readable `LEDGER_PATH` (precondition `P6-ledger`) and
     verifies that the rendered monitor unit carries the `ExecStop=`; both deploy scripts now write the ledger directory they detect into `LEDGER_PATH`.
 
+- **Block 7, trimmed for rc1 — what the armed pair and the monitor-only phase still need.** One suite, `tests/test_block7_rc1.sh`, one section per item.
+  - **B7.4 — fail-closed polarity at the two remaining Alpenglow stops:** the primary's re-take (`switch_to_staked`) asks `_ag_primary_retake_allowed` and the standby's pre-warm (`_prewarm_voter_add`) asks `_ag_prewarm_allowed`,
+    both `return 1` (never) in rc1 and both used as `if ! …`: an undefined predicate withholds, as the standby's take has done since AG-3.1 (the AG-1 form, `if _ag_mode`, let it fall through). `_ag_mode` itself is unchanged.
+
 - **AG-1 — Alpenglow mode: FO never takes the staked identity automatically.** Always on, no knob; every figure and limit is in
   [docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07).
   - **The stop:** the standby's `take_staked_identity` and the primary's `switch_to_staked` (`RECOVERY_MODE=rpc`) return right after the
