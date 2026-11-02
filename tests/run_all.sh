@@ -46,7 +46,7 @@ done
 echo ""
 echo "═══ (2) RUN gate: execute every suite ═══"
 # A vanished/misnamed suite must FAIL this gate, not silently shrink it (bump when adding a suite).
-EXPECTED_SUITES=60
+EXPECTED_SUITES=61
 # The PER-SUITE TIME CAP (6.3.1 fix round 8 — the delta panel 7's CIP-1: GitHub's CI=true froze two suites' simulated
 # clocks, and each would have held its job to the job's timeout, 6 h by default). Each suite runs in its own process group
 # (set -m around the launch) under a watchdog: a suite still running RUN_ALL_SUITE_CAP seconds after it started is KILLED
