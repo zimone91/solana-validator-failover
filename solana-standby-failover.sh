@@ -2373,7 +2373,7 @@ _vat_reason() {
     _p+=' elif ($i | has("blsPubkeyCompressed")) then (if $i.blsPubkeyCompressed == null then "ABSENT (no BLS key: the filter drops the account)" else "present" end)'
     _p+=' else "unavailable (this node jsonParsed has no blsPubkeyCompressed field - LIMIT)" end)'
     _p+=' + "; pending delegator rewards " + (if ($i | type) == "object" and ($i | has("pendingDelegatorRewards")) then ($i.pendingDelegatorRewards | tostring) + " lamports" else "unavailable (field absent - LIMIT)" end) end'
-    _r=$(printf '%s' "$_b" | jq -r "$_p" 2>/dev/null) || r=""
+    _r=$(printf '%s' "$_b" | jq -r "$_p" 2>/dev/null) || _r=""
     [[ -n "$_r" ]] && printf '%s' "$_r" || printf 'unavailable (the answer could not be read)'
 }
 # _vat_summary [cached] - ONE line for a page: the admission state (read fresh now unless `cached`), and for a state that explains a silent vote the
@@ -6994,6 +6994,19 @@ enforce_crossnode_timing_safety() {
     exit 1
 }
 
+# _delinq_drift_note - AG-1 review round (Q4): an existing config keeps its MAX_DELINQUENT_SLOTS - the wizard preset moved 15 -> 24 and nothing rewrites a config.
+# A value in 1..23 sits inside the tail of the measured healthy vote lag (p50 2, p90 8, max 9 slots), so a short lag spike reads as a delinquent holder. LOG ONLY, once per start, no
+# page, no refusal to start: the knob feeds the holder-delinquency verdict, and the take that verdict leads to is withheld in Alpenglow mode. The 24 is the wizard's
+# MAX_DELINQ_PRESET (test_ag_texts pins the two equal); the seconds are slots / _AG_SLOTS_PER_S_FAST in tenths (the shortest time a spike of that many slots can last, 5 slots/s).
+# Standby only: the knob exists in this daemon alone. Called by startup_checks after validate_numeric_config has normalized the value to a plain base-10 integer.
+_delinq_drift_note() {
+    local _preset=24 _t10
+    [[ $MAX_DELINQUENT_SLOTS -ge 1 && $MAX_DELINQUENT_SLOTS -lt $_preset ]] || return 0
+    _ag_mode || return 0
+    _t10=$(( MAX_DELINQUENT_SLOTS * 10 / _AG_SLOTS_PER_S_FAST ))
+    log_warn "⚠️ MAX_DELINQUENT_SLOTS=${MAX_DELINQUENT_SLOTS} is below the Alpenglow preset ${_preset} — a lag spike of ≥ ${MAX_DELINQUENT_SLOTS} slots (≈ $(( _t10 / 10 )).$(( _t10 % 10 )) s) counts as delinquency (the healthy vote lag measured p50 2, p90 8, max 9 slots; docs/SAFETY.md, Slot time under Alpenglow). Log only: nothing is paged for it"
+}
+
 # ========================= STARTUP ============================================
 
 startup_checks() {
@@ -7144,6 +7157,8 @@ startup_checks() {
     fi
     [[ "$PREWARM_VOTER_ADD" == "true" ]] && _ag_mode && log_warn "⚠️ PREWARM_VOTER_ADD=true is INERT in Alpenglow mode — FO never adds the staked voter, so the lever does nothing (docs/SAFETY.md, Alpenglow)"
     [[ "$PREWARM_VOTER_ADD" == "true" ]] && log_warn "⚠️ PREWARM_VOTER_ADD=true — the pre-warm lever is LIVE-TEST-GATED (addendum §3/№8): do not enable before the testnet on-chain observation window"
+
+    _delinq_drift_note   # AG-1 fix round (Q4): a configured fast-detect below the Alpenglow preset is said once, log only
 
     # v0.6.9 (M8): TIER2/TIER3 vantage-independence. Identical URLs silently void A6 ("two vantages")
     # and the liveness fence's fallback independence. Warn loudly — NOT fatal (single-provider users

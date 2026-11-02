@@ -2393,7 +2393,7 @@ _vat_reason() {
     _p+=' elif ($i | has("blsPubkeyCompressed")) then (if $i.blsPubkeyCompressed == null then "ABSENT (no BLS key: the filter drops the account)" else "present" end)'
     _p+=' else "unavailable (this node jsonParsed has no blsPubkeyCompressed field - LIMIT)" end)'
     _p+=' + "; pending delegator rewards " + (if ($i | type) == "object" and ($i | has("pendingDelegatorRewards")) then ($i.pendingDelegatorRewards | tostring) + " lamports" else "unavailable (field absent - LIMIT)" end) end'
-    _r=$(printf '%s' "$_b" | jq -r "$_p" 2>/dev/null) || r=""
+    _r=$(printf '%s' "$_b" | jq -r "$_p" 2>/dev/null) || _r=""
     [[ -n "$_r" ]] && printf '%s' "$_r" || printf 'unavailable (the answer could not be read)'
 }
 # _vat_summary [cached] - ONE line for a page: the admission state (read fresh now unless `cached`), and for a state that explains a silent vote the

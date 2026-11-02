@@ -7,11 +7,11 @@
 #        128 / 2.5 = 51 s) and the measured rate (128 / 4.667 = 27 s)
 #   (2)  the fast-delinquency preset: ONE variable in the standby wizard (MAX_DELINQ_PRESET), 0 or >= 24 (G11: the old 15 sat close to the tail of the
 #        measured Alpenglow vote lag), every echo / prompt / default reads it, no literal 15 is left in that block, and the env template's comment names the
-#        same number
+#        same number; the standby's startup drift note for a MAX_DELINQUENT_SLOTS below it compares against that same number
 #   (3)  the texts that quote the 128-slot window: the wizard, README, DEPLOYMENT-MANUAL, the standby's Tier-1 comment and docs/SAFETY.md ("Slot time under
 #        Alpenglow") say which bound they state (an UPPER bound at the slowest rate; the fast end; the measured rate) - and no text keeps "~150 slots (~60s)"
 #   (4)  CONTROLS: the preset back to 15; a literal in an echo; the simple default off the variable; the wizard text back to "~150 slots (~60s)"; the README
-#        and the MANUAL without their "upper bound"; the SAFETY paragraph without the table's ends
+#        and the MANUAL without their "upper bound"; the SAFETY paragraph without the table's ends; the drift note's number moved off the wizard's
 #   (5)  G5 (AG-1.7): no text recommends an identity.json symlink re-pointed on each transition; the six places that speak of the validator's startup --identity
 #        (both wizards' warn + fail, both daemons' startup alert) and the manual say it is this node's own unstaked keypair, never re-pointed, so every restart
 #        comes up unstaked
@@ -19,7 +19,10 @@
 #        are the warm swap (demote first, the sha256 equal on two reads, a copy with a sha check, voter first then identity), and 'a vote-history file is never
 #        deleted'; every staked set-identity line of the manual is immediately preceded by its authorized-voter add
 #   (7)  every text that promised an automatic takeover (AG-1.7): a table of (file, phrase that must be GONE, phrase that must be THERE) over the wizards, the
-#        installer, both daemons' banners and alerts, README, the manual, NOTIFICATIONS, the templates, the arm ceremony, SPLIT-BRAIN-RESIDUAL and SAFETY
+#        installer, both daemons' banners and alerts, README, the manual, NOTIFICATIONS, the templates, the arm ceremony, SPLIT-BRAIN-RESIDUAL, the systemd
+#        README and SAFETY (the fix round added the three promises the first table missed - README's "the spare steps up", the standby template's "we TAKE
+#        it", the systemd README's "the spare takes on its timer path" - and README's "A promoted STANDBY" bullet, now marked retained path; the 27 s
+#        decision point and the unreadable/unavailable words)
 #   (8)  the fence's ledger (D0 F3, F4): the manual says to set LEDGER_PATH before 'failover arm', why, and that -l is not detected
 #   (9)  CONTROLS for (5)-(8): a wizard line back to the symlink advice, a hard-stop alert back to 'scp tower', the manual's voter/identity order broken, a
 #        promise put back in each of the files of (7), a banner line deleted
@@ -104,6 +107,17 @@ w=$(chk_preset "$WIZ" "$ENVS")
 for scr in "$STANDBY"; do
     [[ "$(grep -c '^MAX_DELINQUENT_SLOTS=0$' "$scr")" == "1" ]] && ok "(2b) the standby daemon's own default stays 0 (off): the preset is the WIZARD's, an installed node's, not a silent change of a running one" || bad "(2b) the standby's MAX_DELINQUENT_SLOTS default moved"
 done
+chk_drift_preset() {   # chk_drift_preset <standby> <wizard> -> the reasons the standby's drift note is not tied to the wizard's preset (empty = tied)
+    local sc="$1" wz="$2" why="" dp wp
+    dp=$(sed -n '/^_delinq_drift_note() {/,/^}/p' "$sc" | grep -o 'local _preset=[0-9][0-9]*' | cut -d= -f2)
+    wp=$(grep -m1 '^MAX_DELINQ_PRESET=[0-9][0-9]*$' "$wz" | cut -d= -f2)
+    [[ "$(grep -c '^_delinq_drift_note() {' "$sc")" == "1" ]] || why="$why note-not-defined-exactly-once"
+    [[ -n "$dp" ]] || why="$why note-carries-no-_preset"
+    [[ -n "$wp" && "$dp" == "$wp" ]] || why="$why note-preset-'$dp'-is-not-the-wizards-'$wp'"
+    printf '%s' "$why"
+}
+w=$(chk_drift_preset "$STANDBY" "$WIZ")
+[[ -z "$w" ]] && ok "(2c) the standby's startup drift note (a MAX_DELINQUENT_SLOTS of 1..23, log only; tests/test_ag_take.sh (7d)) compares against the wizard's MAX_DELINQ_PRESET - the same number, read from the wizard here, not typed twice" || bad "(2c) drift-note preset:$w"
 
 # ── (3) the texts that quote the window ────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (3) each text says which bound it states ───"
@@ -132,8 +146,11 @@ m_sf=$(chk_text "$SAFETY" "Slot time under Alpenglow \\(v0.7, AG-1.6\\)" 14 "4.6
 echo ""; echo "─── (5) G5: the startup --identity is this node's own unstaked keypair, never re-pointed ───"
 DEPLOY_P="$HARNESS_DIR/deploy-failover.sh"; INSTALL="$HARNESS_DIR/install.sh"; ARM="$HARNESS_DIR/failover-arm.sh"
 ENV_P="$HARNESS_DIR/failover.env.example"; NOTIF="$HARNESS_DIR/docs/NOTIFICATIONS.md"; SPLIT="$HARNESS_DIR/docs/SPLIT-BRAIN-RESIDUAL.md"
-FENCE_A="$HARNESS_DIR/systemd/failover-fence.sh"; FENCE_B="$HARNESS_DIR/systemd/failover-fence-page-only.sh"
-SHIPPED_TXT="$STANDBY $PRIMARY $WIZ $DEPLOY_P $INSTALL $ARM $ENVS $ENV_P $FENCE_A $FENCE_B $README $MANUAL $SAFETY $NOTIF $SPLIT"
+FENCE_A="$HARNESS_DIR/systemd/failover-fence.sh"; FENCE_B="$HARNESS_DIR/systemd/failover-fence-page-only.sh"; SYSD="$HARNESS_DIR/systemd/README.md"
+SHIPPED_TXT="$STANDBY $PRIMARY $WIZ $DEPLOY_P $INSTALL $ARM $ENVS $ENV_P $FENCE_A $FENCE_B $README $MANUAL $SAFETY $NOTIF $SPLIT $SYSD"
+for f in $SHIPPED_TXT; do   # a file that is missing would make every GONE row below vacuously true
+    [[ -s "$f" ]] || { echo "  ❌ FAIL: harness: $f is missing or empty"; exit 1; }
+done
 cnt() {   # cnt <fixed phrase> <file…> -> the total number of lines carrying it
     local ph="$1" f c n=0; shift
     for f in "$@"; do c=$(grep -cF -e "$ph" "$f" 2>/dev/null); n=$(( n + ${c:-0} )); done
@@ -228,6 +245,13 @@ readme|P|1|Alpenglow mode (always on in v0.7): FO never takes the
 readme|P|1|**pages you**
 readme|P|3|retained path
 readme|P|1|a take every gate approves is **withheld and paged**
+readme|A|0|the spare steps up
+readme|P|1|then the spare only **pages you**
+readme|P|1|**v0.7 needs agave / Jito-Solana `4.4.0` or newer**
+readme|P|1|v0.7 itself is being exercised on the testnet pair (the Block 10 end-to-end run)
+readme|P|1|up to about 27 s at the decision point
+readme|A|0|- A promoted STANDBY that later isolates self-fences too
+readme|P|1|A promoted STANDBY (the retained path: v0.7 never promotes one by itself) that later isolates self-fences too
 manual|A|0|Recommended fix — the Anza
 manual|A|0|(hot spare)
 manual|P|1|ALPENGLOW MODE (always on)
@@ -243,6 +267,11 @@ notifications|P|1|no spare takes the identity by itself
 arm|P|1|Alpenglow mode (v0.7): the pairing (P5), the vantage checks (P6) and this summary condition only the retained take path
 templates|P|2|v0.7 ALPENGLOW MODE (always on): FO never takes the staked identity automatically
 templates|P|1|(Retained path: v0.7 withholds every take.)
+templates|A|0|(we TAKE it when PRIMARY drops it)
+templates|P|1|v0.7: FO never takes it - you move it to this node by the warm swap after the page
+templates|P|1|a value of 1..23 is logged once at start
+sysd|A|0|the spare takes on its timer path
+sysd|P|1|in Alpenglow mode the spare takes nothing
 splitbrain|A|0|(research pending)
 splitbrain|P|1|v0.7 never takes the staked
 safety|P|1|## Alpenglow mode (v0.7)
@@ -251,7 +280,12 @@ safety|P|1|**What FO does not do.** It does not take, re-take or pre-warm.
 safety|P|1|`TAKEOVER WITHHELD — Alpenglow mode 🚨`
 safety|P|1|in v0.7 (Alpenglow mode) the spare pages instead of taking
 safety|P|1|The top-2000 cut is not checked
-safety|P|1|can take up to 15 s
+safety|A|0|can take up to 15 s
+safety|P|1|can take up to about 27 s
+safety|P|1|the standby says so once at start - a log line, no page - when the value is 1 to 23
+safety|P|1|the vote-history file under `timeout -k 2 10` (12 s more
+safety|A|0|A field that cannot be read prints
+safety|P|1|`unreadable (<why>)` for `getHealth`
 safety|P|1|the validator stays unstaked until an operator acts'
 claims_for() {   # claims_for <key> <file…> -> the claims that do not hold, empty = all hold
     local key="$1" k kind min ph n c f why=""; shift
@@ -269,11 +303,11 @@ claim_files() {   # claim_files <key> -> the file(s) the key names
     case "$1" in
         wizard) echo "$WIZ" ;; deploy_p) echo "$DEPLOY_P" ;; install) echo "$INSTALL" ;; standby) echo "$STANDBY" ;; primary) echo "$PRIMARY" ;;
         readme) echo "$README" ;; manual) echo "$MANUAL" ;; notifications) echo "$NOTIF" ;; arm) echo "$ARM" ;; templates) echo "$ENVS $ENV_P" ;;
-        splitbrain) echo "$SPLIT" ;; safety) echo "$SAFETY" ;;
+        splitbrain) echo "$SPLIT" ;; sysd) echo "$SYSD" ;; safety) echo "$SAFETY" ;;
     esac
 }
 cl_ok=1; cl_rows=""; cl_n=$(printf '%s\n' "$CLAIMS" | grep -c .)
-for key in wizard deploy_p install standby primary readme manual notifications arm templates splitbrain safety; do
+for key in wizard deploy_p install standby primary readme manual notifications arm templates splitbrain sysd safety; do
     # shellcheck disable=SC2046
     w=$(claims_for "$key" $(claim_files "$key"))
     if [[ -z "$w" ]]; then cl_rows="$cl_rows $key"; else cl_ok=0; bad "(7:$key) a claim does not hold:$w"; fi
@@ -297,6 +331,8 @@ ctl() {   # ctl <label> <file> <sed expr> <checker…> - the checker is red on t
     else ctl_ok=0; fi
 }
 cp_pre() { chk_preset "$1" "$ENVS"; }
+cp_drift() { chk_drift_preset "$1" "$WIZ"; }
+ctl note-preset-moved "$STANDBY" 's/local _preset=24 /local _preset=15 /' cp_drift
 ctl preset-15 "$WIZ" 's/^MAX_DELINQ_PRESET=24$/MAX_DELINQ_PRESET=15/' cp_pre
 ctl preset-literal-echo "$WIZ" 's/MAX_DELINQUENT_SLOTS=\${MAX_DELINQ_PRESET}\${NC}"$/MAX_DELINQUENT_SLOTS=24${NC}"/' cp_pre
 ctl simple-default-literal "$WIZ" 's/CFG_MAX_DELINQ_SLOTS=\$MAX_DELINQ_PRESET /CFG_MAX_DELINQ_SLOTS=24 /' cp_pre
@@ -350,6 +386,15 @@ cx() { claims_for splitbrain "$1"; }
 ctl9 p-splitbrain-note "$SPLIT" 's/Alpenglow note (v0\.7)/Alpenglow note (research pending)/' cx
 cq() { claims_for safety "$1"; }
 ctl9 p-safety-section "$SAFETY" 's/^## Alpenglow mode (v0\.7)$/## Mode/' cq
+ctl9 p-safety-15s "$SAFETY" 's/can take up to about 27 s/can take up to 15 s/' cq
+ctl9 p-safety-unreadable "$SAFETY" 's/`unreadable (<why>)` for `getHealth`/`unavailable (<why>)` for everything/' cq
+ctl9 p-readme-steps-up "$README" 's/then the spare only \*\*pages you\*\*/the spare steps up/' cr
+ctl9 p-readme-version "$README" 's/\*\*v0\.7 needs agave \/ Jito-Solana `4\.4\.0` or newer\*\*/v0.7 runs on any agave/' cr
+ctl9 p-readme-27s "$README" 's/up to about 27 s at the decision point/up to about 15 s at the decision point/' cr
+ctl9 p-readme-promoted "$README" 's/A promoted STANDBY (the retained path: v0.7 never promotes one by itself) that later/A promoted STANDBY that later/' cr
+ctl9 p-template-take "$ENVS" 's/(v0\.7: FO never takes it - you move it to this node by the warm swap after the page; the retained path took it when PRIMARY dropped it)/(we TAKE it when PRIMARY drops it)/' ct
+csd() { claims_for sysd "$1"; }
+ctl9 p-sysd-timer "$SYSD" 's/in Alpenglow mode the spare takes nothing/the spare takes on its timer path/' csd
 led_probe() { chk_text "$1" "Arming the fence \\(v0.7\\): set .LEDGER_PATH. explicitly" 5 "has no such detection" "falls to its stop path" "short form \`-l\`"; }
 ctl9 led-no-detection "$MANUAL" 's/but the fence (`failover-fence.sh`, run by the unit.s `OnFailure=`) has no such detection/but the fence (`failover-fence.sh`, run by the unit'"'"'s `OnFailure=`) reads it like the daemons/' led_probe
 [[ $c9_ok -eq 1 ]] && ok "(9) every put-back turns its case red:$c9_rows" || bad "(9) a control did not turn its case red"

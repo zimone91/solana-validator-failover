@@ -16,10 +16,12 @@
 #   (2) _vat_cycle: the first call reads, then only on the schedule (an epoch change; <= every 10 min while not admitted/unknown); a state change is logged
 #   (3) _vat_hold: withhold on a positive "not in the vote set" (one page, throttled), proceed on admitted / unknown / boundary; a withhold
 #       verdict stands 120 s, then it is read again; the page carries the reason class (BLS key, stake, balance) and the named limits
-#   (4) the REAL holder demotes: N6 in both daemons, and the primary's vote-latency and delinquency triggers (the real main-loop region)
+#   (4) the REAL holder demotes: N6 in both daemons (the flag x list table: false holds and true demotes in BOTH the current and the delinquent list -
+#       the pair (4a)/(4b) alone confounded the flag with the list), and the primary's vote-latency and delinquency triggers (the real main-loop region)
 #   (5) CENSUS by bash's parse: every vote-based demote call is preceded by _vat_hold, in both daemons - and no partition trigger is
-#   (6) CONTROLS (mutate()): a missing entry read as not admitted, an inverted flag, a boundary ignored, a guard that never withholds, a page
-#       that repeats, a stale verdict that never expires, an N6 / latency / delinquency site with its guard removed
+#   (6) CONTROLS (mutate()): a missing entry read as not admitted, an inverted flag, admission read from the list instead of the flag (the old
+#       pair stays green under it, the 2x2 table does not), a boundary ignored, a guard that never withholds, a page that repeats, a stale verdict
+#       that never expires, an N6 / latency / delinquency site with its guard removed
 # RED ON THE BASE (AG-1.5 tree + this suite): the functions do not exist and a holder whose own-vote lag fires while epochVoteAccount is
 # false DEMOTES; after the change: no demote, one page; the same world with epochVoteAccount true still demotes.
 #
@@ -46,6 +48,7 @@ vat_body() {   # vat_body <epoch1> <epoch3> <current-array> <delinquent-array> [
 B_ADMITTED="$(vat_body 1074 1074 "[$(ent 5000000000 true)]" '[]')"
 B_NOTADM_DELINQ="$(vat_body 1074 1074 '[]' "[$(ent 5000000000 false)]")"
 B_NOTADM_CURRENT="$(vat_body 1074 1074 "[$(ent 5000000000 false)]" '[]')"
+B_ADMITTED_DELINQ="$(vat_body 1074 1074 '[]' "[$(ent 5000000000 true)]")"   # the flag TRUE in the delinquent list: with B_NOTADM_CURRENT the 2x2 of flag x list
 B_UNSTAKED="$(vat_body 1074 1074 '[]' "[$(ent 0 false)]")"
 B_BOUNDARY="$(vat_body 1074 1075 "[$(ent 5000000000 true)]" '[]')"
 B_ABSENT="$(vat_body 1074 1074 '[]' '[]')"
@@ -222,6 +225,19 @@ rs_run() {   # rs_run <script> <getAccountInfo body|RC7> → _vat_reason's text
         _vat_reason
     )
 }
+rl_run() {   # rl_run <script> <getAccountInfo body> → CLEAN, or LEAK when _vat_reason (called in THIS shell: an assignment in a $(...) would die with it) leaves a variable named r behind
+    local script="$1" body="$2" cs; cs=$(cut_src "$script")
+    (
+        set +e
+        # shellcheck disable=SC1090
+        source "$cs" 2>/dev/null
+        LOCAL_RPC="http://mock-local"; VOTE_PUBKEY="$VOTE"; _watchdog_pet() { :; }
+        curl() { printf '%s' "$body"; return 0; }
+        unset r
+        _vat_reason > /dev/null
+        if [[ -n "${r+set}" ]]; then echo LEAK; else echo CLEAN; fi
+    )
+}
 ACCT() { printf '{"jsonrpc":"2.0","result":{"context":{"slot":1},"value":{"lamports":%s,"owner":"Vote111111111111111111111111111111111111111","data":{"program":"vote","parsed":{"type":"vote","info":{%s}},"space":3762},"executable":false}},"id":1}' "$1" "$2"; }
 for scr in "$STANDBY" "$PRIMARY"; do
     n=$(role_of "$scr")
@@ -235,6 +251,8 @@ for scr in "$STANDBY" "$PRIMARY"; do
         && ok "(3k:$n) an older node's answer (no BLS field, no pending rewards): both named as LIMITs, no value invented" || bad "(3k:$n) older shape ($t)"
     t=$(rs_run "$scr" RC7); [[ "$t" == "unavailable (no answer from LOCAL_RPC getAccountInfo)" ]] && ok "(3l:$n) no answer → unavailable (...), the page still goes out" || bad "(3l:$n) no answer ($t)"
     t=$(rs_run "$scr" '{"jsonrpc":"2.0","result":{"value":null},"id":1}'); [[ "$t" == "unavailable (no account in the answer)" ]] && ok "(3m:$n) no account → unavailable (no account in the answer)" || bad "(3m:$n) null account ($t)"
+    t=$(rs_run "$scr" 'this is not json'); [[ "$t" == "unavailable (the answer could not be read)" ]] && ok "(3n:$n) an answer jq cannot parse → unavailable (the answer could not be read), the page still goes out" || bad "(3n:$n) unparsable answer ($t)"
+    t=$(rl_run "$scr" 'this is not json'); [[ "$t" == "CLEAN" ]] && ok "(3o:$n) _vat_reason called in the daemon's own shell (not in a \$(...)) leaves no variable r behind when jq fails: the fallback assigns the function's local _r" || bad "(3o:$n) _vat_reason leaked a global variable r on an unparsable answer ($t)"
 done
 
 # ── (4) the real holder demotes ───────────────────────────────────────────────────────────────────
@@ -291,6 +309,13 @@ for scr in "$STANDBY" "$PRIMARY"; do
         && ok "(4c:$n) the VAT read fails (unknown): the demote proceeds - unknown never suppresses a demote" || bad "(4c:$n) unknown control ($out)"
     out=$(n6_run "$scr" "$B_ABSENT" 1)
     [[ "$(field "$out" fenced)" == "1" ]] && ok "(4d:$n) an empty filtered answer (no entry) is unknown: the demote proceeds" || bad "(4d:$n) absent control ($out)"
+    # the 2x2 of flag x list: (4a) false/delinquent and (4b) true/current differ in BOTH; (4g) false/current is (4b) with only the flag flipped, (4h) true/delinquent is (4a) with only the flag flipped
+    out=$(n6_run "$scr" "$B_NOTADM_CURRENT" 4)
+    [[ "$(field "$out" fenced)" == "0" && "$(field "$out" pages)" == "1" && "$(field "$out" status)" == " ‖ NOT IN THE EPOCH'S VOTE SET 🚨" && "$(field "$out" vatreads)" == "1" && "$(field "$out" rc)" == "1" ]] \
+        && ok "(4g:$n) the account sits in the CURRENT list (as in (4b)) and epochVoteAccount is FALSE: NO demote over 4 cycles, ONE page, ONE read - admission is the flag, not the list" || bad "(4g:$n) flag false in current ($out)"
+    out=$(n6_run "$scr" "$B_ADMITTED_DELINQ" 1)
+    [[ "$(field "$out" fenced)" == "1" && "$(field "$out" status)" != *"VOTE SET"* && "$(field "$out" rc)" == "0" ]] \
+        && ok "(4h:$n) the account sits in the DELINQUENT list (as in (4a)) and epochVoteAccount is TRUE: the demote proceeds at once, no VAT page" || bad "(4h:$n) flag true in delinquent ($out)"
 done
 # the primary's main-loop triggers: the REAL STAKED branch of the loop (the drive_cycle_primary technique)
 pl_run() {   # pl_run <trigger latency|delinq> <vat body> → fenced=…|pages=…|reasons=…
@@ -421,6 +446,21 @@ for scr in "$STANDBY" "$PRIMARY"; do
         real=$(n6_run "$scr" "$B_NOTADM_DELINQ" 1); mut=$(n6_run "$m" "$B_NOTADM_DELINQ" 1)
         [[ "$(field "$real" fenced)" == "0" && "$(field "$mut" fenced)" == "1" && "$(vg_scan "$m")" != "$(vg_scan "$scr")" ]] \
             && ok "(6:n6-guard-removed:$n) CONTROL: with the N6 guard removed the lapse DEMOTES (fenced 0 -> 1) and the demote-site table moves" || bad "(6:n6-guard-removed:$n) the N6 control did not bite (real: $real :: mutant: $mut)"
+    fi
+done
+# admission read from the LIST instead of the flag: the 2x2 table's off-diagonal worlds swap, the old pair (4a)/(4b) - whose fixtures agree in flag and list - does not move
+for scr in "$STANDBY" "$PRIMARY"; do
+    n=$(role_of "$scr"); m="$WORK/c-membership-$n.sh"
+    if mutate "$scr" 's/elif \$x.epochVoteAccount then "admitted /elif (($v.current \/\/ []) | map(.votePubkey) | index($pk)) != null then "admitted /' "$m"; then
+        g_real=$(n6_run "$scr" "$B_NOTADM_CURRENT" 4);  g_mut=$(n6_run "$m" "$B_NOTADM_CURRENT" 4)
+        h_real=$(n6_run "$scr" "$B_ADMITTED_DELINQ" 1); h_mut=$(n6_run "$m" "$B_ADMITTED_DELINQ" 1)
+        a_real=$(n6_run "$scr" "$B_NOTADM_DELINQ" 4);   a_mut=$(n6_run "$m" "$B_NOTADM_DELINQ" 4)
+        b_real=$(n6_run "$scr" "$B_ADMITTED" 1);        b_mut=$(n6_run "$m" "$B_ADMITTED" 1)
+        # held = no demote at all (fenced 0); demoted = at least one (the harness's cycles keep calling the demote stub, so the count is not always 1)
+        [[ "$(field "$g_real" fenced)" == "0" && "$(field "$g_mut" fenced)" -ge 1 && "$(field "$h_real" fenced)" -ge 1 && "$(field "$h_mut" fenced)" == "0" \
+           && "$(field "$a_mut" fenced)" == "$(field "$a_real" fenced)" && "$(field "$b_mut" fenced)" == "$(field "$b_real" fenced)" ]] \
+            && ok "(6:membership-as-admission:$n) CONTROL: reading admission from the current list turns (4g) false/current from held to demoted and (4h) true/delinquent from demoted to held, while (4a)/(4b) do not move at all (fenced $(field "$a_real" fenced) and $(field "$b_real" fenced) with and without the mutant) - the confounded pair could not see it" \
+            || bad "(6:membership-as-admission:$n) the control did not bite or the old pair moved ((4g) real=$(field "$g_real" fenced) mut=$(field "$g_mut" fenced); (4h) real=$(field "$h_real" fenced) mut=$(field "$h_mut" fenced); (4a) real=$(field "$a_real" fenced) mut=$(field "$a_mut" fenced); (4b) real=$(field "$b_real" fenced) mut=$(field "$b_mut" fenced))"
     fi
 done
 for trig in latency delinq; do
