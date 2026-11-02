@@ -121,12 +121,12 @@ cold take explicit. FO reports the file's class (absent; present with its mtime,
 history, floor = own root <n>; holder lastVote <n>; margin <n> slots; vote history before the take: <class>`.
 
 **The pairing rule and the gap rule.** The gap rule is the holder's half, against the one thing the margin cannot see - a host that was frozen (a VM pause, a live migration, a suspend) and wakes after the spare
-took. The monitor stamps the end of every cycle on a monotonic clock; a cycle that starts `HOLDER_GAP_DEMOTE_SECS` (default 45 s, floor 30) or more after the last stamp, on a node that holds the staked identity,
+took. The monitor stamps the end of every cycle on a monotonic clock; a cycle that starts `HOLDER_GAP_DEMOTE_SECS` (default 30 s, floor 20) or more after the last stamp, on a node that holds the staked identity,
 demotes it - after the cycle's loop-top reads and the identity read, before `check_internet`, the manual-change detection and the self-fence. A monitor that has just started has no previous cycle and so no gap; an
 unstaked node only logs one INFO line; a demote that could not run stays pending and is retried on the next cycle. Failure direction: a false gap (a very long stall of the monitor itself) demotes a healthy
-holder - availability, never a second voter. The pairing rule is what makes the two halves meet: the spare's `TAKEOVER_DELAY` must be at least the holder's `HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 90 >= 45 + 30),
+holder - availability, never a second voter. The pairing rule is what makes the two halves meet: the spare's `TAKEOVER_DELAY` must be at least the holder's `HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 60 >= 30 + 30),
 so a freeze shorter than the gap bound ends, and the holder is voting again, well before the spare's earliest take, and a longer one is demoted at the wake. The holder cannot read the spare's env file, so the rule
-lives in both env templates and here, and the `facts` job pins the shipped pair; an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 75 s (the holder's default 45 + 30; `DRY_RUN` is no exception), and a spare that is not armed logs one warning below 75.
+lives in both env templates and here, and the `facts` job pins the shipped pair; an armed spare REFUSES to start when its `TAKEOVER_DELAY` is below 60 s (the holder's default 30 + 30; `DRY_RUN` is no exception), and a spare that is not armed logs one warning below 60.
 
 **What the armed spare does not do.** It does not re-take on the primary (`RECOVERY_MODE=rpc` stays withheld), pre-warm, copy or move a vote-history file, or give the identity back: the way back to the old
 node is the operator's warm swap, above.

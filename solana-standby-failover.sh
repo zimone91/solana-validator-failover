@@ -147,12 +147,12 @@ MAX_DELINQUENT_SLOTS=0
 # --- Safety ---
 # v0.5.9: DRY_RUN=true is the safe default. Live mode requires explicit DRY_RUN=false in env.
 DRY_RUN=true
-TAKEOVER_DELAY=90                         # seconds of confirmed delinquency before takeover (v0.7 AG-3: 90; the pairing rule: >= the holder's HOLDER_GAP_DEMOTE_SECS (45) + 30)
+TAKEOVER_DELAY=60                         # seconds of confirmed delinquency before takeover (v0.7 AG-3: the pairing rule: >= the holder's HOLDER_GAP_DEMOTE_SECS (30) + 30)
 # v0.7 (AG-3.1): THE ARM SWITCH. Alpenglow mode is the default and the spare only PAGES (TAKEOVER WITHHELD); the ARMED cold take is an opt-in. ONLY the literal `true` arms it - any other value
 # (TRUE, 1, yes, a typo, a trailing space) is NOT armed and says so once at startup. Arming is the operator's ceremony (docs/SAFETY.md, "Armed cold take"): the take is a SET-IDENTITY with an empty vote
 # history, so it is safe only when both conditions of DESIGN-AG 2.3 hold at the moment of the take: (i) the holder has relinquished (demoted, or dead and not coming back staked - every restart boots
 # unstaked) - what the existing gate chain proves (episode, TAKEOVER_DELAY, external confirm, gossip, vote liveness, the fresh re-check, the own-view veto) - and (ii) the spare's root is above the holder's last
-# real vote by AG_TAKE_MARGIN_SLOTS (below). The pairing rule: this spare's TAKEOVER_DELAY must be >= the holder's HOLDER_GAP_DEMOTE_SECS + 30 (P cannot read this env; the defaults are 90 >= 45 + 30).
+# real vote by AG_TAKE_MARGIN_SLOTS (below). The pairing rule: this spare's TAKEOVER_DELAY must be >= the holder's HOLDER_GAP_DEMOTE_SECS + 30 (P cannot read this env; the defaults are 60 >= 30 + 30).
 # The residual (accepted for this slice): a holder whose WHOLE HOST was frozen and thaws after the take votes for at most one monitor cycle before its gap rule demotes it.
 AG_ARMED_TAKE=false
 # v0.7 (AG-3.2): the readiness margin, in slots: the spare takes only if its own finalized slot (= its root under Alpenglow) is at least this far above the holder's last observed lastVote.
@@ -3448,7 +3448,7 @@ take_staked_identity() {
                 add_detail="timed out (${SETIDENTITY_TIMEOUT}s)"; [[ $_rc -ne 124 && $_rc -ne 137 ]] && add_detail="${out:-rc ${_rc}}"
                 log_error "[take] the voter add failed (${add_detail}) — set-identity NOT attempted (voter first: a wedged or refusing socket must not be followed by an identity change)"
                 LAST_TAKEOVER_TIME=$(mono_now); save_state
-                alert "the voter add failed (${add_detail}) - set-identity was NOT attempted: ${reason}" "${CURRENT_IDENTITY:-unknown}" "TAKEOVER BLOCKED — authorized-voter add failed"
+                alert "the voter add failed (${add_detail}) - the identity change was NOT attempted: ${reason}" "${CURRENT_IDENTITY:-unknown}" "TAKEOVER BLOCKED — authorized-voter add failed"
                 return 1
             fi
             [[ $_rc -ne 0 ]] && log_info "[take] the voter add found the voter already loaded - continuing to set-identity"
@@ -7283,11 +7283,11 @@ startup_checks() {
     [[ "$PREWARM_VOTER_ADD" == "true" ]] && log_warn "⚠️ PREWARM_VOTER_ADD=true — the pre-warm lever is LIVE-TEST-GATED (addendum §3/№8): do not enable before the testnet on-chain observation window"
     # v0.7 (AG-3.1): the arm switch is exact - only the literal "true" arms the take; anything else (set and non-empty) is coerced to false with ONE warning naming the value (FAILURE DIRECTION: toward NOT armed).
     [[ "$AG_ARMED_TAKE" != "true" && "$AG_ARMED_TAKE" != "false" && -n "$AG_ARMED_TAKE" ]] && { log_warn "⚠️ AG_ARMED_TAKE='${AG_ARMED_TAKE}' is not exactly true or false - this spare is NOT ARMED (only the literal true arms the take)"; AG_ARMED_TAKE=false; }
-    # The pairing rule (AG-3.4): this spare's TAKEOVER_DELAY >= the holder's HOLDER_GAP_DEMOTE_SECS + 30. The holder's value is on another host and unreadable here; 75 = its DEFAULT 45 + 30.
+    # The pairing rule (AG-3.4): this spare's TAKEOVER_DELAY >= the holder's HOLDER_GAP_DEMOTE_SECS + 30. The holder's value is on another host and unreadable here; 60 = its DEFAULT 30 + 30.
     # ARMED with a delay below it REFUSES to start (like the delay below the safe floor; DRY_RUN is no exception: it mirrors the live decision); a spare that is not armed only says so.
-    [[ "$AG_ARMED_TAKE" == "true" && "$TAKEOVER_DELAY" -lt 75 ]] && { log_error "AG_ARMED_TAKE=true with TAKEOVER_DELAY=${TAKEOVER_DELAY}s < 75s - refusing to start: the pairing rule wants this spare's TAKEOVER_DELAY >= the holder's HOLDER_GAP_DEMOTE_SECS (default 45) + 30, because a holder whose host froze for longer than this delay could wake after the take and vote before its gap rule demotes it. Raise TAKEOVER_DELAY (shipped 90) or set AG_ARMED_TAKE=false (docs/SAFETY.md, Armed cold take)"; exit 1; }
+    [[ "$AG_ARMED_TAKE" == "true" && "$TAKEOVER_DELAY" -lt 60 ]] && { log_error "AG_ARMED_TAKE=true with TAKEOVER_DELAY=${TAKEOVER_DELAY}s < 60s - refusing to start: the pairing rule wants this spare's TAKEOVER_DELAY >= the holder's HOLDER_GAP_DEMOTE_SECS (default 30) + 30, because a holder whose host froze for longer than this delay could wake after the take and vote before its gap rule demotes it. Raise TAKEOVER_DELAY (shipped 60) or set AG_ARMED_TAKE=false (docs/SAFETY.md, Armed cold take)"; exit 1; }
     [[ "$AG_ARMED_TAKE" == "true" ]] && log_warn "⚠️ AG_ARMED_TAKE=true - this spare WILL take the staked identity by itself (cold take) when every gate says take and the readiness margin (AG_TAKE_MARGIN_SLOTS=${AG_TAKE_MARGIN_SLOTS}) holds (docs/SAFETY.md, Armed cold take)"
-    [[ "$AG_ARMED_TAKE" != "true" && "$TAKEOVER_DELAY" -lt 75 ]] && log_warn "⚠️ TAKEOVER_DELAY=${TAKEOVER_DELAY}s < 75s: this spare is not armed, so it only pages - but arming it (AG_ARMED_TAKE=true) would refuse to start until TAKEOVER_DELAY is at least 75 (the pairing rule against the holder's HOLDER_GAP_DEMOTE_SECS: shipped 90 >= 45 + 30; docs/SAFETY.md, Armed cold take)"
+    [[ "$AG_ARMED_TAKE" != "true" && "$TAKEOVER_DELAY" -lt 60 ]] && log_warn "⚠️ TAKEOVER_DELAY=${TAKEOVER_DELAY}s < 60s: this spare is not armed, so it only pages - but arming it (AG_ARMED_TAKE=true) would refuse to start until TAKEOVER_DELAY is at least 60 (the pairing rule against the holder's HOLDER_GAP_DEMOTE_SECS: shipped 60 >= 30 + 30; docs/SAFETY.md, Armed cold take)"
 
     _delinq_drift_note   # AG-1 fix round (Q4): a configured fast-detect below the Alpenglow preset is said once, log only
 
