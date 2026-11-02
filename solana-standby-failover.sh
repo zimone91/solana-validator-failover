@@ -2511,6 +2511,13 @@ _ag_take_withheld() {
 _AG_COLD_FLAG="--do-not-require-vote-history"   # agave-validator 4.4.0 `set-identity --help`: "Do not require saved vote history state for identity change" - named ONCE in this script (facts pins it)
 _ag_lead=""; _ag_opnote=""                       # the page's two sentences: set by _ag_take_allowed, read by the shared _ag_take_withheld (empty = the AG-1 wording)
 _ag_rdy_own=""; _ag_rdy_holder=""; _ag_rdy_margin=""; _ag_rdy_why=""
+# PROOF_MAX_AGE (the figure of the [proof-gate] block) RE-DERIVED at AG-3.2 for the armed cold take (the figure is NOT changed; this paragraph lives HERE, outside the byte-identical [proof-gate] twin block, because only this daemon has the armed take): on an ARMED spare the span holds a third bounded local request after the recheck and the veto - the readiness
+# margin (_ag_take_ready: ONE LOCAL getSlot{finalized}, curl -m 3, then its per-op pet 7 s, plus ~1 s of parse glue = 11 s). The worst REACHABLE span is therefore acceptance slack 3 +
+# the recheck's 36 + the veto's 10 + the margin's 11 = 60 s > 50: it does NOT converge (by 10 s). The figure is left as it was and the non-convergence is named, not hidden: the edge
+# check (require_relinquish_proof) is wired into no take path in this release (6.4 wires it), and the armed take's own gate is _ag_take_allowed. The 6.4 gate must either move
+# PROOF_MAX_AGE to >= 61 (60 s + the 1 s margin idiom of 6.3.1) or take the readiness request BEFORE the recheck (outside the span). Past the margin the armed path runs `authorized-voter add`
+# BEFORE `set-identity` (AG-3.3): a local admin call bounded by SETIDENTITY_TIMEOUT (15 s + 5 s kill grace); healthy it is milliseconds, a slow SUCCESS lengthens the span to the mutation by
+# up to 15 s, a failure or a timeout ends the take before any set-identity.
 # _ag_take_ready - DESIGN-AG 2.3 (ii) as ONE arithmetic gate on two numbers FO already reads: the spare's own finalized slot and the holder's last observed lastVote.
 #   own    = _ag_slot_final: ONE LOCAL getSlot{finalized}, curl -m 3, petted. Under Alpenglow `finalized` IS the root (votor advances confirmed = finalized at each new root; DESIGN-AG 6, holder-slice
 #            input (1)), so `own` is the floor an EMPTY vote history starts from: a node taken with set-identity votes no lower than its own root.
@@ -4360,13 +4367,6 @@ require_relinquish_proof() {
 # 74 s at the edge before this read — gains the same 10 s). PLACEMENT, for 6.4: each take function reads a
 # PRE-TAKE own-head sample (curl -m 2 + its pet: 9 s worst) BEFORE the recheck; 6.4's gate must sit AFTER
 # that sample — placed before it, the span is 3 + 9 + 46 = 58 s > 50 and does not converge.
-# RE-DERIVED at AG-3.2 (the armed cold take; PROOF_MAX_AGE NOT changed): on an ARMED spare the span holds a third bounded local request after the recheck and the veto - the readiness
-# margin (_ag_take_ready: ONE LOCAL getSlot{finalized}, curl -m 3, then its per-op pet 7 s, plus ~1 s of parse glue = 11 s). The worst REACHABLE span is therefore acceptance slack 3 +
-# the recheck's 36 + the veto's 10 + the margin's 11 = 60 s > 50: it does NOT converge (by 10 s). The figure is left as it was and the non-convergence is named, not hidden: the edge
-# check (require_relinquish_proof) is wired into no take path in this release (6.4 wires it), and the armed take's own gate is _ag_take_allowed. The 6.4 gate must either move
-# PROOF_MAX_AGE to >= 61 (60 s + the 1 s margin idiom of 6.3.1) or take the readiness request BEFORE the recheck (outside the span). Past the margin the armed path runs `authorized-voter add`
-# BEFORE `set-identity` (AG-3.3): a local admin call bounded by SETIDENTITY_TIMEOUT (15 s + 5 s kill grace); healthy it is milliseconds, a slow SUCCESS lengthens the span to the mutation by
-# up to 15 s, a failure or a timeout ends the take before any set-identity.
 # FIX ROUNDS 1-3 (PROOF_MAX_AGE NEVER changed): fix round 1 (R3) had the recheck ask the PINNED vantage first
 # (R_worst 19 s: the span 3 + 19 + 10 = 32 s, gate-first 41 s) and so skipped a recovered TIER2 showing the holder
 # voting (the delta panel's DL-1: a voting holder taken 21-34 s into its voting); fix round 2 (S1) read both
