@@ -765,7 +765,8 @@ check_self_fence_isolation getSlot confirmed
 check_self_fence_isolation getVoteAccounts processed
 startup_checks getSlot finalized
 startup_checks getSlot finalized
-startup_checks getSlot finalized"
+startup_checks getSlot finalized
+_hung_local_slot getSlot confirmed"
 S_TABLE="tier1_check_local_health getSlot finalized
 local_check_delinquency getSlot finalized
 local_check_delinquency getVoteAccounts finalized
@@ -800,14 +801,14 @@ d1_scan() {   # $1=file → line 1 "rpc=<n> unparseable=<n> gva/slot=<n> without
 }
 d1_green() { local s; s=$(d1_scan "$1" | head -1); [[ "$s" == *" unparseable=0 "* && "$s" == *" without=0" ]]; }
 d1p=$(d1_scan "$PRIMARY"); d1s=$(d1_scan "$STANDBY")
-if [[ "$(printf '%s\n' "$d1p" | head -1)" == "rpc=32 unparseable=0 gva/slot=19 without=0" && "$(printf '%s\n' "$d1s" | head -1)" == "rpc=34 unparseable=0 gva/slot=19 without=0" ]]; then
+if [[ "$(printf '%s\n' "$d1p" | head -1)" == "rpc=33 unparseable=0 gva/slot=20 without=0" && "$(printf '%s\n' "$d1s" | head -1)" == "rpc=34 unparseable=0 gva/slot=19 without=0" ]]; then
     ok "(1a) on bash's own parse of BOTH daemons (bp_parse), every curl COMMAND to an RPC endpoint — its command word read with quotes and backslashes removed, in any function, the file level or after the marker, a command substitution, a \$((cmd) ) and an unquoted here-document's \$( ) included — carries one literal -d body jq parses as a JSON-RPC request (primary 32, standby 34; the pages and pings excluded by their URL words), and every getVoteAccounts/getSlot request in them names params[0].commitment (19 bodies each, zero without one); no shell is run as a command (a literal shell word followed by anything but only --version / --help, whatever wraps it: its string, script or stream is unreadable — red); not seen: a curl or a shell whose command word is assembled at run time, a tool running its argument through a shell it names itself (flock -c), a string run by eval / trap / mapfile -C (the (0d) census's), code an interpreter runs from a string (awk's system(), perl -e, python3 -c)"
 else
     bad "(1a) primary: $d1p :: standby: $d1s"
 fi
 pc=$(census_bodies "$PRIMARY"); sc=$(census_bodies "$STANDBY")
 if [[ "$pc" == "$P_TABLE" && "$sc" == "$S_TABLE" ]]; then
-    ok "(1b) the site table is pinned: DETECTION reads — the standby's local_check_delinquency reference + payload and the TIER2/TIER3 confirm payloads (tier2_check_delinquency, tier3_confirm_delinquency), the primary's tier1/latency/recovery reads — say finalized (their effective value before, by D0.1); the samplers and the elapsed head processed, the self-fence confirmed/processed, G2 confirmed — unchanged; the [own-view] reads confirmed (new)"
+    ok "(1b) the site table is pinned: DETECTION reads — the standby's local_check_delinquency reference + payload and the TIER2/TIER3 confirm payloads (tier2_check_delinquency, tier3_confirm_delinquency), the primary's tier1/latency/recovery reads — say finalized (their effective value before, by D0.1); the samplers and the elapsed head processed, the self-fence confirmed/processed, G2 confirmed — unchanged; the [own-view] reads confirmed (new); the primary's hung-holder rung reads LOCAL getSlot confirmed (AG-3.8: _hung_local_slot, the self-fence's own request)"
 else
     bad "(1b) the site table moved — primary: $(diff <(printf '%s\n' "$P_TABLE") <(printf '%s\n' "$pc") | grep '^[<>]' | tr '\n' ';') standby: $(diff <(printf '%s\n' "$S_TABLE") <(printf '%s\n' "$sc") | grep '^[<>]' | tr '\n' ';')"
 fi
