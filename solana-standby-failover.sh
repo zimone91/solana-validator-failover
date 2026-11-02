@@ -147,7 +147,19 @@ MAX_DELINQUENT_SLOTS=0
 # --- Safety ---
 # v0.5.9: DRY_RUN=true is the safe default. Live mode requires explicit DRY_RUN=false in env.
 DRY_RUN=true
-TAKEOVER_DELAY=60                         # seconds of confirmed delinquency before takeover
+TAKEOVER_DELAY=90                         # seconds of confirmed delinquency before takeover (v0.7 AG-3: 90; a hung holder's own fence ends in a kill at ~67 s - no-answer 30 + demote timeout 15 + `systemctl stop` bound 20 + kill 2 - so the spare decides after that; the pairing rule: >= the holder's HOLDER_GAP_DEMOTE_SECS (45) + 30)
+# v0.7 (AG-3.1): THE ARM SWITCH. Alpenglow mode is the default and the spare only PAGES (TAKEOVER WITHHELD); the ARMED cold take is an opt-in. ONLY the literal `true` arms it - any other value
+# (TRUE, 1, yes, a typo, a trailing space) is NOT armed and says so once at startup. Arming is the operator's ceremony (docs/SAFETY.md, "Armed cold take"): the take is a SET-IDENTITY with an empty vote
+# history, so it is safe only when both conditions of DESIGN-AG 2.3 hold at the moment of the take: (i) the holder has relinquished (demoted, or dead and not coming back staked - every restart boots
+# unstaked) - what the existing gate chain proves (episode, TAKEOVER_DELAY, external confirm, gossip, vote liveness, the fresh re-check, the own-view veto) - and (ii) the spare's root is above the holder's last
+# real vote by AG_TAKE_MARGIN_SLOTS (below). The pairing rule: this spare's TAKEOVER_DELAY must be >= the holder's HOLDER_GAP_DEMOTE_SECS + 30 (P cannot read this env; the defaults are 90 >= 45 + 30).
+# The residual (accepted for this slice): a holder whose WHOLE HOST was frozen and thaws after the take votes for at most one monitor cycle before its gap rule demotes it.
+AG_ARMED_TAKE=false
+# v0.7 (AG-3.2): the readiness margin, in slots: the spare takes only if its own finalized slot (= its root under Alpenglow) is at least this far above the holder's last observed lastVote.
+# Derivation: a partitioned holder keeps casting votes nobody sees until its own self-fence fires - Internet-lost at ~13.5-16.5 s (17 s measured on the pair), frozen-slot and no-answer at 30 s -
+# plus one cycle (3 s) and the demote (1 s): <= 34 s; at the conservative 5 slots/s that is 170 slots; the on-chain lastVote understates the real last vote by <= ~8 slots (DESIGN-AG 1.2):
+# 170 + 8 = 178, rounded up to 200. A canonical integer >= 150 (below 150 the daemon refuses to start, like the delay floor).
+AG_TAKE_MARGIN_SLOTS=200
 # v0.7 (Block 3, slice 4): page when a delinquency episode has been held >= this many seconds with
 # no takeover (blindness re-anchors, provider flips and span-floor holds can hold the take
 # SILENTLY — see _maybe_starvation_page). Repeats per ALERT_THROTTLE; 0 = off. Observability only —
@@ -2084,8 +2096,9 @@ _alpenglow_status_line() {
 # AG mode is the rule of v0.7 (DESIGN-AG §4, TASK-AG1 AG-1.1): FO never takes the staked identity automatically,
 # on any role, on any cluster. `_ag_mode` returns 0 (AG mode) UNCONDITIONALLY. No env knob, no state file and no RPC
 # answer can make it return non-zero in a shipped script; the tripwire above only reports. The take paths ask it
-# (AG-1.2). The non-AG take path stays in the code as the base for AG-3 and is reachable only by tests, which shadow
-# this function to return 1 after sourcing a daemon (the seam idiom: tests/lib/harness.sh `harness_ag_off`).
+# (AG-1.2). The non-AG take path stays in the code as the retained path and is reachable only by tests, which shadow
+# this function to return 1 (and the standby's _ag_take_allowed to return 0) after sourcing a daemon (the seam idiom: tests/lib/harness.sh `harness_ag_off`).
+# AG-3: the ARMED cold take is decided by the standby's _ag_take_allowed (below the block, S only); this predicate still gates the primary's stop and the pre-warm.
 _ag_mode() { return 0; }
 
 # ── slot rates (AG-1.6; G11) ───────────────────────────────────────────────────────────────────────────────────────
@@ -2478,12 +2491,12 @@ _ag_take_withheld() {
         notadmitted|unstaked) _vat="${_vat} - the holder's silence is likely a VAT lapse, not a death" ;;
     esac
     _vh=$(_vh_class "$_ep")
-    _t="${_why} - every gate FO has said the take would happen now, and in Alpenglow mode FO never takes the staked identity automatically: nothing was done."
+    _t="${_why} - every gate FO has said the take would happen now, and ${_ag_lead:-in Alpenglow mode FO never takes the staked identity automatically: nothing was done.}"
     _t="${_t} Holder silent ${_since}."
     _t="${_t} This node: finalized slot ${_slot}; getHealth ${_health}; validator ${_ver}."
     _t="${_t} VAT admission: ${_vat}."
     _t="${_t} Vote history ${LEDGER_PATH:-<LEDGER_PATH empty>}/vote_history-${STAKED_PUBKEY:-<staked pubkey unknown>}.bin: ${_vh}."
-    _t="${_t} Operator path: warm swap - demote the old holder first, then move the vote history (docs/SAFETY.md, Alpenglow). A cold take is an operator decision; FO never makes it."
+    _t="${_t} Operator path: warm swap - demote the old holder first, then move the vote history (docs/SAFETY.md, Alpenglow). ${_ag_opnote:-A cold take is an operator decision; FO never makes it.}"
     if [[ "$_role" == "primary" ]]; then
         alert "$_t" "$STAKED_PUBKEY" "RECOVERY WITHHELD — Alpenglow mode 🚨"
     else
@@ -2492,6 +2505,66 @@ _ag_take_withheld() {
     return 0
 }
 # ── [ag] end shared block ──
+
+# ── v0.7 (AG-3): the ARMED cold take - S only (the primary never takes: G10; P's switch_to_staked stays withheld) ──────────────────────────────────────────
+# Outside the [ag] shared block on purpose: the block is byte-identical in both daemons and the primary has no armed take. The standby's take site asks _ag_take_allowed.
+_AG_COLD_FLAG="--do-not-require-vote-history"   # agave-validator 4.4.0 `set-identity --help`: "Do not require saved vote history state for identity change" - named ONCE in this script (facts pins it)
+_ag_lead=""; _ag_opnote=""                       # the page's two sentences: set by _ag_take_allowed, read by the shared _ag_take_withheld (empty = the AG-1 wording)
+_ag_rdy_own=""; _ag_rdy_holder=""; _ag_rdy_margin=""; _ag_rdy_why=""
+# _ag_take_ready - DESIGN-AG 2.3 (ii) as ONE arithmetic gate on two numbers FO already reads: the spare's own finalized slot and the holder's last observed lastVote.
+#   own    = _ag_slot_final: ONE LOCAL getSlot{finalized}, curl -m 3, petted. Under Alpenglow `finalized` IS the root (votor advances confirmed = finalized at each new root; DESIGN-AG 6, holder-slice
+#            input (1)), so `own` is the floor an EMPTY vote history starts from: a node taken with set-identity votes no lower than its own root.
+#   holder = _liveness_first_vote: the frozen lastVote the vote-liveness gate accepted. That baseline RISES only on a VOTING verdict and every other re-base only LOWERS it, so a FROZEN verdict means the
+#            holder's latest observed lastVote is within VOTE_LIVENESS_EPSILON of it (0 by default: the accepted sample IS the baseline); a decision that arrived without a liveness sample (the witness fast
+#            path) uses the latest sample the episode holds, and none -> hold.
+#   Returns 0 iff both are canonical uints and own - holder >= AG_TAKE_MARGIN_SLOTS. Anything else returns 1 and says why in _ag_rdy_why: `finalized unavailable (...)`, `holder lastVote unavailable`,
+#   `margin <N> < <K>`. FAIL-CLOSED: a failed read, an answer that is not a canonical integer, a missing baseline, an unusable knob - all hold. It pages nothing (the caller pages via _ag_take_withheld).
+_ag_take_ready() {
+    local _own _holder
+    _ag_rdy_own=""; _ag_rdy_holder=""; _ag_rdy_margin=""; _ag_rdy_why=""
+    _canon_uint "${AG_TAKE_MARGIN_SLOTS:-}" || { _ag_rdy_why="AG_TAKE_MARGIN_SLOTS unusable (${AG_TAKE_MARGIN_SLOTS:-unset})"; return 1; }
+    _own=$(_ag_slot_final)
+    _canon_uint "$_own" || { _ag_rdy_why="finalized ${_own}"; return 1; }
+    _ag_rdy_own="$_own"
+    _holder="${_liveness_first_vote:-}"
+    _canon_uint "$_holder" || { _ag_rdy_why="holder lastVote unavailable"; return 1; }
+    _ag_rdy_holder="$_holder"
+    _ag_rdy_margin=$(( _own - _holder ))
+    [[ $_ag_rdy_margin -ge $AG_TAKE_MARGIN_SLOTS ]] || { _ag_rdy_why="margin ${_ag_rdy_margin} < ${AG_TAKE_MARGIN_SLOTS}"; return 1; }
+    return 0
+}
+# _ag_take_allowed - the predicate the take site asks (AG-3.1). rc 0 = the take may proceed: AG_ARMED_TAKE is the literal `true` AND _ag_take_ready returned 0 IN THIS CALL. rc 1 = withheld. No state is kept
+# between calls and nothing is paged here (the site pages through _ag_take_withheld); one log line per call. It sets the page's two sentences (_ag_lead, _ag_opnote; empty after an allow).
+# POLARITY: the site is `if ! _ag_take_allowed; then <withhold>; return 1; fi` - an UNDEFINED predicate (rc 127) is "not allowed", so a missing definition stops the take (the AG-1 stop, `if _ag_mode`, failed OPEN).
+_ag_take_allowed() {
+    _ag_lead=""; _ag_opnote=""
+    if [[ "${AG_ARMED_TAKE:-}" != "true" ]]; then
+        _ag_lead="this spare is NOT ARMED (AG_ARMED_TAKE=false): nothing was done."
+        log_info "[ag] armed take: held (not armed: AG_ARMED_TAKE=${AG_ARMED_TAKE:-unset})"
+        return 1
+    fi
+    if _ag_take_ready; then
+        log_info "[ag] armed take: allowed (own finalized ${_ag_rdy_own}, holder lastVote ${_ag_rdy_holder}, margin ${_ag_rdy_margin} >= ${AG_TAKE_MARGIN_SLOTS})"
+        return 0
+    fi
+    if [[ -n "$_ag_rdy_own" && -n "$_ag_rdy_holder" ]]; then
+        _ag_lead="this spare is ARMED, but the readiness margin held the take: own finalized ${_ag_rdy_own}, holder lastVote ${_ag_rdy_holder}, margin ${_ag_rdy_margin} < AG_TAKE_MARGIN_SLOTS=${AG_TAKE_MARGIN_SLOTS}: nothing was done."
+    else
+        _ag_lead="this spare is ARMED, but the readiness margin held the take: ${_ag_rdy_why} (AG_TAKE_MARGIN_SLOTS=${AG_TAKE_MARGIN_SLOTS:-unset}): nothing was done."
+    fi
+    _ag_opnote="This spare is armed: it takes by itself once the readiness margin clears (docs/SAFETY.md, Armed cold take)."
+    log_info "[ag] armed take: held (${_ag_rdy_why})"
+    return 1
+}
+# _ag_cold_take_fields <vote-history class before the take> - the fields the TOOK / DRY-RUN pages carry for a cold take (the values _ag_take_allowed's last call measured).
+_ag_cold_take_fields() {
+    printf 'cold take: empty history, floor = own root %s; holder lastVote %s; margin %s slots; vote history before the take: %s' "${_ag_rdy_own:-?}" "${_ag_rdy_holder:-?}" "${_ag_rdy_margin:-?}" "${1:-unknown}"
+}
+# _vh_log_around_take <before|after> <class> - the twin of _vh_log_after_demote for the cold take: a log line, nothing is read twice, nothing is acted on.
+_vh_log_around_take() {
+    log_info "[vote-history] ${1} the cold take: ${LEDGER_PATH:-<LEDGER_PATH empty>}/vote_history-${STAKED_PUBKEY:-<staked pubkey unknown>}.bin is ${2:-unknown} - FO reports the class and never acts on it (a present file of any age gives the same floor as none; docs/SAFETY.md, Armed cold take)"
+}
+
 
 # ── v0.7 (Block 3, slice-4 rework) — TAKEOVER STARVATION PAGE (STANDBY ONLY; page-only) ────────
 # A starving episode is SILENT: every hold path that moves the anchor (blindness re-anchor,
@@ -3287,7 +3360,10 @@ take_staked_identity() {
     # below — the own-view veto / DRY_RUN branch / keypair `-s` test / `log_warn ">>> TAKING…"` /
     # set-identity — holds the A8 rule as it stands since Block 6.3.1: no network, no alerts; one
     # bounded local veto read allowed (_own_view_veto's single LOCAL_RPC read, curl -m 2) — condition
-    # (3) of the pre-registered act-then-alert rule, by construction.
+    # (3) of the pre-registered act-then-alert rule, by construction. AG-3.2: on the ARMED path ONE more
+    # bounded LOCAL read follows the veto - the readiness margin (_ag_take_ready: getSlot finalized, curl -m 3
+    # + its pet): the window holds two bounded local reads, the veto, then the margin; the voter add (AG-3.3)
+    # is an admin call, not a read.
     # v0.7 (Block 6.3.1, D4 b): a PRE-TAKE own-head sample, BEFORE the re-check (outside the A8 window, which
     # opens at the re-check's return-0). The veto's "advancing NOW" check needs an own-head sample no older
     # than OWN_HEAD_H at the veto read; the main loop samples once per cycle, and a take-path cycle whose tier
@@ -3310,19 +3386,30 @@ take_staked_identity() {
     # this is that read. VETO-ONLY: it can turn this take into a hold, never the reverse.
     _own_view_veto || return 1
     local reason="$1"
-    # v0.7 (AG-1.2): ALPENGLOW MODE - FO never takes the staked identity automatically. Every gate above has said "take now" (the episode, the delay, the
-    # external confirm, the fence, the fresh re-check, the own-view veto); this is where the take would begin, and it does not: no keypair check, no
-    # DRY_RUN report, no admin-socket call of any kind - one page per episode (_ag_take_withheld). The cooldown stamp is the failed take's (N9) and only
+    # v0.7 (AG-1.2 / AG-3.1): ALPENGLOW MODE - the default is that FO never takes the staked identity automatically. Every gate above has said "take now" (the episode, the delay, the
+    # external confirm, the fence, the fresh re-check, the own-view veto); this is where the take would begin. It begins only if _ag_take_allowed says so: AG_ARMED_TAKE is the literal
+    # `true` AND the readiness margin holds (_ag_take_ready, AG-3.2: ONE more bounded LOCAL read, curl -m 3 + its pet - the A8 window now holds TWO bounded local reads, the veto, then the margin).
+    # Otherwise: no keypair check, no DRY_RUN report, no admin-socket call of any kind - one page per episode (_ag_take_withheld). The cooldown stamp is the failed take's (N9) and only
     # spaces the decision points; the episode state is NOT reset (the page's marker, _ag_page_ts, ends in _own_view_reset).
-    if _ag_mode; then
+    # POLARITY by construction: `if ! _ag_take_allowed` - an undefined predicate (rc 127) is "not allowed" and withholds (the AG-1 form, `if _ag_mode`, let a missing definition fall through to the take).
+    if ! _ag_take_allowed; then
         LAST_TAKEOVER_TIME=$(mono_now); save_state
         _ag_take_withheld "standby" "$reason"
         return 1
     fi
+    # AG-3.3: the class of the vote-history file BEFORE the take (a local hash; reported, never acted on).
+    local _ag_vh_before=""
+    _ag_mode && _ag_vh_before=$(_vh_class)
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_warn "[DRY RUN] Would TAKE staked — $reason"
-        alert "$reason" "$STAKED_PUBKEY" "[DRY RUN] WOULD TAKE STAKED"
+        if _ag_mode; then
+            # AG-3.1.6: armed and ready - the margin was evaluated above, so a DRY_RUN mirrors the live decision (a margin hold pages the HOLD, not a dry take).
+            log_warn "[DRY RUN] Would TAKE staked (Alpenglow cold take) — $reason"
+            alert "${reason} - $(_ag_cold_take_fields "$_ag_vh_before")" "$STAKED_PUBKEY" "[DRY RUN] WOULD TAKE STAKED (Alpenglow cold take)"
+        else
+            log_warn "[DRY RUN] Would TAKE staked — $reason"
+            alert "$reason" "$STAKED_PUBKEY" "[DRY RUN] WOULD TAKE STAKED"
+        fi
         # v0.5.9: reset window + set cooldown to prevent alert spam every cycle
         LAST_TAKEOVER_TIME=$(mono_now); save_state   # v0.6.1 (F7)
         window_reset
@@ -3347,7 +3434,30 @@ take_staked_identity() {
         [[ $_rc -eq 124 || $_rc -eq 137 ]] && { take_wedged=1; log_warn "[take] fdctl set-identity timed out (${SETIDENTITY_TIMEOUT}s) — admin socket wedged; the re-read below decides what applied (fail toward NOT taking)"; }
         _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
     else
-        local out
+        local out add_detail
+        if _ag_mode; then
+            # v0.7 (AG-3.3): the COLD take, VOTER FIRST. `authorized-voter add` first (closes G4: identity-before-voter opens a HotSpare/NonVoting window - A8, measured 10-06 and on the pair 11-02), then
+            # `set-identity` with the cold flag. The flag is unconditional on this path: a `present` vote-history file of any age is accepted silently by agave and gives the same floor as none
+            # (DESIGN-AG 2.1), so the flag only makes the cold take explicit; the class is reported, never acted on. rc 0 -> continue; rc != 0 with `already present` (agave's wording when the voter is
+            # loaded; accepted live on the pair 11-02) -> log and continue; ANY other failure, and any timeout (rc 124/137) -> NO set-identity: a wedged or refusing socket must not be followed by an identity change.
+            out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" authorized-voter add "$STAKED_KEYPAIR" 2>&1); _rc=$?
+            [[ -n "$out" ]] && log_info "add-voter: $out"
+            _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
+            # A timeout (124/137), or a failure whose output does not say `already present`, ends the take HERE - a return-branch (no else/elif: the A8 census, tests/test_own_view.sh (3c-seg), reads it as one).
+            if [[ $_rc -eq 124 || $_rc -eq 137 || ( $_rc -ne 0 && "$out" != *"already present"* ) ]]; then
+                add_detail="timed out (${SETIDENTITY_TIMEOUT}s)"; [[ $_rc -ne 124 && $_rc -ne 137 ]] && add_detail="${out:-rc ${_rc}}"
+                log_error "[take] the voter add failed (${add_detail}) — set-identity NOT attempted (voter first: a wedged or refusing socket must not be followed by an identity change)"
+                LAST_TAKEOVER_TIME=$(mono_now); save_state
+                alert "the voter add failed (${add_detail}) - set-identity was NOT attempted: ${reason}" "${CURRENT_IDENTITY:-unknown}" "TAKEOVER BLOCKED — authorized-voter add failed"
+                return 1
+            fi
+            [[ $_rc -ne 0 ]] && log_info "[take] the voter add found the voter already loaded - continuing to set-identity"
+            _vh_log_around_take before "$_ag_vh_before"
+            out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledger "$LEDGER_PATH" set-identity "$_AG_COLD_FLAG" "$STAKED_KEYPAIR" 2>&1); _rc=$?
+            [[ -n "$out" ]] && log_info "set-identity: $out"
+            [[ $_rc -eq 124 || $_rc -eq 137 ]] && { take_wedged=1; log_warn "[take] set-identity timed out (${SETIDENTITY_TIMEOUT}s) — admin socket wedged; the re-read below decides what applied (fail toward NOT taking)"; }
+            _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
+        else
         # v0.6.0: NO --require-tower on a set-identity (a TowerBFT flag; Alpenglow has no tower). This is the retained take path, withheld in AG mode (AG-1.2).
         # A staked identity moves by the WARM SWAP (docs/SAFETY.md, Alpenglow): the old holder demoted first, the vote-history file's sha256 equal on two
         # reads, a copy with a sha check, then on the new holder `authorized-voter add` and `set-identity`. A vote-history file is never deleted.
@@ -3362,6 +3472,7 @@ take_staked_identity() {
         [[ -n "$out" ]] && log_info "add-voter: $out"
         [[ $_rc -eq 124 || $_rc -eq 137 ]] && { add_wedged=1; log_warn "[take] authorized-voter add timed out (${SETIDENTITY_TIMEOUT}s) — voting may not start"; }
         _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
+        fi
     fi
 
     sleep 1    # v0.5.9: reduced from 2s (agave-validator updates instantly)
@@ -3377,7 +3488,12 @@ take_staked_identity() {
                            # self-fence + 600s re-take lockout. (_selffence_reset also clears the
                            # collision-detector strike streak — fresh flap debounce for this tenure.)
                            # Fails toward: no spurious self-demote of a legitimate takeover.
-        alert "$reason" "$STAKED_PUBKEY" "TOOK STAKED ✅"   # v0.6.4: role-agnostic (NODE_NAME prefix already identifies the node, incl. BACKUP)
+        if _ag_mode; then
+            _vh_log_around_take after "$(_vh_class)"
+            alert "${reason} - $(_ag_cold_take_fields "$_ag_vh_before")" "$STAKED_PUBKEY" "TOOK STAKED ✅"   # AG-3.3: the cold take's fields (the floor = own root, the holder's lastVote, the margin, the history class before)
+        else
+            alert "$reason" "$STAKED_PUBKEY" "TOOK STAKED ✅"   # v0.6.4: role-agnostic (NODE_NAME prefix already identifies the node, incl. BACKUP)
+        fi
         # v0.6.9 (H4): the take APPLIED but the admin socket wedged mid-take → success WITH a warning.
         [[ -n "$take_wedged" ]] && alert_warn "⚠️ Take applied but the admin socket wedged (timeout rc 124/137) during set-identity — verify node health."
         [[ -n "$add_wedged" ]] && alert_warn "⚠️ authorized-voter add timed out after the take — voting may not start; run 'agave-validator --ledger ${LEDGER_PATH} authorized-voter add <staked keypair>' manually."
@@ -4244,6 +4360,13 @@ require_relinquish_proof() {
 # 74 s at the edge before this read — gains the same 10 s). PLACEMENT, for 6.4: each take function reads a
 # PRE-TAKE own-head sample (curl -m 2 + its pet: 9 s worst) BEFORE the recheck; 6.4's gate must sit AFTER
 # that sample — placed before it, the span is 3 + 9 + 46 = 58 s > 50 and does not converge.
+# RE-DERIVED at AG-3.2 (the armed cold take; PROOF_MAX_AGE NOT changed): on an ARMED spare the span holds a third bounded local request after the recheck and the veto - the readiness
+# margin (_ag_take_ready: ONE LOCAL getSlot{finalized}, curl -m 3, then its per-op pet 7 s, plus ~1 s of parse glue = 11 s). The worst REACHABLE span is therefore acceptance slack 3 +
+# the recheck's 36 + the veto's 10 + the margin's 11 = 60 s > 50: it does NOT converge (by 10 s). The figure is left as it was and the non-convergence is named, not hidden: the edge
+# check (require_relinquish_proof) is wired into no take path in this release (6.4 wires it), and the armed take's own gate is _ag_take_allowed. The 6.4 gate must either move
+# PROOF_MAX_AGE to >= 61 (60 s + the 1 s margin idiom of 6.3.1) or take the readiness request BEFORE the recheck (outside the span). Past the margin the armed path runs `authorized-voter add`
+# BEFORE `set-identity` (AG-3.3): a local admin call bounded by SETIDENTITY_TIMEOUT (15 s + 5 s kill grace); healthy it is milliseconds, a slow SUCCESS lengthens the span to the mutation by
+# up to 15 s, a failure or a timeout ends the take before any set-identity.
 # FIX ROUNDS 1-3 (PROOF_MAX_AGE NEVER changed): fix round 1 (R3) had the recheck ask the PINNED vantage first
 # (R_worst 19 s: the span 3 + 19 + 10 = 32 s, gate-first 41 s) and so skipped a recovered TIER2 showing the holder
 # voting (the delta panel's DL-1: a voting holder taken 21-34 s into its voting); fix round 2 (S1) read both
@@ -6700,6 +6823,7 @@ validate_numeric_config() {
     _validate_numeric TAKEOVER_STARVATION_ALERT_SECS 0     # v0.7 (B3 s4 rework): starvation-page threshold (0 = off, drift-announced)
     _validate_numeric EXTERNAL_CONFIRM_THROTTLE 0
     _validate_numeric MAX_DELINQUENT_SLOTS 0
+    _validate_numeric AG_TAKE_MARGIN_SLOTS 150               # v0.7 (AG-3.2): the armed take's readiness margin; below 150 slots (< the 34 s partition worst case at 5 slots/s) refuses to start
     _validate_numeric LOCAL_HEALTH_MAX_BEHIND 0
     _validate_numeric EXPECTED_PRIMARY_SELF_FENCE_SECS 0   # v0.6.6 (N1): cross-node timing safety
     _validate_numeric SELF_FENCE_MARGIN_SECS 0             # v0.6.6 (N1): cross-node timing safety
@@ -7157,6 +7281,11 @@ startup_checks() {
     fi
     [[ "$PREWARM_VOTER_ADD" == "true" ]] && _ag_mode && log_warn "⚠️ PREWARM_VOTER_ADD=true is INERT in Alpenglow mode — FO never adds the staked voter, so the lever does nothing (docs/SAFETY.md, Alpenglow)"
     [[ "$PREWARM_VOTER_ADD" == "true" ]] && log_warn "⚠️ PREWARM_VOTER_ADD=true — the pre-warm lever is LIVE-TEST-GATED (addendum §3/№8): do not enable before the testnet on-chain observation window"
+    # v0.7 (AG-3.1): the arm switch is exact - only the literal "true" arms the take; anything else (set and non-empty) is coerced to false with ONE warning naming the value (FAILURE DIRECTION: toward NOT armed).
+    [[ "$AG_ARMED_TAKE" != "true" && "$AG_ARMED_TAKE" != "false" && -n "$AG_ARMED_TAKE" ]] && { log_warn "⚠️ AG_ARMED_TAKE='${AG_ARMED_TAKE}' is not exactly true or false - this spare is NOT ARMED (only the literal true arms the take)"; AG_ARMED_TAKE=false; }
+    [[ "$AG_ARMED_TAKE" == "true" ]] && log_warn "⚠️ AG_ARMED_TAKE=true - this spare WILL take the staked identity by itself (cold take) when every gate says take and the readiness margin (AG_TAKE_MARGIN_SLOTS=${AG_TAKE_MARGIN_SLOTS}) holds (docs/SAFETY.md, Armed cold take)"
+    # The pairing rule (AG-3.4): this spare's TAKEOVER_DELAY >= the holder's HOLDER_GAP_DEMOTE_SECS + 30. The holder's value is on another host and unreadable here; 75 = its DEFAULT 45 + 30. A log line only (the holder's value may be lower).
+    [[ "$AG_ARMED_TAKE" == "true" && "$TAKEOVER_DELAY" -lt 75 ]] && log_warn "⚠️ AG_ARMED_TAKE=true with TAKEOVER_DELAY=${TAKEOVER_DELAY}s < 75s - the pairing rule wants this spare's TAKEOVER_DELAY >= the holder's HOLDER_GAP_DEMOTE_SECS (default 45) + 30: a holder whose host froze for longer than this delay could wake after the take and vote before its gap rule demotes it (docs/SAFETY.md, Armed cold take)"
 
     _delinq_drift_note   # AG-1 fix round (Q4): a configured fast-detect below the Alpenglow preset is said once, log only
 
@@ -7279,7 +7408,11 @@ startup_checks() {
     echo ""
     echo "  Node:              $NODE_NAME"
     echo "  Role:              STANDBY (monitoring spare)"
-    echo "  Mode:              ALPENGLOW — this node NEVER takes the staked identity itself: a take every gate approves is WITHHELD and paged (docs/SAFETY.md, Alpenglow)"
+    if [[ "$AG_ARMED_TAKE" == "true" ]]; then
+        echo "  Mode:              ALPENGLOW, ARMED — this spare WILL take the staked identity by itself (cold take, ${_AG_COLD_FLAG}) when every gate says take and the readiness margin holds"
+    else
+        echo "  Mode:              ALPENGLOW — this node NEVER takes the staked identity itself: a take every gate approves is WITHHELD and paged (docs/SAFETY.md, Alpenglow)"
+    fi
     echo "  Staked:            $STAKED_PUBKEY"
     echo "  Unstaked:          $UNSTAKED_PUBKEY"
     echo "  Current:           $CURRENT_IDENTITY"
@@ -7329,7 +7462,11 @@ startup_checks() {
     if [[ "$DRY_RUN" == "true" ]]; then
         alert_info "🚀 STANDBY v0.6.9 started [DRY_RUN]. <code>${CURRENT_IDENTITY:0:8}...</code>"
     else
-        log_warn "⚠️  ⚠️  ⚠️  LIVE MODE — STANDBY will perform real takeover  ⚠️  ⚠️  ⚠️"
+        if [[ "$AG_ARMED_TAKE" == "true" ]]; then
+            log_warn "⚠️  ⚠️  ⚠️  LIVE MODE — STANDBY will perform a real takeover  ⚠️  ⚠️  ⚠️"
+        else
+            log_warn "⚠️  ⚠️  ⚠️  LIVE MODE — STANDBY will demote itself if it holds the staked identity; it never takes (not armed)  ⚠️  ⚠️  ⚠️"
+        fi
         alert_info "🚀 STANDBY v0.6.9 started [LIVE]. <code>${CURRENT_IDENTITY:0:8}...</code>"
     fi
     [[ $STARTUP_GRACE -gt 0 ]] && { log_info "Grace: ${STARTUP_GRACE}s"; _watchdog_sleep "$STARTUP_GRACE"; }   # v0.7 (Block 5.2): grace chunked under the armed unit (plain sleep otherwise)
