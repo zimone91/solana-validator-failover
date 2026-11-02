@@ -30,6 +30,8 @@
 #      UNSTAKED identity — an invariant the fence cannot verify; the arm must)
 #   5. one-arm-state alignment (§2.3: arm-state IS which fence unit is installed; DRY_RUN in
 #      the env file decides WHICH unit this run installs, printed with the why)
+#   P6-ledger (AG-3.5, D0 F3): LEDGER_PATH in the env file is non-empty and a readable directory - REAL arm:
+#      REFUSE (the fence reads it from the env file ONLY and cannot detect it); page-only arm: WARN
 #   probe: the §2.1-rev2.1 condition-1 end-to-end PROBE — a transient Type=notify pair rendered
 #      into ARM_RUNTIME_DIR (tmpfs — ephemeral by construction), physically demonstrating
 #      stopped-petting → watchdog fires → `failed` → OnFailure dispatches ON THIS HOST before
@@ -394,6 +396,37 @@ _pre_identity_check() {
         _arm_refuse "P4-unverifiable" "unit --identity KEY verification is UNVERIFIABLE on this host: $unver. The path string matched, but P4's soundness claim is about the KEY the unit restarts on — unverified is refused, not assumed (claims never exceed checks)" "verify by hand: run  ${SOLANA_PATH:-<SOLANA_PATH>}/solana-keygen pubkey ${got:-$UNSTAKED_KEYPAIR}  and set UNSTAKED_PUBKEY=<that pubkey> in $ARM_ENV_FILE, then re-run 'failover arm'. If this host genuinely cannot derive pubkeys, the DANGEROUS documented override is: ARM_ACCEPT_UNVERIFIED_IDENTITY=1 failover arm — it arms with the KEY unverified and says so loudly"
     fi
     _arm_warn "unit --identity KEY verification unavailable: $unver. PAGE-ONLY arm proceeds (nothing on the page-only dispatch path can demote or stop a validator; no override needed) — but make it verifiable before arming the REAL fence (DRY_RUN=false)."
+    return 0
+}
+
+# ── precondition P6-ledger (AG-3.5; D0 F3): the fence's ledger path ─────────────────────────────
+# systemd/failover-fence.sh runs every agave-validator admin call it makes (contact-info, monitor,
+# authorized-voter remove-all, set-identity) with `--ledger "$LEDGER_PATH"`, and it reads LEDGER_PATH from the
+# env file ONLY: unlike the daemons it has no detection from the running validator or its unit. An empty or
+# wrong value makes every admin call fail to connect, and a real dispatch whose demote cannot connect ends in
+# the validator STOP path - a fence that stops a healthy-looking validator over a missing config line.
+# Census 11-02: the deploy wizards used to write `LEDGER_PATH=""` always (they now write what they detect).
+# REAL arm: LEDGER_PATH non-empty and a readable directory, else REFUSE[P6-ledger] (an arm refusal costs a
+# re-run, not a vote). PAGE-ONLY arm: WARN - nothing on the page-only path calls agave-validator.
+# (This is not the G2 vantage ceremony of the P6-batch / P6-vantage gates below; the id says which one, and its log lines
+# read 'ledger precondition (P6-ledger)' - never 'precondition P6', the prefix test_proof_gate counts the G2 section by.)
+_pre_ledger_check() {
+    local why=""
+    if [[ -z "${LEDGER_PATH:-}" ]]; then
+        why="LEDGER_PATH is empty or unset in $ARM_ENV_FILE"
+    elif [[ ! -d "$LEDGER_PATH" ]]; then
+        why="LEDGER_PATH='$LEDGER_PATH' in $ARM_ENV_FILE is not a directory"
+    elif [[ ! -r "$LEDGER_PATH" ]]; then
+        why="LEDGER_PATH='$LEDGER_PATH' in $ARM_ENV_FILE is a directory this user cannot read"
+    fi
+    if [[ -z "$why" ]]; then
+        _arm_log "ledger precondition (P6-ledger) OK: LEDGER_PATH=$LEDGER_PATH is a readable directory - the fence's agave-validator --ledger calls have a ledger to name"
+        return 0
+    fi
+    if [[ "$ARM_INTENT" == "real" ]]; then
+        _arm_refuse "P6-ledger" "$why - the fence reads LEDGER_PATH from the env file only and cannot detect it; an empty value turns every real fence dispatch into a validator stop" "set LEDGER_PATH=\"<the validator's --ledger directory>\" in $ARM_ENV_FILE (the deploy scripts write it when they detect it; look at the validator unit's ExecStart for --ledger), check that the directory exists, then re-run 'failover arm'"
+    fi
+    _arm_warn "ledger precondition (P6-ledger): $why - the PAGE-ONLY fence calls no agave-validator admin command, so this arm proceeds; the REAL arm (DRY_RUN=false) REFUSES until LEDGER_PATH names the validator's ledger directory (the fence does not detect it)."
     return 0
 }
 
@@ -1030,7 +1063,7 @@ _retire_legacy_monitors() {
 
 # ── install: fence bodies + monitor unit + exactly ONE fence unit + enable ──────────────────────
 _arm_install() {
-    local role_daemon="$ARM_INSTALL_DIR/solana-${ARM_ROLE}-failover.sh" s tmp
+    local role_daemon="$ARM_INSTALL_DIR/solana-${ARM_ROLE}-failover.sh" s tmp _es_line
     # fence BODIES: the release artifact ships them; the CEREMONY is the only thing that ever
     # places them on a host (systemd/README.md's boundary). Both bodies are placed — which UNIT
     # exists is the arm state (§2.3); a body with no unit is dispatched by nothing.
@@ -1046,7 +1079,14 @@ _arm_install() {
     # monitor unit: fill <role> + the role env (the unit itself stays IMMUTABLE across arm
     # states — arm-state lives entirely in which fence unit exists, §2.3)
     _render_skel "$_SKEL_DIR/$MONITOR_UNIT_NAME.skel" "$ARM_SYSTEMD_DIR/$MONITOR_UNIT_NAME" "$role_daemon" "$ARM_INSTALL_DIR/$ARM_ENV_BASE"
-    _arm_log "install: monitor unit rendered → $ARM_SYSTEMD_DIR/$MONITOR_UNIT_NAME (role: $ARM_ROLE)"
+    # AG-3.5: the armed monitor MUST carry the skel's ExecStop (the TERM re-send, docs/SAFETY.md "Known bash behaviour"):
+    # render -> verify, byte-exact. A skel with no ExecStop, or a render that dropped it, arms a monitor whose lost TERM
+    # runs to the stop timeout - refused, never armed.
+    _es_line=$(grep -m1 '^ExecStop=' "$_SKEL_DIR/$MONITOR_UNIT_NAME.skel" 2>/dev/null)
+    if [[ -z "$_es_line" ]] || ! grep -qxF "$_es_line" "$ARM_SYSTEMD_DIR/$MONITOR_UNIT_NAME" 2>/dev/null; then
+        _arm_refuse "RENDER-verify" "the rendered monitor unit $ARM_SYSTEMD_DIR/$MONITOR_UNIT_NAME does not carry the skeleton's ExecStop= line (the skeleton has $([[ -z "$_es_line" ]] && echo none || echo one)) - an armed monitor without it keeps running when a TERM is lost (docs/SAFETY.md, Known bash behaviour)" "re-run 'failover arm' from an intact v0.7 release tree (systemd/solana-failover-monitor.service.skel must carry ExecStop=)"
+    fi
+    _arm_log "install: monitor unit rendered → $ARM_SYSTEMD_DIR/$MONITOR_UNIT_NAME (role: $ARM_ROLE; ExecStop= TERM re-send carried byte-exact)"
     # exactly ONE fence unit — page-only XOR real per DRY_RUN; the arm is the alignment mechanism
     local want_name drop_name
     if [[ "$ARM_INTENT" == "real" ]]; then
@@ -1177,6 +1217,7 @@ main() {
     _pre_socat_check
     _pre_flock_check
     _pre_identity_check
+    _pre_ledger_check         # P6-ledger (AG-3.5, D0 F3): LEDGER_PATH non-empty + a readable directory - REAL arm REFUSE[P6-ledger], page-only WARN
     _announce_arm_state
     _pre_pairing_intake       # P5 (Block 6.1): pairing-token intake + zero-stake verification — spare (standby-role) arms only; REFUSE[P5-*] on crc/shape, bound-vs-delay, staked-"unstaked"/cannot-verify
     _pre_g2_vantage_probe     # P6 (Block 6.2 panel fix round): G2 vantage batch capability + resolved distinctness — spare arms with PRIMARY_UNSTAKED_PUBKEY only; REFUSE[P6-batch] / REFUSE[P6-vantage]

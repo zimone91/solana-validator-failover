@@ -371,8 +371,8 @@ hd_census() {   # $1 = deploy script → prints the count of NON-allowlisted exp
        }
        END { if (cont != "") { n++; print "HIT l" NR ": a backslash-newline at the end of the file" > "/dev/stderr" }; print n+0 }' "$1"
 }
-hd_render() {   # $1 = deploy script, $2 = its env path in the opener → "err=<stderr>|rec=<recorded cmds>|out=<rendered file>"
-  local f="$1" envp="$2" d s e
+hd_render() {   # $1 = deploy script, $2 = its env path in the opener, $3 = optional lines put in front of the heredoc (CFG_* assignments, AG-3.5) → "err=<stderr>|rec=<recorded cmds>|out=<rendered file>"
+  local f="$1" envp="$2" extra="${3:-}" d s e
   d=$(mktemp -d)
   mkdir -p "$d/canary"
   # S4 (fix round 3): the rec-log path is BAKED into the canary here — never read from the environment
@@ -389,6 +389,7 @@ hd_render() {   # $1 = deploy script, $2 = its env path in the opener → "err=<
   {
     echo 'enable -n history kill ulimit suspend'   # S4: the write/kill-capable builtins rbash still allows; it refuses to re-enable one
     echo '_envq(){ printf "%q" "$1"; }'
+    [[ -n "$extra" ]] && printf '%s\n' "$extra"
     echo "while IFS= read -r _l || [[ -n \"\$_l\" ]]; do printf '%s\\n' \"\$_l\"; done << ENVEOF"
     sed -n "$(( s + 1 )),${e}p" "$f"
   } > "$d/render.sh"
@@ -522,6 +523,104 @@ rcheck "kill sentinel"       "\$(kill -TERM $RR_SENT)"                          
 kill -0 "$RR_SENT" 2>/dev/null || { r_ok=0; bad "(27-ctl-r) the render KILLED the sentinel"; }
 kill "$RR_SENT" 2>/dev/null
 [[ $r_ok -eq 1 ]] && ok "(27-ctl-r/S4) the restricted render ALONE also stops the builtin write/kill primitives —$r_rows — with its CWD/TMPDIR inside the temp dir, the rec-log path baked into each canary, and history / kill / ulimit / suspend disabled: no file outside the temp dir, the sentinel alive (pre-fix render: history -w wrote on 3.2, the CANARY_LOG re-point wrote on both bashes, kill killed on both)"
+# ── (28) AG-3.5: the wizard writes the ledger it DETECTED into LEDGER_PATH of the env it generates ──
+# systemd/failover-fence.sh takes LEDGER_PATH from the env file ONLY (the unit's EnvironmentFile=) - it has no detection of its own - and
+# 'failover arm' refuses a real arm when it is empty (P6-ledger, test_arm_ceremony (17)). Until AG-3.5 both wizards printed "Ledger: <path>" and
+# then wrote LEDGER_PATH="" - the detected value was thrown away. Now: CFG_LEDGER is the detected path when it is a directory on this host, EMPTY
+# otherwise (a truncated or unexpanded --ledger word would also stop the daemons' own start-up detection, which only runs on an empty value),
+# and the env gets it through _envq like every other value, so a path with $ ` " \ ; round-trips when the file is sourced.
+#   DETECT  the detection region of each wizard (from LEDGER="" to the "Check for existing config" comment), run with the real sed / head and a
+#           stubbed pgrep (no /proc/<pid>), a stubbed systemctl (its ExecStart carries the --ledger word under test), ok / warn echoing: the
+#           detected directory is kept (one OK line, no warning); no --ledger word keeps CFG_LEDGER empty with ONE warning that says the fence
+#           does not detect it and to fill it before 'failover arm'; a word that is no directory keeps it empty with a warning naming the path.
+#   RENDER  the ENVEOF heredoc (the same restricted render as (27)) with CFG_LEDGER set from the DETECT result: the rendered LEDGER_PATH line
+#           gives back the detected path when it is sourced, the empty string when nothing was detected, and the exact bytes of a path with a
+#           dollar, a backtick, a double quote, a backslash and a semicolon; one LEDGER_PATH line only.
+led_detect() {   # $1 = deploy script, $2 = the --ledger word the stubbed `systemctl show solana -p ExecStart` carries ("" = none) → lines "CFG=<value>" / "OK <text>" / "WARN <text>", or NOREGION
+  local reg
+  reg=$(extract_region "$1" '^LEDGER=""$' '^# Check for existing config$' 2>/dev/null) || { echo "NOREGION"; return; }
+  (
+    ok()   { printf 'OK %s\n' "$*"; }
+    warn() { printf 'WARN %s\n' "$*"; }
+    pgrep() { return 1; }
+    systemctl() { [[ -n "$LED_WORD" ]] && printf '{ path=/usr/bin/agave-validator ; argv[]=/usr/bin/agave-validator --identity /id.json --ledger %s --log - ; ignore_errors=no ; }\n' "$LED_WORD"; return 0; }
+    LED_WORD="$2"
+    eval "$reg"
+    printf 'CFG=%s\n' "$CFG_LEDGER"
+  )
+}
+led_value() {   # $1 = a rendered env file → what its LEDGER_PATH line gives when the file is sourced (the daemons and the arm source it; the units read it as an EnvironmentFile)
+  local l
+  l=$(grep -m1 '^LEDGER_PATH=' "$1" 2>/dev/null) || return 1
+  ( eval "$l" 2>/dev/null; printf '%s' "$LEDGER_PATH" )
+}
+led_render() {   # $1 = deploy script, $2 = its env path, $3 = the CFG_LEDGER value → "<value read back>" with the line count appended as "#<n>"
+  local r f
+  r=$(hd_render "$1" "$2" "CFG_LEDGER=$(printf '%q' "$3")")
+  f=$(field "$r" out)
+  printf '%s#%s' "$(led_value "$f")" "$(grep -c '^LEDGER_PATH=' "$f" 2>/dev/null)"
+}
+led_one() {   # $1 = deploy script, $2 = its env path → "" or the MEASURED reasons
+  local s="$1" envp="$2" w="" out cfg nok nwarn txt rb
+  out=$(led_detect "$s" "$LEDGER_DIR")
+  [[ "$out" == "NOREGION" ]] && { echo " detection-region-missing"; return; }
+  cfg=$(printf '%s\n' "$out" | sed -n 's/^CFG=//p'); nok=$(printf '%s\n' "$out" | grep -c '^OK '); nwarn=$(printf '%s\n' "$out" | grep -c '^WARN ')
+  [[ "$cfg" == "$LEDGER_DIR" && $nok -eq 1 && $nwarn -eq 0 ]] || w="$w detected-dir-not-kept(cfg='$cfg' ok=$nok warn=$nwarn)"
+  rb=$(led_render "$s" "$envp" "$cfg")
+  [[ "$rb" == "$LEDGER_DIR#1" ]] || w="$w detected-dir-not-in-env(read-back='$rb')"
+  out=$(led_detect "$s" "")
+  cfg=$(printf '%s\n' "$out" | sed -n 's/^CFG=//p'); nok=$(printf '%s\n' "$out" | grep -c '^OK '); nwarn=$(printf '%s\n' "$out" | grep -c '^WARN '); txt=$(printf '%s\n' "$out" | sed -n 's/^WARN //p')
+  [[ -z "$cfg" && $nok -eq 0 && $nwarn -eq 1 && "$txt" == *"Ledger not auto-detected"* && "$txt" == *"the fence does not auto-detect it"* && "$txt" == *"before 'failover arm'"* ]] \
+    || w="$w undetected-not-empty-or-warning-wrong(cfg='$cfg' ok=$nok warn=$nwarn)"
+  rb=$(led_render "$s" "$envp" "$cfg")
+  [[ "$rb" == "#1" ]] || w="$w undetected-env-not-empty(read-back='$rb')"
+  out=$(led_detect "$s" "$LEDGER_NOTDIR")
+  cfg=$(printf '%s\n' "$out" | sed -n 's/^CFG=//p'); nwarn=$(printf '%s\n' "$out" | grep -c '^WARN '); txt=$(printf '%s\n' "$out" | sed -n 's/^WARN //p')
+  [[ -z "$cfg" && $nwarn -eq 1 && "$txt" == *"$LEDGER_NOTDIR"* && "$txt" == *"not a directory"* && "$txt" == *"EMPTY"* && "$txt" == *"before 'failover arm'"* ]] \
+    || w="$w not-a-directory-kept-or-silent(cfg='$cfg' warn=$nwarn)"
+  out=$(led_detect "$s" "$LEDGER_WEIRD")
+  cfg=$(printf '%s\n' "$out" | sed -n 's/^CFG=//p')
+  [[ "$cfg" == "$LEDGER_WEIRD" ]] || w="$w weird-path-not-detected(cfg='$cfg')"
+  rb=$(led_render "$s" "$envp" "$LEDGER_WEIRD")
+  [[ "$rb" == "$LEDGER_WEIRD#1" ]] || w="$w weird-path-not-round-tripped(read-back='$rb')"
+  echo "$w"
+}
+LEDGER_TD=$(mktemp -d)
+LEDGER_DIR="$LEDGER_TD/ledger";  mkdir -p "$LEDGER_DIR"
+LEDGER_WEIRD="$LEDGER_TD"'/led$x`q"b\k;v'; mkdir -p "$LEDGER_WEIRD"
+LEDGER_NOTDIR="$LEDGER_TD/no-such-ledger"
+led_guard() {   # $1 = standby deploy, $2 = primary deploy → "ok" or the MEASURED reasons per script
+  local a b why=""
+  a=$(led_one "$1" /opt/solana-failover/failover-standby.env); b=$(led_one "$2" /opt/solana-failover/failover.env)
+  [[ -z "$a" ]] || why="$why standby:$a"
+  [[ -z "$b" ]] || why="$why primary:$b"
+  echo "${why:-ok}"
+}
+g28=$(led_guard "$DEPLOY_STANDBY" "$DEPLOY_PRIMARY")
+if [[ "$g28" == "ok" ]]; then
+  ok "(28) BOTH wizards: the detected ledger directory is kept (CFG_LEDGER = the path, one OK line, no warning) and reaches the generated env's LEDGER_PATH line (read back when sourced); nothing detected → CFG_LEDGER empty, ONE warning ('Ledger not auto-detected … the fence does not auto-detect it … before 'failover arm''), LEDGER_PATH reads back empty; a --ledger word that is no directory → empty with ONE warning naming it; a path with a dollar, a backtick, a double quote, a backslash and a semicolon round-trips byte for byte; one LEDGER_PATH line in each env"
+else
+  bad "(28) deploy ledger:$g28"
+fi
+# (28-ctl) the mutants the guard must each turn RED, one script at a time
+m28_ok=1; m28_rows=""
+m28l() {   # $1=label $2=which(s|p) $3=sed expr
+  local ms="$LEDGER_TD/mut-$2.sh" envp out
+  mutate "$([[ "$2" == "s" ]] && echo "$DEPLOY_STANDBY" || echo "$DEPLOY_PRIMARY")" "$3" "$ms" || { m28_ok=0; return; }
+  envp=/opt/solana-failover/failover.env; [[ "$2" == "s" ]] && envp=/opt/solana-failover/failover-standby.env
+  out=$(led_one "$ms" "$envp")
+  if [[ -n "$out" ]]; then m28_rows="$m28_rows $2:$1"; else m28_ok=0; bad "(28-ctl) mutant '$2:$1' stayed GREEN"; fi
+}
+for w28 in s p; do
+  m28l "assignment-dropped"   "$w28" 's/^    CFG_LEDGER="\$LEDGER"$/    CFG_LEDGER=""/'
+  m28l "env-line-literal"     "$w28" 's/^LEDGER_PATH=\$(_envq "\${CFG_LEDGER}")$/LEDGER_PATH=""/'
+  m28l "env-line-plain-quote" "$w28" 's/^LEDGER_PATH=\$(_envq "\${CFG_LEDGER}")$/LEDGER_PATH="${CFG_LEDGER}"/'
+  m28l "directory-test-gone"  "$w28" 's/ && -d "\$LEDGER"//'
+  m28l "warning-text-gone"    "$w28" 's/the fence does not auto-detect it: //'
+  m28l "not-a-directory-text" "$w28" 's/is not a directory on this host/is fine/'
+done
+[[ $m28_ok -eq 1 ]] && ok "(28-ctl) every ledger mutant turns (28) RED —$m28_rows — the assignment dropped (the detected path thrown away, as before AG-3.5), the env line back to LEDGER_PATH=\"\", the env line interpolating the value in plain double quotes (the weird path no longer round-trips), the directory test gone (a --ledger word that is no directory is kept), the warning without 'the fence does not auto-detect it', the not-a-directory warning reworded"
+rm -rf "$LEDGER_TD"
 rm -rf "$WORKDIR_27"
 
 results_banner

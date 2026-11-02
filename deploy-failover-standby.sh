@@ -202,7 +202,16 @@ fi
 if [[ -z "$LEDGER" ]]; then
     LEDGER=$(systemctl show solana -p ExecStart --value 2>/dev/null | sed -nE 's/.*--ledger[[:space:]=]+([^[:space:]]+).*/\1/p' | head -1)
 fi
-[[ -n "$LEDGER" ]] && ok "Ledger: $LEDGER" || warn "Ledger not auto-detected (set LEDGER_PATH in env if needed)"
+[[ -n "$LEDGER" ]] && ok "Ledger: $LEDGER" || warn "Ledger not auto-detected (set LEDGER_PATH in env if needed - the fence does not auto-detect it: fill it before 'failover arm')"
+# AG-3.5: systemd/failover-fence.sh reads LEDGER_PATH from the env file ONLY (no detection), and 'failover arm' refuses a real arm without it
+# (P6-ledger): the env file below gets what was detected here, written through _envq like every other value. Only a path that is a directory
+# on this host is written (a truncated or unexpanded --ledger word would also stop the daemons' own start-up detection); anything else stays EMPTY.
+CFG_LEDGER=""
+if [[ -n "$LEDGER" && -d "$LEDGER" ]]; then
+    CFG_LEDGER="$LEDGER"
+elif [[ -n "$LEDGER" ]]; then
+    warn "Ledger '$LEDGER' is not a directory on this host - LEDGER_PATH is left EMPTY: fill it before 'failover arm'"
+fi
 
 # Check for existing config
 EXISTING_ENV=""
@@ -776,7 +785,7 @@ VALIDATOR_TYPE=$(_envq "${CFG_VALIDATOR_TYPE}")
 STAKED_KEYPAIR=$(_envq "${CFG_STAKED}")
 UNSTAKED_KEYPAIR=$(_envq "${CFG_UNSTAKED}")
 SOLANA_PATH="\$HOME/.local/share/solana/install/active_release/bin"
-LEDGER_PATH=""
+LEDGER_PATH=$(_envq "${CFG_LEDGER}")
 
 # --- Three-Tier RPC ---
 LOCAL_RPC=$(_envq "${CFG_LOCAL_RPC}")

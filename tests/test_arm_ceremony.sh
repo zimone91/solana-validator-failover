@@ -74,6 +74,14 @@
 #        ARM_STATE_DIR, a symlinked ancestor, every non-resolved spelling (trailing '/', '//', '/./',
 #        '/../', relative) and a FILE at the path → REFUSE[STATE-dir-*] before any write or install;
 #        a missing directory is created and passes; placement; arm ↔ daemon agreement on 7 spellings
+#   (17) P6-ledger (AG-3.5, D0 F3): the fence reads LEDGER_PATH from the env file ONLY - a REAL arm with it empty / unset /
+#        a file / a missing path → REFUSE[P6-ledger] (the D0-F3 sentence verbatim, the fix, BEFORE the probe: nothing installed);
+#        a valid directory passes; the PAGE-ONLY arm WARNS and proceeds; the standby env is the one checked on ARM_ROLE=standby
+#   (18) ExecStop= (AG-3.5, "(12e) option 1"): the skeleton's line is carried byte-exact into the rendered monitor unit and
+#        re-verified by the arm; its shape is what systemd parses (one quoted word, $$ escapes, no %, no backslash); the line is
+#        RUN against a bash that drops TERMs - 2 TERMs for a process that obeys the second, 3 and exit 0 for one that never obeys,
+#        none for a pid that is gone or unknown; 5 mutants of the line each red; a skeleton without it and a renderer that drops
+#        it → REFUSE[RENDER-verify]
 #   (13) reuse parity: _validator_pid + _detect_validator_unit BYTE-IDENTICAL arm ↔ fence
 #   (14) bash -n + shellcheck (if installed)
 #   (B)  boundary grep-proof: canonical /etc + /run/systemd paths untouched by the whole run;
@@ -85,6 +93,7 @@
 #        M7 capability, M8 unverifiable-identity, M9 sibling, M10 render-verify tripwire,
 #        M11 legacy-retire (neutered → the dual-monitor arm completes, observed), M12 P0
 #        state-dir symlink (neutered → the gen counter lands through the link, observed).
+#        M13-M16 P6-ledger (refusal neutered; page-only made a refusal; empty accepted; a non-directory accepted).
 #        Survivors named at the end.
 
 set +e
@@ -270,7 +279,7 @@ write_daemon() {
 new_mock() {
     MOCK_DIR=$(mktemp -d "$MOCK_PARENT/m.XXXXXX")
     mkdir -p "$MOCK_DIR/etc-systemd" "$MOCK_DIR/run-systemd" "$MOCK_DIR/opt" \
-             "$MOCK_DIR/markers" "$MOCK_DIR/state"
+             "$MOCK_DIR/markers" "$MOCK_DIR/state" "$MOCK_DIR/ledger"
     EVENTS="$MOCK_DIR/events"; : > "$EVENTS"
     echo 0 > "$MOCK_DIR/proc"
     touch "$MOCK_DIR/probe.fires"          # default: the wiring works (probe marker appears)
@@ -291,6 +300,7 @@ write_env() {
         echo "UNSTAKED_KEYPAIR=\"$MOCK_DIR/opt/unstaked.json\""
         echo 'UNSTAKED_PUBKEY="UNSTAKEDPUBKEY42"'
         echo "SOLANA_PATH=\"$STUB_DIR\""
+        echo "LEDGER_PATH=\"$MOCK_DIR/ledger\""    # AG-3.5 P6-ledger: a REAL arm needs the ledger directory in the env file (the fence cannot detect it)
         echo 'VALIDATOR_UNIT="sol-test.service"'
         echo 'EXPECTED_PRIMARY_SELF_FENCE_SECS=30'
         echo 'SELF_FENCE_MARGIN_SECS=30'
@@ -849,6 +859,7 @@ printf 'UNSTAKEDPUBKEY42' > "$WEIRD/unstaked.json"
     echo "UNSTAKED_KEYPAIR=\"$WEIRD/unstaked.json\""
     echo 'UNSTAKED_PUBKEY="UNSTAKEDPUBKEY42"'
     echo "SOLANA_PATH=\"$STUB_DIR\""
+    echo "LEDGER_PATH=\"$MOCK_DIR/ledger\""
     echo 'VALIDATOR_UNIT="sol-test.service"'
 } > "$WEIRD/failover.env"
 {
@@ -1313,6 +1324,215 @@ else
     bad "(16g) arm and daemon disagree:$disagree"
 fi
 
+# ── (17) P6-ledger (AG-3.5, D0 F3): LEDGER_PATH non-empty + a readable directory ─────────────────────────────
+echo ""; echo "─── (17) P6-ledger: the fence reads LEDGER_PATH from the env file only — a REAL arm REFUSES without a ledger directory, a page-only arm WARNS ───"
+P6L_PHRASE='the fence reads LEDGER_PATH from the env file only and cannot detect it; an empty value turns every real fence dispatch into a validator stop'
+p6l_untouched() {   # refused BEFORE the probe: no unit rendered, no probe start, no enable, no token
+    [[ -z "$(ls "$MOCK_DIR/etc-systemd" 2>/dev/null)" && -z "$(token_line)" && "$(trace)" != *start-probe* && "$(trace)" != *enable* ]]
+}
+p6l_refused() {   # p6l_refused <the reason fragment> → 0 iff the run refused with REFUSE[P6-ledger], the D0-F3 sentence verbatim, the fix, and touched nothing
+    [[ "$RC" == "1" ]] && grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out" && grep -qF "$P6L_PHRASE" "$MOCK_DIR/out" && grep -qF "$1" "$MOCK_DIR/out" \
+        && grep -q 'FIX: set LEDGER_PATH=' "$MOCK_DIR/out" && grep -q 'NOT ARMED' "$MOCK_DIR/out" && p6l_untouched
+}
+new_mock
+write_env 'LEDGER_PATH=""'
+run_arm
+p6l_refused 'LEDGER_PATH is empty or unset' \
+    && ok "(17a) REAL arm, LEDGER_PATH=\"\" → REFUSE[P6-ledger] with the D0-F3 sentence verbatim and the fix; refused BEFORE the probe: no unit rendered, no probe start, no enable, no token" \
+    || bad "(17a) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+new_mock
+grep -v '^LEDGER_PATH=' "$MOCK_DIR/opt/failover.env" > "$MOCK_DIR/opt/failover.env.t" && mv "$MOCK_DIR/opt/failover.env.t" "$MOCK_DIR/opt/failover.env"
+run_arm
+p6l_refused 'LEDGER_PATH is empty or unset' \
+    && ok "(17b) REAL arm, no LEDGER_PATH line at all (an env file from before the deploy wrote one) → the same refusal" \
+    || bad "(17b) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+new_mock
+: > "$MOCK_DIR/ledger-is-a-file"
+write_env "LEDGER_PATH=\"$MOCK_DIR/ledger-is-a-file\""
+run_arm
+p6l_refused 'is not a directory' \
+    && ok "(17c) REAL arm, LEDGER_PATH names a FILE → REFUSE[P6-ledger] 'is not a directory'" \
+    || bad "(17c) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+new_mock
+write_env "LEDGER_PATH=\"$MOCK_DIR/no-such-ledger\""
+run_arm
+p6l_refused 'is not a directory' \
+    && ok "(17d) REAL arm, LEDGER_PATH names a path that does not exist → REFUSE[P6-ledger] 'is not a directory'" \
+    || bad "(17d) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+new_mock
+run_arm
+if [[ "$RC" == "0" && -n "$(token_line)" ]] && grep -q "ledger precondition (P6-ledger) OK: LEDGER_PATH=$MOCK_DIR/ledger is a readable directory" "$MOCK_DIR/out" && ! grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out"; then
+    ok "(17e) REAL arm, LEDGER_PATH a readable directory → P6-ledger OK, the ceremony completes (token printed)"
+else
+    bad "(17e) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+fi
+new_mock
+write_env 'DRY_RUN=true' 'LEDGER_PATH=""'
+run_arm
+if [[ "$RC" == "0" && -n "$(token_line)" && -f "$MOCK_DIR/etc-systemd/solana-failover-fence-page-only.service" ]] && grep -q 'WARN: ledger precondition (P6-ledger): LEDGER_PATH is empty or unset' "$MOCK_DIR/out" \
+   && grep -q 'PAGE-ONLY fence calls no agave-validator admin command' "$MOCK_DIR/out" && ! grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out"; then
+    ok "(17f) PAGE-ONLY arm (DRY_RUN=true), LEDGER_PATH=\"\" → WARN naming why it proceeds and that the REAL arm refuses; the page-only unit is installed, the token printed (WARN, not refuse)"
+else
+    bad "(17f) rc=$RC out: $(tail -4 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+fi
+new_mock
+write_env 'DRY_RUN=true'
+run_arm
+if [[ "$RC" == "0" ]] && grep -q 'ledger precondition (P6-ledger) OK' "$MOCK_DIR/out" && ! grep -q 'ledger precondition (P6-ledger):' "$MOCK_DIR/out"; then
+    ok "(17g) PAGE-ONLY arm with a valid ledger directory → the OK line, no WARN"
+else
+    bad "(17g) rc=$RC out: $(grep -i 'P6-ledger' "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+fi
+new_mock
+write_daemon "$MOCK_DIR/opt/solana-standby-failover.sh"
+cp "$MOCK_DIR/opt/failover.env" "$MOCK_DIR/opt/failover-standby.env"
+echo 'LEDGER_PATH=""' >> "$MOCK_DIR/opt/failover-standby.env"
+run_arm ARM_ROLE=standby
+p6l_refused 'in '"$MOCK_DIR"'/opt/failover-standby.env' \
+    && ok "(17h) ARM_ROLE=standby: the standby env file is the one checked (the same fence, the same refusal)" \
+    || bad "(17h) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+
+# ── (18) ExecStop= (AG-3.5; docs/SAFETY.md "Known bash behaviour": a TERM can be dropped — "(12e) option 1") ──
+echo ""; echo "─── (18) the monitor unit's ExecStop= re-sends TERM while the main PID lives: carried byte-exact by the render, run for real against a bash that drops TERMs ───"
+SKEL_MON="$SKEL_DIR/solana-failover-monitor.service.skel"
+new_mock
+run_arm
+MON="$MOCK_DIR/etc-systemd/solana-failover-monitor.service"
+es_skel=$(grep -m1 '^ExecStop=' "$SKEL_MON" 2>/dev/null)
+es_unit=$(grep -m1 '^ExecStop=' "$MON" 2>/dev/null)
+es_n=$(grep -c '^ExecStop=' "$MON" 2>/dev/null)
+if [[ "$RC" == "0" && -n "$es_skel" && "$es_unit" == "$es_skel" && "$es_n" == "1" ]] && grep -q 'ExecStop= TERM re-send carried byte-exact' "$MOCK_DIR/out"; then
+    ok "(18a) the skeleton has ONE ExecStop= and the RENDERED monitor unit carries it byte-exact (the arm re-verifies it after the render and says so)"
+else
+    bad "(18a) rc=$RC skel=[$es_skel] unit=[$es_unit] n=$es_n"
+fi
+# the shape systemd parses: ONE single-quoted word after /bin/sh -c; `$$` is systemd's escape for a literal `$`, ${MAINPID} is its own substitution;
+# no `%` (a specifier), no backslash (a C-style escape), no single quote inside the word
+es_pre="/bin/sh -c '"
+es_body=${es_unit#ExecStop=}
+es_script=""
+case "$es_body" in "$es_pre"*"'") es_script=${es_body#"$es_pre"}; es_script=${es_script%"'"} ;; esac
+es_resid=$(printf '%s' "$es_script" | sed -e 's/\$\$//g' -e 's/\${MAINPID}//g')
+es_shape=""
+[[ -n "$es_script" ]] || es_shape="$es_shape [not /bin/sh -c '<one single-quoted word>']"
+case "$es_resid" in *'$'*) es_shape="$es_shape [a bare dollar outside two-dollars and the MAINPID substitution]" ;; esac
+case "$es_resid" in *'%'*) es_shape="$es_shape [a percent sign: a systemd specifier]" ;; esac
+case "$es_resid" in *\\*) es_shape="$es_shape [a backslash: a systemd C-style escape]" ;; esac
+case "$es_script" in *"'"*) es_shape="$es_shape [a single quote inside the quoted word]" ;; esac
+case "$es_script" in *'${MAINPID}'*) : ;; *) es_shape="$es_shape [no MAINPID substitution]" ;; esac
+[[ -z "$es_shape" ]] \
+    && ok "(18b) the line is written for systemd's parser: one single-quoted word after /bin/sh -c, every shell dollar doubled, \${MAINPID} the only substitution, no percent sign, no backslash, no inner quote" \
+    || bad "(18b) shape:$es_shape :: $es_unit"
+es_run() {   # es_run <unit file> <dies2|deaf|gone|nopid> → rc=…|terms=…|alive=…|secs=… : the unit's ExecStop line run the way systemd runs it
+    local unit="$1" mode="$2" d line body script mp="" die_at=0 tpid="" epid wpid rc t0 t1 terms alive w
+    d=$(mktemp -d "$MOCK_PARENT/es.XXXXXX")
+    line=$(grep -m1 '^ExecStop=' "$unit" 2>/dev/null)
+    body=${line#ExecStop=}
+    case "$body" in "$es_pre"*"'") ;; *) printf 'rc=NOLINE|terms=0|alive=no|secs=0'; return 0 ;; esac
+    script=${body#"$es_pre"}; script=${script%"'"}
+    cat > "$d/target.sh" <<'EOT'
+#!/bin/bash
+# a monitor that DROPS TERMs: counts each in $1 and keeps running; ends on the $2-th (0 = never)
+n=0
+trap 'n=$((n + 1)); echo "term $n" >> "$1"; if [ "$2" -gt 0 ] && [ "$n" -ge "$2" ]; then exit 0; fi' TERM
+: > "$1.ready"
+while :; do sleep 1 & wait $!; done
+EOT
+    : > "$d/terms"
+    case "$mode" in dies2) die_at=2 ;; esac
+    if [[ "$mode" == "gone" ]]; then
+        ( exit 0 ) & tpid=$!; wait "$tpid" 2>/dev/null; mp="$tpid"        # a pid that existed and was reaped
+        tpid=""
+    else
+        /bin/bash "$d/target.sh" "$d/terms" "$die_at" >/dev/null 2>&1 & tpid=$!
+        w=0; while [[ ! -e "$d/terms.ready" && $w -lt 50 ]]; do sleep 0.2; w=$((w + 1)); done
+        [[ "$mode" == "nopid" ]] || mp="$tpid"
+    fi
+    # systemd's own parsing of the line: `$$` -> `$`, ${MAINPID} -> the main pid (empty when it is unknown)
+    script=$(printf '%s' "$script" | sed -e 's/\$\$/$/g' -e "s/\${MAINPID}/$mp/g")
+    t0=$(date +%s)
+    MAINPID="$mp" /bin/sh -c "$script" >/dev/null 2>&1 &
+    epid=$!
+    ( sleep 9; kill -9 "$epid" 2>/dev/null ) >/dev/null 2>&1 &
+    wpid=$!
+    wait "$epid" 2>/dev/null; rc=$?
+    kill "$wpid" 2>/dev/null
+    t1=$(date +%s)
+    terms=$(grep -c '^term ' "$d/terms" 2>/dev/null)
+    alive=no
+    if [[ -n "$tpid" ]] && kill -0 "$tpid" 2>/dev/null; then alive=yes; fi
+    if [[ -n "$tpid" ]]; then kill -9 "$tpid" 2>/dev/null; { wait "$tpid"; } 2>/dev/null; fi
+    printf 'rc=%s|terms=%s|alive=%s|secs=%s' "$rc" "$terms" "$alive" "$((t1 - t0))"
+}
+es_in() { local v; v=$(field "$1" "$2"); [[ "$v" -ge "$3" && "$v" -le "$4" ]]; }   # es_in <result> <field> <min> <max>
+r_dies2=$(es_run "$MON" dies2)
+if [[ "$(field "$r_dies2" rc)" == "0" && "$(field "$r_dies2" terms)" == "2" && "$(field "$r_dies2" alive)" == "no" ]] && es_in "$r_dies2" secs 1 4; then
+    ok "(18c) a monitor that DROPS the first TERM: the line sends a second one and stops once the pid is gone — exactly 2 TERMs, the process ends, exit 0 ($r_dies2)"
+else
+    bad "(18c) dies-on-the-second-TERM: $r_dies2"
+fi
+r_deaf=$(es_run "$MON" deaf)
+if [[ "$(field "$r_deaf" rc)" == "0" && "$(field "$r_deaf" terms)" == "3" && "$(field "$r_deaf" alive)" == "yes" ]] && es_in "$r_deaf" secs 2 5; then
+    ok "(18d) a monitor that never obeys: exactly 3 TERMs, 1 s apart, then exit 0 with the process still alive — systemd's own TERM and TimeoutStopSec take over ($r_deaf)"
+else
+    bad "(18d) deaf target: $r_deaf"
+fi
+r_gone=$(es_run "$MON" gone); r_nopid=$(es_run "$MON" nopid)
+if [[ "$(field "$r_gone" rc)" == "0" && "$(field "$r_gone" terms)" == "0" ]] && es_in "$r_gone" secs 0 1 \
+   && [[ "$(field "$r_nopid" rc)" == "0" && "$(field "$r_nopid" terms)" == "0" && "$(field "$r_nopid" alive)" == "yes" ]] && es_in "$r_nopid" secs 0 1; then
+    ok "(18e) a main pid that is already gone, or unknown (MAINPID empty): exit 0 at once and NOT ONE TERM sent — the line never signals a pid it cannot confirm ($r_gone / $r_nopid)"
+else
+    bad "(18e) gone: $r_gone  unknown: $r_nopid"
+fi
+# CONTROLS: each drift of the line must turn its scenario red. A mutant is applied to a copy of the RENDERED unit (mutate() asserts it changed it).
+es_mut() {   # es_mut <label> <sed expr> <scenario> <expectation: "rc=1" … checked by es_ok_for>
+    local lab="$1" expr="$2" mode="$3" mu="$_HARNESS_TMP/es-mut-$1.service" r bit
+    if ! mutate "$MON" "$expr" "$mu"; then es_ctl_ok=0; es_ctl_rows="$es_ctl_rows $lab:NOT-APPLIED"; return 0; fi
+    r=$(es_run "$mu" "$mode")
+    case "$lab" in
+        no-line)    [[ "$(field "$r" rc)" == "NOLINE" ]] && bit=red ;;
+        no-sleep)   ! es_in "$r" secs 2 5 && bit=red ;;
+        exit-one)   [[ "$(field "$r" rc)" != "0" ]] && bit=red ;;
+        wider-bound) [[ "$(field "$r" terms)" != "3" ]] && bit=red ;;
+        no-alive-check) ! es_in "$r" secs 0 1 && bit=red ;;
+    esac
+    if [[ "$bit" == "red" ]]; then es_ctl_rows="$es_ctl_rows $lab:red"; else es_ctl_ok=0; es_ctl_rows="$es_ctl_rows $lab:GREEN($r)"; fi
+}
+es_ctl_ok=1; es_ctl_rows=""
+es_mut no-line '/^ExecStop=/d' dies2
+es_mut no-sleep 's/ sleep 1;//' deaf
+es_mut exit-one "s/exit 0'\$/exit 1'/" dies2
+es_mut wider-bound 's/-lt 3 /-lt 5 /' deaf
+es_mut no-alive-check 's/ && kill -0 ${MAINPID} 2>\/dev\/null//' gone
+[[ $es_ctl_ok -eq 1 ]] \
+    && ok "(18f) CONTROLS: the line deleted, the sleeps removed, exit 1, a wider bound (5), the alive-check removed — each drift turns its scenario red:$es_ctl_rows" \
+    || bad "(18f) a control did not turn red:$es_ctl_rows"
+# the arm refuses to arm a monitor without it: a skeleton that lost the line, and a renderer that drops it
+RT="$_HARNESS_TMP/rt-noes"; rm -rf "$RT"; mkdir -p "$RT"; cp "$ARM" "$RT/failover-arm.sh"; cp -R "$SKEL_DIR" "$RT/systemd"
+grep -v '^ExecStop=' "$SKEL_MON" > "$RT/systemd/solana-failover-monitor.service.skel"
+new_mock
+ARM_OVERRIDE="$RT/failover-arm.sh" run_arm
+if [[ "$RC" == "1" ]] && grep -q 'REFUSE\[RENDER-verify\]' "$MOCK_DIR/out" && grep -q 'does not carry the skeleton.s ExecStop= line (the skeleton has none)' "$MOCK_DIR/out" && [[ -z "$(token_line)" && "$(trace)" != *enable* ]]; then
+    ok "(18g) a skeleton WITHOUT ExecStop= → REFUSE[RENDER-verify] (the skeleton has none): nothing enabled, no token"
+else
+    bad "(18g) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+fi
+cat > "$_HARNESS_TMP/drop-es.awk" <<'EOA'
+# the renderer's pass-through line rewritten to RENAME ExecStop= lines (a renderer that drops the line)
+$0 == "                printf '%s\\n' \"$line\"" { print "                printf '%s\\n' \"${line//ExecStop=/ExecStop-dropped=}\""; next }
+{ print }
+EOA
+if mutate_filter "$ARM" "$RT/failover-arm.sh" awk -f "$_HARNESS_TMP/drop-es.awk"; then
+    cp "$SKEL_MON" "$RT/systemd/solana-failover-monitor.service.skel"
+    new_mock
+    ARM_OVERRIDE="$RT/failover-arm.sh" run_arm
+    if [[ "$RC" == "1" ]] && grep -q 'REFUSE\[RENDER-verify\]' "$MOCK_DIR/out" && grep -q 'the skeleton has one' "$MOCK_DIR/out" && [[ -z "$(token_line)" && "$(trace)" != *enable* ]]; then
+        ok "(18h) a renderer that DROPS the line (a mutant copy) → REFUSE[RENDER-verify] (the skeleton has one): render → verify catches it, nothing enabled"
+    else
+        bad "(18h) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+    fi
+fi
+
 # ── (13) reuse parity: the unit-discovery helpers are BYTE-IDENTICAL arm ↔ fence ────────────────
 echo ""; echo "─── (13) _validator_pid + _detect_validator_unit byte-parity (reuse, not reinvention) ───"
 A_VP=$(extract_region "$ARM"   '^_validator_pid() {' '^}$')
@@ -1563,6 +1783,51 @@ if [[ -f "$ARM" ]]; then
             ok "(M12) P0 symlink refusal neutered → a symlinked state directory ARMS and the gen counter is written THROUGH the link (case 16a observes a load-bearing gate)"
         else
             bad "(M12) control vacuous: rc=$RC out: $(tail -2 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+    # M13 (AG-3.5): the P6-ledger gate - neutered, a REAL arm with LEDGER_PATH="" ARMS (the fence would run every admin call against no ledger)
+    if mutate "$ARM" 's/^\( *\)_arm_refuse "P6-ledger"/\1: "P6-ledger"/' "$MUT"; then
+        new_mock
+        write_env 'LEDGER_PATH=""'
+        ARM_OVERRIDE="$MUT" run_arm
+        if ! grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out" && [[ -n "$(token_line)" ]]; then
+            ok "(M13) P6-ledger refusal neutered → a REAL arm with LEDGER_PATH=\"\" ARMS (case 17a observes a load-bearing gate)"
+        else
+            bad "(M13) control vacuous: rc=$RC out: $(tail -2 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+    # M14: the page-only arm made a REFUSE - (17f) observes that the page-only side is WARN, not refuse
+    if mutate "$ARM" '/^_pre_ledger_check() {/,/^}/ s/\[\[ "\$ARM_INTENT" == "real" \]\]/true/' "$MUT"; then
+        new_mock
+        write_env 'DRY_RUN=true' 'LEDGER_PATH=""'
+        ARM_OVERRIDE="$MUT" run_arm
+        if [[ "$RC" == "1" ]] && grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out" && [[ -z "$(token_line)" ]]; then
+            ok "(M14) the page-only branch turned into a refusal → the PAGE-ONLY arm with LEDGER_PATH=\"\" is REFUSED (case 17f observes WARN-not-refuse)"
+        else
+            bad "(M14) control vacuous: rc=$RC out: $(tail -2 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+    # M15: an EMPTY value accepted
+    if mutate "$ARM" '/^_pre_ledger_check() {/,/^}/ s/^        why="LEDGER_PATH is empty or unset in \$ARM_ENV_FILE"$/        return 0/' "$MUT"; then
+        new_mock
+        write_env 'LEDGER_PATH=""'
+        ARM_OVERRIDE="$MUT" run_arm
+        if ! grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out" && [[ -n "$(token_line)" ]]; then
+            ok "(M15) the empty-value test removed → LEDGER_PATH=\"\" is ACCEPTED and the REAL arm completes (cases 17a/17b observe it)"
+        else
+            bad "(M15) control vacuous: rc=$RC out: $(tail -2 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+    # M16: a path that is not a directory accepted
+    if mutate "$ARM" '/^_pre_ledger_check() {/,/^}/ s/^    elif \[\[ ! -d "\$LEDGER_PATH" \]\]; then$/    elif false; then/' "$MUT"; then
+        new_mock
+        : > "$MOCK_DIR/ledger-is-a-file"
+        write_env "LEDGER_PATH=\"$MOCK_DIR/ledger-is-a-file\""
+        ARM_OVERRIDE="$MUT" run_arm
+        if ! grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out" && [[ -n "$(token_line)" ]]; then
+            ok "(M16) the is-a-directory test removed → a FILE as LEDGER_PATH is ACCEPTED and the REAL arm completes (cases 17c/17d observe it)"
+        else
+            bad "(M16) control vacuous: rc=$RC out: $(tail -2 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
         fi
     fi
     echo "  survivors (named, per HARNESS.md discipline): P3 flock and the P4 page-only/frankendancer/"
