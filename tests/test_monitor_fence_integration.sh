@@ -925,11 +925,15 @@ s_pets=$(grep -cE '^[[:space:]]*_watchdog_pet[[:space:]]+# §5 end-of-cycle pet'
 # (curl -m 5), petted post-op. It runs only in the unreachable branch for a node last seen STAKED (the hung-holder rung), never on a take path, and
 # the rung's other reads pet themselves (get_staked_liveness_sample per provider, the hard-stop ladder per op). A3 re-derived: one bounded op
 # (5 s) + its pet (7 s), inside the 22 s worst case. Totals primary 50 -> 51.
+# +2 in the STANDBY at AG-3.3 (the pin was NOT moved in that diff and stood stale; moved here): take_staked_identity's AG-mode COLD take pets each of its two
+# bounded admin ops - `authorized-voter add`, then `set-identity` with the cold flag, each `timeout -k 5 $SETIDENTITY_TIMEOUT` - exactly as the retained take's
+# pair below them does. A3 re-derived: each op is bounded by SETIDENTITY_TIMEOUT 15 + kill-grace 5 = 20 s and its pet follows the op, so the 22 s worst case
+# (SETIDENTITY_TIMEOUT 15 + kill-grace 5 still governs) is unchanged. Totals standby 54 -> 56.
 p_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$PRIMARY")
 s_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$STANDBY")
-[[ "$p_total" == "51" && "$s_total" == "54" ]] \
-    && ok "(14b) total pet call-site pins: primary 50 calls (+def=51), standby 53 calls (+def=54) — deletion of any pet line trips this" \
-    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 51, standby=$s_total pinned 54) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
+[[ "$p_total" == "51" && "$s_total" == "56" ]] \
+    && ok "(14b) total pet call-site pins: primary 50 calls (+def=51), standby 55 calls (+def=56) — deletion of any pet line trips this" \
+    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 51, standby=$s_total pinned 56) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
 if ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$PRIMARY" && ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$STANDBY" && ! grep -qE '^[[:space:]]*sleep "\$RECOVERY_CHECK_INTERVAL"' "$PRIMARY"; then
     ok "(14c) the >=15s sleeps (STARTUP_GRACE x3, RECOVERY_CHECK_INTERVAL, hard-stop re-verify) go through _watchdog_sleep"
 else
