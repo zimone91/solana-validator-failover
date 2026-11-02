@@ -3,17 +3,18 @@
 [![ci](https://github.com/zimone91/solana-validator-failover/actions/workflows/ci.yml/badge.svg)](https://github.com/zimone91/solana-validator-failover/actions/workflows/ci.yml)
 
 Staked-identity failover **monitor** for Solana validators. **Alpenglow mode (always on in v0.7): FO never takes the
-staked identity by itself.** If your staked node dies or goes silent, the holder fences itself (drops to its own unstaked
+staked identity by itself unless you arm the spare** (`AG_ARMED_TAKE=true`, off by default - below). If your staked node dies or goes silent, the holder fences itself (drops to its own unstaked
 identity within ~30s when it can) and the spare — after the same gates as ever: the delay, the external confirmation, the
 vote-liveness fence, its own node's view — **pages you** (`TAKEOVER WITHHELD — Alpenglow mode`) with what you need to do the
 *warm swap* yourself: demote the old holder, move the vote-history file, then `authorized-voter add` and `set-identity` on the new
-one ([docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07)). The automatic take (`set-identity` on the spare, ~60s) is the *retained path*: kept
-in the code as the base for a later release, unreachable in v0.7, and marked as such wherever this README describes it. When the
+one ([docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07)). The automatic take of the TowerBFT era (`set-identity` on the spare, ~60s) is the *retained path*: kept
+in the code as the base for a later release, unreachable in v0.7, and marked as such wherever this README describes it. What an **armed** spare runs instead is the *cold take*: `authorized-voter add` first,
+then `set-identity` with the vote-history requirement switched off, once a readiness margin also holds ([docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1)). When the
 external RPCs are not observable the gates hold for as long as the blindness lasts (by design: unobservable time counts as life)
 and the operator is paged (`TAKEOVER_STARVATION_ALERT_SECS`, default 300s).
 
 Built safety-first: the failing node **steps down first**, then the spare only **pages you** — the move of the stake is yours
-(the retained path made it; v0.7 never does) — and every ambiguous state resolves toward *nobody holds the stake* rather than
+(an unarmed spare, the default; the retained path made it, and an armed spare takes it cold) — and every ambiguous state resolves toward *nobody holds the stake* rather than
 two nodes holding it.
 
 **Author:** [zim.one](https://zim.one) · **Tested on:** agave & Jito-Solana `4.2.x` — live failover gate on `4.2.0-rc.0`, running armed in production on `4.2.1`; earlier releases validated on `3.1.x` / `4.0.x` / `4.1.x` · **Networks:** testnet · mainnet
@@ -24,8 +25,8 @@ None of the versions above meets that floor; v0.7 itself is being exercised on t
 #### How safe is it — honestly
 
 The failing node fences **itself** (dead RPC, frozen slot, or its own votes not landing) and drops to an
-unstaked identity within ~30s. Only then, after a 60s floor plus an on-chain check that the vote account
-really stopped, does the spare page you that the identity is free to be moved (v0.7: it never moves it itself; the take it used to make
+unstaked identity within ~30s. Only then, after a 90s delay plus an on-chain check that the vote account
+really stopped, does the spare page you that the identity is free to be moved (v0.7: an unarmed spare never moves it itself, an armed one takes it cold; the take it used to make
 is the retained path). Live-tested end to end on testnet (the retained path): [test evidence](docs/SAFETY.md#what-has-been-tested).
 
 The honest limit: a node that has gone **completely silent** cannot be proven incapable of voting — it
@@ -40,7 +41,7 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
 
 - Watches the local validator. If the PRIMARY goes delinquent or isolated, it **self-fences** to its
   own unstaked identity within ~30s; a STANDBY then **pages** you after a cross-node safety delay that the staked identity is
-  free to be moved — in Alpenglow mode (v0.7) it never takes it itself.
+  free to be moved — in Alpenglow mode (v0.7) it takes it itself only when armed (`AG_ARMED_TAKE=true`).
 - Detects the failure modes that matter: dead local RPC, frozen slot, **egress-only partition** (own
   votes not landing while the node still looks healthy), and on-chain delinquency.
 - **Fails safe by design:** ambiguity resolves toward *unstaked / stop / page the operator*, not toward
@@ -51,13 +52,14 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
 > **Prime directive: never let two nodes hold and vote the same staked identity (double-sign).**
 > Everything below serves that goal; the honest limits of the current implementation follow it.
 >
-> **v0.7, Alpenglow mode:** the take-side bullets below describe the *retained* take path — what the same gates guard — which v0.7 never runs:
-> a take every gate approves is **withheld and paged**, once per episode ([docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07)). They stay because
-> those gates decide *when the page is sent*, and the code is the base for a later release.
+> **v0.7, Alpenglow mode:** the take-side bullets below describe the *retained* take path — what the same gates guard — which v0.7 never runs. Unarmed (the default,
+> `AG_ARMED_TAKE=false`), a take every gate approves is **withheld and paged**, once per episode ([docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07)); armed
+> (`AG_ARMED_TAKE=true`), the standby takes it cold, voter first, once the readiness margin also holds ([Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1)). The gates stay
+> because they decide *when the page is sent, or the take made*, and the code is the base for a later release.
 
 - The PRIMARY **relinquishes first** (self-fences to unstaked) before any spare can take.
-- The STANDBY takes only after `TAKEOVER_DELAY` (default **60s** = the PRIMARY's ~30s self-fence + a 30s
-  cross-node margin) **and** a vote-liveness check that the previous holder's vote account has stopped
+- The STANDBY takes only after `TAKEOVER_DELAY` (default **90s**; the floor is 60s = the PRIMARY's ~30s self-fence + a 30s
+  cross-node margin, and 90 pairs with the holder's gap rule: `TAKEOVER_DELAY` ≥ `HOLDER_GAP_DEMOTE_SECS` 45 + 30) **and** a vote-liveness check that the previous holder's vote account has stopped
   advancing. A hand-edited delay below the safe floor **refuses to start**. The last read before the
   take is the spare's **own** node (v0.7): one bounded read (`curl -m 2` + a watchdog pet) that
   withdraws the take if its own node shows the holder voting, cannot answer, or is not advancing; the
@@ -110,7 +112,7 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
   recommends a third endpoint in a separate failure domain. What each layer does and does **not**
   catch — including an active protocol-aware intermediary, which it does not — is enumerated in
   [`docs/SAFETY.md`](docs/SAFETY.md). Un-armed hosts see none of this.
-- A promoted STANDBY (the retained path: v0.7 never promotes one by itself) that later isolates self-fences too, with a 600s re-take lockout.
+- A promoted STANDBY (an unarmed spare never promotes itself; an armed one does, by the cold take) that later isolates self-fences too, with a 600s re-take lockout.
 
 **Where the strength comes from.** The protection is strongest where the failing node can detect its
 own trouble and step down — which covers dead RPC, a stalled slot, and an egress-only partition where
@@ -180,6 +182,9 @@ systemctl restart solana-failover
 The installer generates the env, or copy `failover.env.example` / `failover-standby.env.example`.
 Key knobs: `STAKED_KEYPAIR`, `UNSTAKED_KEYPAIR`, `VOTE_PUBKEY`, `TAKEOVER_DELAY`, the three RPC tiers
 (local → paid → public), and notifications. Full reference: [docs/DEPLOYMENT-MANUAL.md](docs/DEPLOYMENT-MANUAL.md).
+`failover arm` (the fence ceremony) refuses a real arm until `LEDGER_PATH` in the env file names the validator's ledger directory - the fence has no detection of its own - and the monitor unit it installs carries an
+`ExecStop=` that re-sends a lost TERM. The standby's take switch is separate: `AG_ARMED_TAKE=false` (the default) only pages; `true` arms the cold take, with `AG_TAKE_MARGIN_SLOTS` (default 200) as its readiness margin and the
+pairing rule `TAKEOVER_DELAY` ≥ the holder's `HOLDER_GAP_DEMOTE_SECS` + 30 (shipped 90 ≥ 45 + 30) - [docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1).
 
 On a host armed with the v0.7 fence, the daemon also re-verifies its own effective fence
 properties every `FENCE_ROT_CHECK_SECS` (default 60 s): drift that verifiably kills the fence
@@ -187,7 +192,7 @@ properties every `FENCE_ROT_CHECK_SECS` (default 60 s): drift that verifiably ki
 fence) pages CRITICAL immediately with the exact fix command, and only if it persists for
 `FENCE_ROT_GRACE` (default 1800 s, floor max(600, `ALERT_THROTTLE`)) while the node still
 verifiably holds the staked identity does the holder gracefully demote itself to unstaked — the
-spare then sees a silent holder and pages (v0.7: it never takes; the retained path took over on its timer path, the v0.6.x semantics, with or without G2; once Block 6.4 wires
+spare then sees a silent holder and pages (v0.7: an unarmed spare never takes, an armed one takes cold; the retained path took over on its timer path, the v0.6.x semantics, with or without G2; once Block 6.4 wires
 the relinquish-proof gate, via the verified-demote proof). Never instant, never on a guess: a failing
 `systemctl` is treated as cannot-verify (page after a blind streak, no demote clock), and both
 knobs are daemon defaults with validation — no env entry needed. Un-armed hosts (everything
@@ -219,7 +224,7 @@ process group, and fails the run, named. Note the limit: these are function-leve
 - **Not for unattended mainnet yet** — see “How safe is it — honestly” above. Until the v0.7 fence
   lands, run `DRY_RUN`, testnet, or keep a human in the loop to fence the old node before promotion.
 - **Test on testnet first** — DRY_RUN soak, then a live failover on a testnet stack.
-- In v0.7 this tool never moves your staked identity between machines **by itself** (Alpenglow mode); its retained path did, and a later
+- In v0.7 this tool never moves your staked identity between machines **by itself** unless you arm a spare (`AG_ARMED_TAKE=true`, Alpenglow mode); its retained path did, and a later
   release may. Never aim `STAKED_KEYPAIR` at an identity you can't afford to have hot-swapped.
 - **Each node needs its own unique unstaked keypair** — a shared unstaked pubkey breaks the fence.
 - **Point `VOTE_PUBKEY` at *your* vote account** — the one whose `nodePubkey` is your staked identity.
@@ -230,7 +235,7 @@ process group, and fails the run, named. Note the limit: these are function-leve
 ## Roadmap
 
 - **v0.7** — the fence: a node that can no longer confirm it owns the identity is stopped by a
-  watchdog, and the spare pages (it never takes, in Alpenglow mode) on the same gates; the retained take path needs positive proof the old holder was stopped or stepped
+  watchdog, and the spare pages (an unarmed spare never takes, in Alpenglow mode) on the same gates; the retained take path needs positive proof the old holder was stopped or stepped
   down — never inference alone. Ships alongside evidence fixes (vote account ↔ identity binding,
   atomic state, escalation on an unverified demote), a simpler installer, a status dashboard, and a
   chaos/E2E gate on real nodes.

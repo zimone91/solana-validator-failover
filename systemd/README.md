@@ -203,7 +203,7 @@ and no `fdctl` demote rung exists in the fence. A monitor failure on fd therefor
 validator stop + `fenced-stopped` + HOLD (operator-owned recovery) — and a stopped node never
 re-advertises the unstaked flip, so from the release that wires the relinquish-proof gate the spare's G2
 verified-demote proof cannot form there (a slower takeover, or none); in this release no proof conditions a
-take, and in Alpenglow mode the spare takes nothing: when its timer and its gates pass it pages (only the retained path took, on its
+take, and in Alpenglow mode the spare takes nothing unless it is armed (`AG_ARMED_TAKE=true`: a cold take, after a readiness margin also holds - docs/SAFETY.md): when its timer and its gates pass an unarmed spare pages (only the retained path took, on its
 timer path). The daemons DO demote fd (bounded `fdctl set-identity`); the fence deliberately
 does not in v0.7. An fd-native demote rung is future work; until then, arming a frankendancer
 box means accepting stop-only fencing.

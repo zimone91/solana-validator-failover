@@ -258,7 +258,7 @@ has() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
 st() { printf '%s\n' "$1" | grep '^STATE=' | sed 's/^STATE=//'; }
 agp() { evn "$1" 'PAGE .*WITHHELD'; }                                   # agp <out> - the AG pages
 heads() { printf '%s\n' "$1" | grep '^EV: PAGE ' | sed 's/^EV: PAGE [^<]*<b>//; s/<\/b>.*//' | cut -c1-40 | tr '\n' ';'; }   # heads <out> - every page's status
-dp() { evn "$1" 'LOG .*\[ag\].*WITHHELD'; }                          # dp <out> - the AG decision points (each logs one [ag] ... WITHHELD line; AG-3's "armed take: held" line is the predicate's, not a decision point of its own)   # st <world output> - the STATE record, for field
+dp() { evn "$1" 'LOG .*\[ag\] [a-z]*: take '; }   # dp <out> - the AG decision points (each logs one "[ag] <role>: take withheld|WITHHELD ..." line; the "[ag] armed take: held" line of AG-3 is the predicate's, not a decision point of its own)   # st <world output> - the STATE record, for field
 miss=""
 
 # ── (1) STANDBY, every gate open ──────────────────────────────────────────────────────────────────

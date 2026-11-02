@@ -243,7 +243,7 @@ SELF_FENCE_VOTE_LAG_RESET_CYCLES=3
 # v0.7 (AG-3.4): the HOLDER'S GAP RULE. A frozen host (VM pause, live migration, suspend, a stalled hypervisor) resumes the validator and this
 # monitor together, and the monitor's pending sleep has expired. When the time since the END of its previous cycle is >= this many seconds while
 # the node holds the STAKED identity, a spare may have taken it during the freeze: demote FIRST (switch_to_unstaked, before check_internet, the
-# manual-change detection and the self-fence) - the holder votes never, not "one cycle". Not a restart rule: a restarted monitor has no stamp
+# manual-change detection and the self-fence) - after the cycle's loop-top reads and the identity read (milliseconds on a healthy host, at most ~27 s with every bounded read at its limit), not a whole cycle later. Not a restart rule: a restarted monitor has no stamp
 # (H3 handles restarts). PAIRING RULE - P cannot read the spare's env, so the rule lives in both env examples and docs/SAFETY.md and the defaults
 # are pinned by the facts job: the spare's TAKEOVER_DELAY must be >= HOLDER_GAP_DEMOTE_SECS + 30 (the spare's earliest take after the holder's
 # last vote is TAKEOVER_DELAY plus its gates; a holder frozen longer than the delay may wake after a take and must demote before it votes;
@@ -5349,7 +5349,7 @@ _fence_rot_check() {
                     # act-then-alert: the demote path performs the safety action FIRST and carries
                     # its own alerting; the reason below IS the demote page's text.
                     _last_rot_demote_try=$_rot_now
-                    _rot_graceful_demote "Fence rot persisted ${FENCE_ROT_GRACE}s while ARMED+STAKED: ${_rot_found}. Graceful demote — this node no longer holds the staked identity; in Alpenglow mode no spare takes it by itself, so an operator moves it (warm swap, docs/SAFETY.md)."
+                    _rot_graceful_demote "Fence rot persisted ${FENCE_ROT_GRACE}s while ARMED+STAKED: ${_rot_found}. Graceful demote — this node no longer holds the staked identity; in Alpenglow mode no spare takes it by itself unless it is armed (AG_ARMED_TAKE=true), otherwise an operator moves it (warm swap, docs/SAFETY.md)."
                 elif [[ -n "$UNSTAKED_PUBKEY" && "$_rot_id" == "$UNSTAKED_PUBKEY" ]]; then
                     if [[ ${_rot_unstaked_noted:-0} -eq 0 ]]; then
                         _rot_unstaked_noted=1
@@ -6368,7 +6368,7 @@ startup_checks() {
                 # evidence-gated; no-ops outside the armed unit.
                 _watchdog_extend_if_starting 2>/dev/null
                 log_warn "Persisted role STAKED + local validator unreachable ${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s+ at startup — sending URGENT alert"
-                alert "PRIMARY was STAKED at last save + local validator unreachable since monitor startup (>${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s) — the daemon cannot self-demote; in Alpenglow mode no spare takes the identity by itself, so it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "PRIMARY UNREACHABLE WHILE STAKED 🚨"
+                alert "PRIMARY was STAKED at last save + local validator unreachable since monitor startup (>${STARTUP_STAKED_UNREACHABLE_ALERT_SECS}s) — the daemon cannot self-demote; in Alpenglow mode no spare takes the identity by itself unless it is armed (AG_ARMED_TAKE=true), so by default it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "PRIMARY UNREACHABLE WHILE STAKED 🚨"
                 _wait_alerted=1
                 _watchdog_extend_if_starting 2>/dev/null
             fi
@@ -6547,7 +6547,7 @@ while $_running; do
             # delinquency + frozen liveness and take over → double-sign on heal. Page URGENT, not warn.
             if [[ "$_last_known_identity" == "$STAKED_PUBKEY" ]]; then
                 log_warn "Local validator unreachable while STAKED — sending URGENT alert"
-                alert "PRIMARY staked + local validator unreachable — the daemon cannot self-demote; in Alpenglow mode no spare takes the identity by itself, so it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "PRIMARY UNREACHABLE WHILE STAKED 🚨"
+                alert "PRIMARY staked + local validator unreachable — the daemon cannot self-demote; in Alpenglow mode no spare takes the identity by itself unless it is armed (AG_ARMED_TAKE=true), so by default it stays on this node until an operator moves it. Intervene (stop the validator; move the identity only by the warm swap, docs/SAFETY.md)." "$STAKED_PUBKEY" "PRIMARY UNREACHABLE WHILE STAKED 🚨"
             else
                 log_warn "Local validator unreachable — sending alert"
                 alert_warn "⚠️ PRIMARY local validator unreachable! Failover monitoring paused."
