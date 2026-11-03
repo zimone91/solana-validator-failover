@@ -525,6 +525,23 @@ else
     [[ $b72_ok -eq 1 ]] && ok "(B7.2b) CONTROLS: no flock call, exit 1 instead of 3, no page, a page twice, the descriptor closed after the lock (the lock dies with it), a stderr redirection that sticks to the shell, a state dir created without the 0700 umask, a chmod of an existing dir, a refusal on another flock status / on no flock / on an unopenable lock file, one lock name for both roles, the call removed - each turns its case red:$b72_crows" || bad "(B7.2b) a control is not red:$b72_crows"
 fi
 
+# (B7.2c) the unit the deploy scripts write does not restart a copy the lock refused. With Restart=always, RestartSec=10 and a manual copy holding the lock, systemd would start the unit's copy every 10 s,
+# refuse it every time and page SECOND INSTANCE REFUSED six times a minute. Exit status 3 is the refusal's alone; RestartPreventExitStatus=3 stops the loop at the first one (the unit shows `failed`, the manual copy is
+# untouched). Text pin, no flock needed. (The armed monitor unit is Restart=no already.)
+p_b72_unit() {   # the deploy script's unit heredoc: Restart=always once, RestartPreventExitStatus=3 once
+    local script="$1" blk; blk=$(sed -n "/<< 'SERVICEEOF'/,/^SERVICEEOF\$/p" "$script")
+    [[ "$(printf '%s\n' "$blk" | grep -c -x 'Restart=always')" == "1" && "$(printf '%s\n' "$blk" | grep -c -x 'RestartPreventExitStatus=3')" == "1" ]]
+}
+b72u_ok=1; b72u_rows=""
+for b72u_s in deploy-failover.sh deploy-failover-standby.sh; do
+    b72u_f="$HARNESS_DIR/$b72u_s"
+    if p_b72_unit "$b72u_f"; then b72u_rows="$b72u_rows $b72u_s:pinned"; else b72u_ok=0; b72u_rows="$b72u_rows $b72u_s:NOT-PINNED"; fi
+    b72u_m="$WORK/b72u-$b72u_s"
+    if mutate "$b72u_f" '/^RestartPreventExitStatus=3$/d' "$b72u_m"; then
+        if p_b72_unit "$b72u_m"; then b72u_ok=0; b72u_rows="$b72u_rows $b72u_s:MUTANT-GREEN"; else b72u_rows="$b72u_rows mutant:red"; fi
+    else b72u_ok=0; b72u_rows="$b72u_rows $b72u_s:NOT-APPLIED"; fi
+done
+[[ $b72u_ok -eq 1 ]] && ok "(B7.2c) the unit each deploy script writes carries Restart=always once and RestartPreventExitStatus=3 once: a refused copy (exit 3) is not restarted every RestartSec into a page every 10 s; the mutant without the line is red -$b72u_rows" || bad "(B7.2c) deploy unit:$b72u_rows"
 # ══ B7.2 END ═════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 # ══ B7.3 BEGIN ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
