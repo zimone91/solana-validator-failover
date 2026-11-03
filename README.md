@@ -66,7 +66,7 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
   withdraws the take if its own node shows the holder voting, cannot answer, or is not advancing; the
   spare also samples its own head through the episode and before each external read of the take cycle
   — five to twelve bounded local reads per take cycle at the defaults (one more on an armed unit, up to
-  four more with the opt-in witness fast path), milliseconds on a healthy node (measured: +9 to
+  four more with the opt-in witness fast path), milliseconds on a healthy node (harness measurements on a v0.7 development build, not pinned by a test: +9 to
   +15 s when every local read takes 1 s with prompt tiers, up to +40 s in the measured cells with a slow
   tier as well; as a local read nears its 2 s bound the take slides later, and at 2 s or more the spare
   never takes — loudly: the veto page, then the starvation page). How that ordering holds up per failure
@@ -127,7 +127,7 @@ holds staked, steps down       pages: the swap is yours  (pages at 120s, only if
                                (retained path: took the staked identity — not run in v0.7)
 ```
 
-A spare's page (the take that Alpenglow mode withholds) also waits for its own-view reads (milliseconds on a healthy node; measured +9 to +15 s
+A spare's page (the take that Alpenglow mode withholds) also waits for its own-view reads (milliseconds on a healthy node; harness measurements on a v0.7 development build, not pinned by a test: +9 to +15 s
 when every local read takes 1 s with prompt tiers, up to +40 s in the measured cells with a slow tier as
 well; a spare whose local reads take 2 s or more never sends it, and pages the veto instead — so does one whose `TIER2` fails
 slowly (times out, or answers an error late) while `TIER3` is slow, the starvation above) after the delays
