@@ -13,7 +13,7 @@ external liveness ping.
 
 | Tier | Function | Channels | ntfy priority | Telegram retry if down? |
 |------|----------|----------|---------------|--------------------------|
-| 🚨 **Critical** | `alert()` | log + Telegram + ntfy/webhook | `urgent` | **Yes** (`_pending_alert`, re-sent on next good cycle) |
+| 🚨 **Critical** | `alert()` | log + Telegram + ntfy/webhook | `urgent` | **Yes** (`_pending_alert` holds the last undelivered page: the STANDBY re-sends it on every cycle in which its identity reads; the PRIMARY only when an internet-fail streak ends; a daemon refusing to start with `DRY_RUN=true` beside the real fence unit retries it once) |
 | ⚠️ **Warning** | `alert_warn()` | log + Telegram + ntfy/webhook | `high` | No (best-effort) |
 | ℹ️ **Info** | `alert_info()` | log + Telegram **only** | — | No (best-effort) |
 | 🩺 **Watchdog** | `heartbeat_ping()` | external URL only (liveness ping, no body) | — | n/a |
@@ -39,7 +39,7 @@ Also: `🛑` shutdown → Telegram only; `♥` heartbeat status → **log file o
 ### 🚨 Critical (`alert` → Telegram + ntfy)
 | Status | Trigger |
 |--------|---------|
-| `SWITCHED TO UNSTAKED ✅` | dropped the staked identity: internet lost / confirmed delinquency / **self-fence isolation** / a **fence-rot graceful demote** (the reason is in the message). The fence-rot reason says "in Alpenglow mode no spare takes it by itself unless it is armed (AG_ARMED_TAKE=true), otherwise an operator moves it (warm swap, docs/SAFETY.md)": an unarmed spare (the default) withholds the take and sends the `WITHHELD` page, an armed one takes it cold, voter first, once the readiness margin also holds — with or without G2: the verified-demote proof conditions a take only from the release that wires the gate (Block 6.4) |
+| `SWITCHED TO UNSTAKED ✅` | dropped the staked identity: internet lost / confirmed delinquency / the vote-latency escalation / **self-fence isolation** / the holder gap rule / a **fence-rot graceful demote** (the reason is in the message). The fence-rot reason says "in Alpenglow mode no spare takes it by itself unless it is armed (AG_ARMED_TAKE=true), otherwise an operator moves it (warm swap, docs/SAFETY.md)": an unarmed spare (the default) withholds the take and sends the `WITHHELD` page, an armed one takes it cold, voter first, once the readiness margin also holds — with or without G2: the verified-demote proof conditions a take only from the release that wires the gate (Block 6.4) |
 | `SWITCH TO UNSTAKED FAILED ❌` | `set-identity` to unstaked failed (throttled 10 min) |
 | `SWITCH BLOCKED — keypair problem` | unstaked keypair missing/empty |
 | `RECOVERED TO STAKED ✅` / `RECOVERY FAILED ❌` / `RECOVERY BLOCKED — keypair problem` | **Retained path — not sent in v0.7** (Alpenglow mode withholds the take: see the `WITHHELD` page). Only in `RECOVERY_MODE=rpc` (auto re-take) |
@@ -51,7 +51,7 @@ Also: `🛑` shutdown → Telegram only; `♥` heartbeat status → **log file o
 | `PRIMARY SELF-FENCE — HARD STOP FAILED 🚨` / `PRIMARY SELF-FENCE — HARD STOP UNCONFIRMED 🚨` | v0.6.8 (B1): hard-stop couldn't kill / couldn't confirm — INTERVENE NOW |
 | `PRIMARY SELF-FENCE WEDGED — NO HARD STOP 🚨` | v0.6.8 (B1): demote wedged and `SELF_FENCE_HARD_STOP=false` — INTERVENE NOW |
 | `PRIMARY UNREACHABLE WHILE STAKED 🚨` | staked + local validator unreachable — daemon cannot self-demote; in Alpenglow mode no spare takes the identity by itself unless it is armed (`AG_ARMED_TAKE=true`), so by default it stays here until an operator moves it; intervene |
-| `HOLDER HUNG — HARD STOP 🚨` | v0.7 (AG-3.8): the validator was last seen STAKED, its identity has been unreadable for ≥ `HOLDER_UNREACHABLE_STOP_SECS` (the admin socket is mute), it is still the same process, LOCAL `getSlot` is silent and the vote account's `lastVote` did not move while the cluster tip did — so the daemon **hard-stopped it itself** (the self-fence ladder: `systemctl stop`, `mask --runtime`, SIGTERM/SIGKILL, verify — or, for a process in state T/D that cannot handle SIGTERM, straight to `mask --runtime` and SIGKILL). The page names the three facts, the ladder branch taken (fast: process state T/D, `systemctl stop` skipped | normal ladder) and says whether the stop is **confirmed DOWN** or not (if not, the `PRIMARY SELF-FENCE — HARD STOP FAILED 🚨` / `UNCONFIRMED` page follows — INTERVENE NOW). Restart on the unstaked identity; the staked identity moves only by the warm swap |
+| `HOLDER HUNG — HARD STOP 🚨` | v0.7 (AG-3.8): the validator was last seen STAKED, its identity has been unreadable for ≥ `HOLDER_UNREACHABLE_STOP_SECS` (the admin socket is mute), it is still the same process, LOCAL `getSlot` is silent and the vote account's `lastVote` did not move while the cluster tip did — so the daemon **hard-stopped it itself** (the self-fence ladder: `systemctl stop`, `mask --runtime`, SIGTERM/SIGKILL, verify — or, for a process in state T/D that cannot handle SIGTERM, straight to `mask --runtime` and SIGKILL). The page names the three facts, the ladder branch taken (fast: process state T/D, `systemctl stop` skipped | normal ladder) and says whether the stop is **confirmed DOWN** or not (if not, the `PRIMARY SELF-FENCE — HARD STOP FAILED 🚨` / `UNCONFIRMED` page was sent just before this one — INTERVENE NOW). Restart on the unstaked identity; the staked identity moves only by the warm swap |
 | `[DRY RUN] WOULD HARD-STOP the hung validator` | v0.7 (AG-3.8): `DRY_RUN=true`: every fact of the hung-holder rung holds and a live daemon would have hard-stopped the validator now — nothing was stopped (throttled by `ALERT_THROTTLE`) |
 | `STAKED IDENTITY SEEN ELSEWHERE (possible collision) 🚨` | v0.6.9 (M5): while STAKED, gossip shows the staked pubkey at a non-self endpoint on 2 consecutive checks — detection only, no automatic action (throttled) |
 
@@ -216,7 +216,7 @@ Use it with `tail -f` or log shipping; it is intentionally **not** sent to Teleg
 
 ## Throttling
 
-Repeating conditions are throttled by `ALERT_THROTTLE` (default 600s = 10 min): the first page
+Repeating conditions are throttled by `ALERT_THROTTLE` (fixed at 600s = 10 min in this release): the first page
 is immediate, repeats wait the throttle. The rows above say where it applies — among them
 local-validator-unreachable (both roles), switch-to-unstaked-failed (PRIMARY),
 Tier2-unreachable-during-confirmation and node-too-far-behind (STANDBY), the re-check aborts, the
@@ -243,9 +243,8 @@ WEBHOOK_BODY=""                 # leave empty for ntfy; custom JSON template for
 HEARTBEAT_URL=""                # per-node alert-on-absence ping URL (healthchecks.io / Uptime-Kuma / ntfy / cronitor)
 HEARTBEAT_PING_INTERVAL=""      # ping cadence in seconds; empty → HEARTBEAT_INTERVAL (600)
 
-# --- Cadence / throttle ---
+# --- Cadence ---
 HEARTBEAT_INTERVAL=600          # log heartbeat + default watchdog cadence
-ALERT_THROTTLE=600              # min seconds between repeats of the same warning
 ```
 
 ntfy priority is set automatically: `urgent` for 🚨 Critical, `high` for ⚠️ Warning. For
