@@ -54,7 +54,7 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
 > Everything below serves that goal; the honest limits of the current implementation follow it.
 >
 > **v0.7, Alpenglow mode:** the take-side bullets below describe the *retained* take path — what the same gates guard — which v0.7 never runs. Unarmed (the default,
-> `AG_ARMED_TAKE=false`), a take every gate approves is **withheld and paged**, once per episode ([docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07)); armed
+> `AG_ARMED_TAKE=false`), a take every gate approves is **withheld and paged**, and paged again at most once per `ALERT_THROTTLE` while the same episode lasts ([docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07)); armed
 > (`AG_ARMED_TAKE=true`), the standby takes it cold, voter first, once the readiness margin also holds ([Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1)). The gates stay
 > because they decide *when the page is sent, or the take made*, and the code is the base for a later release.
 
@@ -170,12 +170,17 @@ On the **STANDBY**:
 bash deploy-failover-standby.sh
 ```
 
-The interactive installer (**Simple** / **Advanced** modes) writes `/opt/solana-failover/*.env`, installs
+The interactive installer (on the STANDBY it asks for **Simple** or **Advanced** mode; on the PRIMARY it has no mode prompt) writes `/opt/solana-failover/*.env`, installs
 a `systemd` unit, and starts in **DRY_RUN** — it logs what it *would* do and changes nothing. Verify the
-logs, then arm (PRIMARY first, then STANDBY):
+logs, then arm (PRIMARY first, then STANDBY). On the **PRIMARY**:
 ```bash
 sed -i 's/DRY_RUN=true/DRY_RUN=false/' /opt/solana-failover/failover.env
 systemctl restart solana-failover
+```
+On the **STANDBY**:
+```bash
+sed -i 's/DRY_RUN=true/DRY_RUN=false/' /opt/solana-failover/failover-standby.env
+systemctl restart solana-failover-standby
 ```
 
 ## Configuration
@@ -248,7 +253,7 @@ process group, and fails the run, named. Note the limit: these are function-leve
 - [SECURITY.md](SECURITY.md) — disclosure contact; what runs as root; what verification does and does not give you.
 - [docs/audits/](docs/audits/) — every audit round, including the one that made us retract a public overclaim and the NO-GO verdict. Each finding shipped with a control test that fails if the fix is reverted.
 - [docs/evidence/](docs/evidence/) — armed-production evidence: a real unplanned mainnet failover (2026-08-10, every gate logged) *and* the incident from the same fleet, because evidence cuts both ways.
-- [CI](.github/workflows/ci.yml) runs the full suite on bash 3.2 **and** 5.2 on every push — the 5.2 job exists because a real interpreter bug shipped and was invisible to a single-interpreter suite.
+- [CI](.github/workflows/ci.yml) runs the full suite on bash 3.2 **and** 5.2 on pushes to `main` and on pull requests — the 5.2 job exists because a real interpreter bug shipped and was invisible to a single-interpreter suite.
 
 ## License
 
