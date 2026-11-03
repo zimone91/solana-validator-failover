@@ -3000,6 +3000,17 @@ _watchdog_ready() {
     return 0
 }
 
+# B7.2: the one READY=1 outside the startup path and the HOLD exception - a REFUSED second copy (_single_instance_lock, flock status 77) under the armed unit. A Type=notify unit whose
+# main process exits before READY=1 ends `failed` whatever the exit status, and `failed` dispatches OnFailure= - the real fence, on a validator that is perfectly healthy; after READY=1 an exit status the
+# unit counts as success (SuccessExitStatus=3 in the monitor skeleton) ends it `inactive` with nothing dispatched (measured on systemd 255: systemd/README.md, "A refused second copy"). The refused copy
+# calls this after its page and leaves at once: the watchdog arms at READY and this copy pets nothing. The same gate as every function of this block - nothing is sent outside the unit.
+_watchdog_ready_refused() {
+    _watchdog_active || return 0
+    log_info "[watchdog] refused second copy: sending READY=1, then exit 3 (SuccessExitStatus=3 ends the unit as a clean stop; nothing is dispatched)"
+    _sd_notify "READY=1"
+    return 0
+}
+
 # B1 live-extension datagram. 60 s = 2× the wait-loop iteration's worst-case bound, derived:
 # get_local_identity ≤ 8 (its own timeout) + _validator_pid ≈ 0 + _startup_phase_evidence ≤ 13
 # (timeout -k 5, run bound 8 s) + sleep 5 = 26 s → ×2 = 52 → rounded UP to 60 (µs on the wire).
@@ -6381,6 +6392,10 @@ announce_config_drift() {
 # fails for another reason is told apart from a refusal. The refused copy pages ONCE - alert_warn logs the one line and sends the one page - and exits 3, having changed nothing.
 # A GUARD, not a gate: no flock on the box, an unwritable state dir or a flock that fails for another reason is one warning and the daemon starts - a monitor that does not run (the
 # holder's self-fence, the spare's take) is the larger loss. The state dir is created 0700 when missing; an existing one keeps its mode.
+# Under the armed Type=notify unit (NOTIFY_SOCKET and WATCHDOG_USEC set) the refused copy sends READY=1 after its page and before its exit 3: a Type=notify unit whose main process exits BEFORE READY=1 ends
+# `failed` whatever the exit status, and `failed` dispatches OnFailure= - the REAL fence, on a validator that is perfectly healthy (measured on systemd 255: systemd/README.md, "A refused second copy").
+# Exit 3 after READY=1 is a clean stop to the monitor skeleton (SuccessExitStatus=3), so losing the race never reaches the fence. Outside the unit (the wizards' legacy units, a copy started by hand) nothing
+# is sent; the wizards' units refuse the restart of exit 3 (RestartPreventExitStatus=3).
 _single_instance_lock() {
     local _lf="$STATE_DIR/.primary.lock" _um _rc
     ( umask 077; mkdir -p "$STATE_DIR" ) 2>/dev/null
@@ -6399,6 +6414,7 @@ _single_instance_lock() {
     case $_rc in
         0)  return 0 ;;
         77) alert_warn "🛑 SECOND INSTANCE REFUSED — another monitor of this role already runs on this node and holds ${_lf}; this copy exits 3 and has changed nothing"
+            _watchdog_ready_refused
             exit 3 ;;
         *)  log_warn "[single-instance] flock failed (rc ${_rc}) on ${_lf} - the single-instance guard is OFF"
             return 0 ;;

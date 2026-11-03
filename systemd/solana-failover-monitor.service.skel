@@ -100,6 +100,16 @@ TimeoutStartSec=90s
 # top-level loop) logs an ERROR and exits 1 → terminal `failed` → OnFailure (the fence on a
 # holder, the page on a spare). Before M5 that abort fell through to exit 0: dead and unfenced.
 Restart=no
+# THE ONE OTHER CLEAN EXIT (v0.7 Block 7, B7.2): exit 3 AFTER READY=1. A second copy of the role that loses the
+# single-instance lock (an operator's copy started by hand beside the unit, a legacy unit that won the boot race)
+# pages `SECOND INSTANCE REFUSED`, sends READY=1 and exits 3 - status 3 is that refusal's alone (the only `exit 3`
+# in either daemon). Under Type=notify an exit BEFORE READY=1 ends the unit `failed` whatever the exit status -
+# SuccessExitStatus= does not change that - and `failed` dispatches OnFailure=: the REAL fence, on a validator that
+# is perfectly healthy. After READY=1 a status the unit counts as success ends it `inactive`, with nothing
+# dispatched. MEASURED on systemd 255 (Ubuntu 24.04, six throwaway units; the table is in systemd/README.md, "A
+# refused second copy"); 249 (Ubuntu 22.04) is expected to behave the same and was not measured. Exit 1 and the
+# watchdog's SIGABRT stay failures.
+SuccessExitStatus=3
 # Watchdog expiry sends SIGABRT (the default — explicit for audit; research record assumption
 # 4). A bash monitor has nothing to core-dump: TimeoutAbortSec=5s SIGKILLs a SIGABRT-ignoring
 # monitor fast so the unit settles into `failed` (and thus the fence) without delay. The daemon

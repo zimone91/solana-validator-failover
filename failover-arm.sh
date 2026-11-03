@@ -1055,10 +1055,15 @@ _arm_probe() {
 # file, both free to call set-identity; per-process H1.3/self-fence state over a shared disk
 # stamp → one demotes, the other re-takes inside the lockout — a dual actor created at exactly
 # the moment the ceremony exists to make safe. The retirement is a CEREMONY step run BEFORE the
-# new monitor is enabled (same class as the stale fence-sibling removal). A daemon-side
-# single-instance flock is the WRONG fix and is deliberately absent: a Type=notify monitor
-# losing that race never goes READY → start timeout → terminal `failed` → OnFailure → a REAL
-# fence on a HEALTHY validator (the reviewer traced this; do not add one).
+# new monitor is enabled (same class as the stale fence-sibling removal). The retirement is THE
+# mechanism against two monitors; the ceremony does not rely on the daemons' single-instance
+# lock (v0.7 Block 7, B7.2), which is a guard for a copy the OPERATOR starts by hand. A lock
+# alone would have been the WRONG fix: a Type=notify monitor that loses the race and exits
+# BEFORE READY=1 ends `failed` whatever its exit status → OnFailure → a REAL fence on a HEALTHY
+# validator (measured on systemd 255: systemd/README.md, "A refused second copy"). It is safe
+# under the armed unit only because the refused copy sends READY=1 after its page and exits 3,
+# and the monitor skeleton counts exit 3 as success (SuccessExitStatus=3): losing the race ends
+# the unit `inactive`, nothing is dispatched.
 LEGACY_MONITOR_UNITS="solana-failover.service solana-failover-standby.service"
 _retire_legacy_monitors() {
     local u present state
@@ -1142,7 +1147,7 @@ _arm_install() {
     timeout -k 5 15 systemctl daemon-reload >/dev/null 2>&1 || _arm_refuse "INSTALL-reload" "systemctl daemon-reload failed after installing the units" "run systemctl daemon-reload by hand and read journalctl -xe, then re-run 'failover arm'"
     # Legacy-monitor retirement runs BEFORE the enable below — on any failure it REFUSES, the
     # new monitor is never enabled, and no token prints (see _retire_legacy_monitors' header
-    # for the N-is-all name-set derivation and why a daemon-side flock is the wrong fix).
+    # for the N-is-all name-set derivation, and for how the daemons' single-instance lock relates to it).
     _retire_legacy_monitors
     # The ONLY `systemctl enable` of a BLOCK-5 unit — the legacy deploy wizards enable the
     # pre-fence services (deploy-failover.sh:669/780 solana-failover.service,
