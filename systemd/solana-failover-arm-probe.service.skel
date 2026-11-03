@@ -1,6 +1,6 @@
 # SKELETON (v0.7 Block 5.3) — the §2.1-rev2.1 arm-time PROBE unit: rendered into ARM_RUNTIME_DIR
 # (default /run/systemd/system — tmpfs, ephemeral by construction) ONLY by the `failover arm`
-# ceremony, started once, then cleaned by it; NOTHING in this repository installs units.
+# ceremony, started once, then cleaned by it; no other script installs units.
 #
 # The probe is a PHYSICAL demonstration, on THIS host, of the exact chain the real fence rides:
 # READY lands via one socat pet (the §2.6 transport self-test — the ceremony's `systemctl start`

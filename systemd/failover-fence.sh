@@ -1,9 +1,9 @@
 #!/bin/bash
 # failover-fence.sh (v0.7 Block 5.1) — the REAL fence body, dispatched by
 # solana-failover-fence.service when the monitor unit reaches terminal `failed` (first missed
-# watchdog pet). Installed only by the `failover arm` ceremony at the v0.7 rollout
-# (upgrade-then-arm, release checklist); repo-tracked and CI-linted as a shippable artifact —
-# NOTHING in this repository installs it anywhere.
+# watchdog pet). Installed only by the `failover arm` ceremony, which the operator runs at the
+# v0.7 rollout (upgrade-then-arm); repo-tracked and CI-linted as a shippable artifact — no
+# other script installs it.
 #
 # Failure-direction rule (every branch below labels its direction): toward stop/page, NEVER
 # toward silently-staked. Marker direction: claim MORE fencing than proven, never less.

@@ -138,7 +138,7 @@ CHECK_INTERVAL=3                          # seconds between Tier 1 checks (norma
 TURBO_INTERVAL=1                          # seconds between checks (turbo: when delinquency detected)
 CONNECTIVITY_TARGETS=("8.8.8.8" "1.1.1.1" "9.9.9.9")
 CONNECTIVITY_TIMEOUT=1                    # seconds per ping
-CONNECTIVITY_RETRIES=3                    # failed rounds before switch (3 x 3s = 9s)
+CONNECTIVITY_RETRIES=3                    # failed rounds before switch: 3 x CHECK_INTERVAL 3 s + 3 failed rounds of 1.5-2.5 s = 13.5-16.5 s (the code's bounds added up, not pinned by a test; 17 s measured on the pair)
 MAX_VOTE_LATENCY=0                        # 0 = only delinquency, >0 = trigger on N slots behind
 DELINQUENCY_RETRIES=5                     # Tier 1 confirmations before escalating to Tier 2
 RECOVERY_COOLDOWN=120                     # seconds after switch before allowing switch-back
@@ -253,7 +253,7 @@ SELF_FENCE_VOTE_LAG_RESET_CYCLES=3
 # v0.7 (AG-3.4): the HOLDER'S GAP RULE. A frozen host (VM pause, live migration, suspend, a stalled hypervisor) resumes the validator and this
 # monitor together, and the monitor's pending sleep has expired. When the time since the END of its previous cycle is >= this many seconds while
 # the node holds the STAKED identity, a spare may have taken it during the freeze: demote FIRST (switch_to_unstaked, before check_internet, the
-# manual-change detection and the self-fence) - after the cycle's loop-top reads and the identity read (milliseconds on a healthy host, at most ~27 s with every bounded read at its limit), not a whole cycle later. Not a restart rule: a restarted monitor has no stamp
+# manual-change detection and the self-fence) - after the cycle's loop-top reads and the identity read (milliseconds on a healthy host; about 24 s with the due reads at their bounds - gate probe 10, version 3, vote-admission 3, identity 8 - and 34 s with the probe's second read, more on an armed unit: arithmetic from the code's bounds, not pinned by a test), not a whole cycle later. Not a restart rule: a restarted monitor has no stamp
 # (H3 handles restarts). PAIRING RULE - P cannot read the spare's env, so the rule lives in both env examples and docs/SAFETY.md and the defaults
 # are pinned by the facts job: the spare's TAKEOVER_DELAY must be >= HOLDER_GAP_DEMOTE_SECS + 30 (the spare's earliest take after the holder's
 # last vote is TAKEOVER_DELAY plus its gates; a holder frozen longer than the delay may wake after a take and must demote before it votes;
@@ -280,8 +280,9 @@ HOLDER_GAP_DEMOTE_SECS=30
 # from 13 to 23). That cycle then spends up to 5 s on LOCAL getSlot and about 1 s on the external read; the fast branch kills at once. From the hang the validator
 # is dead 48 to 51 s later on the fast branch, 50 to 53 s on the normal ladder when `systemctl stop` returns after 2 s, 70 to 73 s when it is wedged for its whole
 # bound (the reads at their bounds, the host's own work counted as zero: every second the external read takes beyond 1 s adds a second; Frankendancer reads the
-# identity over a 5 s RPC: 0, 9, 17, 25, 33 s, dead 44 to 47 s). The spare's earliest take (TAKEOVER_DELAY 60 from the anchor, plus the gates) is 65 to 73 s after
-# the last vote. Raise the one, raise the other.
+# identity over a 5 s RPC: 0, 9, 17, 25, 33 s, dead 44 to 47 s). The spare's earliest take (TAKEOVER_DELAY 60 from the anchor, plus the gates, at MAX_DELINQUENT_SLOTS 15) is 73 s after
+# the last vote at 3.7 slots/s and 79 s at 2.5 (104 / 125 s at 0), the readiness margin aside (it can only hold a take later); not
+# re-derived for the Alpenglow rate. Raise the one, raise the other.
 HOLDER_UNREACHABLE_STOP_SECS=30
 # v0.6.8 (B1): bound the demote/promote admin-socket calls. set-identity / authorized-voter run on the
 # SAME admin RPC socket that get_local_identity wraps in `timeout 8` ("can hang indefinitely under heavy
@@ -1825,7 +1826,8 @@ _fresh_proof_recheck() {
 # between a TIER2 failure and TIER3, and between the confirm's own reads), so no gap holds more than ONE
 # external read — but one read can be long: the gossip advisory's getClusterNodes and the external confirm's
 # TIER3 read are bounded at 15 s (fix round 3 — the delta panel 2's CKB-2: this text said a tier read is 10 s),
-# every other tier read at 10 s, and the re-check (inside the span: no sample may sit there) is ONE sampler
+# the liveness sampler's reads at 10 s, the gossip prefetch, the relinquish-flip reads and (in turbo, as the take
+# cycle runs) the confirm's TIER2 reads at 5 s, and the re-check (inside the span: no sample may sit there) is ONE sampler
 # call — TIER2's read, then TIER3's after a TIER2 failure. The baseline is the oldest sample that chain leaves
 # within 16 s — MEASURED on the real loop (test_own_view (7c-age); fix round 3's 512-cell sweep: every age the
 # same at MAX_DELINQUENT_SLOTS 0 / 15, CHECK_INTERVAL 5 / 3, 2.5 / 3.7 slots/s; GOSSIP_VERIFY as noted): TIER2
@@ -2573,7 +2575,7 @@ _ag_take_withheld() {
         notadmitted|unstaked) _vat="${_vat} - the holder's silence is likely a VAT lapse, not a death" ;;
     esac
     _vh=$(_vh_class "$_ep")
-    _t="${_why} - every gate FO has said the take would happen now, and ${_ag_lead:-in Alpenglow mode FO never takes the staked identity automatically: nothing was done.}"
+    _t="${_why} - every gate FO has said the take would happen now, and ${_ag_lead:-the primary never re-takes the staked identity automatically: nothing was done.}"
     _t="${_t} Holder silent ${_since}."
     _t="${_t} This node: finalized slot ${_slot}; getHealth ${_health}; validator ${_ver}."
     _t="${_t} VAT admission: ${_vat}."
@@ -2787,9 +2789,9 @@ _validator_pid() {
 # ── [one-arm-state] shared classifier + startup refusal — BYTE-IDENTICAL in both daemons (test_one_arm_state) ──
 # v0.7 (Block 5 skeleton, №1): after Block 5 there are TWO arm-states — DRY_RUN in the env, and
 # WHICH fence unit file is installed (§2.3: arm-state IS which unit — structural, never an env
-# flag). The two canonical paths are written ONLY by the future `failover arm` ceremony; NOTHING
-# in this repository installs them, so on every host today (and on the macOS harness) neither
-# path exists, _fence_unit_state answers "none", and the refusal below is STRUCTURALLY INERT.
+# flag). The two canonical paths are written ONLY by the `failover arm` ceremony (failover-arm.sh,
+# run by the operator); until it has run on a host (and on the macOS harness) neither path
+# exists, _fence_unit_state answers "none", and the refusal below is STRUCTURALLY INERT there.
 FENCE_UNIT_REAL="/etc/systemd/system/solana-failover-fence.service"
 FENCE_UNIT_PAGE_ONLY="/etc/systemd/system/solana-failover-fence-page-only.service"
 
@@ -2859,12 +2861,12 @@ _enforce_one_arm_state() {
 # ── [watchdog] monitor-side fence integration — BYTE-IDENTICAL in both daemons (test_monitor_fence_integration) ──
 # v0.7 (Block 5.2): the native-systemd-watchdog transport + pre-READY live extension + §2.2
 # fence-marker consumption (DESIGN-v0.7-ADDENDUM §2.2/§2.6, design-records/
-# research-systemd-watchdog.md, systemd/failover-fence.sh). STRUCTURALLY INERT on today's hosts,
+# research-systemd-watchdog.md, systemd/failover-fence.sh). STRUCTURALLY INERT outside the armed unit,
 # by construction: every watchdog function below no-ops unless PID 1 itself exported
 # NOTIFY_SOCKET AND WATCHDOG_USEC into our environment (only the Block-5 monitor unit —
-# Type=notify + WatchdogSec — does that, and NOTHING in this repository installs it), and the
+# Type=notify + WatchdogSec — does that, and only the `failover arm` ceremony installs it), and the
 # marker consumer acts only when a fence outcome marker actually exists under FENCE_MARKER_DIR
-# (only the real fence (5.1) writes those; nothing installs it either). A v0.6.9-style host —
+# (only the real fence (5.1) writes those, and only the ceremony installs it). A v0.6.9-style host —
 # the daemon under the old Type=simple unit, or run by hand — sees ZERO behavior change: no
 # datagram, no startup probe, no chunked sleep, no marker action beyond two [[ -e ]] tests on
 # files that do not exist there. Asserted, not asserted-in-prose: the inertness cases plus the
@@ -3110,12 +3112,13 @@ _marker_same_boot() {
     return 0
 }
 
-# ── §2.2 marker consumption (Block 5.2 part C) ── called FIRST in startup_checks (HOLD-1, fix
-# round) — after the env is loaded, BEFORE every fatal startup gate (binary/keypair/one-arm/
-# numeric/vote-liveness) and the validator wait, deliberately:
+# ── §2.2 marker consumption (Block 5.2 part C) ── called right after the single-instance lock in
+# startup_checks (HOLD-1, fix round; that lock's refusal exits 3 after READY=1, a clean stop that never
+# reaches the fence) — after the env is loaded, BEFORE every other fatal startup gate
+# (binary/keypair/one-arm/numeric/vote-liveness) and the validator wait, deliberately:
 #   - a fenced-STOPPED node's identity is unreadable forever, so the wait loop would spin and
 #     the HOLD page would never fire if this ran later;
-#   - ANY fatal startup refusal that precedes this call would, on a fenced node under the armed
+#   - ANY other fatal startup refusal that preceded this call would, on a fenced node under the armed
 #     unit, loop monitor-exit → `failed` → OnFailure → fence-breaker → restart-monitor →
 #     exit… forever (unbounded: StartLimitIntervalSec=0), paging or journal-spamming each pass;
 #     entering HOLD first parks the node loudly instead, and the operator's post-recovery
@@ -6427,7 +6430,7 @@ startup_checks() {
     echo "============================================="
 
     _single_instance_lock     # v0.7 (Block 7, B7.2): FIRST of all - a second copy of this role exits 3 here, before it can consume a fence marker, read an identity or touch the state
-    _consume_fence_markers    # v0.7 (Block 5.2 §2.2 → fix round HOLD-1): FIRST — before EVERY fatal startup gate, so a fenced node parks in HOLD instead of looping a fatal exit-1 through OnFailure → fence-breaker → restart (see the function header); same-boot fenced-stopped → HOLD; stale → warn + monitor; fenced-demoted → note + clear on first clean cycle; inert when no marker exists (every host today)
+    _consume_fence_markers    # v0.7 (Block 5.2 §2.2 → fix round HOLD-1): SECOND, right after the single-instance lock — before EVERY other fatal startup gate, so a fenced node parks in HOLD instead of looping a fatal exit-1 through OnFailure → fence-breaker → restart (see the function header); same-boot fenced-stopped → HOLD; stale → warn + monitor; fenced-demoted → note + clear on first clean cycle; inert when no marker exists (every host today)
 
     if [[ "$VALIDATOR_TYPE" == "frankendancer" ]]; then
         command -v fdctl &>/dev/null || { log_error "fdctl not found"; exit 1; }

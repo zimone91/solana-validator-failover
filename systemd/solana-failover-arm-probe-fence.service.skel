@@ -1,6 +1,6 @@
 # SKELETON (v0.7 Block 5.3) — the §2.1-rev2.1 arm-time PROBE FENCE: rendered into
 # ARM_RUNTIME_DIR (tmpfs — ephemeral by construction) ONLY by the `failover arm` ceremony and
-# cleaned by it; NOTHING in this repository installs units.
+# cleaned by it; no other script installs units.
 #
 # Dispatched by PID 1 when the probe unit reaches terminal `failed` (its watchdog firing on the
 # deliberately-stopped pets). Its ONLY action is writing the marker file the ceremony waits
