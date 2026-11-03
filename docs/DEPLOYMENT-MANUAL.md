@@ -130,7 +130,7 @@
 
 ```
 ┌──────────────────────────────────┐     ┌──────────────────────────────────┐
-│       PRIMARY (v0.7.0-rc1)       │     │      STANDBY (v0.7.0-rc1)        │
+│       PRIMARY (v0.7)             │     │      STANDBY (v0.7)              │
 │                                  │     │                                  │
 │  LOCAL: delinquency (every 1-3s) │     │  LOCAL: delinquency (every 1-3s) │
 │  LOCAL: internet ping (parallel) │     │  LOCAL: own health (getHealth)   │
@@ -141,7 +141,7 @@
 └──────────────────────────────────┘     └──────────────────────────────────┘
                                                           │
                                          ┌────────────────▼────────────────┐
-                                         │      BACKUP (v0.7.0-rc1)        │
+                                         │      BACKUP (v0.7)              │
                                          │  TAKEOVER_DELAY=120s            │
                                          │  GOSSIP_VERIFY=false            │
                                          │  Fence: vote-liveness (real!)   │
