@@ -690,6 +690,7 @@ User=root
 ExecStart=/opt/solana-failover/solana-primary-failover.sh
 Restart=always
 RestartSec=10
+RestartPreventExitStatus=3
 LimitNOFILE=1000000
 TimeoutStopSec=15
 KillSignal=SIGTERM
