@@ -714,8 +714,8 @@ timeline is identical to v0.6.6 (~70s).
 > the read fails, or the spare's own head is not advancing — and the spare samples its own head through
 > the episode and before each external read of the take cycle: five to twelve bounded local reads per
 > take cycle at the defaults (one more on an armed unit, up to four more with the opt-in witness fast
-> path), milliseconds on a healthy node; measured +9 to +15 s when every local read takes 1 s with prompt
-> tiers (+9 s at the wizard's preset), up to +40 s in the measured cells with a slow tier as well; as a
+> path; the counts are not pinned by a test), milliseconds on a healthy node; measured +9 to +15 s when every local read takes 1 s with prompt
+> tiers (+9 s at the wizard's preset), up to +40 s in the measured cells with a slow tier as well (harness measurement on a v0.7 development build, not pinned by a test); as a
 > local read nears its 2 s bound the take slides later, and at 2 s or more the spare never takes (loudly:
 > the veto page, then the starvation page) (`docs/SAFETY.md`, *What it costs, measured*). Nor does a spare
 > whose `TIER2` fails slowly — times out, or answers an error or garbage late — while `TIER3` is slow:
