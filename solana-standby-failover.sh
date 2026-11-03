@@ -820,6 +820,14 @@ window_mostly_clear() {
 # which would enforce the cooldown right after a restart and block a legitimate
 # FIRST takeover during an incident.
 
+# v0.7 (Block 7, B7.3): is STATE_FILE cut short? save_state replaces the file atomically (tmp + mv), so a file this build wrote is always whole. One cut INSIDE a
+# line is what the older writer ("> $STATE_FILE": truncate, then print) left when it died mid-write - and half a number reads as a smaller, canonical one (4200 cut to 42:
+# a lockout that looks long expired). Every line the writer prints ends in a newline, so a file that is empty or does not end with one is cut short. A cut exactly at a
+# line boundary is a valid shorter file and loads like any other: the loader reads keys in any order, and a file from before v0.6.9 has no SAVE_TS at all. rc 0 = not cut.
+_state_complete() {
+    [[ "$(tail -c 1 "$STATE_FILE" 2>/dev/null | wc -l | tr -d ' ')" == "1" ]]
+}
+
 # v0.6.9 (H3): fetch one numeric field from STATE_FILE (the key's LAST line wins).
 # v0.7 (Block 6.3 fix round 2, R5 — P2-INERT-4): through the ONE canonical-integer validator. rc 0 +
 # the value when that line holds a canonical integer; rc 1 (nothing printed) when the key is absent or
@@ -858,6 +866,15 @@ load_state() {
         fi
     fi
     [[ -r "$STATE_FILE" ]] || return 0
+    # v0.7 (Block 7, B7.3): a file cut short (_state_complete) is read by NOTHING - half a line is no value, and the stamps lost with it are the safety
+    # ones: the self-fence re-take lockout and the takeover cooldown that the armed take leans on. The restart then HOLDS both IN FULL from now (the rule for a non-canonical
+    # stamp, R5: fail toward HELD) instead of starting them at 0 = expired; ONE warning says so, and the daemon goes on. (The task text says "starts from defaults": a lost
+    # lockout is the one default that can be wrong in the dangerous direction - a re-take of the identity this node just fenced.)
+    if ! _state_complete; then
+        log_warn "State: $STATE_FILE is cut short (it is empty or does not end with a newline: a write died half-way, or a hand edit) - nothing is restored from it; the takeover cooldown and the re-take lockout re-hold IN FULL from now (fail toward HELD)"
+        LAST_TAKEOVER_TIME=$(mono_now); SELF_FENCE_DEMOTE_TIME=$LAST_TAKEOVER_TIME
+        return 0
+    fi
     # v0.7 (Block 3): cross-reboot semantics for the persisted MONOTONIC safety stamps. mono_now
     # values are only comparable within the boot that wrote them, so save_state records BOOT_ID and
     # this compares it to the current boot:
@@ -1053,8 +1070,11 @@ save_state() {
     # per main-loop cycle (plain overwrite — no fsync storm).
     local _role="unstaked"
     [[ -n "$STAKED_PUBKEY" && "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]] && _role="staked"
-    local _SAVE_W _SAVE_M
+    local _SAVE_W _SAVE_M _tmp="${STATE_FILE}.tmp"
     _SAVE_W=$(date +%s); _SAVE_M=$(mono_now)
+    # v0.7 (Block 7, B7.3): the whole save is written BESIDE the state file (same directory = same filesystem) and renamed over it, mode 0600 from the first
+    # moment the name exists: a crash mid-write leaves the previous COMPLETE save in place. The old "> $STATE_FILE" truncated first - a crash lost the
+    # re-take lockout and the cooldown, which the armed take leans on. No fsync: a power loss may still drop the LAST save, never tear one.
     {
         printf 'LAST_TAKEOVER_TIME=%s\n'            "$(_m2w "$LAST_TAKEOVER_TIME")"
         printf 'LAST_TAKEOVER_MONO=%s\n'            "${LAST_TAKEOVER_TIME:-0}"
@@ -1073,9 +1093,11 @@ save_state() {
         printf 'ROLE_AT_SAVE=%s\n'                  "$_role"
         printf 'BOOT_ID=%s\n'                       "$(boot_id)"   # v0.7 (Block 3): the persisted stamps above are mono_now values — only comparable within this boot (see load_state)
         printf 'SAVE_TS=%s\n'                       "$(date +%s)"
-    } > "$STATE_FILE" 2>/dev/null \
-        || { log_warn "Cannot write $STATE_FILE — state not persisted"; return 0; }
-    chmod 600 "$STATE_FILE" 2>/dev/null || true
+    } > "$_tmp" 2>/dev/null \
+        || { log_warn "Cannot write $_tmp — state not persisted"; rm -f "$_tmp" 2>/dev/null; return 0; }
+    chmod 600 "$_tmp" 2>/dev/null || true
+    mv -f "$_tmp" "$STATE_FILE" 2>/dev/null \
+        || { log_warn "Cannot replace $STATE_FILE — state not persisted"; rm -f "$_tmp" 2>/dev/null; return 0; }
     return 0
 }
 
