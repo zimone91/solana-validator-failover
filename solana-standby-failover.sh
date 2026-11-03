@@ -7208,11 +7208,43 @@ _delinq_drift_note() {
 
 # ========================= STARTUP ============================================
 
+# v0.7 (Block 7, B7.2): ONE standby monitor per node. Two copies - the operator's manual start beside the unit is the case - run the same decisions on the same node and each can call
+# set-identity; the second one is refused here, before it consumes a fence marker (it would park in HOLD beside the first), before it reads an identity and before it touches the
+# state file. flock -n on "$STATE_DIR/.standby.lock", held on descriptor 8 for the life of this process (children inherit it, the unit's cgroup kill ends them with the daemon) and
+# released by its exit, however it ends: a lock file left behind by a dead copy is simply unlocked and is acquired. Exit status 77 is flock's own "held by another" (-E), so a flock that
+# fails for another reason is told apart from a refusal. The refused copy pages ONCE - alert_warn logs the one line and sends the one page - and exits 3, having changed nothing.
+# A GUARD, not a gate: no flock on the box, an unwritable state dir or a flock that fails for another reason is one warning and the daemon starts - a monitor that does not run (the
+# holder's self-fence, the spare's take) is the larger loss. The state dir is created 0700 when missing; an existing one keeps its mode.
+_single_instance_lock() {
+    local _lf="$STATE_DIR/.standby.lock" _um _rc
+    ( umask 077; mkdir -p "$STATE_DIR" ) 2>/dev/null
+    if ! command -v flock >/dev/null 2>&1; then
+        log_warn "[single-instance] flock not found - the single-instance guard is OFF (a second copy of this monitor would not be refused)"
+        return 0
+    fi
+    _um=$(umask); umask 077
+    { exec 8>>"$_lf"; } 2>/dev/null; _rc=$?
+    umask "$_um"
+    if [[ $_rc -ne 0 ]]; then
+        log_warn "[single-instance] cannot open $_lf - the single-instance guard is OFF"
+        return 0
+    fi
+    flock -n -E 77 8; _rc=$?
+    case $_rc in
+        0)  return 0 ;;
+        77) alert_warn "🛑 SECOND INSTANCE REFUSED — another monitor of this role already runs on this node and holds ${_lf}; this copy exits 3 and has changed nothing"
+            exit 3 ;;
+        *)  log_warn "[single-instance] flock failed (rc ${_rc}) on ${_lf} - the single-instance guard is OFF"
+            return 0 ;;
+    esac
+}
+
 startup_checks() {
     echo "============================================="
     echo " Solana STANDBY Failover v0.6.10 (3-TIER RPC)"
     echo "============================================="
 
+    _single_instance_lock     # v0.7 (Block 7, B7.2): FIRST of all - a second copy of this role exits 3 here, before it can consume a fence marker, read an identity or touch the state
     _consume_fence_markers    # v0.7 (Block 5.2 §2.2 → fix round HOLD-1): FIRST — before EVERY fatal startup gate, so a fenced node parks in HOLD instead of looping a fatal exit-1 through OnFailure → fence-breaker → restart (see the function header); same-boot fenced-stopped → HOLD; stale → warn + monitor; fenced-demoted → note + clear on first clean cycle; inert when no marker exists (every host today)
 
     if [[ "$VALIDATOR_TYPE" == "frankendancer" ]]; then

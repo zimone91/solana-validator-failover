@@ -34,6 +34,10 @@ All notable changes are documented here. Versions follow the project's internal 
     verifies that the rendered monitor unit carries the `ExecStop=`; both deploy scripts now write the ledger directory they detect into `LEDGER_PATH`.
 
 - **Block 7, trimmed for rc1 — what the armed pair and the monitor-only phase still need.** One suite, `tests/test_block7_rc1.sh`, one section per item.
+  - **B7.2 — one monitor per role per node:** the first thing `startup_checks` does is `flock -n -E 77` on `$STATE_DIR/.primary.lock` / `.standby.lock` (descriptor 8, held for the life of the process, released by its exit however it ends;
+    a lock file left by a dead copy is simply unlocked). A second copy - an operator's manual start beside the unit is the case - pages `SECOND INSTANCE REFUSED` once, logs that one line and exits 3, before it can consume a fence marker,
+    read an identity or touch the state file; the first copy is unaffected. A guard, not a gate: no `flock` on the box, an unopenable lock file or a `flock` that fails for another reason is one warning and the daemon starts. The state
+    dir is created 0700 when missing and keeps its mode when it exists.
   - **B7.3 — the state file is replaced atomically, and a file cut short is never read:** `save_state` writes `<state file>.tmp` beside the state file (mode 0600, same directory = same filesystem) and renames it
     over with `mv -f`, so a crash mid-write leaves the previous whole save (the old `> state` truncated first - a crash then lost the 600-s re-take lockout and the takeover cooldown that the armed take leans on).
     A state file that is empty or does not end with a newline (a number cut in half reads as a smaller, canonical one) is read by nothing: `load_state` logs one WARN and HOLDS the takeover cooldown and the re-take

@@ -382,6 +382,149 @@ b71_ctl_pair selection-fence-word-dropped P F "$B71R"'s/|monitor|exit|/|zz-monit
 # ══ B7.1 END ═════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 # ══ B7.2 BEGIN ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+# ── (B7.2) one instance per role ────────────────────────────────────────────────────────────────────────────────────────
+echo ""; echo "─── (B7.2) a second copy of the same role is refused at startup: flock -n on \$STATE_DIR/.<role>.lock, exit 3 within 2 s, one log line, one page SECOND INSTANCE REFUSED ───"
+# S-7: nothing stopped an operator's manual start beside the unit; two copies of one role run the same decisions and each can call set-identity. The lock is the first thing startup_checks does - before the fence markers are
+# consumed (a second copy would park in HOLD beside the first) and before any identity read. The checks drive the REAL _single_instance_lock in separate bash processes: the holder keeps its descriptor open until it is
+# killed, the second copy must exit 3. flock(1) is util-linux (the Linux legs); the macOS box has none, so there the same syscall is made by a python3 shim on the INHERITED descriptor (the lock belongs to the open file
+# description the daemon holds, exactly as flock(1) does it).
+b72_bin="$WORK/b72-bin"; mkdir -p "$b72_bin"; b72_bash=$(command -v bash)
+b72_how=""
+if command -v flock >/dev/null 2>&1; then
+    b72_how="flock(1)"
+elif command -v python3 >/dev/null 2>&1; then
+    cat > "$b72_bin/flock" <<'PYEOF'
+#!/usr/bin/env python3
+import fcntl, sys
+a = sys.argv[1:]
+nb = False; code = 1; fd = None; i = 0
+while i < len(a):
+    if a[i] == "-n":
+        nb = True
+    elif a[i] == "-E":
+        i += 1; code = int(a[i])
+    else:
+        fd = int(a[i])
+    i += 1
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if nb else 0))
+except BlockingIOError:
+    sys.exit(code)
+sys.exit(0)
+PYEOF
+    chmod +x "$b72_bin/flock"; b72_how="a python3 fcntl shim"
+fi
+if [[ -z "$b72_how" ]]; then
+    echo "⏭ SKIP: (B7.2) neither flock(1) nor python3 on this box: the single-instance guard is tested on the Linux legs"
+else
+    b72_mk() {   # b72_mk <daemon script> <dir> <hold|try|noflock> -> prints the path of a world script: the seam sourced, the senders and the log mocked (every call appended to <dir>/log, <dir>/tg, <dir>/wh), STATE_DIR = ${B72_STATE_DIR:-<dir>/state}
+        local script="$1" dir="$2" mode="$3" src w; src=$(cut_src "$script"); w="$WORK/b72-world.$$.$RANDOM.sh"
+        mkdir -p "$dir"
+        {
+            printf 'set +e\numask 022\nsource %q 2>/dev/null\n' "$src"
+            printf 'D=%q; STATE_DIR="${B72_STATE_DIR:-$D/state}"\n' "$dir"
+            printf 'log_info() { :; }; log_warn() { echo "WARN $*" >> "$D/log"; }; log_error() { echo "ERROR $*" >> "$D/log"; }\n'
+            printf 'send_telegram() { echo "TG $*" >> "$D/tg"; }; send_webhook() { echo "WH $*" >> "$D/wh"; }\n'
+            [[ "$mode" != "noflock" ]] || printf 'command() { if [[ "$1" == "-v" && "$2" == "flock" ]]; then return 1; fi; builtin command "$@"; }\n'
+            case "$mode" in
+                hold)  printf '_single_instance_lock; echo "LOCKED rc=$?" > "$D/hold.out"; : > "$D/ready"; read -r _ < "$D/hold.fifo"\n' ;;
+                *)     printf '_single_instance_lock; echo "LOCKED rc=$?" > "$D/try.out"; echo "STDERR-STILL-OPEN" >&2\n' ;;
+            esac
+        } > "$w"
+        printf '%s' "$w"
+    }
+    b72_run() {   # b72_run <script> <dir> <mode> [path prefix] -> the world's exit status; its stderr in <dir>/err
+        local w; w=$(b72_mk "$1" "$2" "$3")
+        PATH="${4:-$b72_bin}:$PATH" "$b72_bash" "$w" 2> "$2/err"; local rc=$?
+        rm -f "$w"; return $rc
+    }
+    p_b72_two() {   # the holder alive -> the second copy exits 3 inside 2 s with ONE log line and ONE page (telegram + webhook), the first copy is unaffected; the holder killed -> its stale lock file is acquired, quietly
+        local script="$1" role d t0 rc hpid hw n
+        role=$(basename "$script" | cut -d- -f2)
+        d="$WORK/b72a.$RANDOM"; mkdir -p "$d"; mkfifo "$d/hold.fifo"
+        hw=$(b72_mk "$script" "$d" hold)
+        PATH="$b72_bin:$PATH" "$b72_bash" "$hw" 2>/dev/null & hpid=$!
+        n=0; while [[ ! -e "$d/ready" && $n -lt 100 ]]; do sleep 0.1; n=$((n + 1)); done
+        [[ -e "$d/ready" && "$(cat "$d/hold.out" 2>/dev/null)" == "LOCKED rc=0" ]] || { kill -9 "$hpid" 2>/dev/null; return 1; }
+        t0=$SECONDS; b72_run "$script" "$d" try; rc=$?
+        [[ $rc -eq 3 && $(( SECONDS - t0 )) -le 2 && ! -e "$d/try.out" ]] || { kill -9 "$hpid" 2>/dev/null; return 1; }
+        [[ "$(wc -l < "$d/log" | tr -d ' ')" == "1" && "$(grep -c '^WARN .*SECOND INSTANCE REFUSED' "$d/log")" == "1" \
+           && "$(wc -l < "$d/tg" | tr -d ' ')" == "1" && "$(grep -c 'SECOND INSTANCE REFUSED' "$d/tg")" == "1" \
+           && "$(wc -l < "$d/wh" | tr -d ' ')" == "1" && "$(grep -c 'SECOND INSTANCE REFUSED' "$d/wh")" == "1" \
+           && -f "$d/state/.$role.lock" ]] || { kill -9 "$hpid" 2>/dev/null; return 1; }
+        kill -0 "$hpid" 2>/dev/null || return 1          # the first copy is unaffected
+        kill -9 "$hpid" 2>/dev/null; { wait "$hpid"; } 2>/dev/null
+        rm -f "$d/log" "$d/tg" "$d/wh"
+        b72_run "$script" "$d" try; rc=$?
+        [[ $rc -eq 0 && "$(cat "$d/try.out" 2>/dev/null)" == "LOCKED rc=0" && ! -e "$d/log" && ! -e "$d/tg" && ! -e "$d/wh" && "$(cat "$d/err")" == "STDERR-STILL-OPEN" ]]
+    }
+    p_b72_dir() {   # a missing state dir (and its missing parents) is created 0700; an existing one keeps its mode
+        local script="$1" d="$WORK/b72b.$RANDOM" m1 m2
+        mkdir -p "$d"
+        B72_STATE_DIR="$d/new/sub/dir" b72_run "$script" "$d" try
+        m1=$(ls -ld "$d/new/sub/dir" 2>/dev/null | cut -c1-10)
+        mkdir -p "$d/old"; chmod 755 "$d/old"
+        B72_STATE_DIR="$d/old" b72_run "$script" "$d" try
+        m2=$(ls -ld "$d/old" 2>/dev/null | cut -c1-10)
+        [[ "$m1" == "drwx------" && "$m2" == "drwxr-xr-x" && -f "$d/old/.$(basename "$script" | cut -d- -f2).lock" ]]
+    }
+    p_b72_guard() {   # no flock on the box, a flock that fails for another reason than a held lock, a lock file that cannot be opened: ONE WARN, the daemon starts, no page - it is a guard, not a gate
+        local script="$1" d="$WORK/b72c.$RANDOM" rc1 rc2 rc3 role; role=$(basename "$script" | cut -d- -f2)
+        mkdir -p "$d"
+        b72_run "$script" "$d" noflock; rc1=$?
+        [[ $rc1 -eq 0 && "$(wc -l < "$d/log" | tr -d ' ')" == "1" && "$(grep -c '^WARN .*single-instance guard is OFF' "$d/log")" == "1" && ! -e "$d/tg" && "$(cat "$d/try.out")" == "LOCKED rc=0" ]] || return 1
+        rm -rf "$d"; mkdir -p "$d/rc2bin"; printf '#!/bin/sh\nexit 2\n' > "$d/rc2bin/flock"; chmod +x "$d/rc2bin/flock"
+        b72_run "$script" "$d" try "$d/rc2bin"; rc2=$?
+        [[ $rc2 -eq 0 && "$(wc -l < "$d/log" | tr -d ' ')" == "1" && "$(grep -c '^WARN .*flock failed (rc 2)' "$d/log")" == "1" && ! -e "$d/tg" && "$(cat "$d/try.out")" == "LOCKED rc=0" ]] || return 1
+        rm -rf "$d"; mkdir -p "$d/state/.$role.lock"      # the lock "file" is a directory: it cannot be opened for writing
+        b72_run "$script" "$d" try; rc3=$?
+        [[ $rc3 -eq 0 && "$(wc -l < "$d/log" | tr -d ' ')" == "1" && "$(grep -c '^WARN .*cannot open' "$d/log")" == "1" && ! -e "$d/tg" && "$(cat "$d/try.out")" == "LOCKED rc=0" ]]
+    }
+    b72_fn() { sed -n '/^_single_instance_lock() {/,/^}/p' "$1" | grep -v '^[[:space:]]*#'; }
+    b72_first_two() {   # the first two statements of startup_checks after the banner
+        sed -n '/^startup_checks() {/,/^}/p' "$1" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*echo "' | grep -v '^[[:space:]]*$' | sed -n '2,3p' | sed 's/^[[:space:]]*//; s/[[:space:]]*#.*$//' | tr '\n' ';'
+    }
+    p_b72_shape() {   # the lock is the FIRST statement of startup_checks, before _consume_fence_markers; one flock call, one exit 3, one lock file name per role, descriptor 8 opened in a group so the shell's own stderr is not redirected
+        local script="$1" role f; role=$(basename "$script" | cut -d- -f2); f=$(b72_fn "$script")
+        [[ "$(grep -c '^_single_instance_lock() {' "$script")" == "1" && "$(printf '%s\n' "$f" | grep -c -F 'flock -n -E 77 8')" == "1" && "$(printf '%s\n' "$f" | grep -c -F 'exit 3 ;;')" == "1" \
+           && "$(printf '%s\n' "$f" | grep -c -F "local _lf=\"\$STATE_DIR/.$role.lock\"")" == "1" && "$(printf '%s\n' "$f" | grep -c -F '{ exec 8>>"$_lf"; } 2>/dev/null')" == "1" \
+           && "$(printf '%s\n' "$f" | grep -c -F 'alert_warn "🛑 SECOND INSTANCE REFUSED')" == "1" \
+           && "$(b72_first_two "$script")" == "_single_instance_lock;_consume_fence_markers;" ]]
+    }
+    b72_all=1; b72_rows=""
+    for b72_s in "$PRIMARY" "$STANDBY"; do
+        b72_n=$(basename "$b72_s" | cut -d- -f2)
+        p_b72_two "$b72_s" && b72_rows="$b72_rows $b72_n:two" || { b72_all=0; b72_rows="$b72_rows $b72_n:TWO-COPIES"; }
+        p_b72_dir "$b72_s" && b72_rows="$b72_rows dir" || { b72_all=0; b72_rows="$b72_rows DIR-MODE"; }
+        p_b72_guard "$b72_s" && b72_rows="$b72_rows guard" || { b72_all=0; b72_rows="$b72_rows GUARD-GATES"; }
+        p_b72_shape "$b72_s" && b72_rows="$b72_rows shape" || { b72_all=0; b72_rows="$b72_rows SHAPE"; }
+    done
+    [[ $b72_all -eq 1 ]] && ok "(B7.2a) _single_instance_lock (primary and standby; flock via $b72_how): while a copy holds the lock a second copy exits 3 inside 2 s with ONE log line and ONE page on each channel ('SECOND INSTANCE REFUSED') and the first copy lives on; once the holder is killed its stale lock file is acquired, quietly, and the shell's stderr is still open; a missing state dir is created 0700 and an existing one keeps its mode; no flock, a flock failing with another status than 77, or a lock file that cannot be opened is one WARN and the daemon starts; the call is the first statement of startup_checks, before _consume_fence_markers -$b72_rows" || bad "(B7.2a) single instance:$b72_rows"
+    b72_ok=1; b72_crows=""
+    b72_ctl() {   # b72_ctl <label> <script> <sed expr> <predicate>: the predicate holds on the shipped script and FAILS on the mutant
+        local label="$1" script="$2" expr="$3" pred="$4" m="$WORK/b72-$1.sh" rv mv_
+        if ! mutate "$script" "$expr" "$m"; then b72_ok=0; b72_crows="$b72_crows $label:NOT-APPLIED"; return; fi
+        "$pred" "$script" && rv=y || rv=n; "$pred" "$m" && mv_=y || mv_=n
+        if [[ "$rv" == "y" && "$mv_" == "n" ]]; then b72_crows="$b72_crows $label:red"; else b72_ok=0; b72_crows="$b72_crows $label:[shipped=$rv,mutant=$mv_]"; fi
+    }
+    b72_both() { b72_ctl "pr-$1" "$PRIMARY" "$2" "$3"; b72_ctl "sb-$1" "$STANDBY" "$2" "$3"; }
+    b72_both no-lock        's|^    flock -n -E 77 8; _rc=\$?$|    true; _rc=0|' p_b72_two
+    b72_both exit-1         's|^            exit 3 ;;$|            exit 1 ;;|' p_b72_two
+    b72_both no-page        's|^        77) alert_warn "|        77) true "|' p_b72_two
+    b72_both page-twice     's|^\(        77) \)\(alert_warn .*\)$|\1\2; \2|' p_b72_two
+    b72_both fd-closed      's|^        0)  return 0 ;;$|        0)  exec 8>\&-; return 0 ;;|' p_b72_two
+    b72_both stderr-leak    's|^    { exec 8>>"\$_lf"; } 2>/dev/null; _rc=\$?$|    exec 8>>"$_lf" 2>/dev/null; _rc=$?|' p_b72_two
+    b72_both dir-mode       's|^    ( umask 077; mkdir -p "\$STATE_DIR" ) 2>/dev/null$|    ( mkdir -p "$STATE_DIR" ) 2>/dev/null|' p_b72_dir
+    b72_both chmod-existing 's|^    ( umask 077; mkdir -p "\$STATE_DIR" ) 2>/dev/null$|    ( umask 077; mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR" ) 2>/dev/null|' p_b72_dir
+    b72_both other-rc-refuses '/^        \*)  log_warn "\[single-instance\] flock failed/ s|^        \*)  |        *)  exit 3; |' p_b72_guard
+    b72_both no-flock-refuses '/command -v flock/,/^    fi$/ s|^        return 0$|        exit 3|' p_b72_guard
+    b72_both cannot-open-refuses '/cannot open/,/^    fi$/ s|^        return 0$|        exit 3|' p_b72_guard
+    b72_ctl pr-lock-name-shared "$PRIMARY" 's|\.primary\.lock|.standby.lock|' p_b72_shape
+    b72_ctl sb-lock-name-shared "$STANDBY" 's|\.standby\.lock|.primary.lock|' p_b72_shape
+    b72_both call-removed   '/^    _single_instance_lock     # /d' p_b72_shape
+    [[ $b72_ok -eq 1 ]] && ok "(B7.2b) CONTROLS: no flock call, exit 1 instead of 3, no page, a page twice, the descriptor closed after the lock (the lock dies with it), a stderr redirection that sticks to the shell, a state dir created without the 0700 umask, a chmod of an existing dir, a refusal on another flock status / on no flock / on an unopenable lock file, one lock name for both roles, the call removed - each turns its case red:$b72_crows" || bad "(B7.2b) a control is not red:$b72_crows"
+fi
+
 # ══ B7.2 END ═════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 # ══ B7.3 BEGIN ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
