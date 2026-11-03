@@ -79,7 +79,7 @@
 > `SELF_FENCE_ISOLATION_SECS`), raises the STANDBY `TAKEOVER_DELAY` preset 20 → **60** (= PRIMARY
 > self-fence worst case 30 + a 30s cross-node margin), adds the STANDBY/BACKUP knobs
 > `EXPECTED_PRIMARY_SELF_FENCE_SECS`/`SELF_FENCE_MARGIN_SECS` with a **loud startup warning** when
-> `TAKEOVER_DELAY < EXPECTED + margin`, and enables fast-detect (`MAX_DELINQUENT_SLOTS=15`) so the
+> `TAKEOVER_DELAY < EXPECTED + margin`, and enables fast-detect (`MAX_DELINQUENT_SLOTS=15`; the wizard preset is 24 since v0.7) so the
 > end-to-end takeover stays ~70s. **N2:** the no-answer self-fence now demotes BEFORE its alert (the
 > safety action never waits on notification I/O). The anti-double-sign margin is **unchanged** — only
 > availability is traded (faster PRIMARY relinquish). No fence/liveness/window/switch/takeover body
@@ -130,7 +130,7 @@
 
 ```
 ┌──────────────────────────────────┐     ┌──────────────────────────────────┐
-│       PRIMARY (v0.6.2)           │     │      STANDBY (v0.6.2)            │
+│       PRIMARY (v0.7.0-rc1)       │     │      STANDBY (v0.7.0-rc1)        │
 │                                  │     │                                  │
 │  LOCAL: delinquency (every 1-3s) │     │  LOCAL: delinquency (every 1-3s) │
 │  LOCAL: internet ping (parallel) │     │  LOCAL: own health (getHealth)   │
@@ -141,7 +141,7 @@
 └──────────────────────────────────┘     └──────────────────────────────────┘
                                                           │
                                          ┌────────────────▼────────────────┐
-                                         │      BACKUP (v0.6.2)            │
+                                         │      BACKUP (v0.7.0-rc1)        │
                                          │  TAKEOVER_DELAY=120s            │
                                          │  GOSSIP_VERIFY=false            │
                                          │  Fence: vote-liveness (real!)   │
@@ -606,7 +606,7 @@ configs are complete before the wiring lands.
 | CHECK_INTERVAL | 3 | 3 | 5 |
 | TURBO_INTERVAL | 1 | 1 | 1 |
 | TAKEOVER_DELAY | — | **60** | 120 |
-| MAX_DELINQUENT_SLOTS | — | 15 | 15 |
+| MAX_DELINQUENT_SLOTS | — | 24 | 24 |
 | SELF_FENCE_ISOLATION_SECS | 30 | — | — |
 | SELF_FENCE_NOANSWER_SECS | **30** | — | — |
 | EXPECTED_PRIMARY_SELF_FENCE_SECS | — | **30** | **30** |
@@ -741,7 +741,10 @@ timeline is identical to v0.6.6 (~70s).
 > its self-fence demotes it at ~30s. A spare must take only **after** that, with margin.
 > **Pre-N1 fast presets (`TAKEOVER_DELAY=10`/`20`) are UNSAFE and must not be used** — they would let
 > the spare take before the PRIMARY self-fences (double-sign on heal). The examples below use the
-> shipped-safe presets.
+> v0.6.6 presets (`TAKEOVER_DELAY=60`, `MAX_DELINQUENT_SLOTS=15`). The v0.7 wizard writes 24 for
+> `MAX_DELINQUENT_SLOTS`: the first delinquent read then comes 9 slots later (about 4 s at 2.5 slots/s,
+> less at a faster rate), and every STANDBY and BACKUP line after it moves with it. The PRIMARY lines
+> do not move, so the ordering shown holds.
 
 ### STANDBY — shipped v0.6.6 (MAX_DELINQUENT_SLOTS=15, TAKEOVER_DELAY=60)
 

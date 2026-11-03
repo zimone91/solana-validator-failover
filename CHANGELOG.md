@@ -188,7 +188,7 @@ All notable changes are documented here. Versions follow the project's internal 
   `❌` lines if any, and the output tail (a suite killed mid-run by `set -e`, a syntax error or a
   crash prints no `❌` at all — its last lines carry the reason), and EVERY diagnostic line in
   both branches is tagged with the suite that produced it (`exit rc=1 [test_x.sh]`,
-  `tail [test_x.sh]: …`) — an untagged line in a log of 51 suites is unattached, and a grep by
+  `tail [test_x.sh]: …`) — an untagged line in a log of 61 suites is unattached, and a grep by
   suite name missed it and read as "the diagnostics did not fire".
 - **Block 6.2 — the G2 verified-demote proof provider (§2.4 + [rev3/№2]).** The first real
   provider behind the Block-6.1 proof gate, in a new `[g2-provider]` twin region (byte-identical
@@ -246,7 +246,7 @@ All notable changes are documented here. Versions follow the project's internal 
   requirement in front of the staked mutation, so a false PROVEN cannot by itself cause a take —
   it can only fail to BLOCK a take the pre-existing v0.6.x logic already authorized, and a
   double-sign needs BOTH a false G2 proof AND a false-frozen vote observation. New suite
-  `tests/test_g2_provider.sh` (51 suites): reds-first per detector, the ratified №2 control, the
+  `tests/test_g2_provider.sh` (51 suites at landing): reds-first per detector, the ratified №2 control, the
   multilayer rule over the enumerated layer set (each layer neutered alone → the attack falls
   through to a NAMED surviving layer; ALL neutered → the forged acceptance red restored),
   boundedness/pet censuses from live event order, inertness censuses, constants census extended
@@ -273,8 +273,9 @@ All notable changes are documented here. Versions follow the project's internal 
   spare's own staked tenure; and the clock-budget attribution is corrected — the ±budget compare
   bounds a vantage's CHAIN-HEAD lag, not the local system clock CRDS purge depends on, which is
   now a named residual in `docs/SAFETY.md`. The batch merged two reads into one, so the region's
-  per-op pet census moved 5 → 4 per daemon (totals 42/43 → 41/42) and its worst added per-cycle
-  gap fell 36 s → 24 s; the CI wall-clock pins were re-derived and are UNCHANGED at 21/22.
+  per-op pet census moved 5 → 4 per daemon (totals 42/43 → 41/42 at landing; `tests/test_monitor_fence_integration.sh`
+  (14b) pins 51/56 at this release, definition lines included) and its worst added per-cycle gap fell
+  36 s → 24 s; the CI wall-clock pins were re-derived and did not move (21/22 at landing, 22/23 at this release).
   **Reviewer conditions (second fix round, in this same entry).** (C1) The severity statement
   above — "a double-sign needs BOTH a false G2 proof AND a false-frozen vote observation" — is
   formally true but MEANINGLESS on the default config, where `G2_VANTAGE_A`/`G2_VANTAGE_B` derive
@@ -314,7 +315,8 @@ All notable changes are documented here. Versions follow the project's internal 
   outcome only under the exact-`true` `ALLOW_UNFENCED_TAKEOVER` lever (screams at every armed
   start AND per bypassed take). Floors are PER-PROVIDER, never global: `_derive_proof_floors`
   is the ONE derivation site — `elapsed_floor = W + B + MARGIN_ELAPSED` (=100 at the shipped
-  30/60) with `N_HEAD = slots(MARGIN_ELAPSED)` (=25) COUPLED mechanically (staleness tolerance
+  30/60) with `N_HEAD = slots(MARGIN_ELAPSED − 1)` (= 22 at the shipped `MARGIN_ELAPSED` = 10; this block built it
+  as `slots(MARGIN_ELAPSED)` = 25) COUPLED mechanically (staleness tolerance
   cannot be raised without visibly raising the floor); `PROOF_MAX_AGE=50` is derived from a
   full verdict→mutation read census (the recheck's sampler worst = 2×`curl -m 10` + 2 armed
   pets + glue = 36 s; healthy path 2–4 s — convergence proven with margin) and enforced at the
@@ -342,7 +344,7 @@ All notable changes are documented here. Versions follow the project's internal 
   names the stale-bound re-arm residual (a holder re-armed with larger bounds + a forgotten
   re-pair is a double-sign direction the spare cannot detect by construction; the holder's arm
   refusing to complete without printing the token is the operational protection). New suite
-  `tests/test_proof_gate.sh` (50 suites): reds-first, forged-token matrix, per-signal
+  `tests/test_proof_gate.sh` (50 suites at landing): reds-first, forged-token matrix, per-signal
   mutation controls (incl. the defense-in-depth pair: one neutered floor layer does NOT reopen
   the hole, both neutered restores the red), broadened constants census
   (`local`/`declare`/`export`/`readonly`/arithmetic spellings all bite).
@@ -370,7 +372,7 @@ All notable changes are documented here. Versions follow the project's internal 
   for any re-rot). During the grace the holder is voting and paging, so the spare's
   silence-based path cannot fire against it — the window adds no double-sign exposure (the
   reasoning lives as a comment at the grace check). New suite `tests/test_fence_rot.sh`
-  (49 suites): reds-first against the pre-5.4 daemons (armed+masked-fence → zero pages, zero
+  (49 suites at landing): reds-first against the pre-5.4 daemons (armed+masked-fence → zero pages, zero
   reads, no clock — logged), per-property red→green, measured episodic table
   (rot→heal→re-rot → demote at 240+grace, stale-anchor control at grace−history), never-instant
   and storm and first-immediate and gate controls (all `mutate()`-loud), both pet censuses
@@ -406,7 +408,7 @@ All notable changes are documented here. Versions follow the project's internal 
   (`$(timeout … systemctl` beside the funnel); (10a) now asserts the `[DRY RUN]` adapter title
   it always claimed; `_fence_rot_check`/`_rot_capture_intent` added to the HOLD baits; the
   pre-impl vacuity census corrected to the MEASURED sets (7 at land, 4 after this round —
-  recorded in the suite header). 50→67 checks; monitor skeleton R8 comment split per the
+  recorded in the suite header). 50→67 checks at landing; monitor skeleton R8 comment split per the
   container record (249: never runs; 255: re-dispatches per iteration — either way outside the
   one-hop contract).
 - **Block 5.3 — the `failover arm` ceremony** (`failover-arm.sh`, repo root: SHIPPABLE — in
@@ -444,7 +446,7 @@ All notable changes are documented here. Versions follow the project's internal 
   verify re-classifies and must agree (render→verify). The §2.1 pairing token
   (`v0.7|gen=N|watchdog=…|relinquish_bound=…|fence=…|host=…|crc`) bumps a persisted generation
   counter and the arm refuses to complete without printing it. New suite
-  `tests/test_arm_ceremony.sh` (48 suites): reds-first, every actuator stubbed, every root in
+  `tests/test_arm_ceremony.sh` (48 suites at landing): reds-first, every actuator stubbed, every root in
   mktemp (the hard boundary — no test touches /etc, /run/systemd, or a real systemd),
   refuse-gate mutation controls on every gate, arm↔fence byte-parity on the reused
   unit-discovery helpers.
@@ -469,7 +471,7 @@ All notable changes are documented here. Versions follow the project's internal 
   file holding the bumped value; the "only enable" claim is scoped to the Block-5 unit set
   everywhere it is printed or written; all five `systemd/*.skel` render sources joined
   SHA256SUMS (integrity artifacts for root-installed units); `tests/run_all.sh` dispatches via
-  `"${BASH:-bash}"` (interpreter-drift class closed). Suite 56 → 85 checks, mutation controls
+  `"${BASH:-bash}"` (interpreter-drift class closed). Suite 56 → 85 checks at landing, mutation controls
   M1–M10. (5-lens adversarial verification panel; folded into the Block
   5.2 commit — every fix red-first, every panel mutant re-killed, every attack scenario re-run).
   **5.3 fix round 2** (reviewer blockers, both reds observed on a tool-bearing machine —
@@ -488,7 +490,7 @@ All notable changes are documented here. Versions follow the project's internal 
   observed), and the `P1-capability` refusal now prints the failing daemon's MEASURED counts
   against the REQUIRED floors instead of static shipped-daemon figures (the old "carry 7 and
   35+" disagreed with the reviewer's count of the same daemons — illustrative numbers drift,
-  measurements do not). Suite 85 → 97 checks, controls M1–M11.
+  measurements do not). Suite 85 → 97 checks at landing, controls M1–M11.
   **FF-B1 (false-fence blocker):** the wedged-demote paths now pet their COMPLETED timed-out
   ops — a `timeout` rc 124/137 return IS a completed bounded op (the monitor is alive and
   remediating): the primary's `switch_to_unstaked` rc-124 branches pet BEFORE entering
@@ -517,8 +519,9 @@ All notable changes are documented here. Versions follow the project's internal 
   contradicted the daemons' own derivation) and pins `TimeoutStartSec=90s` (= the systemd
   default) so the part-D no-EXTEND-sent bound is stated where it binds; the honest pet
   call-site count is pinned structurally in the suite: 34 per-op/end-of-cycle call sites in
-  the primary, 35 in the standby (`grep -cE '^[[:space:]]*_watchdog_pet\b'` minus the
-  definition line — the earlier "36 per daemon" figure counted the definition + a comment).
+  the primary, 35 in the standby at landing (`grep -cE '^[[:space:]]*_watchdog_pet\b'` minus the
+  definition line — the earlier "36 per daemon" figure counted the definition + a comment); at this
+  release the same count is 50 and 55 (the grep reads 51 and 56).
   **HOLD fixes:** `_consume_fence_markers` now runs FIRST in `startup_checks` — before EVERY
   fatal gate (binary/keypair/one-arm/numeric/vote-liveness), so a fenced node parks in HOLD
   instead of looping a fatal exit-1 through OnFailure → fence-breaker → restart (suite-driven,
@@ -536,7 +539,7 @@ All notable changes are documented here. Versions follow the project's internal 
   17+ monitoring/takeover entrypoints as bait and case (7) asserts ZERO fire in HOLD (M6a/M6b
   now red); a primary drive-cycle case covers the primary's first-clean-cycle fenced-demoted
   clear (M7-primary now red); end-of-cycle pet CALL-line counts (5/4) and TOTAL pet call-site
-  counts (35/36 incl. definitions) are pinned structurally — a call deleted or `:`-neutered
+  counts (35/36 incl. definitions at landing; 51/56 at this release) are pinned structurally — a call deleted or `:`-neutered
   under its kept comment trips the pin (the M1b class now red); a full non-delay cycle with
   the №8 lever ON asserts ZERO voter adds (M11x now red); the suite's inertness grep widened
   to socat|NOTIFY_SOCKET|WATCHDOG_USEC|READY=1|WATCHDOG=1|EXTEND_TIMEOUT_USEC in code outside
