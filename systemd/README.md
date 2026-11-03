@@ -1,4 +1,4 @@
-# `systemd/` — v0.7 Block-5 fence scripts (real) + unit skeletons (installed by NOTHING)
+# `systemd/` — v0.7 Block-5 fence scripts (real) + unit skeletons (installed only by the `failover arm` ceremony)
 
 **Two kinds of file live here (Block 5.1 + 5.3):**
 
@@ -6,8 +6,7 @@
   ladder/§2.2 verdict body, tested by `tests/test_fence_script.sh`) and
   `failover-fence-page-only.sh` (the §2.3 structural-DRY_RUN twin). They are in `SHA256SUMS`,
   the CI shellcheck list, and `run_all.sh`'s parse gate. Shippable is NOT installed: their
-  EXECUTION on a host happens only at the v0.7 rollout (`failover arm`, upgrade-then-arm, per
-  the release checklist).
+  EXECUTION on a host happens only at the v0.7 rollout (`failover arm`, upgrade-then-arm).
 - **Every `.service.skel` stays a skeleton — repo-only.** Units are installed ONLY by the
   `failover arm` ceremony (`failover-arm.sh` at the repo root — shipped since Block 5.3,
   EXECUTED only at the rollout; tested by `tests/test_arm_ceremony.sh` with every root in
@@ -16,12 +15,15 @@
   render into `ARM_RUNTIME_DIR` (default `/run/systemd/system` — tmpfs, ephemeral by
   construction) for the §2.1-rev2.1 probe, and are cleaned by the ceremony in the same run.
 
-Nothing in this repository writes to `/etc/systemd/system`, runs `systemctl enable`, or
-`daemon-reload`s on behalf of these Block-5 units. (Scoped deliberately: the legacy deploy
+Nothing in this repository except `failover-arm.sh` — the `failover arm` ceremony, run by the
+operator — writes to `/etc/systemd/system`, runs `systemctl enable`, or `daemon-reload`s on behalf
+of these Block-5 units. (Scoped deliberately: the legacy deploy
 scripts DO enable and install the pre-fence `solana-failover` service they ship today —
 `deploy-failover.sh`, `deploy-failover-standby.sh` — and are superseded at the v0.7 rollout;
-no script other than `failover-arm.sh` and the daemons' classifier constants references any
-Block-5 unit name.) The **Block-5 entry blocker** gates the first
+no script outside `tests/` other than `failover-arm.sh`, `failover-fence.sh` (the monitor
+unit it restarts) and the daemons' unit-name constants (the two fence-unit paths the
+arm-state classifier tests, the monitor unit the fence-rot sweep reads) references any
+Block-5 unit name in code.) The **Block-5 entry blocker** gates the first
 real installation: **all four nodes confirmed on v0.6.10+** (the patsub alert-death class —
 pre-v0.6.10 daemons on bash 5.2 silently fail to deliver Telegram pages, and the fence's
 semantics is "does not act, loudly"). The blocker lifts on host answers, not on code readiness.
@@ -65,8 +67,8 @@ ends **any other way** — a bash expansion error discards the whole top-level l
 number in arithmetic was the measured case) — logs an `ERROR` and exits **1**: terminal `failed` →
 `OnFailure` (the fence on a holder, the page on a spare). Before the fix that abort fell through to
 `Main loop exited.` and exit 0 — the armed monitor sat dead and unfenced. The shipped v0.6.x unit
-(`Restart=always`) restarts the daemon either way. The one other deliberate exit is a **refused
-second copy** (exit 3 after `READY=1`, next section).
+(`Restart=always`) restarts the daemon either way. The one other exit status is **3**, a **refused
+second copy**: under the armed unit it exits after `READY=1` (next section).
 
 ## A refused second copy (Block 7, B7.2): `READY=1`, then exit 3
 
@@ -240,9 +242,13 @@ wording could not ship, both directions traced:
    record `verify-rot-properties.md`, private tree). Verified fence-killing drift pages
    CRITICAL immediately (exact element + exact fix) and, only after `FENCE_ROT_GRACE` of
    persistence while verifiably STAKED, gracefully self-demotes via the daemon's existing
-   demote path (§2.1-rev2.1 №2). Structurally inert on every un-armed host. What remains for
-   Block 6 (deliberately NOT daemon work here): the zero-stake verification of the unstaked
-   key — it is G2's arm condition and its consumer/wiring is spare-side.
+   demote path (§2.1-rev2.1 №2). Structurally inert on every un-armed host. The zero-stake
+   verification of the unstaked key (G2's arm condition) is not daemon work: it ships in the
+   ceremony as precondition P5, on a spare's arm — for each `PRIMARY_UNSTAKED_PUBKEY` entry in
+   the env file, a bounded `getVoteAccounts` read (`TIER2_RPC`, then `TIER3_RPC`); the arm
+   refuses (`REFUSE[P5-staked-unstaked]`) when a vote account lists the key as `nodePubkey` with
+   activated stake, or when no usable answer comes (cannot-verify refuses); an empty
+   `PRIMARY_UNSTAKED_PUBKEY` skips it, said aloud.
 
 ## Frankendancer: STOP-ONLY fencing in v0.7 (named limitation — reviewer-packet item)
 
@@ -271,7 +277,7 @@ execs these, CI ships none of them, and the monitor skeleton's `<role>` placehol
 uninstallable as-is); for the two fence scripts and `failover-arm.sh` the guard is that no
 code path in this repository RUNS them — they ship in the release artifact, the ceremony is
 the only thing that places the fence bodies on a host, and the ceremony itself runs only by
-the operator's hand at the rollout (upgrade-then-arm, release checklist). Their tests mock
+the operator's hand at the rollout (upgrade-then-arm). Their tests mock
 every actuator (`systemctl`, the admin-socket CLI, `pgrep`, `/proc` reads, `socat`, `flock`)
 and point every arm root (`ARM_SYSTEMD_DIR`, `ARM_RUNTIME_DIR`, `ARM_INSTALL_DIR`,
 `FENCE_MARKER_DIR`, `ARM_STATE_DIR`) at mktemp; no real `systemctl` call runs from any test.
@@ -284,6 +290,6 @@ and point every arm root (`ARM_SYSTEMD_DIR`, `ARM_RUNTIME_DIR`, `ARM_INSTALL_DIR
    ignoring"), the failing unit reaches terminal `failed` normally, and the existing unit in a
    two-unit list dispatches despite the missing sibling. Load-bearing in ANY design (every
    un-armed host names a nonexistent unit) — executed, not reasoned (the gate-B class). Full
-   record: the project design records (`verify-onfailure-missing-unit.md`). The §2.1-rev2.1
+   record: a private design record, not in this repository. The §2.1-rev2.1
    arm-time probe remains: the record proves systemd's semantics, the probe proves THIS host's
    wiring.

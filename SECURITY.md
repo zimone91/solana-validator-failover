@@ -57,10 +57,11 @@ curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover
 sh install.sh
 ```
 
-Everything shipped is plain bash: the entire tool can be read in an afternoon, and that remains
-the strongest verification available. CI runs the full suite on every push (bash 3.2 and 5.2 —
-the 5.2 job exists because a real interpreter-semantics bug shipped in v0.6.9 and was caught only
-by running on both; see `.github/workflows/ci.yml`).
+Everything shipped is plain text (bash scripts, the POSIX `sh` installer `install.sh`, two env
+templates, five systemd unit skeletons): the entire tool can be read in an afternoon, and that
+remains the strongest verification available. CI runs the full suite on pushes to `main` and on
+pull requests (bash 3.2 and 5.2 — the 5.2 job exists because a real interpreter-semantics bug
+shipped in v0.6.9 and was caught only by running on both; see `.github/workflows/ci.yml`).
 
 ## Audit history
 
