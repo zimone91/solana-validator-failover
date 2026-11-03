@@ -63,10 +63,12 @@ All notable changes are documented here. Versions follow the project's internal 
     four constants equal, equal to this heading's version, and carried by line 2 of both env templates, the title of `docs/DEPLOYMENT-MANUAL.md` and the two start-page entries of `docs/NOTIFICATIONS.md`; no printed label of
     those scripts may carry a literal version. The tag name stays the release gate's business - the constant is the string the operator sees.
 
-- **AG-1 — Alpenglow mode: FO never takes the staked identity automatically.** Always on, no knob; every figure and limit is in
+- **AG-1 — Alpenglow mode: by default FO never takes the staked identity automatically** (the one opt-in, the armed cold take, is
+  AG-3 above). Always on, no knob turns the mode off; every figure and limit is in
   [docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07).
   - **The stop:** the standby's `take_staked_identity` and the primary's `switch_to_staked` (`RECOVERY_MODE=rpc`) return right after the
-    own-view veto, before the `DRY_RUN` branch and every admin-socket call; the pre-warm (`PREWARM_VOTER_ADD`) is inert. One page per
+    own-view veto, before the `DRY_RUN` branch and every admin-socket call - since AG-3 the standby goes on only when it is armed and the
+    readiness margin holds (the cold take, voter first: AG-3 above); the pre-warm (`PREWARM_VOTER_ADD`) is inert. One page per
     episode, `TAKEOVER WITHHELD` / `RECOVERY WITHHELD — Alpenglow mode`, with the holder's silence, this node's finalized slot and
     `getHealth` class, its version against `MIN_VALIDATOR_VERSION` (default 4.4.0), the VAT admission, the vote-history state and the
     operator path; repeated at most once per `ALERT_THROTTLE`.

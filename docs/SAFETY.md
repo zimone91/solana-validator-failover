@@ -161,7 +161,7 @@ duplicates, not equivocation; the holder's exit is not a guarantee when the fork
 
 ## The cross-node invariant
 
-> **Alpenglow mode (v0.7):** the take this section guards is the *retained* path — v0.7 pages instead of taking. The ordering below still decides when the page is sent.
+> **Alpenglow mode (v0.7):** the take this section guards is the *retained* path — by default v0.7 pages instead of taking, and a standby armed with `AG_ARMED_TAKE=true` makes the cold take instead (voter first, once the readiness margin also holds: [Armed cold take](#armed-cold-take-opt-in-rc1)) behind the same gates. The ordering below still decides when the page is sent and, armed, the earliest moment of the cold take.
 
 A spare must not take the staked identity until the previous holder has **provably relinquished** it.
 Two independent mechanisms enforce this:
@@ -442,7 +442,7 @@ under this escalation contract:
    re-rot starts a fresh one.
 3. **Graceful self-demote** only if the rot persists past the grace *and* the node still verifiably
    holds the staked identity: the standard set-identity-to-unstaked path (a PRIMARY's
-   `switch_to_unstaked`, a promoted STANDBY's `give_back_identity`). In this release the spare then takes
+   `switch_to_unstaked`, a promoted STANDBY's `give_back_identity`). On the retained path the spare then takes
    on its timer path — the v0.6.x semantics, with or without G2: the demoted holder stops voting and the
    spare's detection runs its course; once Block 6.4 wires the relinquish-proof gate, it takes via the
    verified-demote proof. That is an automatic failover to the healthy side where a spare watches the
@@ -615,7 +615,8 @@ testnet and 3 of 3 mainnet samples, `processed` 1–2 slots ahead — so the Tow
 below use does not exist. The healthy vote lag measured p50 2, p90 8, max 9 slots (665 mainnet accounts), which is why the wizard's fast-delinquency preset is
 **24** slots (it was 15). Everything below this paragraph was measured at 2.5 or 3.7 slots/s under TowerBFT. A figure that bounds a time from above (a holder
 fence's worst case, the lag a spare may carry) still holds — 2.5 slots/s is the slowest rate there is; a figure that is a minimum (the earliest a spare's take can
-come after the last vote) belongs to the take path, which AG mode never runs, and stays as measured for the release that re-derives it (AG-3). In the tables below
+come after the last vote) belongs to the take path, which AG mode ends in the page by default and, on a standby armed with `AG_ARMED_TAKE=true`, in the cold take
+(voter first, once the readiness margin also holds); it stays as measured, not re-derived in this release. In the tables below
 *the wizard preset* is the set the v0.6.6–v0.6.9 wizards wrote — `TAKEOVER_DELAY` 60, `CHECK_INTERVAL` 3, `GOSSIP_VERIFY` on, `MAX_DELINQUENT_SLOTS` 15 — which is
 what those worlds ran; the v0.7 wizard writes 24.
 
@@ -788,9 +789,11 @@ included (a documented residual, `test_elapsed_provider` (3l-R5a)).
    - the **finalized** bank is the per-cycle entry gate (the own-bank delinquency check that opens
      the episode), and inside an open episode its "current" verdict now **re-anchors the countdown**
      (a full `TAKEOVER_DELAY` after the last such cycle) and restarts watchdog-elapsed's silence;
-   - the **confirmed** view is a **mutation-edge condition**: the last read before `set-identity` on
-     every take path is the own-view veto (one bounded `LOCAL_RPC` read after the fresh re-check —
-     [the spare's own view](#the-spares-own-view-v07-block-631)).
+   - the **confirmed** view is a **mutation-edge condition**: on every take path the own-view veto (one
+     bounded `LOCAL_RPC` read after the fresh re-check — [the spare's own view](#the-spares-own-view-v07-block-631))
+     is the last read before the Alpenglow stop, which withholds the take of an unarmed spare (the default)
+     and the primary's re-take; on an armed spare the stop makes one more bounded `LOCAL_RPC` read, the
+     readiness margin's `getSlot` *finalized*, and that is the last `LOCAL_RPC` read before `set-identity`.
 
    **Finding 1 (6.3) — the own bank did not bound the exposure; since 6.3.1 it does.** In 6.3 the own
    bank was read once, at the take cycle's start, at finalized, and a "current" verdict vetoed that
