@@ -412,8 +412,8 @@ All notable changes are documented here. Versions follow the project's internal 
   container record (249: never runs; 255: re-dispatches per iteration — either way outside the
   one-hop contract).
 - **Block 5.3 — the `failover arm` ceremony** (`failover-arm.sh`, repo root: SHIPPABLE — in
-  SHA256SUMS, shellcheck, and the parse gate — but EXECUTED only at the v0.7 rollout,
-  upgrade-then-arm, per the release checklist; nothing in this repository runs it). Structure:
+  SHA256SUMS, shellcheck, and the parse gate — but EXECUTED only by the operator at the v0.7
+  rollout, upgrade-then-arm (docs/DEPLOYMENT-MANUAL.md, "Arming the fence"); nothing in this repository runs it). Structure:
   preconditions → probe → install → verify → token, every precondition refusing with the exact
   fix printed. Preconditions: self-v0.7 patsub-guard check on the installed daemons (the
   rev3.2 release condition self-enforced — the ceremony IS the upgrade-then-arm checkpoint);
