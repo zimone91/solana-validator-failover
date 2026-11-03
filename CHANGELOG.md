@@ -38,7 +38,9 @@ All notable changes are documented here. Versions follow the project's internal 
     read an identity or touch the state file; the first copy is unaffected. A guard, not a gate: no `flock` on the box, an unopenable lock file or a `flock` that fails for another reason is one warning and the daemon starts. The state
     dir is created 0700 when missing and keeps its mode when it exists.
     The units the deploy scripts write (`Restart=always`, `RestartSec=10`) carry `RestartPreventExitStatus=3`: a copy the lock refused is not restarted every 10 s into a page every 10 s (exit status 3 is
-    the refusal's alone). The armed monitor unit is `Restart=no` already; units installed by an older deploy keep their old text until they are re-deployed.
+    the refusal's alone). The armed monitor unit is `Restart=no`, and a `Type=notify` unit whose main process exits before `READY=1` ends `failed` whatever the exit status - `failed` dispatches `OnFailure=`, the real
+    fence, on a healthy validator (measured on systemd 255; `systemd/README.md`, "A refused second copy"). So under the armed unit (`NOTIFY_SOCKET` and `WATCHDOG_USEC` set) the refused copy sends `READY=1` after its page and
+    exits 3, and the monitor skeleton carries `SuccessExitStatus=3` once: the unit ends `inactive`, nothing is dispatched; outside the unit nothing is sent. Units installed by an older deploy keep their old text until they are re-deployed.
   - **B7.3 — the state file is replaced atomically, and a file cut short is never read:** `save_state` writes `<state file>.tmp` beside the state file (mode 0600, same directory = same filesystem) and renames it
     over with `mv -f`, so a crash mid-write leaves the previous whole save (the old `> state` truncated first - a crash then lost the 600-s re-take lockout and the takeover cooldown that the armed take leans on).
     A state file that is empty or does not end with a newline (a number cut in half reads as a smaller, canonical one) is read by nothing: `load_state` logs one WARN and HOLDS the takeover cooldown and the re-take
@@ -429,8 +431,11 @@ All notable changes are documented here. Versions follow the project's internal 
   commands printed, the new monitor NOT enabled, no token; the unit file stays on disk for the
   operator to delete. Two Restart=always monitors on one host share the env + state file and
   race set-identity — one demotes, the other re-takes inside the lockout; the fix is this
-  ceremony step, deliberately NOT a daemon-side flock, which would turn the losing notify
-  monitor into a never-READY start timeout → OnFailure → REAL fence on a healthy validator),
+  ceremony step, not a daemon-side flock: a lock alone would turn the losing notify monitor
+  into an exit before READY → `failed` → OnFailure → REAL fence on a healthy validator. The
+  daemons' lock that Block 7 added (B7.2) is only a guard for a hand-started copy, and it is
+  safe under the armed unit because the refused copy sends READY=1 and exits 3, which the
+  monitor skeleton counts as success (`SuccessExitStatus=3`)),
   enables the monitor (the only `systemctl enable` of a Block-5 unit — supersession of the
   legacy deploy services is an ACTION the ceremony performs, not a plan), never touches
   the validator unit; post-install

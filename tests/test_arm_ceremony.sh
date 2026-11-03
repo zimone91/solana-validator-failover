@@ -999,8 +999,10 @@ fi
 # ACTIVE + ENABLED → the ceremony completed a full REAL arm (token printed, new monitor enabled)
 # with ZERO legacy stop/disable events — two Restart=always monitor daemons on one host, same
 # env + state file, racing set-identity (scratchpad/red-block53-round2.log). The fix is a
-# ceremony step, NOT a daemon-side flock (a notify monitor losing that race never goes READY →
-# start timeout → OnFailure → a REAL fence on a healthy validator — the reviewer's trace).
+# ceremony step, NOT a daemon-side flock (a notify monitor losing that race and exiting before READY=1 ends
+# `failed` → OnFailure → a REAL fence on a healthy validator — the reviewer's trace). Block 7 (B7.2) later added the
+# daemons' lock as a guard for a hand-started copy; it is safe under the armed unit because a refused copy sends
+# READY=1 before its exit 3 and the monitor skeleton counts exit 3 as success (SuccessExitStatus=3).
 echo ""; echo "─── (15) legacy monitor: stop+disable+VERIFY before the new enable; refuse on failure; absent → untouched ───"
 new_mock
 printf '[Service]\nExecStart=/opt/solana-failover/solana-primary-failover.sh\nRestart=always\n' > "$MOCK_DIR/etc-systemd/solana-failover.service"

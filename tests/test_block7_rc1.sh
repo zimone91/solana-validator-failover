@@ -5,7 +5,8 @@
 #          wait-for-restart-window): the unit's MainPID first, pgrep only as the fallback with the admin clients excluded - primary, standby, the fence
 #          script and the arm ceremony (the last two are byte-identical copies of one function)
 #   (B7.2) one instance per role: flock -n on "$STATE_DIR/.<role>.lock" at startup, before the first identity read; the second instance exits 3 with
-#          one log line and one page SECOND INSTANCE REFUSED
+#          one log line and one page SECOND INSTANCE REFUSED; under the armed unit it sends READY=1 first (B7.2d) and the monitor skeleton counts exit 3
+#          as success (B7.2e), so that losing the race never dispatches OnFailure= (the real fence on a healthy validator)
 #   (B7.3) the state file is written atomically (tmp + mv in the same directory, 0600); a torn file on load is one WARN, never an abort, and never a
 #          lost lockout
 #   (B7.4) fail-closed polarity at the two remaining AG stops: the primary's switch_to_staked and the standby's _prewarm_voter_add ask a positive
@@ -462,6 +463,16 @@ else
             printf 'log_info() { :; }; log_warn() { echo "WARN $*" >> "$D/log"; }; log_error() { echo "ERROR $*" >> "$D/log"; }\n'
             printf 'send_telegram() { echo "TG $*" >> "$D/tg"; }; send_webhook() { echo "WH $*" >> "$D/wh"; }\n'
             [[ "$mode" != "noflock" ]] || printf 'command() { if [[ "$1" == "-v" && "$2" == "flock" ]]; then return 1; fi; builtin command "$@"; }\n'
+            cat <<'WEOF'
+echo "$$" > "$D/pid"
+log_info() { echo "INFO $*" >> "$D/ev"; }
+log_warn() { echo "WARN $*" >> "$D/log"; echo "WARN $*" >> "$D/ev"; }
+send_telegram() { echo "TG $*" >> "$D/tg"; echo "TG $*" >> "$D/ev"; }
+send_webhook() { echo "WH $*" >> "$D/wh"; echo "WH $*" >> "$D/ev"; }
+timeout() { if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@"; }
+socat() { local _p; _p=$(cat); _p="${_p//$'\n'/|}"; echo "SD $_p" >> "$D/ev"; return 0; }
+WEOF
+            [[ -z "${B72_ENV:-}" ]] || printf '%s\n' "$B72_ENV"
             case "$mode" in
                 hold)  printf '_single_instance_lock; echo "LOCKED rc=$?" > "$D/hold.out"; : > "$D/ready"; read -r _ < "$D/hold.fifo"\n' ;;
                 *)     printf '_single_instance_lock; echo "LOCKED rc=$?" > "$D/try.out"; echo "STDERR-STILL-OPEN" >&2\n' ;;
@@ -559,6 +570,60 @@ else
     b72_ctl sb-lock-name-shared "$STANDBY" 's|\.standby\.lock|.primary.lock|' p_b72_shape
     b72_both call-removed   '/^    _single_instance_lock     # /d' p_b72_shape
     [[ $b72_ok -eq 1 ]] && ok "(B7.2b) CONTROLS: no flock call, exit 1 instead of 3, no page, a page twice, the descriptor closed after the lock (the lock dies with it), a stderr redirection that sticks to the shell, a state dir created without the 0700 umask, a chmod of an existing dir, a refusal on another flock status / on no flock / on an unopenable lock file, one lock name for both roles, the call removed - each turns its case red:$b72_crows" || bad "(B7.2b) a control is not red:$b72_crows"
+
+    # (B7.2d) the refused copy under the ARMED unit. A Type=notify unit whose main process exits before READY=1 ends `failed` whatever the exit status, and `failed` dispatches OnFailure= - the real fence, on a healthy
+    # validator (measured on systemd 255, systemd/README.md "A refused second copy"). So a copy the lock refused sends READY=1 after its page and before its exit 3 (the skeleton counts exit 3 as success, B7.2e). The
+    # world: the real _single_instance_lock, a holder alive, NOTIFY_SOCKET and WATCHDOG_USEC set to stubs and a socat stub that appends every datagram to the ordered event file ($d/ev) beside the log line and the pages.
+    p_b72_ready() {   # (the shipped script must pass it; every mutant below must fail it)
+        local script="$1" d hpid hw n rc pid sd_n sd_l tg_l wh_l armed_env
+        d="$WORK/b72d.$RANDOM"; mkdir -p "$d"; mkfifo "$d/hold.fifo"
+        hw=$(b72_mk "$script" "$d" hold)
+        PATH="$b72_bin:$PATH" "$b72_bash" "$hw" 2>/dev/null & hpid=$!
+        n=0; while [[ ! -e "$d/ready" && $n -lt 100 ]]; do sleep 0.1; n=$((n + 1)); done
+        [[ -e "$d/ready" && "$(cat "$d/hold.out" 2>/dev/null)" == "LOCKED rc=0" ]] || { kill -9 "$hpid" 2>/dev/null; return 1; }
+        armed_env='export NOTIFY_SOCKET="$D/notify.sock" WATCHDOG_USEC=30000000'
+        # (1) both gate inputs set: exit 3, ONE datagram READY=1 with the MAINPID claim (the world's own pid), after the page on both channels
+        rm -f "$d/log" "$d/tg" "$d/wh"; : > "$d/ev"
+        B72_ENV="$armed_env" b72_run "$script" "$d" try; rc=$?
+        pid=$(cat "$d/pid" 2>/dev/null)
+        sd_n=$(grep -c '^SD ' "$d/ev" 2>/dev/null); sd_l=$(grep -n '^SD ' "$d/ev" 2>/dev/null | head -1 | cut -d: -f1)
+        tg_l=$(grep -n '^TG ' "$d/ev" 2>/dev/null | head -1 | cut -d: -f1); wh_l=$(grep -n '^WH ' "$d/ev" 2>/dev/null | head -1 | cut -d: -f1)
+        [[ $rc -eq 3 && "$sd_n" == "1" && -n "$pid" && "$(grep '^SD ' "$d/ev")" == "SD READY=1|MAINPID=$pid" && -n "$sd_l" && -n "$tg_l" && -n "$wh_l" && $tg_l -lt $sd_l && $wh_l -lt $sd_l \
+           && "$(wc -l < "$d/tg" | tr -d ' ')" == "1" && "$(wc -l < "$d/wh" | tr -d ' ')" == "1" ]] || { kill -9 "$hpid" 2>/dev/null; return 1; }
+        # (2) the gate closed (neither, only one of the two): the page and exit 3 as before, NO datagram
+        for armed_env in '' 'export NOTIFY_SOCKET="$D/notify.sock"' 'export WATCHDOG_USEC=30000000'; do
+            rm -f "$d/log" "$d/tg" "$d/wh"; : > "$d/ev"
+            B72_ENV="$armed_env" b72_run "$script" "$d" try; rc=$?
+            [[ $rc -eq 3 && "$(grep -c '^SD ' "$d/ev" 2>/dev/null)" == "0" && "$(wc -l < "$d/tg" | tr -d ' ')" == "1" && "$(wc -l < "$d/wh" | tr -d ' ')" == "1" ]] || { kill -9 "$hpid" 2>/dev/null; return 1; }
+        done
+        # (3) the holder gone, the gate open: the lock is acquired, rc 0, and nothing is sent (READY belongs to the startup path, not to the lock)
+        kill -9 "$hpid" 2>/dev/null; { wait "$hpid"; } 2>/dev/null
+        rm -f "$d/log" "$d/tg" "$d/wh" "$d/try.out"; : > "$d/ev"
+        B72_ENV='export NOTIFY_SOCKET="$D/notify.sock" WATCHDOG_USEC=30000000' b72_run "$script" "$d" try; rc=$?
+        [[ $rc -eq 0 && "$(cat "$d/try.out" 2>/dev/null)" == "LOCKED rc=0" && "$(grep -c '^SD ' "$d/ev" 2>/dev/null)" == "0" && ! -e "$d/tg" ]]
+    }
+    b72d_all=1; b72d_rows=""; b72d_rv_primary=n; b72d_rv_standby=n
+    for b72d_s in "$PRIMARY" "$STANDBY"; do
+        b72d_n=$(basename "$b72d_s" | cut -d- -f2)
+        if p_b72_ready "$b72d_s"; then b72d_rows="$b72d_rows $b72d_n:ready-once"; eval "b72d_rv_$b72d_n=y"; else b72d_all=0; b72d_rows="$b72d_rows $b72d_n:READY-WRONG"; fi
+    done
+    [[ $b72d_all -eq 1 ]] && ok "(B7.2d) the refused copy under the armed unit's environment (NOTIFY_SOCKET and WATCHDOG_USEC set; a socat stub records the datagrams) sends exactly one READY=1 with the MAINPID claim, after its page on both channels, and exits 3; with either input or both missing it sends nothing; a copy that gets the lock sends nothing -$b72d_rows" || bad "(B7.2d) READY=1 of a refused copy:$b72d_rows"
+    b72d_ok=1; b72d_crows=""
+    b72d_ctl() {   # b72d_ctl <label> <script> <sed expr>: p_b72_ready holds on the shipped script and FAILS on the mutant
+        local label="$1" script="$2" expr="$3" m="$WORK/b72d-$1.sh" rv mv_
+        if ! mutate "$script" "$expr" "$m"; then b72d_ok=0; b72d_crows="$b72d_crows $label:NOT-APPLIED"; return; fi
+        case "$(basename "$script")" in *primary*) rv=$b72d_rv_primary ;; *) rv=$b72d_rv_standby ;; esac
+        p_b72_ready "$m" && mv_=y || mv_=n
+        if [[ "$rv" == "y" && "$mv_" == "n" ]]; then b72d_crows="$b72d_crows $label:red"; else b72d_ok=0; b72d_crows="$b72d_crows $label:[shipped=$rv,mutant=$mv_]"; fi
+    }
+    b72d_both() { b72d_ctl "pr-$1" "$PRIMARY" "$2"; b72d_ctl "sb-$1" "$STANDBY" "$2"; }
+    b72d_both call-removed     '/^            _watchdog_ready_refused$/d'
+    b72d_both gate-removed     '/^_watchdog_ready_refused() {/,/^}/ s|^    _watchdog_active \|\| return 0$|    true|'
+    b72d_both sent-twice       '/^_watchdog_ready_refused() {/,/^}/ s|^    _sd_notify "READY=1"$|    _sd_notify "READY=1"; _sd_notify "READY=1"|'
+    b72d_both wrong-payload    '/^_watchdog_ready_refused() {/,/^}/ s|_sd_notify "READY=1"|_sd_notify "READY=0"|'
+    b72d_both before-the-page  's|^\(        77) \)\(alert_warn .*\)$|\1_watchdog_ready_refused; \2|;/^            _watchdog_ready_refused$/d'
+    b72d_both on-a-free-lock   's|^        0)  return 0 ;;$|        0)  _watchdog_ready_refused; return 0 ;;|'
+    [[ $b72d_ok -eq 1 ]] && ok "(B7.2d) CONTROLS: the call removed, the gate removed, the datagram sent twice, READY=0 instead of READY=1, the call before the page, the call on the lock that was acquired - each turns its case red:$b72d_crows" || bad "(B7.2d) a control is not red:$b72d_crows"
 fi
 
 # (B7.2c) the unit the deploy scripts write does not restart a copy the lock refused. With Restart=always, RestartSec=10 and a manual copy holding the lock, systemd would start the unit's copy every 10 s,
@@ -578,6 +643,27 @@ for b72u_s in deploy-failover.sh deploy-failover-standby.sh; do
     else b72u_ok=0; b72u_rows="$b72u_rows $b72u_s:NOT-APPLIED"; fi
 done
 [[ $b72u_ok -eq 1 ]] && ok "(B7.2c) the unit each deploy script writes carries Restart=always once and RestartPreventExitStatus=3 once: a refused copy (exit 3) is not restarted every RestartSec into a page every 10 s; the mutant without the line is red -$b72u_rows" || bad "(B7.2c) deploy unit:$b72u_rows"
+
+# (B7.2e) the ARMED monitor unit counts exit 3 as success: with READY=1 sent first (B7.2d) the refused copy then ends the unit `inactive` and nothing is dispatched. The line is a text pin in the skeleton: once, as a whole line,
+# in [Service]. (Alone it is no fix - systemd/README.md "A refused second copy", row 2 - and without it the READY=1 of B7.2d would end the unit `failed`: exit 3 is a failure status.)
+p_b72_skel() {
+    local f="$1"
+    [[ "$(grep -c -x 'SuccessExitStatus=3' "$f")" == "1" ]] || return 1
+    awk '/^\[/ { sec = $0 } /^SuccessExitStatus=3$/ { if (sec == "[Service]") ok = 1 } END { exit !ok }' "$f"
+}
+b72e_f="$HARNESS_DIR/systemd/solana-failover-monitor.service.skel"; b72e_ok=1; b72e_rows=""
+if p_b72_skel "$b72e_f"; then b72e_rows=" skeleton:pinned"; else b72e_ok=0; b72e_rows=" skeleton:NOT-PINNED"; fi
+b72e_ctl() {   # b72e_ctl <label> <mutant file>: the pin FAILS on the mutant
+    if p_b72_skel "$2"; then b72e_ok=0; b72e_rows="$b72e_rows $1:MUTANT-GREEN"; else b72e_rows="$b72e_rows $1:red"; fi
+}
+b72e_m="$WORK/b72e-deleted.skel";    if mutate "$b72e_f" '/^SuccessExitStatus=3$/d' "$b72e_m"; then b72e_ctl deleted "$b72e_m"; else b72e_ok=0; b72e_rows="$b72e_rows deleted:NOT-APPLIED"; fi
+b72e_m="$WORK/b72e-commented.skel";  if mutate "$b72e_f" 's|^SuccessExitStatus=3$|#SuccessExitStatus=3|' "$b72e_m"; then b72e_ctl commented-out "$b72e_m"; else b72e_ok=0; b72e_rows="$b72e_rows commented-out:NOT-APPLIED"; fi
+b72e_m="$WORK/b72e-value.skel";      if mutate "$b72e_f" 's|^SuccessExitStatus=3$|SuccessExitStatus=1|' "$b72e_m"; then b72e_ctl other-status "$b72e_m"; else b72e_ok=0; b72e_rows="$b72e_rows other-status:NOT-APPLIED"; fi
+b72e_m="$WORK/b72e-unit.skel";       awk '/^SuccessExitStatus=3$/ { next } { print } /^\[Unit\]$/ { print "SuccessExitStatus=3" }' "$b72e_f" > "$b72e_m"
+if cmp -s "$b72e_f" "$b72e_m"; then b72e_ok=0; b72e_rows="$b72e_rows wrong-section:NOT-APPLIED"; else b72e_ctl wrong-section "$b72e_m"; fi
+b72e_m="$WORK/b72e-twice.skel";      awk '{ print } /^SuccessExitStatus=3$/ { print }' "$b72e_f" > "$b72e_m"
+if cmp -s "$b72e_f" "$b72e_m"; then b72e_ok=0; b72e_rows="$b72e_rows twice:NOT-APPLIED"; else b72e_ctl twice "$b72e_m"; fi
+[[ $b72e_ok -eq 1 ]] && ok "(B7.2e) the armed monitor skeleton carries SuccessExitStatus=3 once, as a whole line, in [Service]: a refused copy that has sent READY=1 ends the unit inactive and dispatches nothing; deleted, commented out, another status, in [Unit], twice - each is red -$b72e_rows" || bad "(B7.2e) skeleton:$b72e_rows"
 # ══ B7.2 END ═════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 # ══ B7.3 BEGIN ═══════════════════════════════════════════════════════════════════════════════════════════════════════════

@@ -65,7 +65,55 @@ ends **any other way** — a bash expansion error discards the whole top-level l
 number in arithmetic was the measured case) — logs an `ERROR` and exits **1**: terminal `failed` →
 `OnFailure` (the fence on a holder, the page on a spare). Before the fix that abort fell through to
 `Main loop exited.` and exit 0 — the armed monitor sat dead and unfenced. The shipped v0.6.x unit
-(`Restart=always`) restarts the daemon either way.
+(`Restart=always`) restarts the daemon either way. The one other deliberate exit is a **refused
+second copy** (exit 3 after `READY=1`, next section).
+
+## A refused second copy (Block 7, B7.2): `READY=1`, then exit 3
+
+Each daemon takes `flock -n` on `$STATE_DIR/.<role>.lock` right after its banner, at the start of
+`startup_checks` and before any identity read, fence-marker consumption or state-file access; a second
+copy of the same role pages `SECOND INSTANCE REFUSED` and exits **3**. The ceremony's
+retirement of the legacy units (below) stays THE mechanism against two monitors; the lock is a guard
+for a copy the operator starts by hand, or a unit that comes up beside a running one.
+
+Under the armed unit that exit must not happen **before** `READY=1`. Measured on systemd 255
+(255.4-1ubuntu8.18, Ubuntu 24.04), in a user manager, with six throwaway `Type=notify` units
+(`NotifyAccess=all`, `Restart=no`, `TimeoutStartSec=20s`), each with `OnFailure=` a oneshot that
+touches a marker file (the `READY=1` of rows 3 and 4 was sent with `systemd-notify --ready`):
+
+| the unit's main process | extra | end state / result | `OnFailure=` |
+|---|---|---|---|
+| `exit 3` | — | failed / exit-code | **fired** |
+| `exit 3` | `SuccessExitStatus=3` | failed / protocol | **fired** |
+| `READY=1`, 1 s, `exit 3` | `SuccessExitStatus=3` | inactive / success | not fired |
+| `READY=1`, 1 s, `exit 0` | — | inactive / success | not fired |
+| `exit 0` | — | failed / protocol | **fired** |
+| 1 s, `exit 0` | `RemainAfterExit=yes` | failed / protocol | **fired** |
+
+Any exit before `READY=1` ends a `Type=notify` unit in `failed` — `exit-code` for a failing status,
+`protocol` for a success status, with or without `SuccessExitStatus=` — and `failed` dispatches
+`OnFailure=`, which on the armed unit is the real fence. Only an exit after `READY=1`, with a status
+the unit counts as success, ends it `inactive`. So:
+
+- a refused copy under the armed unit (`NOTIFY_SOCKET` and `WATCHDOG_USEC` set) sends `READY=1` after
+  its page — `_watchdog_ready_refused`, in the `[watchdog]` block, behind the same gate as the rest of
+  it — and exits 3 at once (the watchdog arms at READY, and this copy pets nothing);
+- the monitor skeleton carries `SuccessExitStatus=3` once, so that this exit ends the unit
+  `inactive`; status 3 is the refusal's alone (the only `exit 3` in either daemon), and exit 1 and the
+  watchdog's SIGABRT stay failures. `SuccessExitStatus=3` **without** the `READY=1` is no fix: row 2;
+- outside the armed unit (the wizards' legacy units, a copy started by hand) nothing is sent; the units
+  the deploy scripts write refuse the restart of exit 3 (`RestartPreventExitStatus=3`; a unit
+  installed by an older deploy keeps its old text until it is re-deployed).
+
+The shape the daemon uses was measured as well: a child process sends `READY=1` (`systemd-notify --ready`,
+the shortest-lived sender, so the worst case for the sender-attribution race the daemons document at
+`_sd_notify`) and the main process exits 3 at once. With `SuccessExitStatus=3`, 300 of 300 runs ended
+`inactive` / success and `OnFailure=` never fired; without it, 30 of 30 ended `failed` / exit-code and
+it fired; an exit 3 before any `READY=1` fired 30 of 30. The daemon's own sender is `socat`, which was
+not installed on the measuring host, so `systemd-notify` is the stand-in that was measured.
+
+Scope: systemd 255 was measured. The `protocol` result for a notify service that exits before `READY`
+exists since systemd v240, so 249 (Ubuntu 22.04) is expected to behave the same; it was not measured.
 
 ## `ExecStop=` — the TERM re-send (AG-3.5; the (12e) TERM race)
 
@@ -168,9 +216,11 @@ wording could not ship, both directions traced:
    `stop` → `disable` → VERIFIED retired BEFORE the new monitor is enabled; any failure or
    verify disagreement → `REFUSE[INSTALL-legacy]` with the manual commands printed, no enable,
    no token; the unit FILE stays on disk — deleting it is the operator's cleanup. Supersession
-   is an ACTION the ceremony performs, not a rollout plan — and deliberately NOT a daemon-side
-   single-instance flock: a Type=notify monitor losing that race never goes READY → start
-   timeout → `failed` → OnFailure → a REAL fence on a healthy validator); then `enable` the
+   is an ACTION the ceremony performs, not a rollout plan — and not a daemon-side single-instance
+   flock: the daemons' lock (Block 7) is only a guard for a hand-started copy, and a lock alone
+   would turn the losing notify monitor into an exit before READY → `failed` → OnFailure → a REAL
+   fence on a healthy validator, which is why a refused copy sends `READY=1` and exits 3 — see "A
+   refused second copy" above); then `enable` the
    monitor (the only enable of a Block-5 unit); NEVER start/restart the validator unit. Then a
    `_fence_unit_state`-equivalent
    re-read must agree with the intent (render→verify, not render→hope), the persisted
