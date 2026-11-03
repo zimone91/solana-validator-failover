@@ -178,9 +178,11 @@ slashing. The residual above is exactly a vote-equivocation event.
 > **Alpenglow note (v0.7):** Alpenglow replaces TowerBFT (and the tower file) with Votor/BLS certificates
 > and a **vote-history file** in the ledger directory (`vote_history-<staked pubkey>.bin`). The design above
 > assumed the spare takes over from the chain's last landed vote and that no state moves between nodes; under
-> Alpenglow that is a *cold swap*, whose safety FO cannot see from outside, so **v0.7 never takes the staked
+> Alpenglow that is a *cold swap*, whose safety FO cannot see from outside, so by default **v0.7 never takes the staked
 > identity automatically** (Alpenglow mode): a take every gate approves is withheld and paged, and the operator
 > does the *warm swap* — the old holder demoted first, the history file copied with a sha check, then
 > `authorized-voter add` and `set-identity` on the new holder ([SAFETY.md — Alpenglow](SAFETY.md#alpenglow-mode-v07)).
-> The vote-liveness fence and the delinquency semantics (`lastVote`) still decide *when the page is sent*; re-deriving them
-> against Votor, for a release that takes again, is open work.
+> The one opt-in is a standby armed with `AG_ARMED_TAKE=true` (default `false`): it takes cold, voter first, once a
+> readiness margin also holds ([SAFETY.md — Armed cold take](SAFETY.md#armed-cold-take-opt-in-rc1)).
+> The vote-liveness fence and the delinquency semantics (`lastVote`) still decide *when the page is sent* (or, armed,
+> when the cold take is made); re-deriving them against Votor is open work.

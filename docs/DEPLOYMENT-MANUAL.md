@@ -164,7 +164,7 @@ Normal operation: **0 external RPC calls**. Everything via LOCAL RPC.
 1. PRIMARY: Internet lost → parallel pings fail 3x → switch to unstaked (~9s). OR isolated from the
    supermajority (LOCAL confirmed slot frozen / LOCAL JSON-RPC silent) → **self-fence** to unstaked at
    ~30s (`SELF_FENCE_ISOLATION_SECS`/`SELF_FENCE_NOANSWER_SECS`) — it relinquishes BEFORE any spare takes.
-2. STANDBY: LOCAL RPC sees delinquent → sliding window 7/10 → external confirm → **fence (vote-liveness authoritative; gossip advisory)** → in Alpenglow mode **pages** that the staked identity is free to be moved (the retained path took it, ~70s: `TAKEOVER_DELAY=60` after the PRIMARY has relinquished at ~30s, with a 30s cross-node margin)
+2. STANDBY: LOCAL RPC sees delinquent → sliding window 7/10 → external confirm → **fence (vote-liveness authoritative; gossip advisory)** → in Alpenglow mode **pages** that the staked identity is free to be moved (unarmed, the default) or, armed (`AG_ARMED_TAKE=true`), takes it cold, voter first, once the readiness margin also holds (the retained path took it, ~70s: `TAKEOVER_DELAY=60` after the PRIMARY has relinquished at ~30s, with a 30s cross-node margin)
 3. BACKUP: Same with 120s delay + the **vote-liveness** fence (no longer blind). Only activates if STANDBY also stopped voting (~130s)
 4. PRIMARY (rpc mode): checks T2/T3 → sees STANDBY holds/votes the identity → stays unstaked
 
@@ -707,7 +707,7 @@ timeline is identical to v0.6.6 (~70s).
 
 ## Expected timelines
 
-> **Alpenglow mode (v0.7):** these are the *retained* take path's timelines — v0.7 sends the page at the moment the take would have been made, and nobody takes.
+> **Alpenglow mode (v0.7):** these are the *retained* take path's timelines — by default v0.7 sends the page at the moment the take would have been made, and nobody takes; a standby armed with `AG_ARMED_TAKE=true` takes cold, voter first, at that moment if the readiness margin also holds, else at a later decision point once it does ([SAFETY.md — Armed cold take](SAFETY.md#armed-cold-take-opt-in-rc1)).
 
 > **v0.7 (Block 6.3.1):** every take below ends with the spare's own-view veto — one bounded read of
 > its own node (`curl -m 2` + a watchdog pet) that withdraws the take if the holder shows voting there,
@@ -817,8 +817,8 @@ iptables -I OUTPUT 1 ! -o lo -j DROP; sleep 120; iptables -D OUTPUT ! -o lo -j D
 ```
 
 After test, restore with the warm swap — the four steps of [Manual switch-back](#manual-switch-back-standby--primary-after-an-incident): demote the node that holds the staked identity,
-check the vote-history file's sha256 twice, copy it to the other node with a sha check, then `authorized-voter add` and `set-identity` there. (In v0.7 FO does not make the take in this phase:
-it pages `TAKEOVER WITHHELD — Alpenglow mode`, and the swap is yours.)
+check the vote-history file's sha256 twice, copy it to the other node with a sha check, then `authorized-voter add` and `set-identity` there. (In v0.7 an unarmed STANDBY, the default, does not make the take in this phase:
+it pages `TAKEOVER WITHHELD — Alpenglow mode`, and the swap is yours; one armed with `AG_ARMED_TAKE=true` takes cold, voter first, once the readiness margin also holds.)
 
 ---
 
