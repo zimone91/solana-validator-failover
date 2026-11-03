@@ -1103,7 +1103,7 @@ fi
 # the LAST set-identity command (the agave one; the first is frankendancer's) — must be exactly the permitted
 # statements below, in order (an allowlist: layer 1). The FALL-THROUGH — the segment minus every RETURN-BRANCH
 # (an if…fi without else/elif, or a && { … } block, whose last statement is a return: the DRY_RUN report, the
-# keypair-missing page, the Alpenglow stop — AG-1.2 — (`if _ag_mode; then … _ag_take_withheld … return 1; fi` on the primary, `if ! _ag_take_allowed; then …` on the standby since AG-3.1:
+# keypair-missing page, the Alpenglow stop — AG-1.2 — (`if ! _ag_primary_retake_allowed; then … _ag_take_withheld … return 1; fi` on the primary since B7.4 — AG-1's `if _ag_mode; then` let a missing definition fall through to the re-take, an undefined positive predicate (rc 127) enters the stop —, `if ! _ag_take_allowed; then …` on the standby since AG-3.1:
 # their reads, the armed predicate's ONE readiness read included (censused in tests/test_ag_armed_take.sh (2f)), and their page are outside the rule's subject: they return before any
 # mutation) and the armed voter-add failure page (AG-3.3: `authorized-voter add` failed or timed out, return 1 before any set-identity) never reach set-identity) — and every daemon function it calls, transitively, hold NO
 # network primitive (net_scan) except the notify socket's socat (_sd_notify: the watchdog pet, a local datagram)
@@ -1209,7 +1209,7 @@ out=$(timeout -k 5 "$SETIDENTITY_TIMEOUT" "$SOLANA_PATH/agave-validator" --ledge
 '
 SEG_P='
 _own_view_veto || return 1
-if _ag_mode; then
+if ! _ag_primary_retake_allowed; then
 LAST_SWITCH_TIME=$(mono_now); save_state
 _ag_take_withheld "primary" "$reason"
 return 1
