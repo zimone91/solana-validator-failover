@@ -1048,7 +1048,7 @@ save_state() {
     # atomic-enough overwrite — no fsync storm; the freshness gate tolerates a torn last write).
     local _role="unstaked"
     [[ -n "$STAKED_PUBKEY" && "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]] && _role="staked"
-    local _SAVE_W _SAVE_M _tmp="${STATE_FILE}.tmp"
+    local _SAVE_W _SAVE_M _state_new="${STATE_FILE}.tmp"
     _SAVE_W=$(date +%s); _SAVE_M=$(mono_now)
     # v0.7 (Block 7, B7.3): the whole save is written BESIDE the state file (same directory = same filesystem) and renamed over it, mode 0600 from the first
     # moment the name exists: a crash mid-write leaves the previous COMPLETE save in place. The old "> $STATE_FILE" truncated first - a crash lost the
@@ -1069,11 +1069,11 @@ save_state() {
         printf 'ROLE_AT_SAVE=%s\n'                  "$_role"
         printf 'BOOT_ID=%s\n'                       "$(boot_id)"   # v0.7 (Block 3): the persisted stamps above are mono_now values — only comparable within this boot (see load_state)
         printf 'SAVE_TS=%s\n'                       "$(date +%s)"
-    } > "$_tmp" 2>/dev/null \
-        || { log_warn "Cannot write $_tmp — state not persisted"; rm -f "$_tmp" 2>/dev/null; return 0; }
-    chmod 600 "$_tmp" 2>/dev/null || true
-    mv -f "$_tmp" "$STATE_FILE" 2>/dev/null \
-        || { log_warn "Cannot replace $STATE_FILE — state not persisted"; rm -f "$_tmp" 2>/dev/null; return 0; }
+    } > "$_state_new" 2>/dev/null \
+        || { log_warn "Cannot write $_state_new — state not persisted"; rm -f "$_state_new" 2>/dev/null; return 0; }
+    chmod 600 "$_state_new" 2>/dev/null || true
+    mv -f "$_state_new" "$STATE_FILE" 2>/dev/null \
+        || { log_warn "Cannot replace $STATE_FILE — state not persisted"; rm -f "$_state_new" 2>/dev/null; return 0; }
     return 0
 }
 
