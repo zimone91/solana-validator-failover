@@ -311,7 +311,7 @@ else
     echo ""
     echo -e "  ${YELLOW}Why GOSSIP_VERIFY=false for BACKUP?${NC}"
     echo -e "  If STANDBY held the identity (after a warm swap you ran) and then crashed, gossip still shows staked on"
-    echo -e "  STANDBY's endpoint for 5-10 min — gossip-verify ON would block BACKUP."
+    echo -e "  STANDBY's endpoint for ~48 h (advisory since v0.6.3) — a gossip check that decided would block BACKUP."
     echo -e "  So gossip is OFF, but ${BOLD}vote-liveness (v0.6.2) is ON${NC}: BACKUP pages only once the staked"
     echo -e "  vote account stops advancing (the crashed STANDBY is no longer voting). A real fence — never a blind"
     echo -e "  verdict; in Alpenglow mode BACKUP pages and never takes."

@@ -1,9 +1,9 @@
 #!/bin/bash
 # failover-fence-page-only.sh (v0.7 Block 5.1) — the PAGE-ONLY fence twin (§2.3 structural
 # DRY_RUN), dispatched by solana-failover-fence-page-only.service when the monitor unit reaches
-# terminal `failed`. Installed only by the `failover arm` ceremony at the v0.7 rollout
-# (upgrade-then-arm, release checklist); repo-tracked and CI-linted as a shippable artifact —
-# NOTHING in this repository installs it anywhere.
+# terminal `failed`. Installed only by the `failover arm` ceremony, which the operator runs at
+# the v0.7 rollout (upgrade-then-arm); repo-tracked and CI-linted as a shippable artifact — no
+# other script installs it.
 #
 # ZERO MUTATIONS, STRUCTURAL: while THIS unit (and not the real one) is installed, a monitor
 # failure can only produce a journal page + a marker. There is deliberately NO admin-socket

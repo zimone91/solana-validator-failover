@@ -1,10 +1,11 @@
 #!/bin/bash
 # failover-arm.sh (v0.7 Block 5.3) — the `failover arm` CEREMONY: the installer of the fence.
 #
-# SHIPPABLE, NOT EXECUTED HERE: this script is repo-tracked, in SHA256SUMS, shellcheck'd, and
-# parse-gated — but its EXECUTION happens only at the v0.7 rollout (upgrade-then-arm, per host,
-# release checklist). NOTHING in this repository runs it; its tests drive it with EVERY root
-# below pointed at mktemp and every actuator stubbed (tests/test_arm_ceremony.sh).
+# SHIPPABLE, RUN BY THE OPERATOR: this script is repo-tracked, in SHA256SUMS, shellcheck'd, and
+# parse-gated — and its EXECUTION on a host happens only when the operator runs it at the v0.7
+# rollout (upgrade-then-arm, per host; docs/DEPLOYMENT-MANUAL.md, "Arming the fence"). No shipped
+# script runs it; its tests drive it with EVERY root below pointed at mktemp and every actuator
+# stubbed (tests/test_arm_ceremony.sh).
 #
 # Structure (TASK-block53 / addendum §2.1-rev2.1, §2.3, §2.6):
 #   preconditions → probe → install → verify → token
@@ -42,8 +43,8 @@
 #      RETIRE the legacy monitor unit(s) — stop + disable + VERIFY solana-failover.service /
 #      solana-failover-standby.service, the units the legacy deploy wizards write and enable;
 #      supersession is an ACTION this ceremony performs, never a plan — then enable the
-#      monitor (the ONLY `systemctl enable` of a BLOCK-5 unit; no other script references the
-#      Block-5 unit names).
+#      monitor (the ONLY `systemctl enable` of a BLOCK-5 unit; no other script installs,
+#      enables or retires one). It does not START the monitor: the closing output names that step.
 #      The validator unit is NEVER started/restarted/stopped by this script.
 #   verify: a _fence_unit_state-equivalent re-read must agree with the DRY_RUN intent
 #      (render→verify, not render→hope).
@@ -1153,8 +1154,8 @@ _arm_install() {
     # pre-fence services (deploy-failover.sh:669/780 solana-failover.service,
     # deploy-failover-standby.sh:907/1042 solana-failover-standby.service), and THIS ceremony
     # has just RETIRED any of them it found (stop+disable+verify above): supersession is an
-    # ACTION the arm performs, not a rollout plan. No other script references the Block-5 unit
-    # names (the functional Block-5 boundary, held by grep). The validator unit is NEVER
+    # ACTION the arm performs, not a rollout plan. No other script installs or enables a Block-5
+    # unit (the functional Block-5 boundary: only this ceremony does). The validator unit is NEVER
     # started, restarted, or stopped by this script — arming must not touch a possibly-voting
     # process.
     timeout -k 5 15 systemctl enable "$MONITOR_UNIT_NAME" >/dev/null 2>&1 || _arm_refuse "INSTALL-enable" "systemctl enable $MONITOR_UNIT_NAME failed" "read journalctl -xe, enable by hand (systemctl enable $MONITOR_UNIT_NAME), then re-run 'failover arm' to verify + re-pair"
@@ -1258,6 +1259,7 @@ main() {
     _arm_verify
     _arm_token
     _arm_log "ARMED ($ARM_INTENT): ceremony complete — the pairing token above goes to EVERY spare (re-pair is ceremony, not advice)."
+    _arm_log "NEXT STEP: systemctl start $MONITOR_UNIT_NAME (systemctl restart on a host that already runs it) - this ceremony enables the monitor and stops the wizard's unit but does not start the monitor, so until you do, nothing monitors this host."
     _arm_g2_summary           # (Block 6.2 C1): the shared-vantage DEGRADATION, re-stated on the final screen (silent when the vantages are separate)
     _arm_pairing_summary      # (Block 6.1): §2.7 (c) — the pairing posture is the LAST thing on the operator's screen (spare arms only)
 }
