@@ -11,7 +11,7 @@ All notable changes are documented here. Versions follow the project's internal 
   [docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1).
   - **The stop is fail-closed:** `if ! _ag_take_allowed` - an undefined predicate withholds (the AG-1 form let it fall through). The `TAKEOVER WITHHELD` page names whether the
     spare is not armed or armed but held by the margin; `DRY_RUN` on an armed spare evaluates the margin and pages `[DRY RUN] WOULD TAKE STAKED (Alpenglow cold take)`.
-  - **The readiness margin:** `AG_TAKE_MARGIN_SLOTS=200` (a canonical integer ≥ 150, or the daemon refuses to start): the spare's finalized slot (its root under Alpenglow) minus the holder's
+  - **The readiness margin:** `AG_TAKE_MARGIN_SLOTS=200` (digits only and ≥ 150, or the daemon refuses to start; a leading-zero spelling is accepted and normalized at start, and the take itself accepts only the canonical form): the spare's finalized slot (its root under Alpenglow) minus the holder's
     last observed `lastVote` must reach it; a failed read, a missing baseline or an unusable knob holds the take. One more bounded local read in the act-then-alert window: two bounded local
     reads (the veto, then the margin).
   - **The take is voter-first (G4):** `authorized-voter add` first, then `set-identity --do-not-require-vote-history` (agave and Jito-Solana 4.4.0). A failed or timed-out voter add stops the take
@@ -33,8 +33,9 @@ All notable changes are documented here. Versions follow the project's internal 
     reads each hit's `cmdline`: a hit with one of the six words as an argument after `argv[0]`, as a whole word (`--identity /keys/set-identity.json` is not one; the word after `--ledger` is its value), is passed over; a hit with
     `--ledger` and no such word is preferred; a `cmdline` that cannot be read proves nothing (no readable `cmdline` at all = the first hit, as before); only clients alive = no validator, empty. The fence script and the arm
     ceremony carry the same selection and never ask the unit. **The `cmdline` read is bounded (B7.1b):** `timeout -k 1 2 tr '\0' '\n' < cmdline` in all four copies - a validator wedged inside the kernel can hold the mm lock that file takes, and an unbounded read would block the pid lookup (the hard stop, the fence's stop path, the ceremony's check) with it; a read that times out is a `cmdline` that cannot be read, so that hit is not a client and is answered as the floor. Pinned by `tests/test_block7_rc1.sh` (B7.1), with mutants.
-  - **B7.2 — one monitor per role per node:** the first thing `startup_checks` does is `flock -n -E 77` on `$STATE_DIR/.primary.lock` / `.standby.lock` (descriptor 8, held for the life of the process, released by its exit however it ends;
-    a lock file left by a dead copy is simply unlocked). A second copy - an operator's manual start beside the unit is the case - pages `SECOND INSTANCE REFUSED` once, logs that one line and exits 3, before it can consume a fence marker,
+  - **B7.2 — one monitor per role per node:** `startup_checks` takes `flock -n -E 77` on `$STATE_DIR/.primary.lock` / `.standby.lock` (descriptor 8, held for the life of the process, released by its exit however it ends;
+    a lock file left by a dead copy is simply unlocked) right after its three banner lines - only the lock file's own `mkdir` and open come before the `flock` - and before any identity read, fence-marker consumption or state-file access.
+    A second copy - an operator's manual start beside the unit is the case - pages `SECOND INSTANCE REFUSED` once, logs that one line and exits 3, before it can consume a fence marker,
     read an identity or touch the state file; the first copy is unaffected. A guard, not a gate: no `flock` on the box, an unopenable lock file or a `flock` that fails for another reason is one warning and the daemon starts. The state
     dir is created 0700 when missing and keeps its mode when it exists.
     The units the deploy scripts write (`Restart=always`, `RestartSec=10`) carry `RestartPreventExitStatus=3`: a copy the lock refused is not restarted every 10 s into a page every 10 s (exit status 3 is
