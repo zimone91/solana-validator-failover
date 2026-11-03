@@ -7,15 +7,16 @@
 # What the margin guards (DESIGN-AG 2.3 (ii)): an EMPTY vote history starts the new holder's votes at its own root; a holder that kept voting until its own fence fired
 # (<= ~34 s at 5 slots/s = 170 slots + 8 of understatement, rounded up to 200) must be below that floor, or the two would vote the same slots.
 #   (1) the default is NOT armed: the stop withholds exactly as AG-1 - one page, zero admin calls, no readiness read; only the literal true arms (TRUE / 1 / yes / 'true ' do not)
-#   (2) armed, margin ok: the admin argv in order - `authorized-voter add <key>`, then `set-identity <cold flag> <key>`; ONE read between the stop and the first admin call
-#       (A8: the veto's, stubbed here, then the margin's); the TOOK page carries the cold-take fields and the vote-history class; the class is logged before and after
+#   (2) armed, margin ok: the admin argv in order - `authorized-voter add <staked keypair>`, then `set-identity <cold flag> <staked keypair>`; ONE read between the stop and the first admin call
+#       (A8: the veto's, stubbed here, then the margin's); the TOOK page carries the cold-take fields and the vote-history class; the class is logged before and after;
+#       (2g) the same take with a ~300-character --ledger path: the comparison does not depend on how deep TMPDIR is (the keypairs are relative names, nothing is normalised)
 #   (3) the voter add answers `already present`: the take goes on;   (4)(5) any other failure and a timeout: no set-identity, a BLOCKED page, the cooldown stamped
 #   (6)-(8) the margin: the boundary (== K takes, K-1 holds), a holder ahead of the spare, finalized unavailable / not an integer, holder lastVote unavailable, an unusable knob - all HOLD, one page
 #   (9) polarity: an undefined _ag_take_allowed withholds;   (10) DRY_RUN + armed: the margin is evaluated, the dry page names the cold take, a margin hold pages the hold
 #   (11) startup: only the literal true arms (one warning for any other non-empty value); the armed spare says so in the log;   (12) AG_TAKE_MARGIN_SLOTS below 150 refuses to start
 #   (13) the banner and the LIVE MODE line print only what is true;   (14) the retained path under harness_ag_off and the fdctl branch are unchanged
 #   (15) CONTROLS (mutate()): the default flipped, >= to >, the operands swapped, the flag removed, the order swapped, a voter failure ignored, `already present` not accepted, the polarity opened,
-#        the literal not required, a failed finalized read ignored, the dry title lost, the TOOK fields dropped, a second read in the window - each turns its case red
+#        the literal not required, a failed finalized read ignored, the dry title lost, the TOOK fields dropped, a second read in the window, the WRONG keypair in the voter add / in set-identity, the admin line cut - each turns its case red
 #   (16) the REAL chain (attempt_takeover -> the liveness gate -> the take): the margin reads the baseline the gate accepted; a held take is decided again at the next decision point
 # RED ON THE BASE (4c6bbc5 + this suite): the symbols _ag_take_allowed / _ag_take_ready / AG_ARMED_TAKE do not exist there; the stop is `if _ag_mode` (always withheld), so every armed case is red.
 #
@@ -32,7 +33,13 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/agt.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/ledger-absent" "$WORK/ledger-present"
 printf 'vote-history-bytes' > "$WORK/ledger-present/vote_history-S1.bin"
+DEEP_LEDGER="$WORK"; for _i in 1 2 3 4 5 6 7 8; do DEEP_LEDGER="$DEEP_LEDGER/a-directory-name-of-some-length-$_i"; done   # ~270 characters on top of $WORK: the --ledger path a very deep TMPDIR gives
+mkdir -p "$DEEP_LEDGER/ledger-absent"
 FLAG="do-not-require""-vote-history"   # assembled: this file does not name it either
+# The two keypair files of every world, as RELATIVE names: the world cd's into a directory of its own that holds both. The admin argv therefore names a key exactly as it is - the same string on every machine and under every
+# TMPDIR (a temp path would have to be normalised before it could be compared, and a normalisation that is wide enough to swallow a deep TMPDIR is wide enough to swallow a WRONG key) - and a daemon that passes the
+# wrong keypair shows another name, not <key>. The ledger path in front of the argv is the only place a temp path remains; admin_args strips it before anything is compared.
+KP_STAKED="staked-kp.json"; KP_UNSTAKED="unstaked-kp.json"
 role_of() { basename "$1" | sed 's/solana-\(.*\)-failover.sh/\1/'; }
 evn() { printf '%s\n' "$1" | grep -c "^EV: $2"; }          # evn <out> <regex> - how many events match
 evl() { printf '%s\n' "$1" | grep "^EV: $2" | head -1; }  # evl <out> <regex> - the first such event
@@ -121,7 +128,7 @@ exit 7
 EOS
     cat > "$1/agave-validator" <<'EOS'
 #!/bin/sh
-printf 'ADMIN agave-validator %s\n' "$*" | cut -c1-200 >> "$_EVT_FILE"
+printf 'ADMIN agave-validator %s\n' "$*" >> "$_EVT_FILE"
 case "$*" in
     *"authorized-voter add"*)
         case "${ADD:-ok}" in
@@ -133,7 +140,7 @@ exit 0
 EOS
     cat > "$1/fdctl" <<'EOS'
 #!/bin/sh
-printf 'ADMIN fdctl %s\n' "$*" | cut -c1-200 >> "$_EVT_FILE"
+printf 'ADMIN fdctl %s\n' "$*" >> "$_EVT_FILE"
 exit 0
 EOS
     chmod +x "$1/curl" "$1/agave-validator" "$1/fdctl"
@@ -141,7 +148,8 @@ EOS
 }
 # at_world <script> [knob=value …] - the REAL take_staked_identity of the standby, called once, with the three gates before the stop stubbed open (the gate chain is the other suites' subject; this suite's subject is the
 # stop that follows it). Knobs: ARMED (AG_ARMED_TAKE value, default false), MARGIN (AG_TAKE_MARGIN_SLOTS), OWN (the node's finalized slot), HOLDER (the episode's _liveness_first_vote; "" = none), FIN=ok|down|garbage,
-# ADD=ok|present|fail|timeout (the voter add), DRY_RUN, VALIDATOR_TYPE, AGMODE=real|off (off = harness_ag_off, the retained path), UNDEF=1 (_ag_take_allowed removed), VH=absent|present, KP=ok|empty.
+# ADD=ok|present|fail|timeout (the voter add), DRY_RUN, VALIDATOR_TYPE, AGMODE=real|off (off = harness_ag_off, the retained path), UNDEF=1 (_ag_take_allowed removed), VH=absent|present, KP=ok|empty,
+# DEEP=1 (the ledger path in front of the admin argv is ~300 characters long, what a very deep TMPDIR gives).
 # Prints: EV: <event> lines (ADMIN / PAGE / READ / NET / LOG / SAVE / HOOK), RC=<take rc>, STATE=ltt=<LAST_TAKEOVER_TIME>.
 at_world() {
     local script="$1"; shift
@@ -150,20 +158,20 @@ at_world() {
     load_seam "$script"
     EVT=$(mktemp); export _EVT_FILE="$EVT"
     STUB=$(mktemp -d); ag3_stubs "$STUB"; PATH="$STUB:$PATH"
-    KPF=$(mktemp); echo '[1]' > "$KPF"
-    trap 'rm -f "$KPF" "$EVT"; rm -rf "$STUB"' EXIT
-    STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VOTE_PUBKEY="V1"; STAKED_KEYPAIR="$KPF"
+    KD=$(mktemp -d "$WORK/kp.XXXXXX"); cd "$KD" || exit 1; echo '[1]' > "$KP_STAKED"; echo '[2]' > "$KP_UNSTAKED"
+    trap 'rm -f "$EVT"; rm -rf "$STUB" "$KD"' EXIT
+    STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VOTE_PUBKEY="V1"; STAKED_KEYPAIR="$KP_STAKED"; UNSTAKED_KEYPAIR="$KP_UNSTAKED"
     LOCAL_RPC="http://local.mock"; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"; CONFIG_TOML="$WORK/config.toml"
     SOLANA_PATH="$STUB"; VALIDATOR_TYPE="agave"; SETIDENTITY_TIMEOUT=15
     DRY_RUN=false; TG_ENABLED=false; MIN_VALIDATOR_VERSION=4.4.0; PREWARM_VOTER_ADD=false
-    local ARMED=default MARGIN=default OWN=800000 HOLDER=799000 FIN=ok AGMODE=real UNDEF="" VH=absent KP=ok kv
+    local ARMED=default MARGIN=default OWN=800000 HOLDER=799000 FIN=ok AGMODE=real UNDEF="" VH=absent KP=ok DEEP="" kv
     export ADD=ok
     OVMODE=pass; HMODE=ok; VMODE=ok; VATMODE=admitted; AMODE=full; AGDOWN=""
     for kv in "$@"; do eval "$kv"; done
     export ADD
     [[ "$ARMED" != "default" ]] && AG_ARMED_TAKE="$ARMED"; [[ "$MARGIN" != "default" ]] && AG_TAKE_MARGIN_SLOTS="$MARGIN"   # "default" = the value the sourced daemon ships (a flipped shipped default is seen)
-    LEDGER_PATH="$WORK/ledger-$VH"
-    [[ "$KP" == "empty" ]] && : > "$KPF"
+    LEDGER_PATH="$WORK/ledger-$VH"; [[ -n "$DEEP" ]] && LEDGER_PATH="$DEEP_LEDGER/ledger-absent"
+    [[ "$KP" == "empty" ]] && : > "$KP_STAKED"
     [[ "$AGMODE" == "off" ]] && HARNESS_AG_REAL=0 harness_ag_off
     [[ -n "$UNDEF" ]] && unset -f _ag_take_allowed
     harness_clock_shims
@@ -188,16 +196,17 @@ at_world() {
     )
 }
 admin_n() { evn "$1" 'ADMIN'; }
-admin_ln() { printf '%s\n' "$1" | grep '^EV: ADMIN' | sed 's/^EV: ADMIN agave-validator //' | cut -c1-160; }   # the admin calls, one argv per line (without the leading --ledger <path>)
-admin_args() { admin_ln "$1" | sed 's#^--ledger [^ ]* ##'; }
+admin_ln() { printf '%s\n' "$1" | grep '^EV: ADMIN' | sed 's/^EV: ADMIN agave-validator //'; }   # the admin calls, one argv per line, WHOLE: the --ledger path in front is as long as the TMPDIR is deep, and a cut would eat the tail
+admin_args() { admin_ln "$1" | sed 's#^--ledger [^ ]* ##'; }   # ... without the leading --ledger <path> (the only temp path in the argv)
 rc_of() { printf '%s\n' "$1" | grep '^EV: RC=' | sed 's/^EV: RC=//'; }
 page_n() { evn "$1" 'PAGE'; }
 page_head() { printf '%s\n' "$1" | grep -m1 '^EV: PAGE ' | sed 's/^EV: PAGE [^<]*<b>//; s/<\/b>.*//'; }
 reads_before_admin() { printf '%s\n' "$1" | awk '/^EV: ADMIN/ { exit } /^EV: READ / { n++ } END { print n + 0 }'; }
 pages_before_admin() { printf '%s\n' "$1" | awk '/^EV: ADMIN/ { exit } /^EV: PAGE / { n++ } END { print n + 0 }'; }
-KEY_RE='/tmp/tmp\.[A-Za-z0-9]*|/var/folders/[^ ]*|/private/[^ ]*|/tmp/[^ ]*'
-sub_key() { sed -E "s#($KEY_RE)#<key>#g"; }   # the temp keypair path, as <key>
-EXPECT_ORDER=$'authorized-voter add <key>\nset-identity --'"$FLAG"' <key>'
+WANT_ADD="authorized-voter add $KP_STAKED"; WANT_SET="set-identity --$FLAG $KP_STAKED"
+EXPECT_ORDER="$WANT_ADD"$'\n'"$WANT_SET"
+p_order() { [[ "$(admin_args "$1")" == "$EXPECT_ORDER" ]]; }    # the two calls, voter first, each with the STAKED keypair: (2a) (3) (16a) (16c) and the controls that must turn them red
+p_add_only() { [[ "$(admin_args "$1")" == "$WANT_ADD" ]]; }     # the voter add alone, no set-identity: (4)
 
 
 # ── the FULL-CHAIN world: the REAL attempt_takeover (episode, delay, external confirm, vote liveness, fresh re-check, own-view veto) -> take_staked_identity over a timeline ──
@@ -211,9 +220,9 @@ ag3_sb() {
     load_seam "$script"
     EVT=$(mktemp); export _EVT_FILE="$EVT"
     STUB=$(mktemp -d); ag3_stubs "$STUB"; PATH="$STUB:$PATH"
-    KPF=$(mktemp); echo '[1]' > "$KPF"
-    trap 'rm -f "$KPF" "$EVT"; rm -rf "$STUB"' EXIT
-    STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VOTE_PUBKEY="V1"; STAKED_KEYPAIR="$KPF"
+    KD=$(mktemp -d "$WORK/kp.XXXXXX"); cd "$KD" || exit 1; echo '[1]' > "$KP_STAKED"; echo '[2]' > "$KP_UNSTAKED"
+    trap 'rm -f "$EVT"; rm -rf "$STUB" "$KD"' EXIT
+    STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VOTE_PUBKEY="V1"; STAKED_KEYPAIR="$KP_STAKED"; UNSTAKED_KEYPAIR="$KP_UNSTAKED"
     LOCAL_RPC="http://local.mock"; TIER2_RPC="http://t2.mock"; TIER3_RPC="http://t3.mock"; CONFIG_TOML="$WORK/config.toml"
     SOLANA_PATH="$STUB"; VALIDATOR_TYPE="agave"; SETIDENTITY_TIMEOUT=15
     TAKEOVER_DELAY=$DELAY; EXTERNAL_CONFIRM_THROTTLE=0
@@ -225,7 +234,7 @@ ag3_sb() {
     export ADD
     [[ "$ARMED" != "default" ]] && AG_ARMED_TAKE="$ARMED"; [[ "$MARGIN" != "default" ]] && AG_TAKE_MARGIN_SLOTS="$MARGIN"
     TAKEOVER_COOLDOWN=$COOLDOWN; ALERT_THROTTLE=$THROTTLE; LEDGER_PATH="$WORK/ledger-$VH"
-    [[ "$KP" == "empty" ]] && : > "$KPF"
+    [[ "$KP" == "empty" ]] && : > "$KP_STAKED"
     [[ "$AGMODE" == "off" ]] && HARNESS_AG_REAL=0 harness_ag_off
     harness_clock_shims
     log(){ :;}; log_error(){ :;}
@@ -299,9 +308,9 @@ dflt=$( (set +e; load_seam "$STANDBY"; printf '%s|%s|%s' "${AG_ARMED_TAKE-UNSET}
 # ── (2) armed + margin ok: voter first, then the cold set-identity ───────────────────────────────────────────
 echo ""; echo "─── (2) armed, margin ok: authorized-voter add FIRST, then set-identity with the cold flag; TOOK page with the cold-take fields ───"
 out=$(at_world "$STANDBY" ARMED=true)
-got=$(admin_args "$out" | sub_key)
-if [[ "$got" == "$EXPECT_ORDER" && "$(rc_of "$out")" == "0" && "$(page_head "$out")" == "TOOK STAKED ✅" && "$(page_n "$out")" == "1" ]]; then
-    ok "(2a) the mock records, in this order: 'authorized-voter add <key>' then 'set-identity $FLAG <key>' - nothing else; rc 0; ONE page, 'TOOK STAKED ✅'"
+got=$(admin_args "$out")
+if p_order "$out" && [[ "$(rc_of "$out")" == "0" && "$(page_head "$out")" == "TOOK STAKED ✅" && "$(page_n "$out")" == "1" ]]; then
+    ok "(2a) the mock records, in this order: '$WANT_ADD' then '$WANT_SET' - nothing else, both with the STAKED keypair; rc 0; ONE page, 'TOOK STAKED ✅'"
 else
     bad "(2a) armed take: calls=[$(printf '%s' "$got" | tr '\n' ';')] rc=$(rc_of "$out") head=$(page_head "$out") pages=$(page_n "$out")"
 fi
@@ -375,23 +384,33 @@ mp page-in-predicate 's/^    _ag_lead=""; _ag_opnote=""$/    _ag_lead=""; _ag_op
 mp external-read 's/^    _canon_uint "\${AG_TAKE_MARGIN_SLOTS:-}" || {/    wget -q -O - "$TIER2_RPC" >\/dev\/null 2>\&1; _canon_uint "${AG_TAKE_MARGIN_SLOTS:-}" || {/'
 if [[ $pc_ok -eq 1 ]]; then ok "(2f-ctl) the census catches a second request in the margin read (a curl to TIER3), a page in the predicate and an external client:$pc_rows"; else bad "(2f-ctl) a mutant keeps the census green (GREEN) or did not apply:$pc_rows"; fi
 
+# (2g) the temp directory's depth is not a variable of the comparison: the same take with a ~300-character --ledger path in front of the argv (a very deep TMPDIR gives that, and the CI run that found this had
+# /home/runner/rt/strace-hermetic/tmp). Neither the recorder nor the helpers cut the line, and nothing the comparison reads is a temp path: the compared argv has no '/' in it.
+deep=$(at_world "$STANDBY" ARMED=true DEEP=1)
+dl=$(admin_ln "$deep" | head -1 | wc -c | tr -d ' ')
+if p_order "$deep" && [[ "$(rc_of "$deep")" == "0" && "$(page_head "$deep")" == "TOOK STAKED ✅" && "$dl" -gt 300 && "$(admin_args "$deep")" != */* ]]; then
+    ok "(2g) a ${dl}-character first admin line (the --ledger path in front): the same two calls, the same order, TOOK; the compared argv holds no path at all - nothing in it depends on where TMPDIR points"
+else
+    bad "(2g) deep ledger path: line=${dl} chars calls=[$(admin_args "$deep" | tr '\n' ';')] rc=$(rc_of "$deep") head=$(page_head "$deep")"
+fi
+
 # ── (3)-(5) the voter add: already present / failure / timeout ─────────────────────────────────────────────
 echo ""; echo "─── (3)-(5) the voter add: 'already present' continues; any other failure and a timeout stop the take BEFORE set-identity ───"
 out=$(at_world "$STANDBY" ARMED=true ADD=present)
-if [[ "$(admin_args "$out" | sub_key)" == "$EXPECT_ORDER" && "$(rc_of "$out")" == "0" && "$(page_head "$out")" == "TOOK STAKED ✅" ]] && has "$(evl "$out" 'LOG .*already loaded')" "continuing to set-identity"; then
+if p_order "$out" && [[ "$(rc_of "$out")" == "0" && "$(page_head "$out")" == "TOOK STAKED ✅" ]] && has "$(evl "$out" 'LOG .*already loaded')" "continuing to set-identity"; then
     ok "(3) the voter add answers rc 1 'already present': logged, and set-identity still runs (the same two calls in the same order, TOOK)"
 else
-    bad "(3) already present: calls=[$(admin_args "$out" | sub_key | tr '\n' ';')] rc=$(rc_of "$out") head=$(page_head "$out")"
+    bad "(3) already present: calls=[$(admin_args "$out" | tr '\n' ';')] rc=$(rc_of "$out") head=$(page_head "$out")"
 fi
 for md in fail timeout; do
     out=$(at_world "$STANDBY" ARMED=true ADD=$md)
     want_detail="admin rpc unreachable"; [[ "$md" == "timeout" ]] && want_detail="timed out"
     pg=$(printf '%s\n' "$out" | grep -m1 '^EV: PAGE ')
-    if [[ "$(admin_args "$out" | sub_key)" == "authorized-voter add <key>" && "$(rc_of "$out")" == "1" && "$(page_n "$out")" == "1" && "$(page_head "$out")" == "TAKEOVER BLOCKED — authorized-voter add failed" \
+    if p_add_only "$out" && [[ "$(rc_of "$out")" == "1" && "$(page_n "$out")" == "1" && "$(page_head "$out")" == "TAKEOVER BLOCKED — authorized-voter add failed" \
           && "$(field "$(printf '%s\n' "$out" | grep '^STATE=' | sed 's/^STATE=//')" ltt)" -gt 0 ]] && has "$pg" "$want_detail" && has "$pg" "the identity change was NOT attempted"; then
         ok "(4:$md) the voter add ${md}s: NO set-identity (one admin call), ONE page 'TAKEOVER BLOCKED — authorized-voter add failed' naming '$want_detail', the cooldown stamped, rc 1"
     else
-        bad "(4:$md) calls=[$(admin_args "$out" | sub_key | tr '\n' ';')] rc=$(rc_of "$out") pages=$(page_n "$out") head=$(page_head "$out") page=$pg"
+        bad "(4:$md) calls=[$(admin_args "$out" | tr '\n' ';')] rc=$(rc_of "$out") pages=$(page_n "$out") head=$(page_head "$out") page=$pg"
     fi
 done
 
@@ -567,10 +586,10 @@ fi
 # ── (14) the other branches: the retained path and fdctl ────────────────────────────────────────────────────────────────
 echo ""; echo "─── (14) the retained path (shadowed) and fdctl are unchanged ───"
 rt=$(at_world "$STANDBY" AGMODE=off)
-if [[ "$(admin_args "$rt" | sub_key)" == $'set-identity <key>\nauthorized-voter add <key>' && "$(rc_of "$rt")" == "0" && "$(reads_before_admin "$rt")" == "0" ]]; then
+if [[ "$(admin_args "$rt")" == "set-identity $KP_STAKED"$'\n'"authorized-voter add $KP_STAKED" && "$(rc_of "$rt")" == "0" && "$(reads_before_admin "$rt")" == "0" ]]; then
     ok "(14a) the SAME world under harness_ag_off (what every older suite runs): set-identity FIRST, then authorized-voter add, no cold flag, no readiness read - the retained path, byte for byte its old sequence"
 else
-    bad "(14a) retained: calls=[$(admin_args "$rt" | sub_key | tr '\n' ';')] rc=$(rc_of "$rt") reads=$(reads_before_admin "$rt")"
+    bad "(14a) retained: calls=[$(admin_args "$rt" | tr '\n' ';')] rc=$(rc_of "$rt") reads=$(reads_before_admin "$rt")"
 fi
 fdx=$(at_world "$STANDBY" ARMED=true VALIDATOR_TYPE=frankendancer)
 if [[ "$(admin_n "$fdx")" == "1" ]] && printf '%s\n' "$fdx" | grep -q '^EV: ADMIN fdctl set-identity ' && ! printf '%s\n' "$fdx" | grep -q "authorized-voter\|$FLAG"; then
@@ -584,12 +603,12 @@ echo ""; echo "─── (15) CONTROLS (mutate()): each mutant of the armed take
 ctl_ok=1; ctl_rows=""
 mw_state() { cat "$WORK/mw.state" 2>/dev/null; }
 mw_label() { [[ "$(mw_state)" == "applied" ]] && echo GREEN || echo NOT-APPLIED; }   # GREEN = the mutant ran and the case did not bite; NOT-APPLIED = the sed expression matched nothing
-mw() {   # mw <label> <sed expr> <at_world knobs…> -> the mutant world's output (rc 1 when the expression changed nothing)
+mw() {   # mw <label> <sed expr> <world knobs…> -> the mutant world's output (rc 1 when the expression changed nothing); the world is at_world unless MW_WORLD names another
     local lab="$1" expr="$2" m="$WORK/mut-$1.sh"; shift 2
     echo not-applied > "$WORK/mw.state"
     mutate "$STANDBY" "$expr" "$m" >/dev/null || return 1
     echo applied > "$WORK/mw.state"
-    at_world "$m" "$@"
+    ${MW_WORLD:-at_world} "$m" "$@"
 }
 # 1 the shipped default flipped to armed / the shipped margin weakened: check (1) and the boundary (6a) read the SHIPPED values, so each turns red
 c=$(mw default-armed 's/^AG_ARMED_TAKE=false$/AG_ARMED_TAKE=true/') && [[ "$(admin_n "$c")" -ge 1 ]] \
@@ -600,9 +619,9 @@ c=$(mw cmp-gt 's/^    \[\[ \$_ag_rdy_margin -ge \$AG_TAKE_MARGIN_SLOTS \]\]/    
     && ctl_rows="$ctl_rows margin-ge-to-gt:red" || { ctl_ok=0; ctl_rows="$ctl_rows margin-ge-to-gt:$(mw_label)"; }
 c=$(mw swapped 's/^    _ag_rdy_margin=\$(( _own - _holder ))$/    _ag_rdy_margin=$(( _holder - _own ))/' ARMED=true) && [[ "$(admin_n "$c")" == "0" ]] \
     && ctl_rows="$ctl_rows operands-swapped:red" || { ctl_ok=0; ctl_rows="$ctl_rows operands-swapped:$(mw_label)"; }
-c=$(mw noflag 's/ "\$_AG_COLD_FLAG" "\$STAKED_KEYPAIR"/ "$STAKED_KEYPAIR"/' ARMED=true) && [[ "$(admin_args "$c" | sub_key)" != "$EXPECT_ORDER" ]] \
+c=$(mw noflag 's/ "\$_AG_COLD_FLAG" "\$STAKED_KEYPAIR"/ "$STAKED_KEYPAIR"/' ARMED=true) && ! p_order "$c" \
     && ctl_rows="$ctl_rows flag-removed:red" || { ctl_ok=0; ctl_rows="$ctl_rows flag-removed:$(mw_label)"; }
-c=$(mw order 's/authorized-voter add "\$STAKED_KEYPAIR" 2>&1); _rc=\$?$/@@V@@/;s/set-identity "\$_AG_COLD_FLAG" "\$STAKED_KEYPAIR" 2>&1); _rc=\$?$/authorized-voter add "$STAKED_KEYPAIR" 2>\&1); _rc=$?/;s/@@V@@/set-identity "$_AG_COLD_FLAG" "$STAKED_KEYPAIR" 2>\&1); _rc=$?/' ARMED=true) && [[ "$(admin_args "$c" | sub_key)" != "$EXPECT_ORDER" ]] \
+c=$(mw order 's/authorized-voter add "\$STAKED_KEYPAIR" 2>&1); _rc=\$?$/@@V@@/;s/set-identity "\$_AG_COLD_FLAG" "\$STAKED_KEYPAIR" 2>&1); _rc=\$?$/authorized-voter add "$STAKED_KEYPAIR" 2>\&1); _rc=$?/;s/@@V@@/set-identity "$_AG_COLD_FLAG" "$STAKED_KEYPAIR" 2>\&1); _rc=$?/' ARMED=true) && ! p_order "$c" \
     && ctl_rows="$ctl_rows order-swapped:red" || { ctl_ok=0; ctl_rows="$ctl_rows order-swapped:$(mw_label)"; }
 c=$(mw nostop-on-fail 's/^                return 1$/                :/' ARMED=true ADD=fail) && [[ "$(admin_n "$c")" -ge 2 ]] \
     && ctl_rows="$ctl_rows voter-failure-ignored:red" || { ctl_ok=0; ctl_rows="$ctl_rows voter-failure-ignored:$(mw_label)"; }
@@ -624,17 +643,46 @@ c=$(mw nofields 's/ - \$(_ag_cold_take_fields "\$_ag_vh_before")" "\$STAKED_PUBK
     && ctl_rows="$ctl_rows took-fields-dropped:red" || { ctl_ok=0; ctl_rows="$ctl_rows took-fields-dropped:$(mw_label)"; }
 c=$(mw margin-read-twice 's/^    _own=\$(_ag_slot_final)$/    _own=$(_ag_slot_final); _own=$(_ag_slot_final)/' ARMED=true) && [[ "$(reads_before_admin "$c")" != "1" ]] \
     && ctl_rows="$ctl_rows second-read-seen-by-A8-census:red" || { ctl_ok=0; ctl_rows="$ctl_rows second-read-seen-by-A8-census:$(mw_label)"; }
+# 2 the KEYPAIR: the staked key is compared by NAME, never normalised, so a daemon that hands the other keypair to the voter add, or to set-identity, is seen by the cases that hold the two calls: (2a) (3) (4:fail) (4:timeout) (16a).
+#   key_ctl <world> <row> <mutant label> <sed expr> <predicate> <world knobs…>: the mutant world must NOT satisfy the predicate the real case holds
+key_ctl() {
+    local w="$1" row="$2" lab="$3" expr="$4" pred="$5" c; shift 5
+    c=$(MW_WORLD=$w mw "$lab" "$expr" "$@") && ! "$pred" "$c" && ctl_rows="$ctl_rows $row:red" || { ctl_ok=0; ctl_rows="$ctl_rows $row:$(mw_label)"; }
+}
+WK_ADD='s/authorized-voter add "\$STAKED_KEYPAIR" 2>&1); _rc=\$?$/authorized-voter add "$UNSTAKED_KEYPAIR" 2>\&1); _rc=$?/'
+WK_SET='s/set-identity "\$_AG_COLD_FLAG" "\$STAKED_KEYPAIR" 2>&1); _rc=\$?$/set-identity "$_AG_COLD_FLAG" "$UNSTAKED_KEYPAIR" 2>\&1); _rc=$?/'
+key_ctl at_world wrong-key-in-add:2a  wk-add-2a  "$WK_ADD" p_order    ARMED=true
+key_ctl at_world wrong-key-in-add:3   wk-add-3   "$WK_ADD" p_order    ARMED=true ADD=present
+key_ctl at_world wrong-key-in-add:4f  wk-add-4f  "$WK_ADD" p_add_only ARMED=true ADD=fail
+key_ctl at_world wrong-key-in-add:4t  wk-add-4t  "$WK_ADD" p_add_only ARMED=true ADD=timeout
+key_ctl ag3_sb   wrong-key-in-add:16a wk-add-16a "$WK_ADD" p_order    ARMED=true
+key_ctl at_world wrong-key-in-set:2a  wk-set-2a  "$WK_SET" p_order    ARMED=true
+key_ctl at_world wrong-key-in-set:3   wk-set-3   "$WK_SET" p_order    ARMED=true ADD=present
+# 3 the helper: the line the comparison reads is cut at the old 160 characters - the deep-ledger case (2g) turns red on it
+c=$(at_world "$STANDBY" ARMED=true DEEP=1)
+( admin_ln() { printf '%s\n' "$1" | grep '^EV: ADMIN' | sed 's/^EV: ADMIN agave-validator //' | cut -c1-160; }; ! p_order "$c" ) \
+    && ctl_rows="$ctl_rows admin-line-cut-at-160:2g-red" || { ctl_ok=0; ctl_rows="$ctl_rows admin-line-cut-at-160:[2g-green]"; }
 if [[ $ctl_ok -eq 1 ]]; then ok "(15) every mutant turns its case red:$ctl_rows"; else bad "(15) a control is not red (GREEN = the mutant ran and the case does not bite; NOT-APPLIED = the sed expression matched nothing):$ctl_rows"; fi
+# (15b) why no key is normalised: a helper that COLLAPSED key names to a placeholder - the shape of the temp-path normalisation this suite used to have - reads the real take AND the wrong-key daemon as the same two calls
+good_w=$(at_world "$STANDBY" ARMED=true); wrong_w=$(mw wk-add-witness "$WK_ADD" ARMED=true)
+cw=$( admin_args() { admin_ln "$1" | sed 's#^--ledger [^ ]* ##' | sed -E 's#[A-Za-z0-9_.-]+\.json#<key>#g'; }
+      EXPECT_ORDER=$'authorized-voter add <key>\nset-identity --'"$FLAG"' <key>'
+      p_order "$good_w" && a=y || a=n; p_order "$wrong_w" && b=y || b=n; echo "$a$b" )
+if [[ "$cw" == "yy" ]] && p_order "$good_w" && ! p_order "$wrong_w"; then
+    ok "(15b) the witness: with key names collapsed to a placeholder the wrong-key daemon passes the order check as the real take does (a tautology); compared by name, as this suite does, it fails it - the keypair rows of (15) are the proof that no normalisation hides a key"
+else
+    bad "(15b) collapse witness: collapsed(real,wrong)=[$cw] by-name(real)=$(p_order "$good_w" && echo y || echo n) by-name(wrong)=$(p_order "$wrong_w" && echo y || echo n)"
+fi
 
 # ── (16) the REAL chain ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 echo ""; echo "─── (16) the real chain (attempt_takeover -> the liveness gate -> take_staked_identity): the margin reads the baseline the gate accepted; a held take is decided again at the next decision point ───"
 fc=$(ag3_sb "$STANDBY" ARMED=true)
 fcp=$(printf '%s\n' "$fc" | grep -m1 '^EV: PAGE ')
-if [[ "$(admin_n "$fc")" == "2" && "$(admin_args "$fc" | sub_key)" == "$EXPECT_ORDER" && "$(evn "$fc" 'TAKE-EXIT rc=0')" == "1" && "$(page_head "$fc")" == "TOOK STAKED ✅" && "$(page_n "$fc")" == "1" && "$(evn "$fc" 'NET CURLBIN')" == "0" && "$(evn "$fc" 'READ EXT')" == "0" ]] \
+if [[ "$(admin_n "$fc")" == "2" ]] && p_order "$fc" && [[ "$(evn "$fc" 'TAKE-EXIT rc=0')" == "1" && "$(page_head "$fc")" == "TOOK STAKED ✅" && "$(page_n "$fc")" == "1" && "$(evn "$fc" 'NET CURLBIN')" == "0" && "$(evn "$fc" 'READ EXT')" == "0" ]] \
    && has "$fcp" "holder lastVote 5000;"; then
     ok "(16a) armed, every REAL gate open (episode, delay, liveness, the fresh proof, veto): 'authorized-voter add' then the cold 'set-identity', ONE page 'TOOK STAKED ✅' whose 'holder lastVote 5000' is the baseline the real liveness gate built from its own samples; no curl binary, no external read"
 else
-    bad "(16a) armed full chain: admin=$(admin_n "$fc") calls=[$(admin_args "$fc" | sub_key | tr '\n' ';')] exits=$(evn "$fc" 'TAKE-EXIT rc=0') pages=$(page_n "$fc") head=$(page_head "$fc") :: ${fcp:0:240}"
+    bad "(16a) armed full chain: admin=$(admin_n "$fc") calls=[$(admin_args "$fc" | tr '\n' ';')] exits=$(evn "$fc" 'TAKE-EXIT rc=0') pages=$(page_n "$fc") head=$(page_head "$fc") :: ${fcp:0:240}"
 fi
 own=$(printf '%s' "$fcp" | sed -n 's/.*floor = own root \([0-9][0-9]*\);.*/\1/p')
 if [[ "$own" =~ ^[0-9]+$ ]]; then
@@ -650,7 +698,7 @@ if [[ "$own" =~ ^[0-9]+$ ]]; then
     fr=$(ag3_sb "$STANDBY" ARMED=true LV=$lvh HZ=200)
     frh=$(printf '%s\n' "$fr" | grep '^EV: PAGE ' | sed 's/^EV: PAGE [^<]*<b>//; s/<\/b>.*//' | tr '\n' ';')
     m2=$(printf '%s\n' "$fr" | grep '^EV: PAGE ' | tail -1 | sed -n 's/.*margin \([0-9][0-9]*\) slots; vote history.*/\1/p')
-    if [[ "$(admin_n "$fr")" == "2" && "$(admin_args "$fr" | sub_key)" == "$EXPECT_ORDER" && "$frh" == "TAKEOVER WITHHELD — Alpenglow mode 🚨;TOOK STAKED ✅;" && "$m2" =~ ^[0-9]+$ ]] && [[ "$m2" -ge 200 && "$m2" -gt 100 ]]; then
+    if [[ "$(admin_n "$fr")" == "2" ]] && p_order "$fr" && [[ "$frh" == "TAKEOVER WITHHELD — Alpenglow mode 🚨;TOOK STAKED ✅;" && "$m2" =~ ^[0-9]+$ ]] && [[ "$m2" -ge 200 && "$m2" -gt 100 ]]; then
         ok "(16c) the page's promise holds: ARMED and held at margin 100, the spare is not asked again - the next decision point (the cooldown later) finds the margin at ${m2} (>= 200, the holder's lastVote frozen while the spare's root advanced) and TAKES: pages '${frh}', the two admin calls in order"
     else
         bad "(16c) held then re-decided: admin=$(admin_n "$fr") pages=[$frh] margin-at-take=[$m2]"
