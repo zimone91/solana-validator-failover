@@ -419,9 +419,9 @@ promoted (there is no built-in assisted mode). See [SPLIT-BRAIN-RESIDUAL.md](SPL
 
 ### Known hardening items (tracked)
 
-- **Fencing** (v0.7): watchdog self-fence on the holder + a relinquish proof on the spare (verified
-  demote / watchdog-elapsed); external fence providers (STONITH-style, cloud/IPMI) remain v0.8 options
-  on the same interface.
+- **Fencing** (v0.7): the watchdog self-fence on the holder. The spare's relinquish proof (verified
+  demote / watchdog-elapsed) is built and tested but wired into no take path in this release (Block 6.4
+  wires it); external fence providers (STONITH-style, cloud/IPMI) remain v0.8 options on the same interface.
 
 ### Fence rot (v0.7, armed hosts): holder-side self-enforcement
 

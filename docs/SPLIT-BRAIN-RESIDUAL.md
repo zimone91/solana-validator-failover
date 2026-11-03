@@ -129,8 +129,10 @@ closure options below.
   guarantee") — a sufficiently adversarial partition timing, a mis-tuned or disabled self-fence,
   or a dishonest LOCAL RPC could still leave a narrow overlap. The v0.6.9 collision detector (M5)
   makes the resulting two-holder state *visible* (🚨 page) but deliberately does not auto-resolve
-  it; the v0.7 watchdog fence + relinquish proof narrows this further, and external providers (#3)
-  remain v0.8 options.
+  it; the v0.7 watchdog fence narrows this further, and external providers (#3) remain v0.8
+  options. The relinquish-proof gate (`require_relinquish_proof`) is built and tested but wired
+  into no take path in this release, so it narrows nothing yet ([SAFETY.md](SAFETY.md),
+  "Verified-demote (G2)").
 
 ## The three closure options
 
