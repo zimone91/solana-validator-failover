@@ -576,12 +576,19 @@ and mechanical on the holder side: the holder's `failover arm` refuses to comple
 the new token ("re-pair every spare" is ceremony, not advice — Block 5.3), and the spare's own arm
 re-validates its stored token at every arm. The residual stays and is stated plainly: between a
 holder re-arm and the next spare re-pair, the spare's elapsed floor rests on stale bounds.
-- **Evidence quality** (v0.7): bind `VOTE_PUBKEY` to `STAKED_PUBKEY` via `getVoteAccounts`
-  (`nodePubkey`) before acting. Landed in v0.7: the paired liveness sample is provider-pinned, and
+- **Evidence quality** (tracked, not in rc1): bind `VOTE_PUBKEY` to `STAKED_PUBKEY` via `getVoteAccounts`
+  (`nodePubkey`) before acting. What ships instead: only the primary's `RECOVERY_MODE=rpc` recovery pass
+  reads the vote account's `nodePubkey`, and it aborts the re-take when that is not `STAKED_PUBKEY`; the
+  spare's take path reads the holder's `lastVote` by `votePubkey` alone (the own-bank check, the own-view
+  veto, the liveness sampler) and never checks the vote account's `nodePubkey`. Landed in v0.7: the paired liveness sample is provider-pinned, and
   *any* forward movement of `lastVote` now counts as "alive" (`VOTE_LIVENESS_EPSILON=0`, which
   presumes that pinned pair).
-- **Failure handling** (v0.7): escalate on *any* unverified demote postcondition, not only on
-  command timeouts; atomic state writes; monotonic (boot-time) safety timers.
+- **Failure handling** (tracked, not in rc1): escalate on *any* unverified demote postcondition, not only on
+  command timeouts. What ships instead: only a demote command that times out (`authorized-voter remove-all`,
+  `set-identity`, `fdctl set-identity` at `SETIDENTITY_TIMEOUT`) escalates to the hard stop; a demote whose
+  postcondition fails (the identity read after it is not the unstaked one) pages `SWITCH TO UNSTAKED FAILED ❌`
+  (at most once per `ALERT_THROTTLE`) and returns failure, and the self-fence keeps its timer armed and
+  retries it on the next cycle. Landed in v0.7: atomic state writes; monotonic (boot-time) safety timers.
 
 ### Shared vantages — the spare's observation surface (a standing property, v0.7)
 
