@@ -190,7 +190,7 @@ jobs:
       - name: shellcheck
         # v0.7 Block 5.1: the two fence scripts are REAL shippable artifacts (in SHA256SUMS and
         # the run_all parse gate) — their EXECUTION on a host happens only at the v0.7 rollout
-        # (`failover arm`, upgrade-then-arm); nothing in this repository installs them.
+        # (`failover arm`, upgrade-then-arm, run by the operator); nothing else in this repository installs them.
         # install.sh: in SHA256SUMS since it shipped, but absent from this list until the
         # Block-5.1 panel found the gap (pre-existing, not a fence regression) — closed here.
         # v0.7 Block 5.3: failover-arm.sh — the `failover arm` ceremony itself (the installer
@@ -417,7 +417,7 @@ jobs:
         # red, and does not cry wolf on the paths the scripts only name.
         # LIMIT: the cheap second line of defence, by LINE. A path assembled in a variable, a verb on another line than its path and a
         # destructive tool outside the list are not seen here; the real census is tests/test_tower_handling.sh (6), by bash's own parse with the
-        # variable taint, and it runs in the VM legs only - this step runs in GitHub CI on every push.
+        # variable taint, and it runs in the VM legs only - this step runs in GitHub CI on pushes to main and on pull requests.
         run: |
           w=$(mktemp -d)
           scan() {

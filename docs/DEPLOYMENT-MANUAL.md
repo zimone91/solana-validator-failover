@@ -167,7 +167,9 @@ armed spare with `PRIMARY_UNSTAKED_PUBKEY` set and two distinct G2 vantages, the
 
 ### Failure scenario (3-server)
 
-1. PRIMARY: Internet lost → parallel pings fail 3x → switch to unstaked (~9s). OR isolated from the
+1. PRIMARY: Internet lost → parallel pings fail 3x → switch to unstaked (13.5–16.5 s: 3 × the 3 s
+   `CHECK_INTERVAL` plus three failed ping rounds of 1.5 to 2.5 s — the code's bounds added up, not pinned
+   by a test; 17 s measured on the testnet pair). OR isolated from the
    supermajority (LOCAL confirmed slot frozen / LOCAL JSON-RPC silent) → **self-fence** to unstaked at
    ~30s (`SELF_FENCE_ISOLATION_SECS`/`SELF_FENCE_NOANSWER_SECS`) — it relinquishes BEFORE any spare takes.
 2. STANDBY: LOCAL RPC sees delinquent → sliding window 7/10 → external confirm → **fence (vote-liveness authoritative; gossip advisory)** → in Alpenglow mode **pages** that the staked identity is free to be moved (unarmed, the default) or, armed (`AG_ARMED_TAKE=true`), takes it cold, voter first, once the readiness margin also holds (the retained path took it, ~70s: `TAKEOVER_DELAY=60` after the PRIMARY has relinquished at ~30s, with a 30s cross-node margin)
@@ -456,11 +458,16 @@ systemctl restart solana-failover-standby
 
 On a host armed with `failover arm` (v0.7) the monitor is the unit `solana-failover-monitor.service`, which the ceremony renders from `systemd/solana-failover-monitor.service.skel` (it runs
 `/opt/solana-failover/solana-<role>-failover.sh`) and enables, and the ceremony has stopped and disabled the wizard's unit, `solana-failover` or `solana-failover-standby` (its unit file stays on disk).
-The ceremony starts nothing: it enables the monitor and stops the wizard's unit, so until you run `systemctl start solana-failover-monitor` (or the host boots) nothing monitors the host.
+The ceremony does not start the monitor: it enables it and stops the wizard's unit, so until you run `systemctl start solana-failover-monitor` (or the host boots) nothing monitors the host; the ceremony's closing output names this step.
 To update an armed host, copy the role's script as above, then run `systemctl restart solana-failover-monitor`; wherever this manual starts, restarts or stops `solana-failover[-standby]`, an armed host means
 `solana-failover-monitor`. Leave the retired unit stopped: the ceremony retired it so that the host runs one monitor, not two. Under the armed unit a daemon that exits with an error, at its start
 too, ends the unit `failed`, and `OnFailure=` dispatches the fence (a page on a spare). The copy replaces the script only: the fence scripts and the unit files on that host are the ones
-`failover arm` placed, and a re-run of the ceremony replaces them.
+`failover arm` placed, and a re-run of the ceremony replaces them. After an update that changes `failover-arm.sh`, the fence scripts or the unit skeletons, re-run `failover arm` from the new
+release tree: it re-renders the units and verifies them, and a holder's re-arm prints a new pairing token that every spare re-pairs with.
+`DRY_RUN` is part of an armed host's state. The ceremony reads it to choose the fence unit (`false`: the real fence; anything else: the page-only fence, and it removes the other unit), and the daemon
+checks the pair at every start. Change it only through the ceremony: edit the env file, re-run `failover arm`, then restart `solana-failover-monitor` — not with a `sed` and a restart alone (the `sed` of
+Phase 3 flips the value and leaves the fence unit as it was). `DRY_RUN=true` beside the real fence unit makes the daemon refuse to start (exit 1, a CRITICAL page), and under the armed unit a start that
+fails ends the unit `failed`, which dispatches the real fence; `DRY_RUN=false` beside the page-only unit starts, with a warning that the holder is not really fenced.
 
 ---
 
@@ -774,7 +781,7 @@ timeline is identical to v0.6.6 (~70s).
 > **Read the cross-node invariant first (v0.6.6 N1).** The spare's `TAKEOVER_DELAY` must be **≥
 > `EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS` (= 60 by default)** so the PRIMARY
 > *always relinquishes first*. The binding case is **not** the fast internet-loss path (PRIMARY
-> unstaked ~9s) — it is an **isolated-but-still-voting** PRIMARY, which holds the staked identity until
+> unstaked at 13.5–16.5 s, the code's bounds added up) — it is an **isolated-but-still-voting** PRIMARY, which holds the staked identity until
 > its self-fence demotes it at ~30s. A spare must take only **after** that, with margin.
 > **Pre-N1 fast presets (`TAKEOVER_DELAY=10`/`20`) are UNSAFE and must not be used** — they would let
 > the spare take before the PRIMARY self-fences (double-sign on heal). The examples below use the
@@ -787,7 +794,8 @@ timeline is identical to v0.6.6 (~70s).
 
 ```
 # PRIMARY relinquishes FIRST (whichever trigger applies):
-PRIMARY t=~9s:    internet-loss path → SWITCHED TO UNSTAKED
+PRIMARY t=13.5-16.5s: internet-loss path → SWITCHED TO UNSTAKED
+#   (the code's bounds added up, not pinned by a test; 17 s measured on the testnet pair)
    …or (the BINDING cross-node case)…
 PRIMARY t=~30s:   isolated-but-voting → SELF-FENCE → SWITCHED TO UNSTAKED (demote before alert, N2)
 # STANDBY (fast-detect 15, delay 60):
@@ -809,9 +817,9 @@ BACKUP t=~132s:   TAKEOVER_DELAY (120s) elapsed + liveness frozen (crashed STAND
 ### Without fast-detect (MAX_DELINQUENT_SLOTS=0, TAKEOVER_DELAY=60)
 
 ```
-PRIMARY t=~9-30s: SWITCHED TO UNSTAKED (internet-loss or self-fence, as above)
-STANDBY t=~60s:   RPC delinquent list (~128 slots) → first-delinquent → window starts
-STANDBY t=~120s:  TAKEOVER_DELAY (60s) elapsed + Window 7/10 → TOOK STAKED
+PRIMARY t=13.5-30s: SWITCHED TO UNSTAKED (internet-loss or self-fence, as above)
+STANDBY t=~60s:     RPC delinquent list (~128 slots) → first-delinquent → window starts
+STANDBY t=~120s:    TAKEOVER_DELAY (60s) elapsed + Window 7/10 → TOOK STAKED
 # ⇒ slower detection (no fast-detect) only LENGTHENS the spare's takeover — the cross-node margin is preserved.
 ```
 
