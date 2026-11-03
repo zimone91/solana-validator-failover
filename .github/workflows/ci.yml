@@ -336,6 +336,36 @@ jobs:
           done
           [ "$bad" = 0 ] || { echo "RED: the MIN_VALIDATOR_VERSION default moved in one place (rule: this step's comment)"; exit 1; }
           echo "MIN_VALIDATOR_VERSION is 4.4.0 in both daemons, their drift tables and both env templates"
+      - name: the version string is ONE value everywhere an operator reads it - FO_VERSION in both daemons and both deploy scripts, the CHANGELOG head, the templates, the manual, the start pages (v0.7 B7.6)
+        # RULE: FO_VERSION="<x>" is assigned exactly once in each of the four scripts that print a version (solana-primary-failover.sh, solana-standby-failover.sh, deploy-failover.sh,
+        # deploy-failover-standby.sh), all four equal, and equal to the version of CHANGELOG.md's FIRST release heading (## v<x> - ...). The banner, the start pages, --version, the deploy banner, the
+        # generated unit's Description and the deploy test messages say ${FO_VERSION} - no printed line of those scripts carries a literal version. Line 2 of both env templates and the title of
+        # docs/DEPLOYMENT-MANUAL.md carry v<x>, and docs/NOTIFICATIONS.md names the two start pages with it. A release moves the constant, the CHANGELOG head, the templates, the manual and the
+        # notification entries in the same diff and updates this step's comment: the label an operator reads is the version that runs.
+        run: |
+          bad=0
+          want=$(sed -n 's/^## v\([0-9][0-9A-Za-z.+-]*\) .*$/\1/p' CHANGELOG.md | head -1)
+          [ -n "$want" ] || { echo "cannot read a version from the first '## v<version> ...' heading of CHANGELOG.md"; exit 1; }
+          for f in solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh; do
+            n=$(grep -c -E '^FO_VERSION="[^"]+"' "$f" || true)
+            v=$(sed -n 's/^FO_VERSION="\([^"]*\)".*$/\1/p' "$f" | head -1)
+            { [ "$n" = 1 ] && [ "$v" = "$want" ]; } || { echo "$f: FO_VERSION assignments=$n value='$v' (want exactly 1, equal to '$want' = the CHANGELOG head)"; bad=1; }
+          done
+          for f in failover.env.example failover-standby.env.example; do
+            n=$(sed -n 2p "$f" | grep -c -F " Failover v$want " || true)
+            [ "$n" = 1 ] || { echo "$f: line 2 does not carry ' Failover v$want '"; bad=1; }
+          done
+          n=$(sed -n 1p docs/DEPLOYMENT-MANUAL.md | grep -c -F " v$want " || true)
+          [ "$n" = 1 ] || { echo "docs/DEPLOYMENT-MANUAL.md: line 1 (the title) does not carry ' v$want '"; bad=1; }
+          for r in PRIMARY STANDBY; do
+            a=$(grep -c -F "🚀 $r v$want started [DRY_RUN]" docs/NOTIFICATIONS.md || true)
+            b=$(grep -c -F "🚀 $r v$want started [LIVE]" docs/NOTIFICATIONS.md || true)
+            { [ "$a" = 1 ] && [ "$b" = 1 ]; } || { echo "docs/NOTIFICATIONS.md: the $r start pages are not named with v$want (DRY_RUN lines=$a, LIVE lines=$b)"; bad=1; }
+          done
+          lit=$(grep -n -E '(echo|alert_info|Title:|Description=|-d text=).*(Failover|failover|Protection|PRIMARY|STANDBY)[^"]{0,24}v[0-9]+\.[0-9]+\.[0-9]+' solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*#' || true)
+          [ -z "$lit" ] || { echo "a printed label carries a literal version (use \${FO_VERSION}):"; echo "$lit"; bad=1; }
+          [ "$bad" = 0 ] || { echo "RED: the version string is not one value (rule: this step's comment)"; exit 1; }
+          echo "FO_VERSION=$want in both daemons and both deploy scripts, the CHANGELOG head, both templates' line 2, the manual's title and the start-page entries"
       - name: the armed take's defaults are one set of values everywhere they are written - unarmed, margin 200, delay 60 >= gap 30 + 30, rung 30 (v0.7 AG-3)
         # RULE: AG_ARMED_TAKE defaults to false (only the literal true arms the take) in the standby and its template; AG_TAKE_MARGIN_SLOTS is
         # 200 in both; TAKEOVER_DELAY is 60 in the standby and its template; HOLDER_GAP_DEMOTE_SECS is 30 and HOLDER_UNREACHABLE_STOP_SECS is 30 in

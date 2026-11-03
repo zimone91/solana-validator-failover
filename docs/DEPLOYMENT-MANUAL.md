@@ -1,4 +1,4 @@
-# Solana Validator Failover System v0.6.9 — Deployment Manual
+# Solana Validator Failover System v0.7.0-rc1 — Deployment Manual
 
 > **Status:** read the honest-limits note in the [README](../README.md) and the safety model in
 > [SAFETY.md](SAFETY.md) before arming anything. `DRY_RUN=true` is the shipped default everywhere.
