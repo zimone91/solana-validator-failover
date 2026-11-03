@@ -523,8 +523,9 @@ All notable changes are documented here. Versions follow the project's internal 
   the primary, 35 in the standby at landing (`grep -cE '^[[:space:]]*_watchdog_pet\b'` minus the
   definition line — the earlier "36 per daemon" figure counted the definition + a comment); at this
   release the same count is 50 and 55 (the grep reads 51 and 56).
-  **HOLD fixes:** `_consume_fence_markers` now runs FIRST in `startup_checks` — before EVERY
-  fatal gate (binary/keypair/one-arm/numeric/vote-liveness), so a fenced node parks in HOLD
+  **HOLD fixes:** `_consume_fence_markers` now runs ahead of EVERY fatal gate of `startup_checks`
+  (binary/keypair/one-arm/numeric/vote-liveness) — second only to the single-instance lock that
+  Block 7 added (B7.2) — so a fenced node parks in HOLD
   instead of looping a fatal exit-1 through OnFailure → fence-breaker → restart (suite-driven,
   both daemons; the HOLD loop sanitizes CHECK_INTERVAL locally since numeric validation now
   runs later); the fence script's HOLD comments and `systemd/README.md` now state the
@@ -547,7 +548,7 @@ All notable changes are documented here. Versions follow the project's internal 
   the [watchdog] block; the red-log provenance note records that the archived red predates the
   final suite revision (identical per-case outcome set re-verified). The primary's dead-but-
   parity-kept `boolf` drift branch is annotated (twin discipline over dead-code purity).
-  Suite grows 44 → 60 checks; the panel's M1–M11x battery re-run post-fix: 15/15 mutants red.
+  Suite grows 44 → 60 checks at landing; the panel's M1–M11x battery re-run post-fix: 15/15 mutants red.
 - **Block 5.2 — monitor-side fence integration** (installed by nothing; structurally inert on
   every host today — every mechanism activates only under the Block-5 systemd unit, i.e. when
   PID 1 exports `NOTIFY_SOCKET`+`WATCHDOG_USEC`, or when a fence outcome marker exists; both
@@ -580,8 +581,8 @@ All notable changes are documented here. Versions follow the project's internal 
   the takeover delay window + `remove-all` hygiene on episode reset (never while holding
   staked); off/DRY_RUN = zero admin calls (asserted); drift-announced via the new `boolf`
   direction with the live-test-gate wording. New suite
-  `tests/test_monitor_fence_integration.sh` (44 checks; 60 after the fix round — mutation
-  controls, structural pins, twin parity); suite
+  `tests/test_monitor_fence_integration.sh` (44 checks at landing; 60 after the fix round — mutation
+  controls, structural pins, twin parity); at landing too: suite
   count 46 → 47; CI wall-clock pins 19→20/20→21 (the one new site per daemon is the
   `_marker_same_boot` twin — mtime/boot-epoch comparisons are inherently wall-clock, not a
   timer); `test_demote_killafter` census 8 → 9 (the bounded startup-evidence probe).
@@ -602,9 +603,11 @@ All notable changes are documented here. Versions follow the project's internal 
   `systemctl restart --no-block` — the monitor is `Type=notify` with READY gated on its first
   identity read (minutes away mid-replay), so a job-blocking 15 s restart deterministically
   produced a false CRITICAL "UNMONITORED; intervene" on a healthy node (a killed wait is not a
-  canceled job); rc now means ENQUEUE outcome only. Also: single-instance `flock -n` guard
-  (loser logs + exits 0; skipped where flock is absent — macOS harness only); marker precedence
-  enforced in `_write_marker` (never `fenced-demoted` while `fenced-stopped` exists; a stopped
+  canceled job); rc now means ENQUEUE outcome only. Also: single-instance guard, `flock -w "${FENCE_LOCK_WAIT:-30}"`
+  (not `-n`: a concurrent twin waits for the lock; when the wait runs out the script takes the holder to be stuck — it
+  pages, restarts the monitor, fences WITHOUT the lock and exits 1 even when the fence worked; skipped where flock is
+  absent — macOS harness only); marker precedence enforced in `_write_marker` (never `fenced-demoted` while a SAME-BOOT
+  `fenced-stopped` exists — a stale, pre-boot one is removed and the demote written; a stopped
   write supersedes the demoted sibling); per-rung-sized watchdog pets (the repoll rung's real
   ~104 s bound, stop-path pets) made REAL by the fence unit skeleton's new `NotifyAccess=all` +
   derived `TimeoutStartSec=300` (term-by-term arithmetic in the skel; pets = belt, budget =
@@ -613,7 +616,7 @@ All notable changes are documented here. Versions follow the project's internal 
   third-branch fence↔monitor loop named honestly in a comment (loud, nothing stopped; breaker
   is 5.2 monitor-side); frankendancer stop-only posture documented (header +
   `systemd/README.md` — v0.7 limitation, reviewer-packet item). **B3 (test honesty):**
-  `tests/test_fence_script.sh` grows 21 → 41 checks — B1 stale/fresh/unreadable-uptime cases,
+  `tests/test_fence_script.sh` grows 21 → 41 checks at landing — B1 stale/fresh/unreadable-uptime cases,
   B2 enqueue semantics (with a slow-READY systemctl model), and a killer for every panel
   mutation that had survived: unreadable-re-poll-with-live-process abort, stop-UNCONFIRMED
   loudest-page path, delayed re-verify vs a Restart=always resurrection (per-call `proc.seq`
@@ -650,7 +653,7 @@ All notable changes are documented here. Versions follow the project's internal 
   promotion, deliberate:** both scripts enter `SHA256SUMS`, the CI shellcheck list, and
   `run_all.sh`'s parse gate; the `.service.skel` units stay skeletons — **still nothing
   installs anything anywhere**; execution begins only at the v0.7 rollout (`failover arm`,
-  upgrade-then-arm). New suite `tests/test_fence_script.sh` (46 suites): drives the real
+  upgrade-then-arm). New suite `tests/test_fence_script.sh` (46 suites at landing): drives the real
   script as a subprocess behind a fully mocked PATH (scriptable `agave-validator`/`systemctl`/
   `pgrep`/`timeout` stubs, ordered event log; no real systemctl can run), covering the exact
   ladder order (with a swap-mutation control), the stale-write re-poll abort, all three
@@ -679,9 +682,9 @@ All notable changes are documented here. Versions follow the project's internal 
   classification is pure `test -e` on the two canonical unit paths (BOTH present = `real`, fail
   toward the refusal; no systemctl on the startup path), and `none` — no fence unit exists,
   every host today — keeps the check **structurally inert**. No new env knobs. New suite
-  `tests/test_one_arm_state.sh` (45 suites).
+  `tests/test_one_arm_state.sh` (45 suites at landing).
 
-- **Alpenglow feature-gate tripwire** (both daemons, pre-Block-4 №9): agave 4.2.1 ships the entire
+- **Alpenglow feature-gate tripwire, as first built** (both daemons, pre-Block-4 №9; AG-1, above, changed what it reads and what it says, and `docs/NOTIFICATIONS.md` lists the pages of this release): agave 4.2.1 ships the entire
   votor/BLS machinery dormant, runtime-gated on the on-chain `alpenglow` feature — on activation
   `set-identity` demands a vote-history file by default (a direct hit on the deliberate
   no-tower-transfer design) and the whole lastVote observation model needs re-derivation. The
@@ -690,8 +693,7 @@ All notable changes are documented here. Versions follow the project's internal 
   drift-announced; first check immediate) and **page the moment the gate shows pending/active** —
   `pending` at WARN (epoch-boundary slack), `active` on the CRITICAL channel (set-identity then
   fails by default without a vote-history file: the promote path may be inert — the
-  UNKNOWN-IDENTITY class and channel) — with the instruction to re-run the 4.2 audit (Blocks 5–6
-  constants freeze until it passes). The last known state persists in the state file; "unknown"
+  UNKNOWN-IDENTITY class and channel). The last known state persists in the state file; "unknown"
   (both externals unusable) never overwrites it, logs at WARN, retries on a **900 s floor**
   instead of waiting out the full cadence, and **pages after 4 consecutive failures** (repeating
   per `ALERT_THROTTLE`) — a tripwire whose failure mode is silence would be a dead gate that
