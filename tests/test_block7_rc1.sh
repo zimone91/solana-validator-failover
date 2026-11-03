@@ -52,6 +52,8 @@ done
 #   (11) the fence and the arm never ask the unit (no systemctl call)   (12) the REAL hard stop (P S) kills the validator, not the unkillable client listed first, and confirms DOWN
 #   (13) the fence's and the arm's _detect_validator_unit names the VALIDATOR's unit when a client of the monitor unit is listed first
 #   (14) twins: P and S carry one body, F and A are byte-identical, and the selection part is one text in all four   (15) structure by text   (16) CONTROLS (mutate()): every mutant turns its case red
+#   (17) [B7.1b] the cmdline READ is bounded (`timeout -k 1 2 tr '\0' '\n' < cmdline`): a validator wedged inside the kernel can hold the mm lock /proc/<pid>/cmdline takes, and a builtin read on it would block the
+#        function (the hard stop, the fence's stop path, the ceremony's check) for as long as the wedge lasts; a read that times out is a cmdline that cannot be read (the hit is NOT a client). Red before B7.1b.
 # RED ON THE BASE (0730a78 + this section, the scripts unchanged): (01) on the standby only - the primary has had the MainPID path since AG-3.8 - and (02) (03) (04) (05) (08) (09) (11) (12) (13) (14a) (14c) (15),
 # and every control of (16) (NOT-APPLIED: the lines they mutate do not exist yet). The hard stop of (12) on the base: rc=1, 'HARD STOP FAILED', events STOP,MASK,KILL 4001,KILL -9 4001 - the client, never the validator.
 # NOT red on the base: (06) (07a) (07b) (10) (14b) - they pin what the code already does (a sole hit is answered whole; the fence and the arm are already byte-identical); their red is their mutants.
@@ -104,7 +106,11 @@ b71_run() {    # b71_run <daemon|fence> <script> <MainPID text> <agave pids> <fd
         set +e
         # shellcheck disable=SC1090
         source "$src" 2>/dev/null
-        timeout() { shift; "$@"; }
+        if [[ "${B71_REALTIMEOUT:-}" == "1" ]]; then   # (17): the cmdline read must meet the REAL timeout; only the unit's bounded show stays a mock
+            timeout() { case "$*" in *systemctl*) shift 2; "$@" ;; *) command timeout "$@" ;; esac; }
+        else
+            timeout() { if [[ "$1" == "-k" ]]; then shift 3; else shift 1; fi; "$@"; }   # both shapes: `timeout -k K DUR cmd` (the cmdline read) and `timeout DUR cmd` (the unit's show)
+        fi
         systemctl() { echo "$*" >> "$log.sc"; printf '%s\n' "$mp"; }
         pgrep() { local l; echo "$2" >> "$log.pg"; case "$2" in agave-validator) l="$pa" ;; fdctl) l="$pf" ;; solana-validator) l="$ps" ;; *) l="" ;; esac; [[ -n "$l" ]] || return 1; printf '%s\n' $l; }
         VALIDATOR_TYPE="$vt"; PROC_ROOT="$root"; FENCE_PROC_ROOT="$root"; unset VALIDATOR_UNIT
@@ -131,6 +137,7 @@ b71_hardstop() {   # b71_hardstop <script> -> rc=<rc>|status=<the last alert's s
             case "$*" in
                 *systemctl\ stop*) echo STOP >> "$ev"; return 124 ;;
                 *systemctl\ mask*) echo MASK >> "$ev"; return 0 ;;
+                *" tr "*) shift 3; "$@"; return $? ;;   # the cmdline read of _validator_pid: `timeout -k 1 2 tr ...`
             esac
             return 0
         }
@@ -274,6 +281,28 @@ b71_p_unit() {   # (13) _detect_validator_unit names the VALIDATOR's unit, not t
     out=$( ( source "$src" 2>/dev/null; pgrep() { printf '4001\n4002\n'; }; FENCE_PROC_ROOT="$r"; VALIDATOR_TYPE=agave; unset VALIDATOR_UNIT; _detect_validator_unit ) )
     b71_why="unit='$out'"; [[ "$out" == "sol.service" ]]
 }
+b71_p_bounded() {   # (17) the cmdline READ is bounded: a hit whose /proc/<pid>/cmdline blocks (a validator wedged under the mm lock; here a FIFO whose writer never writes) costs the 2-s bound, not the wedge
+    # scenario 1: the blocked hit listed first, a readable validator second -> answered inside 4 s, the validator wins; scenario 2: the blocked hit is the ONLY one -> it is answered (a read that timed out proves nothing: it is NOT a
+    # client, so the floor holds - skipping it would tell the hard stop "no validator" about a wedged STAKED holder)
+    local script="$1" kind="$2" r holder bp n t0 dt hung out1 out2 sc
+    for sc in 1 2; do
+        r=$(b71_root); mkdir -p "$r/4001"; mkfifo "$r/4001/cmdline"; b71_val "$r" 4002
+        ( exec 9<>"$r/4001/cmdline"; read -r -t 25 -u 9 _ ) 2>/dev/null & holder=$!            # a writer end is open: open() returns at once (as it does on /proc), read() blocks
+        if [[ "$sc" == "1" ]]; then ( B71_REALTIMEOUT=1 b71_run "$kind" "$script" "" "4001 4002" "" "" "$r" > "$r/out" ) 2>/dev/null & bp=$!
+        else ( B71_REALTIMEOUT=1 b71_run "$kind" "$script" "" "4001" "" "" "$r" > "$r/out" ) 2>/dev/null & bp=$!; fi
+        t0=$SECONDS; n=0; hung=0
+        while kill -0 "$bp" 2>/dev/null && [[ $n -lt 60 ]]; do sleep 0.1; n=$((n + 1)); done
+        dt=$((SECONDS - t0))
+        if kill -0 "$bp" 2>/dev/null; then hung=1; kill -9 "$bp" 2>/dev/null; fi
+        { wait "$bp"; } 2>/dev/null; kill "$holder" 2>/dev/null; { wait "$holder"; } 2>/dev/null
+        if [[ "$sc" == "1" ]]; then out1=$(cat "$r/out" 2>/dev/null); b71_why="scenario 1: hung=$hung secs=$dt out=[$out1]"
+            [[ $hung -eq 0 && $dt -le 4 && "$(b71_pid_of "$out1")" == "4002" ]] || return 1
+        else out2=$(cat "$r/out" 2>/dev/null); b71_why="scenario 2 (the blocked hit alone): hung=$hung secs=$dt out=[$out2]"
+            [[ $hung -eq 0 && $dt -le 4 && "$(b71_pid_of "$out2")" == "4001" ]] || return 1
+        fi
+    done
+    b71_why=""; return 0
+}
 b71_body() { sed -n '/^_validator_pid() {/,/^}$/p' "$1"; }
 b71_sel() {   # the selection part of the function, as one text: the daemons' MainPID lines and the proc-root name normalised away
     b71_body "$1" | sed -e '/MainPID/d' -e '/kill -0/d' -e 's/FENCE_PROC_ROOT/PROC_ROOT/' -e 's/^    local p n c /    local n c /'
@@ -292,6 +321,7 @@ b71_p_struct() {   # (15) by text: no `head -1` (the first-hit shape), ONE pgrep
     [[ -n "$body" ]] || { b71_why="no function"; return 1; }
     [[ "$(printf '%s\n' "$body" | grep -c 'head -1')" == "0" ]] || why="$why head-1"
     [[ "$(printf '%s\n' "$body" | grep -c 'pgrep ')" == "1" ]] || why="$why pgrep-sites=$(printf '%s\n' "$body" | grep -c 'pgrep ')"
+    [[ "$(printf '%s\n' "$body" | grep -c -F "_cl=\$(timeout -k 1 2 tr '\\0' '\\n' < \"\$f\" 2>/dev/null)")" == "1" ]] || why="$why bounded-read"
     if [[ "$kind" == "daemon" ]]; then
         [[ "$(printf '%s\n' "$body" | grep -c 'timeout 5 systemctl show -p MainPID --value "${VALIDATOR_SERVICE:-solana}"')" == "1" ]] || why="$why mainpid-show"
         [[ "$(printf '%s\n' "$body" | grep -c 'kill -0')" == "1" ]] || why="$why kill-0"
@@ -325,6 +355,7 @@ b71_chk "(B7.1-09) fdctl (Frankendancer only) and solana-validator go through th
 b71_chk "(B7.1-10) the pid prints with no newline and rc 0, found and not found - P S F A" b71_p_shape "P S F A"
 b71_chk "(B7.1-11) the fence and the arm never ask the unit: no systemctl call even with a live MainPID-shaped answer on offer (the fence does not know VALIDATOR_SERVICE) - F A" b71_p_nounit "F A"
 b71_chk "(B7.1-12) the REAL hard stop with no unit and the daemon's own set-identity client listed first kills the VALIDATOR (never the client), and confirms DOWN - P S" b71_p_hardstop "P S"
+b71_chk "(B7.1-17) the cmdline READ is bounded (timeout -k 1 2 tr): a hit whose cmdline blocks - a FIFO with a silent writer, the shape of a validator wedged under the mm lock - costs the 2-s bound, not the wedge: answered inside 4 s, the readable validator listed after it wins, and a blocked hit that is the ONLY one is still answered (a timed-out read proves nothing: it is not a client) - P S F A" b71_p_bounded "P S F A"
 b71_chk "(B7.1-13) _detect_validator_unit answers the VALIDATOR's unit when a client in the monitor unit's cgroup is listed first - F A" b71_p_unit "F A"
 if b71_p_same "$PRIMARY" "$STANDBY"; then ok "(B7.1-14a) the primary and the standby carry ONE _validator_pid body ($(b71_body "$PRIMARY" | wc -l | tr -d ' ') lines)"; else bad "(B7.1-14a) P and S _validator_pid bodies differ ($b71_why)"; fi
 if b71_p_same "$B71_FENCE" "$B71_ARM"; then ok "(B7.1-14b) the fence script and the arm ceremony carry byte-identical _validator_pid bodies"; else bad "(B7.1-14b) F and A _validator_pid bodies differ ($b71_why)"; fi
@@ -370,6 +401,11 @@ for b71_t in P S F A; do
     b71_ctl newline-printed "$b71_t" "$B71R"'s/printf .%s. "\$pick"/echo "$pick"/' b71_p_shape
     b71_ctl rc-nonzero-when-none "$b71_t" "$B71R"'s/^    return 0$/    return 1/' b71_p_shape
 done
+for b71_t in P F; do   # the bounded read: the bound removed (the read hangs), a hung read taken for a client (the sole blocked hit vanishes), and the bound too long
+    b71_ctl bound-removed "$b71_t" "$B71R"'s/_cl=\$(timeout -k 1 2 tr /_cl=$(tr /' b71_p_bounded
+    b71_ctl hung-read-is-client "$b71_t" "$B71R"'s/^\( *_cl=\$(timeout -k 1 2 tr .*\)$/\1 || sub=1/' b71_p_bounded
+done
+b71_ctl bound-too-long P "$B71R"'s/timeout -k 1 2 tr /timeout -k 1 60 tr /' b71_p_bounded
 for b71_t in P S; do
     b71_ctl mainpid-not-preferred "$b71_t" "$B71R"'{ /kill -0/d; }' b71_p_mainpid
     b71_ctl mainpid-alive-check-removed "$b71_t" "$B71R"'s/ \&\& kill -0 "\$p" 2>\/dev\/null//' b71_p_mainpid_unusable
