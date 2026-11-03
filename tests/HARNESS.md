@@ -183,6 +183,16 @@ lost one at once. What the suite does about it: (12e) waits a bounded 10 s after
 AG-1.8 that world ran to the per-suite cap. The remedy for a real unit is not a test change: the unit's `ExecStop=` has to re-send TERM while `$MAINPID` lives
 (docs/SAFETY.md, *Other standing notes*) — required before any unit is armed.
 
+**(12e-ctl) seen red once on `ubuntu:24.04`, not reproduced in 399 runs (AG-3, 2026-11-03).** One run of the whole suite on `ubuntu:24.04` (bash 5.2.21, mawk) failed the control
+on the standby: `rc=137|exited=0|shutdown=0|lost=1` — the first TERM was dropped as designed, the SECOND did not end the daemon inside the world's 5 s window. Two mechanisms look
+the same in that row: a second TERM that bash 5.2 lost, and a trap deferred behind a foreground command that runs longer than 5 s. They are told apart by a snapshot from a `/proc`
+sampler kept outside the repository — the daemon's process tree with the age of every descendant, and the kernel's `SigCgt` / `SigPnd` masks, at the 10 s boundary and 4 s after the
+second TERM: a LOST TERM leaves the daemon alive, `SigCgt` holding TERM, nothing pending and no descendant older than 5 s; a DEFERRED one leaves a foreground command older than 5 s.
+Both were reproduced on purpose on the same image (the mutant dropping both TERMs; a 9 s `sleep` in the daemon's loop) and read differently. The world, cut out of the suite and run
+alone on that image (`sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac`, bash 5.2.21 x86_64) 399 times — 299 with four copies at once, 100 with one — did not
+repeat the red: 0 of 299 and 0 of 100, an upper 95 % bound of 0.75 % per run. The control was not changed. If it goes red again: classify it first (is a descendant older than 5 s
+still running? does `SigCgt` hold TERM with nothing pending?), then decide.
+
 ## Deliberately NOT migrated (and why — decided, not deferred)
 
 - `test_v058_regression.sh` — fully self-contained by design: INVERTED results semantics (its
