@@ -7,6 +7,16 @@
 # (No-op error on bash < 5.2, hence the || true.)
 shopt -u patsub_replacement 2>/dev/null || true
 
+# v0.7 (Block 7, B7.6): THE version string - the one the operator reads. The start banner, the start pages and --version say this constant, never a literal (they said v0.6.9 / v0.6.10 on a v0.7
+# daemon). The facts job pins it equal in both daemons and both deploy scripts, equal to the version of the CHANGELOG's first release heading, and carried by the env templates' line 2, the
+# manual's title and the notification entries. `--version` answers only when this file is EXECUTED (a sourced copy - the test seam, an operator's `source` - never exits here), before anything else
+# runs: no environment, no file, no network.
+FO_VERSION="0.7.0-rc1"
+if [[ "${BASH_SOURCE[0]}" == "$0" && "${1:-}" == "--version" ]]; then
+    _fo_name=${0##*/}; _fo_name=${_fo_name%.sh}
+    printf '%s %s\n' "$_fo_name" "$FO_VERSION"; exit 0
+fi
+
 # Monotonic clock for every SAFETY duration. Wall clock (`date +%s`) is steppable — a single NTP
 # makestep during an incident was measured to instantly mature the takeover delay, defeat the
 # vote-liveness fence, and disarm the self-fence timers. /proc/uptime cannot step. Wall clock
@@ -6396,7 +6406,7 @@ _single_instance_lock() {
 
 startup_checks() {
     echo "============================================="
-    echo " Solana PRIMARY Failover v0.6.10 (3-TIER RPC)"
+    echo " Solana PRIMARY Failover v${FO_VERSION} (3-TIER RPC)"
     echo "============================================="
 
     _single_instance_lock     # v0.7 (Block 7, B7.2): FIRST of all - a second copy of this role exits 3 here, before it can consume a fence marker, read an identity or touch the state
@@ -6649,10 +6659,10 @@ startup_checks() {
 
     log_info "Started. Identity: $CURRENT_IDENTITY"
     if [[ "$DRY_RUN" == "true" ]]; then
-        alert_info "🚀 PRIMARY v0.6.9 started [DRY_RUN]. <code>${CURRENT_IDENTITY:0:8}...</code> | Mode: $RECOVERY_MODE"
+        alert_info "🚀 PRIMARY v${FO_VERSION} started [DRY_RUN]. <code>${CURRENT_IDENTITY:0:8}...</code> | Mode: $RECOVERY_MODE"
     else
         log_warn "⚠️  ⚠️  ⚠️  LIVE MODE — failover will perform real identity switches  ⚠️  ⚠️  ⚠️"
-        alert_info "🚀 PRIMARY v0.6.9 started [LIVE]. <code>${CURRENT_IDENTITY:0:8}...</code> | Mode: $RECOVERY_MODE"
+        alert_info "🚀 PRIMARY v${FO_VERSION} started [LIVE]. <code>${CURRENT_IDENTITY:0:8}...</code> | Mode: $RECOVERY_MODE"
     fi
     [[ $STARTUP_GRACE -gt 0 ]] && { log_info "Grace: ${STARTUP_GRACE}s"; _watchdog_sleep "$STARTUP_GRACE"; }   # v0.7 (Block 5.2): grace chunked under the armed unit (plain sleep otherwise)
 }

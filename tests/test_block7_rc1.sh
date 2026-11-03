@@ -1282,4 +1282,59 @@ b75_ctl sb-lockout-no-sentinel    "$STANDBY" 's/\[\[ \${_last_lockout_log:-0} -e
 [[ $b75_ctl_ok -eq 1 ]] && ok "(B7.5-23) every mutant of the rule turns its case red:$b75_ctl_rows" || bad "(B7.5-23) a control is not red (NOT-APPLIED = its sed matched nothing; DOES-NOT-PARSE = the mutant is not bash):$b75_ctl_rows"
 # ══ B7.5 END ═════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
+# ══ B7.6 BEGIN ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+# ── (B7.6) one version string, the one the operator reads ───────────────────────────────────────────────────────────────
+echo ""; echo "─── (B7.6) FO_VERSION: the start banner, the start page and --version say the constant; sourcing the script never answers --version ───"
+# The labels said v0.6.9 / v0.6.10 on a v0.7 daemon: an operator reading the start page could not tell which build ran. One constant per daemon (and per deploy script); the facts job pins the four equal, equal to the CHANGELOG head,
+# and the templates' line 2, the manual's title and the notification entries carrying it. This section pins the daemons' own use of the constant.
+b76_ver() { sed -n 's/^FO_VERSION="\([^"]*\)".*$/\1/p' "$1" | head -1; }
+b76_run() {   # b76_run <script> <args...> -> "<stdout>|rc=<n>|err=<bytes>|files=<n>": the script EXECUTED (not sourced) in an empty directory with an empty environment
+    local script="$1" d o rc e; shift; d=$(mktemp -d "$WORK/b76.XXXXXX")
+    o=$( cd "$d" && env -i PATH="$PATH" HOME="$d" "$BASH" "$script" "$@" 2> "$d/.err" ); rc=$?
+    e=$(wc -c < "$d/.err" | tr -d ' ')
+    printf '%s|rc=%s|err=%s|files=%s' "$o" "$rc" "$e" "$(find "$d" -mindepth 1 ! -name .err | wc -l | tr -d ' ')"
+}
+p_b76_version() {   # --version prints "<script name without .sh> <FO_VERSION>" and nothing else, rc 0, no stderr, creates no file; the constant looks like a version
+    local script="$1" v name; v=$(b76_ver "$script"); name=$(basename "$script" .sh)
+    [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ && "$(b76_run "$script" --version)" == "$name $v|rc=0|err=0|files=0" ]]
+}
+p_b76_sourced() {   # SOURCED with --version as the caller's first argument (a test, an operator's `source`), the script does not answer and does not exit
+    local script="$1" src o; src=$(cut_src "$script")
+    o=$( "$BASH" -c 'source "$1" --version 2>/dev/null; echo SURVIVED' bash "$src" 2>/dev/null )
+    [[ "$o" == "SURVIVED" ]]
+}
+p_b76_text() {   # the banner and the two start pages carry ${FO_VERSION}, exactly once each; the daemon names no literal version in them
+    local script="$1" R; R=$(basename "$script" | cut -d- -f2 | tr 'a-z' 'A-Z')
+    [[ "$(grep -c -F "echo \" Solana $R Failover v\${FO_VERSION} (3-TIER RPC)\"" "$script")" == "1" \
+       && "$(grep -c -F "alert_info \"🚀 $R v\${FO_VERSION} started [DRY_RUN]" "$script")" == "1" && "$(grep -c -F "alert_info \"🚀 $R v\${FO_VERSION} started [LIVE]" "$script")" == "1" \
+       && "$(grep -v '^[[:space:]]*#' "$script" | grep -c -E "(echo|alert_info).*(Failover|$R) v0\.[0-9]+\.[0-9]+")" == "0" \
+       && "$(grep -c -E '^FO_VERSION="[^"]+"' "$script")" == "1" ]]
+}
+b76_all=1; b76_rows=""
+for b76_s in "$PRIMARY" "$STANDBY"; do
+    b76_n=$(basename "$b76_s" | cut -d- -f2)
+    p_b76_version "$b76_s" && b76_rows="$b76_rows $b76_n:version" || { b76_all=0; b76_rows="$b76_rows $b76_n:VERSION"; }
+    p_b76_sourced "$b76_s" && b76_rows="$b76_rows sourced" || { b76_all=0; b76_rows="$b76_rows SOURCED-EXITS"; }
+    p_b76_text "$b76_s" && b76_rows="$b76_rows text" || { b76_all=0; b76_rows="$b76_rows TEXT"; }
+done
+[[ $b76_all -eq 1 ]] && ok "(B7.6a) both daemons: 'script --version' (executed, empty environment, empty directory) prints '<name> <FO_VERSION>' and nothing else - rc 0, no stderr, no file; sourced with --version as the caller's argument the script neither answers nor exits; the startup banner and the [DRY_RUN] / [LIVE] start pages say v\${FO_VERSION} once each and no printed line carries a literal version -$b76_rows" || bad "(B7.6a) version string:$b76_rows"
+b76_ok=1; b76_crows=""
+b76_ctl() {   # b76_ctl <label> <script> <sed expr> <predicate>: the predicate holds on the shipped script and FAILS on the mutant
+    local label="$1" script="$2" expr="$3" pred="$4" m="$WORK/b76-$1.sh" rv mv_
+    if ! mutate "$script" "$expr" "$m"; then b76_ok=0; b76_crows="$b76_crows $label:NOT-APPLIED"; return; fi
+    "$pred" "$script" && rv=y || rv=n; "$pred" "$m" && mv_=y || mv_=n
+    if [[ "$rv" == "y" && "$mv_" == "n" ]]; then b76_crows="$b76_crows $label:red"; else b76_ok=0; b76_crows="$b76_crows $label:[shipped=$rv,mutant=$mv_]"; fi
+}
+b76_both() { b76_ctl "pr-$1" "$PRIMARY" "$2" "$3"; b76_ctl "sb-$1" "$STANDBY" "$2" "$3"; }
+b76_both no-handler     '/^if \[\[ "\${BASH_SOURCE\[0\]}" == "\$0" && "\${1:-}" == "--version" \]\]; then$/,/^fi$/ d' p_b76_version
+b76_both handler-sourced 's|^if \[\[ "\${BASH_SOURCE\[0\]}" == "\$0" && |if [[ |' p_b76_sourced
+b76_both handler-noexit '/^if \[\[ "\${BASH_SOURCE\[0\]}" == "\$0" && "\${1:-}" == "--version" \]\]; then$/,/^fi$/ s|; exit 0$||' p_b76_version
+b76_both handler-extra  's|printf '"'"'%s %s\\n'"'"' "\$_fo_name" "\$FO_VERSION"|printf '"'"'%s %s extra\\n'"'"' "$_fo_name" "$FO_VERSION"|' p_b76_version
+b76_both banner-literal 's|Failover v\${FO_VERSION} (3-TIER RPC)|Failover v0.6.10 (3-TIER RPC)|' p_b76_text
+b76_both page-dry-literal 's|v\${FO_VERSION} started \[DRY_RUN\]|v0.6.9 started [DRY_RUN]|' p_b76_text
+b76_both page-live-literal 's|v\${FO_VERSION} started \[LIVE\]|v0.6.9 started [LIVE]|' p_b76_text
+b76_both constant-twice '/^FO_VERSION="/p' p_b76_text
+[[ $b76_ok -eq 1 ]] && ok "(B7.6b) CONTROLS: no --version handler, a handler that fires when the script is sourced, one that does not exit, one that prints more than the name and the constant, a literal version in the banner / the [DRY_RUN] page / the [LIVE] page, the constant assigned twice - each turns its case red:$b76_crows" || bad "(B7.6b) a control is not red:$b76_crows"
+# ══ B7.6 END ═════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
 results_banner

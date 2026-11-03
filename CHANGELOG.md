@@ -3,15 +3,7 @@
 All notable changes are documented here. Versions follow the project's internal `v0.6.x` line;
 `v0.6.9` is the first public release.
 
-## Unreleased (v0.7 line)
-
-- **B7.1 — `_validator_pid` is the validator, never an admin client of the daemon (Block 7, rc1).** `pgrep -x agave-validator | head -1` could answer a bounded admin call of the daemon itself or of the operator
-  (`agave-validator --ledger L set-identity | authorized-voter | contact-info | monitor | exit | wait-for-restart-window` has the validator's process name and runs while the hard stop runs): the hard stop then
-  killed the client, called a hung STAKED holder "still running" (`HARD STOP FAILED`) and left it voting; in the fence script and the arm ceremony the pid names a systemd unit through its cgroup, so a client of the
-  monitor unit could be taken for the validator's unit. Now the unit's `MainPID` comes first in BOTH daemons (the standby's is new), and the `pgrep` fallback (the three process names as before, one `pgrep` per name, all hits)
-  reads each hit's `cmdline`: a hit with one of the six words as an argument after `argv[0]`, as a whole word (`--identity /keys/set-identity.json` is not one; the word after `--ledger` is its value), is passed over; a hit with
-  `--ledger` and no such word is preferred; a `cmdline` that cannot be read proves nothing (no readable `cmdline` at all = the first hit, as before); only clients alive = no validator, empty. The fence script and the arm
-  ceremony carry the same selection and never ask the unit. Pinned by `tests/test_block7_rc1.sh` (B7.1), with mutants.
+## v0.7.0-rc1 — release candidate (v0.7 line, unreleased)
 
 - **AG-3 (rc1) — the armed cold take under Alpenglow, opt-in; the holder's gap rule and hung-validator rung; unit and ceremony hygiene.** A standby with `AG_ARMED_TAKE=true`
   (default `false`; only the literal `true` arms, anything else is not armed and says so once at start) takes the staked identity itself - cold - when every gate
@@ -34,6 +26,13 @@ All notable changes are documented here. Versions follow the project's internal 
     verifies that the rendered monitor unit carries the `ExecStop=`; both deploy scripts now write the ledger directory they detect into `LEDGER_PATH`.
 
 - **Block 7, trimmed for rc1 — what the armed pair and the monitor-only phase still need.** One suite, `tests/test_block7_rc1.sh`, one section per item.
+  - **B7.1 — `_validator_pid` is the validator, never an admin client of the daemon (Block 7, rc1).** `pgrep -x agave-validator | head -1` could answer a bounded admin call of the daemon itself or of the operator
+    (`agave-validator --ledger L set-identity | authorized-voter | contact-info | monitor | exit | wait-for-restart-window` has the validator's process name and runs while the hard stop runs): the hard stop then
+    killed the client, called a hung STAKED holder "still running" (`HARD STOP FAILED`) and left it voting; in the fence script and the arm ceremony the pid names a systemd unit through its cgroup, so a client of the
+    monitor unit could be taken for the validator's unit. Now the unit's `MainPID` comes first in BOTH daemons (the standby's is new), and the `pgrep` fallback (the three process names as before, one `pgrep` per name, all hits)
+    reads each hit's `cmdline`: a hit with one of the six words as an argument after `argv[0]`, as a whole word (`--identity /keys/set-identity.json` is not one; the word after `--ledger` is its value), is passed over; a hit with
+    `--ledger` and no such word is preferred; a `cmdline` that cannot be read proves nothing (no readable `cmdline` at all = the first hit, as before); only clients alive = no validator, empty. The fence script and the arm
+    ceremony carry the same selection and never ask the unit. Pinned by `tests/test_block7_rc1.sh` (B7.1), with mutants.
   - **B7.2 — one monitor per role per node:** the first thing `startup_checks` does is `flock -n -E 77` on `$STATE_DIR/.primary.lock` / `.standby.lock` (descriptor 8, held for the life of the process, released by its exit however it ends;
     a lock file left by a dead copy is simply unlocked). A second copy - an operator's manual start beside the unit is the case - pages `SECOND INSTANCE REFUSED` once, logs that one line and exits 3, before it can consume a fence marker,
     read an identity or touch the state file; the first copy is unaffected. A guard, not a gate: no `flock` on the box, an unopenable lock file or a `flock` that fails for another reason is one warning and the daemon starts. The state
@@ -44,17 +43,21 @@ All notable changes are documented here. Versions follow the project's internal 
     lockout (the primary: the recovery cooldown) IN FULL from now instead of starting them at zero. A file cut exactly at a line boundary and a file from before v0.6.9 load as before.
   - **B7.4 — fail-closed polarity at the two remaining Alpenglow stops:** the primary's re-take (`switch_to_staked`) asks `_ag_primary_retake_allowed` and the standby's pre-warm (`_prewarm_voter_add`) asks `_ag_prewarm_allowed`,
     both `return 1` (never) in rc1 and both used as `if ! …`: an undefined predicate withholds, as the standby's take has done since AG-3.1 (the AG-1 form, `if _ag_mode`, let it fall through). `_ag_mode` itself is unchanged.
-
-- **B7.5 (rc1) — the `DRY_RUN` monitor-only phase does not storm the operator.** A node on `DRY_RUN=true` runs the same decisions as a live one and only swaps the mutation for a
-  log line and a page; a decision that holds for many cycles used to page on every one of them (the offline node every ≈ 5 s, the self-fence's `getHealth` path every 3 s, its
-  frozen-slot path every ≈ 33 s).
-  - **The primary's dry demote** (`switch_to_unstaked`, the one function every demote goes through: internet lost, the four self-fence signals, the holder gap rule, the vote-latency
-    and delinquency escalations, the fence-rot demote) logs `[DRY RUN] Would switch to UNSTAKED — …` on every call and sends the `[DRY RUN] WOULD SWITCH TO UNSTAKED` page once per
-    `ALERT_THROTTLE` (600 s) per reason. The reason with its digits stripped is the key, so a changing count or slot number is the same reason; a different reason pages at once and
-    each reason has its own window (a partition that is both frozen and behind pages twice, not once per alternation). In memory, on the monotonic clock; the live demote is never
-    throttled and the dry branch still returns 0. The self-fence's own pages (`LOCAL RPC SILENT`, `VOTES NOT LANDING`) are untouched.
-  - **The standby's `Takeover cooldown: Ns remaining since last attempt`** (a WARN on every turbo cycle, 1 s, for the whole cooldown) and **`Re-take locked out after self-fence: Ns remaining`**
-    (already one WARN per 60 s; the cycles in between logged nothing) are WARN at most once per 60 s per line - the first call at once - and the same text at INFO in between.
+  - **B7.5 (rc1) — the `DRY_RUN` monitor-only phase does not storm the operator.** A node on `DRY_RUN=true` runs the same decisions as a live one and only swaps the mutation for a
+    log line and a page; a decision that holds for many cycles used to page on every one of them (the offline node every ≈ 5 s, the self-fence's `getHealth` path every 3 s, its
+    frozen-slot path every ≈ 33 s).
+    - **The primary's dry demote** (`switch_to_unstaked`, the one function every demote goes through: internet lost, the four self-fence signals, the holder gap rule, the vote-latency
+      and delinquency escalations, the fence-rot demote) logs `[DRY RUN] Would switch to UNSTAKED — …` on every call and sends the `[DRY RUN] WOULD SWITCH TO UNSTAKED` page once per
+      `ALERT_THROTTLE` (600 s) per reason. The reason with its digits stripped is the key, so a changing count or slot number is the same reason; a different reason pages at once and
+      each reason has its own window (a partition that is both frozen and behind pages twice, not once per alternation). In memory, on the monotonic clock; the live demote is never
+      throttled and the dry branch still returns 0. The self-fence's own pages (`LOCAL RPC SILENT`, `VOTES NOT LANDING`) are untouched.
+    - **The standby's `Takeover cooldown: Ns remaining since last attempt`** (a WARN on every turbo cycle, 1 s, for the whole cooldown) and **`Re-take locked out after self-fence: Ns remaining`**
+      (already one WARN per 60 s; the cycles in between logged nothing) are WARN at most once per 60 s per line - the first call at once - and the same text at INFO in between.
+  - **B7.6 — one version string, the one the operator reads:** `FO_VERSION="0.7.0-rc1"` in each daemon and each deploy script. The start banner (`Solana PRIMARY/STANDBY Failover v…`), the two start pages
+    (`🚀 PRIMARY/STANDBY v… started [DRY_RUN]` / `[LIVE]`), the deploy banner, the generated unit's `Description=` and the deploy test messages said `v0.6.9` / `v0.6.10` on a v0.7 daemon; they now say the constant.
+    `solana-primary-failover.sh --version` / `solana-standby-failover.sh --version` print `<name> <FO_VERSION>` and exit 0 before anything else runs (only when the file is executed - a sourced copy never exits). The `facts` job pins the
+    four constants equal, equal to this heading's version, and carried by line 2 of both env templates, the title of `docs/DEPLOYMENT-MANUAL.md` and the two start-page entries of `docs/NOTIFICATIONS.md`; no printed label of
+    those scripts may carry a literal version. The tag name stays the release gate's business - the constant is the string the operator sees.
 
 - **AG-1 — Alpenglow mode: FO never takes the staked identity automatically.** Always on, no knob; every figure and limit is in
   [docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07).

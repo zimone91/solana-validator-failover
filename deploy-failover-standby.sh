@@ -6,8 +6,10 @@
 # This codebase is written against bash-3.2 substitution semantics; restore them everywhere.
 # (No-op error on bash < 5.2, hence the || true.)
 shopt -u patsub_replacement 2>/dev/null || true
+# v0.7 (Block 7, B7.6): the version the operator reads - the banner, the generated unit's Description and the test messages below. The facts job pins it equal to the daemons' FO_VERSION and the CHANGELOG head.
+FO_VERSION="0.7.0-rc1"
 # ============================================================================
-# Solana STANDBY Failover v0.6.9 — Interactive Deploy
+# Solana STANDBY Failover — Interactive Deploy
 # Run on STANDBY node as root.
 # ============================================================================
 
@@ -172,7 +174,7 @@ done
 
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
-echo -e "  ${BOLD}${CYAN}Solana Failover  ·  STANDBY / BACKUP  ·  v0.6.10${NC}"
+echo -e "  ${BOLD}${CYAN}Solana Failover  ·  STANDBY / BACKUP  ·  v${FO_VERSION}${NC}"
 echo -e "  Staked-identity failover monitor for Solana validators — Alpenglow mode: it detects and pages, the swap is yours"
 echo ""
 echo -e "  ${DIM}Author:${NC}     zim.one  ·  https://zim.one"
@@ -718,7 +720,7 @@ if [[ "$CFG_NTFY_ENABLED" == "true" ]]; then
     echo -e "  Sending test notification..."
     # shellcheck disable=SC2034  # output captured for potential debug; only the exit code is checked
     NTFY_TEST=$(curl -s -m 10 -X POST "$CFG_WEBHOOK_URL" \
-        -H "Title: [${CFG_NODE_NAME}] STANDBY Failover v0.6.9 — deploy test" \
+        -H "Title: [${CFG_NODE_NAME}] STANDBY Failover v${FO_VERSION} — deploy test" \
         -H "Priority: urgent" \
         -H "Tags: white_check_mark" \
         -d "STANDBY node connected to this channel." 2>&1)
@@ -946,7 +948,7 @@ step "Creating systemd service"
 
 cat > /etc/systemd/system/solana-failover-standby.service << 'SERVICEEOF'
 [Unit]
-Description=Solana STANDBY Node Failover Protection v0.6.10
+Description=Solana STANDBY Node Failover Protection v@FO_VERSION@
 After=solana.service
 Wants=solana.service
 
@@ -966,6 +968,7 @@ SyslogIdentifier=solana-failover-standby
 [Install]
 WantedBy=multi-user.target
 SERVICEEOF
+sed -i "s/@FO_VERSION@/${FO_VERSION}/" /etc/systemd/system/solana-failover-standby.service   # v0.7 (B7.6): the quoted heredoc above expands nothing
 
 systemctl daemon-reload
 ok "Systemd service created"
@@ -1014,7 +1017,7 @@ fi
 if [[ "$CFG_TG_ENABLED" == "true" && -n "$CFG_TG_TOKEN" && -n "$CFG_TG_CHAT" ]]; then
     TG_RESULT=$(curl -s -m 10 -X POST "https://api.telegram.org/bot${CFG_TG_TOKEN}/sendMessage" \
         -d chat_id="$CFG_TG_CHAT" \
-        -d text="[${CFG_NODE_NAME}] 🔧 Deploy complete — STANDBY failover v0.6.9 ready" \
+        -d text="[${CFG_NODE_NAME}] 🔧 Deploy complete — STANDBY failover v${FO_VERSION} ready" \
         -d parse_mode="HTML" 2>/dev/null) || true
     echo "$TG_RESULT" | jq -e '.ok' &>/dev/null && ok "Telegram: test message sent" || warn "Telegram: send failed"
 fi
