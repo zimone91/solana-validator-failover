@@ -17,10 +17,10 @@ Built safety-first: the failing node **steps down first**, then the spare only *
 (an unarmed spare, the default; the retained path made it, and an armed spare takes it cold) — and every ambiguous state resolves toward *nobody holds the stake* rather than
 two nodes holding it.
 
-**Author:** [zim.one](https://zim.one) · **Tested on:** agave & Jito-Solana `4.2.x` — live failover gate on `4.2.0-rc.0`, running armed in production on `4.2.1`; earlier releases validated on `3.1.x` / `4.0.x` / `4.1.x` · **Networks:** testnet · mainnet
+**Author:** [zim.one](https://zim.one) · **Tested on:** agave & Jito-Solana `4.4.0` — the v0.7 release-candidate gate, on the testnet pair; v0.6.x: live failover gate on `4.2.0-rc.0`, ran armed in production on `4.2.1`; earlier releases validated on `3.1.x` / `4.0.x` / `4.1.x` · **Networks:** testnet · mainnet
 
 **v0.7 needs agave / Jito-Solana `4.4.0` or newer** (`MIN_VALIDATOR_VERSION`: on an older validator the spare pages `VALIDATOR VERSION NOT READY`).
-None of the versions above meets that floor; v0.7 itself is being exercised on the testnet pair (the Block 10 end-to-end run).
+The `4.2.1` production run above is v0.6.x's, on a validator below that floor; v0.7 itself is being exercised on the testnet pair (the Block 10 end-to-end run).
 
 #### How safe is it — honestly
 

@@ -159,7 +159,7 @@ echo -e "  Staked-identity failover monitor for Solana validators — Alpenglow 
 echo ""
 echo -e "  ${DIM}Author:${NC}     zim.one  ·  https://zim.one"
 echo -e "  ${DIM}Validator:${NC}  ${CYAN}2zykwzzo1pd3H2oSj5j5SRLTvmpa9Nr2S2Bh8tTVd5Tq${NC}"
-echo -e "  ${DIM}Tested on:${NC}  agave & Jito-Solana  4.2.x (earlier: 3.1.x / 4.0.x / 4.1.x)"
+echo -e "  ${DIM}Tested on:${NC}  agave & Jito-Solana  4.4.0 (v0.7 gate: testnet pair; earlier: 3.1.x / 4.0.x / 4.1.x / 4.2.x)"
 echo -e "  ${DIM}Networks:${NC}   testnet · mainnet"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
 sleep 2
