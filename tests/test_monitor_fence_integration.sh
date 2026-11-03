@@ -977,7 +977,7 @@ out=$( (
     UNSTAKED_KEYPAIR="$MOCK_DIR/uk.json"; printf '[1]' > "$MOCK_DIR/uk.json"
     STAKED_PUBKEY=S1; UNSTAKED_PUBKEY=U1; SETIDENTITY_TIMEOUT=15
     # admin ops wedge (rc 124); the _sd_notify socat pipeline passes through to the sd: logger
-    timeout() { case "$*" in (*socat*) if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@" ;; (*) echo "op:wedge" >> "$EV"; return 124 ;; esac; }
+    timeout() { case "$*" in (*socat*|*" tr "*) if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@" ;; (*) echo "op:wedge" >> "$EV"; return 124 ;; esac; }   # (B7.1b: the bounded cmdline read of _validator_pid is no admin op)
     _selffence_hard_stop() { echo "op:hardstop" >> "$EV"; return 1; }
     switch_to_unstaked "FF-B1 probe"
     w=$(ev_line 'op:wedge'); h=$(ev_line 'op:hardstop'); p=$(ev_line '^sd:WATCHDOG=1')
@@ -997,7 +997,7 @@ out=$( (
     UNSTAKED_KEYPAIR="$MOCK_DIR/uk.json"; printf '[1]' > "$MOCK_DIR/uk.json"
     STAKED_PUBKEY=S1; UNSTAKED_PUBKEY=U1; SETIDENTITY_TIMEOUT=15
     # admin ops wedge (rc 124); the _sd_notify socat pipeline passes through to the sd: logger
-    timeout() { case "$*" in (*socat*) if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@" ;; (*) echo "op:wedge" >> "$EV"; return 124 ;; esac; }
+    timeout() { case "$*" in (*socat*|*" tr "*) if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@" ;; (*) echo "op:wedge" >> "$EV"; return 124 ;; esac; }   # (B7.1b: the bounded cmdline read of _validator_pid is no admin op)
     _selffence_hard_stop() { echo "op:hardstop" >> "$EV"; return 1; }
     get_local_identity() { echo "op:idread" >> "$EV"; printf ''; }
     window_reset() { :; }

@@ -103,17 +103,18 @@ _arm_refuse() {
 #    by test_arm_ceremony (13): reuse, not reinvention; FENCE_PROC_ROOT is the same test seam) ──
 # v0.7 (B7.1): _validator_pid never answers an ADMIN CLIENT (agave-validator --ledger L set-identity | authorized-voter | contact-info | monitor | exit | wait-for-restart-window: the
 # validator's process name, run by the monitor daemon and the operator beside this ceremony); its cgroup would name the MONITOR unit as the validator's. Every pgrep hit's argv is read
-# from ${FENCE_PROC_ROOT:-/proc}/<pid>/cmdline; the rules - whole words after argv[0], --ledger preferred, an unreadable cmdline proves nothing, only clients alive = empty - are
+# from ${FENCE_PROC_ROOT:-/proc}/<pid>/cmdline; the rules - whole words after argv[0], --ledger preferred, an unreadable cmdline proves nothing, only clients alive = empty, the bounded read (`timeout -k 1 2 tr`, v0.7 B7.1b) - are
 # documented in full at the fence script's copy, which this one repeats byte for byte.
 _validator_pid() {
-    local n c f w i sk sub led first pick
+    local n c f w i sk sub led first pick _cl
     for n in agave-validator fdctl solana-validator; do
         [[ "$n" == "fdctl" && "$VALIDATOR_TYPE" != "frankendancer" ]] && continue
         first=""; pick=""
         for c in $(pgrep -x "$n" 2>/dev/null); do
             f="${FENCE_PROC_ROOT:-/proc}/$c/cmdline"; sub=""; led=""; sk=""; i=0
             if [[ -r "$f" ]]; then
-                while IFS= read -r -d '' w || [[ -n "$w" ]]; do
+                _cl=$(timeout -k 1 2 tr '\0' '\n' < "$f" 2>/dev/null)
+                while IFS= read -r w; do
                     i=$((i + 1))
                     [[ $i -gt 1 ]] || continue
                     [[ -z "$sk" ]] || { sk=""; continue; }
@@ -122,7 +123,7 @@ _validator_pid() {
                         --ledger=*) led=1 ;;
                         set-identity|authorized-voter|contact-info|monitor|exit|wait-for-restart-window) sub=1 ;;
                     esac
-                done 2>/dev/null < "$f"
+                done <<< "$_cl"
             fi
             [[ -z "$sub" ]] || continue
             [[ -n "$first" ]] || first=$c
