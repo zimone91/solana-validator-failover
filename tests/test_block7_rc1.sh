@@ -739,7 +739,7 @@ b74_pr_world() {   # b74_pr_world <script> <shadow|unset|ship> -> "rc=<switch_to
             unset)  unset -f _ag_primary_retake_allowed ;;
             shadow) _ag_primary_retake_allowed() { return 0; } ;;
         esac
-        switch_to_staked "recovery test"; rc=$?
+        switch_to_staked "recovery test" 2>/dev/null; rc=$?   # the "unset" world calls an UNDEFINED predicate on purpose: bash says "command not found" - not the suite's output
         printf 'rc=%s|withheld=%s|admin=%s|keypair=%s' "$rc" "$(grep -c '^W$' "$EVF")" "$(grep -c '^A$' "$EVF")" "$(grep -c '^K$' "$EVF")"
     )
 }
@@ -758,7 +758,7 @@ b74_sb_world() {   # b74_sb_world <script> <shadow|unset|ship> -> "admin=<n>": t
             unset)  unset -f _ag_prewarm_allowed ;;
             shadow) _ag_prewarm_allowed() { return 0; } ;;
         esac
-        _prewarm_voter_add; printf 'admin=%s' "$(grep -c '^A$' "$EVF")"
+        _prewarm_voter_add 2>/dev/null; printf 'admin=%s' "$(grep -c '^A$' "$EVF")"   # (the "unset" world: an undefined predicate on purpose)
     )
 }
 p_b74_pr_closed() { [[ "$(b74_pr_world "$1" ship)" == "rc=1|withheld=1|admin=0|keypair=0" && "$(b74_pr_world "$1" unset)" == "rc=1|withheld=1|admin=0|keypair=0" ]]; }
@@ -855,7 +855,7 @@ b75_calls() {   # b75_calls <script> <spec> [VAR=val ...] -> P <t> <status>|<rea
         while IFS=$'\t' read -r b75_t b75_r; do
             [[ -n "$b75_t" ]] || continue
             _SIM_NOW=$(( B + b75_t ))
-            switch_to_unstaked "$b75_r"; b75_rc=$?
+            switch_to_unstaked "$b75_r" 2>/dev/null; b75_rc=$?   # (UNDEF=1 calls an undefined predicate on purpose: bash says "command not found")
             printf 'R %s %s\n' "$b75_t" "$b75_rc" >> "$EV"
         done <<< "$spec"
         printf 'N %s\n' "${#_dry_page_keys[@]}" >> "$EV"
