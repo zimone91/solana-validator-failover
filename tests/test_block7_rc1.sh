@@ -673,12 +673,12 @@ b73_shape_ok() {
     local ps pp sp
     ps=$(sed -n '/^save_state() {/,/^}/p' "$PRIMARY"); sp=$(sed -n '/^save_state() {/,/^}/p' "$STANDBY"); pp=$(b73_fn_text "$PRIMARY")
     [[ -n "$pp" && "$pp" == "$(b73_fn_text "$STANDBY")" \
-       && "$(printf '%s\n' "$ps" | grep -c -F '} > "$_tmp" 2>/dev/null')" == "1" && "$(printf '%s\n' "$sp" | grep -c -F '} > "$_tmp" 2>/dev/null')" == "1" \
-       && "$(printf '%s\n' "$ps" | grep -c -F 'mv -f "$_tmp" "$STATE_FILE"')" == "1" && "$(printf '%s\n' "$sp" | grep -c -F 'mv -f "$_tmp" "$STATE_FILE"')" == "1" \
-       && "$(printf '%s\n' "$ps$sp" | grep -c -F '> "$STATE_FILE"')" == "0" && "$(printf '%s\n' "$ps" | grep -c -F '_tmp="${STATE_FILE}.tmp"')" == "1" && "$(printf '%s\n' "$sp" | grep -c -F '_tmp="${STATE_FILE}.tmp"')" == "1" ]]
+       && "$(printf '%s\n' "$ps" | grep -c -F '} > "$_state_new" 2>/dev/null')" == "1" && "$(printf '%s\n' "$sp" | grep -c -F '} > "$_state_new" 2>/dev/null')" == "1" \
+       && "$(printf '%s\n' "$ps" | grep -c -F 'mv -f "$_state_new" "$STATE_FILE"')" == "1" && "$(printf '%s\n' "$sp" | grep -c -F 'mv -f "$_state_new" "$STATE_FILE"')" == "1" \
+       && "$(printf '%s\n' "$ps$sp" | grep -c -F '> "$STATE_FILE"')" == "0" && "$(printf '%s\n' "$ps" | grep -c -F '_state_new="${STATE_FILE}.tmp"')" == "1" && "$(printf '%s\n' "$sp" | grep -c -F '_state_new="${STATE_FILE}.tmp"')" == "1" ]]
 }
 if b73_shape_ok; then
-    ok "(B7.3c) shapes: _state_complete is byte-identical in both daemons; each save_state writes '> \"\$_tmp\"' (the tmp is \"\${STATE_FILE}.tmp\", beside the state file) and renames with 'mv -f \"\$_tmp\" \"\$STATE_FILE\"', and no '> \"\$STATE_FILE\"' is left in either"
+    ok "(B7.3c) shapes: _state_complete is byte-identical in both daemons; each save_state writes '> \"\$_state_new\"' (the tmp is \"\${STATE_FILE}.tmp\", beside the state file) and renames with 'mv -f \"\$_state_new\" \"\$STATE_FILE\"', and no '> \"\$STATE_FILE\"' is left in either"
 else
     bad "(B7.3c) shapes: helper-equal=$([[ "$(b73_fn_text "$PRIMARY")" == "$(b73_fn_text "$STANDBY")" ]] && echo yes || echo no)"
 fi
@@ -698,12 +698,12 @@ b73_ctl() {   # b73_ctl <label> <script> <sed expr> <predicate>: the predicate h
 b73_both() {   # the same sed expression on both daemons (the line is the same text in both)
     b73_ctl "pr-$1" "$PRIMARY" "$2" "$3"; b73_ctl "sb-$1" "$STANDBY" "$2" "$3"
 }
-b73_both nonatomic       's|^    } > "\$_tmp" 2>/dev/null \\$|    } > "$STATE_FILE" 2>/dev/null \\|;s|^    mv -f "\$_tmp" "\$STATE_FILE" 2>/dev/null \\$|    true \\|' p_b73_save
-b73_both no-rename       's|^    mv -f "\$_tmp" "\$STATE_FILE" 2>/dev/null \\$|    true \\|' p_b73_save
-b73_both nonatomic-crash 's|^    } > "\$_tmp" 2>/dev/null \\$|    } > "$STATE_FILE" 2>/dev/null \\|;s|^    mv -f "\$_tmp" "\$STATE_FILE" 2>/dev/null \\$|    true \\|' p_b73_crash
-b73_both no-chmod        '/^    chmod 600 "\$_tmp" 2>\/dev\/null || true$/d' p_b73_save
-b73_both tmp-elsewhere   's|_tmp="\${STATE_FILE}.tmp"|_tmp="/tmp/fo-state.$$.tmp"|' p_b73_save
-b73_both tmp-left        's|state not persisted"; rm -f "\$_tmp" 2>/dev/null; return 0; }$|state not persisted"; return 0; }|' p_b73_fail
+b73_both nonatomic       's|^    } > "\$_state_new" 2>/dev/null \\$|    } > "$STATE_FILE" 2>/dev/null \\|;s|^    mv -f "\$_state_new" "\$STATE_FILE" 2>/dev/null \\$|    true \\|' p_b73_save
+b73_both no-rename       's|^    mv -f "\$_state_new" "\$STATE_FILE" 2>/dev/null \\$|    true \\|' p_b73_save
+b73_both nonatomic-crash 's|^    } > "\$_state_new" 2>/dev/null \\$|    } > "$STATE_FILE" 2>/dev/null \\|;s|^    mv -f "\$_state_new" "\$STATE_FILE" 2>/dev/null \\$|    true \\|' p_b73_crash
+b73_both no-chmod        '/^    chmod 600 "\$_state_new" 2>\/dev\/null || true$/d' p_b73_save
+b73_both tmp-elsewhere   's|_state_new="\${STATE_FILE}.tmp"|_state_new="/tmp/fo-state.$$.tmp"|' p_b73_save
+b73_both tmp-left        's|state not persisted"; rm -f "\$_state_new" 2>/dev/null; return 0; }$|state not persisted"; return 0; }|' p_b73_fail
 b73_both complete-never  '/^_state_complete() {/,/^}/ s|^    \[\[ .*\]\]$|    true|' p_b73_torn
 b73_both complete-inverted '/^_state_complete() {/,/^}/ s|== "1" \]\]$|!= "1" ]]|' p_b73_whole
 b73_both counts-bytes    '/^_state_complete() {/,/^}/ s|wc -l|wc -c|' p_b73_torn
