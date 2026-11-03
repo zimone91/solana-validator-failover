@@ -121,7 +121,7 @@ cold take explicit. FO reports the file's class (absent; present with its mtime,
 history, floor = own root <n>; holder lastVote <n>; margin <n> slots; vote history before the take: <class>`.
 
 **The pairing rule and the gap rule.** The gap rule is the holder's half, against the one thing the margin cannot see - a host that was frozen (a VM pause, a live migration, a suspend) and wakes after the spare
-took. The monitor stamps the end of every cycle on a monotonic clock; a cycle that starts `HOLDER_GAP_DEMOTE_SECS` (default 30 s, floor 20) or more after the last stamp, on a node that holds the staked identity,
+took. The monitor stamps the end of every cycle on a monotonic clock; a cycle that starts `HOLDER_GAP_DEMOTE_SECS` (default 30 s; floor 20, or 17 + the longer of `CHECK_INTERVAL` / `TURBO_INTERVAL` when that is more) or more after the last stamp, on a node that holds the staked identity,
 demotes it - after the cycle's loop-top reads and the identity read, before `check_internet`, the manual-change detection and the self-fence. A monitor that has just started has no previous cycle and so no gap; an
 unstaked node only logs one INFO line; a demote that could not run stays pending and is retried on the next cycle. Failure direction: a false gap (a very long stall of the monitor itself) demotes a healthy
 holder - availability, never a second voter. The pairing rule is what makes the two halves meet: the spare's `TAKEOVER_DELAY` must be at least the holder's `HOLDER_GAP_DEMOTE_SECS` + 30 (shipped: 60 >= 30 + 30),
@@ -453,7 +453,8 @@ under this escalation contract:
    identity at expiry demotes nothing (that would be a guess); paging continues.
 
 The availability tradeoff is accepted and bounded: a broken-but-loud fence costs (at worst) one
-graceful failover to the healthy spare after ≥30 minutes of CRITICAL paging — against the
+graceful failover to the healthy spare after `FENCE_ROT_GRACE` of CRITICAL paging (30 minutes at the
+default 1800 s, never less than the floor of item 2) — against the
 alternative of a spare taking on the holder's silence (its timer path in this release, `watchdog-elapsed`
 once the gate is wired) over a holder whose fence silently no longer exists, which is the double-sign
 class this tool exists to prevent. During the grace the holder is
@@ -781,8 +782,8 @@ resolved path) never proves either: *cannot*, "the pairing token's directory is 
 symlink — point PROOF_STATE_DIR at the resolved path", on the same three surfaces (the provider's
 reason, the startup posture, the status line). The availability cost, by design: **a symlinked state
 directory disables watchdog-elapsed until `PROOF_STATE_DIR` is pointed at the resolved path** (and the
-monitor restarted to read it; `failover arm` writes through the link into that same directory, so the
-stored token does not move). Not visible, for the regular file: a rewrite back to identical bytes
+monitor restarted to read it; `failover arm` refuses such a directory, `REFUSE[STATE-dir-symlink]`,
+instead of writing through the link). Not visible, for the regular file: a rewrite back to identical bytes
 within one ctime granule — a kernel tick on ns-timestamp filesystems, 1 s on ext4 with 128-byte inodes,
 ext3 or HFS+ (the inode number does not help: ext4 recycles it across a tmp+mv); and the state
 directory's contents swapped away and back between two steps — by a rename, a transient symlink or a
@@ -1055,7 +1056,7 @@ piece is **veto-only** — it can turn a take into a hold, never the reverse.
   `LOCAL_RPC`, a JSON-RPC batch `[getSlot{confirmed}, getVoteAccounts{confirmed, votePubkey}]` matched by
   id, `curl -m 2`, then its watchdog pet. It VETOES if the read fails, times out, or answers anything
   non-canonical or not echoing its ids (BLIND); if the holder is in agave's `current` list of the
-  confirmed view (fix round 1), NOT delinquent there by the same predicate the own-bank check applies,
+  confirmed view (fix round 1; list membership alone, whatever `MAX_DELINQUENT_SLOTS` is — not the own-bank check's latency threshold),
   or its confirmed `lastVote` is above the highest the own bank showed this episode (VOTING — the
   countdown and the silence restart); if the spare's own head is not advancing (below). State is written
   before the (throttled) alert; no cooldown is set — a withdrawn verdict, not a failed take. **The
@@ -1104,7 +1105,10 @@ piece is **veto-only** — it can turn a take into a hold, never the reverse.
   16 s, which holds where the take cycle's reads are that close. Where an external read is slow no gap
   holds more than ONE external read — but one read can be long: the gossip advisory's `getClusterNodes` and
   the external confirm's `TIER3` read are bounded at 15 s (fix round 3 — the delta review of fix round 2,
-  CKB-2: earlier texts said a tier read is 10 s and named only the advisory), every other tier read at 10 s,
+  CKB-2: earlier texts said a tier read is 10 s and named only the advisory), the liveness sampler's reads
+  (the liveness probe, the fence's liveness read, the re-check and, armed, the watchdog-elapsed evaluation)
+  at 10 s, the delay's gossip prefetch and relinquish-flip reads and the external confirm's `TIER2` reads
+  (the payload, its `MAX_DELINQUENT_SLOTS` reference and re-read: turbo's `-m 5`) at 5 s,
   and the re-check, inside the span where no sample may sit, is one sampler call — `TIER2`'s read, then
   `TIER3`'s after a `TIER2` failure; the baseline is what that leaves. **Measured at the veto** (`test_own_view` (7c-age); fix round 3's
   512-cell sweep — `TIER2` answering in 0–10 s, `TIER2` down with `TIER3` in 0–10 s, `TIER3` answering in 10 s
@@ -1251,7 +1255,7 @@ reviewer's policy question — the policy is unchanged. Every such hold is loud:
    age is the rest of the cycle's reads, ~1–2 s, and a hold that short vetoes (a 10 s page leaves 16 s).
    Samples cannot split one read; the options — bound the advisory like the prefetch (`-m 5`: it gates
    nothing, its verdict only picks a log line), skip it on a slow take cycle, or move it out of the take
-   cycle; the confirm's `TIER3` read at the other tier reads' 10 s — are the reviewer's. (b) **The matrix's
+   cycle; the confirm's `TIER3` read at the liveness sampler's 10 s — are the reviewer's. (b) **The matrix's
    cells below 14 s** (the sweep above): 12 / 9 / 10 s with `TIER2` at 6 / 9 s or at its bound; 10 / 12 s
    with `TIER2` down and `TIER3` at 0 / 1 s; 10 / 12 / 9 s with `TIER3` answering in 10 s and `TIER2` at 5 / 6 /
    9 s; and **8 s** with `TIER3` answering in 10 s and `TIER2` at 4 s under `GOSSIP_VERIFY` on. From 9 s a hold must reach 22.5 slots
@@ -1501,7 +1505,8 @@ and a holder lagging within rate × that gap of the limit never demoted on that 
 reads its payload FIRST**, then the reference: a stall between the two can only make the holder look
 LESS current — the demote comes sooner, never later (the holder's side of the cost model); the price is
 a live holder whose two reads straddle a long stall reading over-limit on that cycle (a demote still
-needs `DELINQUENCY_RETRIES` such reads and `TIER2`'s own verdict). This path is **not** part of the
+needs `DELINQUENCY_RETRIES` such reads and `TIER2`'s own verdict — or, when `TIER2` gives no usable answer,
+those local reads alone). This path is **not** part of the
 cross-node invariant: it may fire after a spare's take — the relinquish bound B bounds the self-fence
 only.
 
