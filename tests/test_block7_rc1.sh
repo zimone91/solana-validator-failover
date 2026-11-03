@@ -892,7 +892,7 @@ b75_calls() {   # b75_calls <script> <spec> [VAR=val ...] -> P <t> <status>|<rea
         source "$cs" 2>/dev/null
         EV=$(mktemp); KP=$(mktemp); echo '[1]' > "$KP"
         trap 'rm -rf "$EV" "$EV.bin" "$KP"' EXIT
-        mkdir -p "$EV.bin"; printf '#!/bin/bash\necho "ADMIN $*" >> "%s"\nexit 0\n' "$EV" > "$EV.bin/agave-validator"; chmod +x "$EV.bin/agave-validator"
+        mkdir -p "$EV.bin"; printf '#!/bin/sh\necho "ADMIN $*" >> "%s"\nexit 0\n' "$EV" > "$EV.bin/agave-validator"; chmod +x "$EV.bin/agave-validator"
         SOLANA_PATH="$EV.bin"; LEDGER_PATH="$EV.ledger"; VALIDATOR_TYPE=agave; SETIDENTITY_TIMEOUT=15
         STAKED_PUBKEY="$STK"; UNSTAKED_PUBKEY="$UNS"; UNSTAKED_KEYPAIR="$KP"; CURRENT_IDENTITY="$STK"
         DRY_RUN=true; ALERT_THROTTLE=600; TG_ENABLED=false; UNDEF=0
@@ -930,7 +930,7 @@ $region
 }"
         EV=$(mktemp); KP=$(mktemp); echo '[1]' > "$KP"
         trap 'rm -rf "$EV" "$EV.bin" "$KP"' EXIT
-        mkdir -p "$EV.bin"; printf '#!/bin/bash\necho "ADMIN $*" >> "%s"\nexit 0\n' "$EV" > "$EV.bin/agave-validator"; chmod +x "$EV.bin/agave-validator"
+        mkdir -p "$EV.bin"; printf '#!/bin/sh\necho "ADMIN $*" >> "%s"\nexit 0\n' "$EV" > "$EV.bin/agave-validator"; chmod +x "$EV.bin/agave-validator"
         SOLANA_PATH="$EV.bin"
         ev() { printf '%s\n' "$*" >> "$EV"; }
         read -r -a PLAN <<< "$plan"
