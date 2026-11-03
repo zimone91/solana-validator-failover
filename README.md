@@ -182,6 +182,8 @@ On the **STANDBY**:
 sed -i 's/DRY_RUN=true/DRY_RUN=false/' /opt/solana-failover/failover-standby.env
 systemctl restart solana-failover-standby
 ```
+On a host that has been armed with `failover arm`, `DRY_RUN` is part of the arm state: change it by editing the env file and re-running `failover arm`, not by a `sed` and a restart alone
+(see the deployment manual, *Update existing*).
 
 ## Configuration
 

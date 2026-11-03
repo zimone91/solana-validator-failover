@@ -53,7 +53,7 @@ regardless:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/<TAG>/install.sh
-# read it — it is ~120 lines — then:
+# read it — it is about 110 lines — then:
 sh install.sh
 ```
 
