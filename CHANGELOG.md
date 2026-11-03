@@ -26,6 +26,10 @@ All notable changes are documented here. Versions follow the project's internal 
     verifies that the rendered monitor unit carries the `ExecStop=`; both deploy scripts now write the ledger directory they detect into `LEDGER_PATH`.
 
 - **Block 7, trimmed for rc1 — what the armed pair and the monitor-only phase still need.** One suite, `tests/test_block7_rc1.sh`, one section per item.
+  - **B7.3 — the state file is replaced atomically, and a file cut short is never read:** `save_state` writes `<state file>.tmp` beside the state file (mode 0600, same directory = same filesystem) and renames it
+    over with `mv -f`, so a crash mid-write leaves the previous whole save (the old `> state` truncated first - a crash then lost the 600-s re-take lockout and the takeover cooldown that the armed take leans on).
+    A state file that is empty or does not end with a newline (a number cut in half reads as a smaller, canonical one) is read by nothing: `load_state` logs one WARN and HOLDS the takeover cooldown and the re-take
+    lockout (the primary: the recovery cooldown) IN FULL from now instead of starting them at zero. A file cut exactly at a line boundary and a file from before v0.6.9 load as before.
   - **B7.4 — fail-closed polarity at the two remaining Alpenglow stops:** the primary's re-take (`switch_to_staked`) asks `_ag_primary_retake_allowed` and the standby's pre-warm (`_prewarm_voter_add`) asks `_ag_prewarm_allowed`,
     both `return 1` (never) in rc1 and both used as `if ! …`: an undefined predicate withholds, as the standby's take has done since AG-3.1 (the AG-1 form, `if _ag_mode`, let it fall through). `_ag_mode` itself is unchanged.
 
