@@ -278,6 +278,15 @@ spare (by 1 s); garbage the 73 / 79 s spares (by 10 / 4 s); N6 the 79 s spare at
 one at 3.7 (by 23 s); the tiers-only frozen row holds (by 21 s). A slow holder host fences later than a spare
 with prompt I/O can take.
 
+**Page time is outside the cells.** `tests/test_d6_holder.sh` stubs every page and every Telegram send.
+The self-fence demotes first and pages after (v0.6.6 N2), but the primary's 3-tier delinquency demote and
+its opt-in vote-latency demote (`MAX_VOTE_LATENCY` > 0) page first: `verify_delinquency_tiered` sends its
+`🔍 3-tier: …` page (`alert_info` — one `send_telegram`, `curl -m 10`) and then returns its
+verdict, and the caller runs `switch_to_unstaked` after it; `verify_latency_tiered` does the same
+with `🔍 Latency: LOCAL <n>sl ALCHEMY <n>sl > limit <n>` when `TIER2` confirms. A fence on either path lands
+up to 10 s later than the harness, which sends nothing, can show (the send's bound; no delay when Telegram is
+not configured).
+
 **Every CROSSING above is a double-sign exposure of this build, named here, not a margin.** Most of
 them share the holder's **startup blind window** — after a (re)start no self-fence runs until the
 identity wait, the external tier tests and `STARTUP_GRACE` have passed, whatever the persisted baseline
