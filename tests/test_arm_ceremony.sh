@@ -1444,7 +1444,7 @@ EOT
         ( exit 0 ) & tpid=$!; wait "$tpid" 2>/dev/null; mp="$tpid"        # a pid that existed and was reaped
         tpid=""
     else
-        /bin/bash "$d/target.sh" "$d/terms" "$die_at" >/dev/null 2>&1 & tpid=$!
+        "$BASH_BIN" "$d/target.sh" "$d/terms" "$die_at" >/dev/null 2>&1 & tpid=$!   # the suite's own interpreter: the bash:5.2 image has NO /bin/bash
         w=0; while [[ ! -e "$d/terms.ready" && $w -lt 50 ]]; do sleep 0.2; w=$((w + 1)); done
         [[ "$mode" == "nopid" ]] || mp="$tpid"
     fi
