@@ -304,7 +304,8 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
     sooner, never later. (Until 6.3 the reference came first and the bias could delay the demote by a
     full STAKED loop cycle; the measured numbers are in `docs/SAFETY.md`.) The price: a live holder
     whose two reads straddle a long stall reads over-limit on that cycle — a demote still needs
-    `DELINQUENCY_RETRIES` consecutive over-limit reads and Tier-2's own verdict. This path is **not**
+    `DELINQUENCY_RETRIES` consecutive over-limit reads and Tier-2's own verdict (or, when Tier-2 gives
+    no usable answer, those local reads alone). This path is **not**
     part of the cross-node invariant: it may fire after a spare's take; the margin `B` bounds the
     self-fence only (whose own-vote-lag check reads a single same-payload snapshot). Off by default.
 - **Recovery mode (`RECOVERY_MODE`):** `manual` is the **default and recommended** path —
