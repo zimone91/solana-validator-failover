@@ -234,7 +234,7 @@ behind tiers that show it frozen, at the assumed 2.5 slots/s and the measured ma
 assumes prompt I/O** — every read answers at once — unless it says otherwise; the worst-case I/O column
 below drops that assumption.
 
-| Spare (earliest, from the last vote) | `MAX_DELINQUENT_SLOTS=15` (the wizard's) | `MAX_DELINQUENT_SLOTS=0` (daemon/template default) |
+| Spare (earliest, from the last vote) | `MAX_DELINQUENT_SLOTS=15` (the v0.6.6–v0.6.9 wizards' value; the v0.7 wizard writes 24, which this table does not measure) | `MAX_DELINQUENT_SLOTS=0` (daemon/template default) |
 |---|---|---|
 | un-armed timer path — take | **79 s** at 2.5 slots/s, **73 s** at 3.7 | **125 s** at 2.5, **104 s** at 3.7 |
 | armed watchdog-elapsed — earliest mint | **119 s** at 3.7; **125 s** at 2.525; at exactly 2.5 none while the own confirmed head is smooth (the rate layer abstains), but the confirmed head held 12 slots behind processed (10 more than usual) around its anchor sample mints at **126 s** (one read phase measured — the slow-cluster residual, *Slot time*) | **150 s** at 3.7; **170 s** at 2.525; at exactly 2.5 with the anchor hold **171 s** |
@@ -1353,8 +1353,8 @@ plain restart, the un-armed crash, the wedged demote, the fully wedged validator
 column that 6.3.1's fix round added.
 
 **The holder's self-fence (both daemons, identical decision logic; the demote action differs by
-role).** (Not byte-identical twins: `check_self_fence_isolation` / `load_state` / `save_state` differ by
-36 / 27 / 6 code-only lines between the daemons — the demote call, log and alert texts, `LAST_SWITCH`
+role).** (Not byte-identical twins: `check_self_fence_isolation` / `load_state` / `save_state` differ
+between the daemons in their code lines, comments aside — the demote call, log and alert texts, `LAST_SWITCH`
 vs `LAST_TAKEOVER`, the standby's `SELF_FENCE_DEMOTE` restore.) A present non-canonical LOCAL slot /
 `numSlotsBehind` / own or cluster `lastVote` counts as frozen / behind / lagging — never healthy, never
 the no-answer path's early return (`SELF_FENCE_NOANSWER_SECS=0` still fences through the frozen clock).
