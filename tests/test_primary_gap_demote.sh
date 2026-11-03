@@ -73,7 +73,7 @@ gap_world() {   # gap_world <script> <plan> [VAR=val ...] -> the events, one per
 $region
 }"
         EV=$(mktemp); export EV; trap 'rm -rf "$EV" "$EV.bin" "$EV.sc"' EXIT
-        mkdir -p "$EV.bin"; printf '#!/bin/bash\necho "ADMIN $*" >> "%s"\nexit 0\n' "$EV" > "$EV.bin/agave-validator"; chmod +x "$EV.bin/agave-validator"
+        mkdir -p "$EV.bin"; printf '#!/bin/sh\necho "ADMIN $*" >> "%s"\nexit 0\n' "$EV" > "$EV.bin/agave-validator"; chmod +x "$EV.bin/agave-validator"
         SOLANA_PATH="$EV.bin"
         ev() { printf '%s\n' "$*" >> "$EV"; }
         read -r -a PLAN <<< "$plan"
