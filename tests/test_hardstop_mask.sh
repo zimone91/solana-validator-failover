@@ -58,10 +58,18 @@ scenario() {
         return 0
     }
     pgrep(){ [[ "$_PROC" == "1" ]] && echo 4242; return 0; }
-    kill(){ echo KILL >> "$EV"; _PROC=0; return 0; }
-    sleep(){ [[ "$1" == "$HARD_STOP_REVERIFY_SECS" && "$_RESURRECT" == "1" ]] && _PROC=1; :; }
+    [[ -n "${SC_EXITWAIT:-}" ]] && HARD_STOP_EXIT_WAIT_SECS="$SC_EXITWAIT"   # rc1 F19: unset = the daemon's own default (15)
+    # SC_TERM_IGNORED=1: SIGTERM does nothing (events TERM), only SIGKILL ends the process (events KILL9); SC_LAG=n: the pid stays visible for n more polls after the SIGKILL (rc1 F19)
+    kill(){ if [[ "${SC_TERM_IGNORED:-0}" == "1" ]]; then if [[ "$1" == "-9" ]]; then echo KILL9 >> "$EV"; _PROC=0; echo "${SC_LAG:-0}" > "$EV.lag"; else echo TERM >> "$EV"; fi; return 0; fi; echo KILL >> "$EV"; _PROC=0; return 0; }
+    pgrep(){ local n; if [[ -s "$EV.lag" ]]; then n=$(cat "$EV.lag"); if [[ $n -gt 0 ]]; then echo $((n - 1)) > "$EV.lag"; echo 4242; return 0; fi; fi; [[ "$_PROC" == "1" ]] && echo 4242; return 0; }
+    sleep(){ echo "SLEEP $1" >> "$EV.all"; [[ "$1" == "$HARD_STOP_REVERIFY_SECS" && "$_RESURRECT" == "1" ]] && _PROC=1; :; }
     _selffence_hard_stop "test wedge"; rc=$?
-    printf 'rc=%s|status=%s|events=%s|msg=%s\n' "$rc" "$_STATUS" "$(tr '\n' ',' < "$EV")" "$_MSG"
+    if [[ "${SC_OUT:-}" == "polls" ]]; then
+        grep -c '^SLEEP 1$' "$EV.all" 2>/dev/null
+    else
+        printf 'rc=%s|status=%s|events=%s|msg=%s\n' "$rc" "$_STATUS" "$(tr '\n' ',' < "$EV")" "$_MSG"
+    fi
+    rm -f "$EV.all" "$EV.lag"
   )
 }
 title_banner "Hard-stop without a mask + delayed re-verify (v0.6.9 H2, v0.7 rc1 F18)"
@@ -161,6 +169,41 @@ if mutate "$PRIMARY" "$MASK_BACK" "$PM" && mutate "$STANDBY" "$MASK_BACK" "$SM";
     fi
 else
     bad "(M-g) the control's sed did not apply to a daemon (mutate reported it)"
+fi
+rm -f "$PM" "$SM"
+
+
+# ── (M-h) rc1 F19: the exit wait - after the SIGKILL the ladder polls once per second, up to HARD_STOP_EXIT_WAIT_SECS (15) - in BOTH ladders ─────────────────────────
+echo ""; echo "─── (M-h) the killed process is gone only at the 4th poll -> confirmed (rc 0); alive at the bound -> HARD STOP FAILED; the standby ladder too ───"
+polls() { SC_OUT=polls "$@"; }
+h_ok=1; h_why=""
+for sc in "$PRIMARY" "$STANDBY"; do
+    nm=$(basename "$sc")
+    late=$(SC_TERM_IGNORED=1 SC_LAG=3 scenario "$sc" 124 0 1); lp=$(SC_TERM_IGNORED=1 SC_LAG=3 polls scenario "$sc" 124 0 1)
+    dead=$(SC_TERM_IGNORED=1 SC_LAG=99 scenario "$sc" 124 0 1); dp=$(SC_TERM_IGNORED=1 SC_LAG=99 polls scenario "$sc" 124 0 1)
+    four=$(SC_TERM_IGNORED=1 SC_LAG=99 SC_EXITWAIT=4 polls scenario "$sc" 124 0 1)
+    if [[ "$(field "$late" rc)" != "0" || "$(field "$late" status)" != *"HARD STOP ✅" || "$lp" != "4" || "$(field "$late" events)" != "STOP,TERM,KILL9," \
+          || "$(field "$dead" rc)" != "1" || "$(field "$dead" status)" != *"HARD STOP FAILED"* || "$dp" != "15" || "$(field "$dead" msg)" != *"still running (pid 4242) 15s after SIGKILL"* || "$four" != "4" ]]; then
+        h_ok=0; h_why="$h_why [$nm: late=($late) polls=$lp dead=($dead) polls=$dp four=$four]"
+    fi
+done
+if [[ $h_ok -eq 1 ]]; then
+    ok "(M-h) both ladders: the pid visible for 3 polls after the SIGKILL and gone at the 4th -> rc 0 and the ✅ page (4 polls); alive at the bound -> rc 1, HARD STOP FAILED ('still running (pid 4242) 15s after SIGKILL'), 15 polls; HARD_STOP_EXIT_WAIT_SECS=4 -> 4 polls"
+else
+    bad "(M-h) exit wait:$h_why"
+fi
+# (M-i) CONTROL: the old single read 1 s after the kill (the loop cut to one poll) turns (M-h) red in both ladders
+PM=$(mktemp); SM=$(mktemp)
+ONE_POLL='s/^            \[\[ -z "\$pid" || \$_hs_i -ge \$_hs_w \]\] && break$/            break/'
+if mutate "$PRIMARY" "$ONE_POLL" "$PM" && mutate "$STANDBY" "$ONE_POLL" "$SM"; then
+    pl=$(SC_TERM_IGNORED=1 SC_LAG=3 scenario "$PM" 124 0 1); sl=$(SC_TERM_IGNORED=1 SC_LAG=3 scenario "$SM" 124 0 1)
+    if [[ "$(field "$pl" rc)" == "1" && "$(field "$pl" status)" == *"HARD STOP FAILED"* && "$(field "$sl" rc)" == "1" && "$(field "$sl" status)" == *"HARD STOP FAILED"* ]]; then
+        ok "(M-i) control: a ladder that reads once, 1 s after the SIGKILL (the old verify), calls the 3-polls-late process FAILED in both daemons - (M-h) bites"
+    else
+        bad "(M-i) control did not revert to the old verify: primary=($pl) standby=($sl)"
+    fi
+else
+    bad "(M-i) the control's sed did not apply to a daemon (mutate reported it)"
 fi
 rm -f "$PM" "$SM"
 

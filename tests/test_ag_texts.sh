@@ -580,7 +580,7 @@ ctl9 f18-primary-resurrect "$PRIMARY" 's/INTERVENE NOW (systemctl stop \${VALIDA
 ctl9 f18-primary-dry "$PRIMARY" 's/systemctl stop \[--no-block on a stopped or uninterruptible process\], SIGTERM\/SIGKILL, verify, re-verify/systemctl stop, mask --runtime, SIGTERM\/SIGKILL, verify/' cp_
 ctl9 f18-primary-comment "$PRIMARY" 's/the ladder skips it, asks systemd for the stop without waiting/the ladder skips it and goes straight to mask --runtime, asks systemd for the stop without waiting/' cp_
 ctl9 f18-primary-h2 "$PRIMARY" 's/What protects a direct kill from Restart= is a REQUESTED STOP/What protects a direct kill from Restart= is the mask/' cp_
-ctl9 f18-primary-budget "$PRIMARY" 's/(stop 20 + kill-grace 3 + re-verify 15)/(stop 20 + mask 20 + kill-grace 3 + re-verify 15)/' cp_
+ctl9 f18-primary-budget "$PRIMARY" 's/(stop 20 + kill-grace 3 + exit wait 15 + re-verify 15)/(stop 20 + mask 20 + kill-grace 3 + exit wait 15 + re-verify 15)/' cp_
 ctl9 f18-standby-page "$STANDBY" 's/The unit is stopped by a requested stop (Restart= does not apply): recover with /Unit is MASKED (--runtime): recover with /' cs
 ctl9 f18-standby-header "$STANDBY" 's/# validator (systemctl stop → SIGTERM → SIGKILL, verified + re-verified per H2) so the/# validator (systemctl stop → mask --runtime → SIGTERM → SIGKILL, verified + re-verified per H2) so the/' cs
 ctl9 f18-deploy-comment "$DEPLOY_P" 's/validator\. The unit is NOT$/validator. the unit is masked (--runtime/' cdp

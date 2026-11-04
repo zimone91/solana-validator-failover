@@ -624,6 +624,8 @@ SELF_FENCE_HARD_STOP=true
 # masked (a runtime mask is shadowed by a unit file under /etc/systemd/system): the stop is a requested
 # systemctl stop, which Restart= does not undo. Recovery: systemctl start solana, on the UNSTAKED identity.
 HARD_STOP_REVERIFY_SECS=15
+# v0.7 (rc1 F19): after the SIGKILL, poll once per second for up to this many seconds until the killed validator is gone (a large process needs seconds to be torn down).
+HARD_STOP_EXIT_WAIT_SECS=15
 
 # --- Collision detector (v0.6.9 M5) ---
 # While STAKED: compare external gossip's endpoint for the staked pubkey vs our own; 2 consecutive
