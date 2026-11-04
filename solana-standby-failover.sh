@@ -207,6 +207,10 @@ SELF_FENCE_HARD_STOP=true
 # shadowed by a unit file under /etc/systemd/system. The blocking `systemctl stop` is the REQUESTED STOP that
 # Restart= respects - see the primary's HARD_STOP_REVERIFY_SECS comment for the measurement.)
 HARD_STOP_REVERIFY_SECS=15
+# v0.7 (rc1 F19): after the SIGKILL the process needs time to be GONE - a validator with a large resident set takes seconds to be torn down (~2.4 s measured for ~150 GB), and the old verify,
+# ONE read 1 s after the kill, called such a stop "still running" (HARD STOP FAILED). The ladder now polls the validator once per second for up to this many seconds (floor 1) and calls the stop
+# FAILED only when the process is still there at the bound; the H2 re-verify above then runs exactly as before (same knob and semantics as the primary's).
+HARD_STOP_EXIT_WAIT_SECS=15
 # v0.6.9 (H1.3, safety-critical): post-self-fence RE-TAKE LOCKOUT. After a self-fence demote the staked
 # vote account WILL look delinquent+frozen (WE were the voter and we stopped) — every normal takeover
 # gate would pass and this node would re-take the identity it just dropped. attempt_takeover refuses
@@ -3879,8 +3883,8 @@ _sd_notify() {
 #     carries its own per-op pet, so the ≈ 22 s max-gap claim below is unchanged.
 #   - Incident-path cycles COMPOUND bounds: a tiered confirm (curl -m 15 × 2 + -m 10), a
 #     demote/take ladder (2 × (SETIDENTITY_TIMEOUT 15 + kill-grace 5) = 40), a hard stop
-#     (stop 20 + kill-grace 3 + re-verify 15) and each page (Telegram -m 10 +
-#     webhook -m 10) stack past ~150 s of bound inside ONE cycle.
+#     (stop 20 + kill-grace 3 + exit wait 15 + re-verify 15) and each page (Telegram -m 10 +
+#     webhook -m 10) stack past ~170 s of bound inside ONE cycle.
 # Therefore, per the A3 rule (worst case ≫ 15 s): pets fire ADDITIONALLY after EVERY bounded
 # network/admin op (≥ 5 s bound — and, since the Block 6.3 fix round (M6), the standby's two
 # curl -m 3 LOCAL getSlot reads too: Tier-1's precedes a petted TIER2 read, and the unpetted pair
@@ -6454,7 +6458,7 @@ _selffence_hard_stop() {
         return 1
     fi
     log_error "[self-fence] demote wedged ($why) — HARD-STOPPING the validator so the staked identity stops voting"
-    local sc_out sc_rc pid_found="" pid
+    local sc_out sc_rc pid_found="" pid _hs_kp _hs_w _hs_i
     sc_out=$(timeout -k 5 15 systemctl stop "${VALIDATOR_SERVICE:-solana}" 2>&1); sc_rc=$?
     [[ -n "$sc_out" ]] && log_info "systemctl stop: $sc_out"
     _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
@@ -6469,12 +6473,20 @@ _selffence_hard_stop() {
     fi
     if [[ -n "$pid" ]]; then
         kill -9 "$pid" 2>/dev/null || true; log_warn "[self-fence] SIGTERM ignored — sent SIGKILL to validator pid $pid"
-        sleep 1; pid=$(_validator_pid)
+        # v0.7 (rc1 F19): wait for the process to be GONE - poll once per second, up to HARD_STOP_EXIT_WAIT_SECS (floor 1); FAILED below only if it is still there at the bound.
+        # _watchdog_sleep: one plain `sleep 1` outside the armed unit, a pet per completed second inside it.
+        _hs_kp=$pid; _hs_w="${HARD_STOP_EXIT_WAIT_SECS:-15}"; case "$_hs_w" in ''|*[!0-9]*) _hs_w=15 ;; *) _hs_w=$((10#$_hs_w)) ;; esac
+        _hs_i=0
+        while :; do
+            _watchdog_sleep 1; _hs_i=$((_hs_i + 1)); pid=$(_validator_pid)
+            [[ -z "$pid" || $_hs_i -ge $_hs_w ]] && break
+        done
+        [[ -z "$pid" ]] && log_info "[self-fence] validator pid $_hs_kp gone ${_hs_i}s after SIGKILL"
     fi
     # VERIFY (S4 port): only report success if the validator is provably down.
     if [[ -n "$pid" ]]; then
-        log_error "[self-fence] HARD STOP FAILED — validator pid $pid still running after systemctl stop + SIGKILL; keeping the fence armed to retry"
-        alert "Hard-stop FAILED ($why) — validator still running (pid $pid) after systemctl stop + SIGKILL; the staked identity may still vote. INTERVENE NOW." "$STAKED_PUBKEY" "STANDBY SELF-FENCE — HARD STOP FAILED 🚨"
+        log_error "[self-fence] HARD STOP FAILED — validator pid $pid still running ${_hs_i:-0}s after SIGKILL (systemctl stop + SIGKILL); keeping the fence armed to retry"
+        alert "Hard-stop FAILED ($why) — validator still running (pid $pid) ${_hs_i:-0}s after SIGKILL (systemctl stop + SIGKILL); the staked identity may still vote. INTERVENE NOW." "$STAKED_PUBKEY" "STANDBY SELF-FENCE — HARD STOP FAILED 🚨"
         return 1
     fi
     if [[ $sc_rc -ne 0 && -z "$pid_found" ]]; then
@@ -6952,6 +6964,7 @@ validate_numeric_config() {
       || { log_error "Bad SETIDENTITY_TIMEOUT: require an integer >= 8 seconds (got ${SETIDENTITY_TIMEOUT})"; exit 1; }
     SETIDENTITY_TIMEOUT=$((10#$SETIDENTITY_TIMEOUT))
     _validate_numeric HARD_STOP_REVERIFY_SECS 0                # v0.6.9 (H2): hard-stop re-verify delay (0 = immediate re-check only)
+    _validate_numeric HARD_STOP_EXIT_WAIT_SECS 1               # v0.7 (rc1 F19): how long the hard stop waits for the killed process to be gone (floor 1: at least one poll)
     _validate_numeric SELF_FENCE_RETAKE_COOLDOWN 0             # v0.6.9 (H1.3): 0 = no re-take lockout (NOT recommended)
     _validate_numeric COLLISION_CHECK_INTERVAL 1               # v0.6.9 (M5): collision-detector cadence
     _validate_numeric STATE_MAX_AGE_SECS 0                     # v0.6.9 (H3): baseline-restore freshness gate (0 = never restore)

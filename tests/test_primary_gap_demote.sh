@@ -508,7 +508,8 @@ ladder_world() {   # ladder_world <script> <process state letter or empty> <rc o
         source "$SRC" 2>/dev/null; rm -f "$SRC"
         STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VALIDATOR_TYPE="agave"; VALIDATOR_SERVICE="solana"
         SELF_FENCE_HARD_STOP=true; HARD_STOP_REVERIFY_SECS=7; TG_ENABLED=false
-        EV=$(mktemp); trap 'rm -f "$EV" "$EV.dead" "$EV.log" "$EV.all" "$EV.nb"' EXIT
+        [[ -n "${LW_EXITWAIT+x}" ]] && HARD_STOP_EXIT_WAIT_SECS="$LW_EXITWAIT"   # rc1 F19: unset = the daemon's own default (15)
+        EV=$(mktemp); trap 'rm -f "$EV" "$EV.dead" "$EV.log" "$EV.all" "$EV.nb" "$EV.lag"' EXIT
         log_info(){ echo "I $*" >> "$EV.log"; }; log_warn(){ echo "W $*" >> "$EV.log"; }; log_error(){ :; }; send_telegram(){ return 0; }; send_webhook(){ :; }; _watchdog_pet(){ :; }
         _STATUS=""; _MSG=""; alert(){ _MSG="$1"; _STATUS="$3"; }
         _PROC=1
@@ -521,9 +522,9 @@ ladder_world() {   # ladder_world <script> <process state letter or empty> <rc o
             esac
             return 0
         }
-        pgrep(){ [[ "$_PROC" == "1" && ! -e "$EV.dead" ]] && echo 4242; return 0; }
+        pgrep(){ local n; if [[ -s "$EV.lag" ]]; then n=$(cat "$EV.lag"); if [[ $n -gt 0 ]]; then echo $((n - 1)) > "$EV.lag"; echo 4242; return 0; fi; fi; [[ "$_PROC" == "1" && ! -e "$EV.dead" ]] && echo 4242; return 0; }   # rc1 F19: after the SIGKILL the pid stays visible for LW_LAG more polls (a large process needs seconds to be torn down)
         _proc_state(){ printf '%s' "$st"; }
-        kill(){ if [[ "$1" == "-9" ]]; then echo KILL9 >> "$EV"; echo KILL9 >> "$EV.all"; _PROC=0; else echo TERM >> "$EV"; echo TERM >> "$EV.all"; fi; return 0; }   # SIGTERM is ignored: only SIGKILL ends the process
+        kill(){ if [[ "$1" == "-9" ]]; then echo KILL9 >> "$EV"; echo KILL9 >> "$EV.all"; _PROC=0; echo "${LW_LAG:-0}" > "$EV.lag"; else echo TERM >> "$EV"; echo TERM >> "$EV.all"; fi; return 0; }   # SIGTERM is ignored: only SIGKILL ends the process
         sleep(){ echo "SLEEP $1" >> "$EV.all"; [[ "$1" == "$HARD_STOP_REVERIFY_SECS" && "$resurrect" == "1" ]] && _PROC=1; :; }
         _selffence_hard_stop "test wedge"; rc=$?
         case "$out" in
@@ -630,6 +631,61 @@ if p_no_mask_code "$PRIMARY" && p_no_mask_code "$STANDBY"; then
     ok "(22h) no 'mask' in the code of either daemon's _selffence_hard_stop (comment lines excluded): the step, its variables and both '(unit masked)' pages are gone"
 else
     bad "(22h) a mask survives in a ladder: primary=$(sed -n '/^_selffence_hard_stop() {/,/^}/p' "$PRIMARY" | grep -v '^[[:space:]]*#' | grep -ci 'mask') standby=$(sed -n '/^_selffence_hard_stop() {/,/^}/p' "$STANDBY" | grep -v '^[[:space:]]*#' | grep -ci 'mask')"
+fi
+# (22i) rc1 F19: after the SIGKILL the ladder WAITS for the process to be gone - it polls once per second, up to HARD_STOP_EXIT_WAIT_SECS (default 15). A process that stays visible for 3 more polls and then goes
+# (a validator with a large resident set needs seconds to be torn down: ~2.4 s measured for ~150 GB) is a CONFIRMED stop - the old single read 1 s after the kill called it FAILED
+w_ok=1; w_why=""
+for st in T S; do   # the fast branch; the normal ladder (its stop fails, SIGTERM is ignored, then the SIGKILL)
+    lg=$(LW_LAG=3 ladder_world "$PRIMARY" "$st" 1 0 0 deactivating log); al=$(LW_LAG=3 ladder_world "$PRIMARY" "$st" 1 0 0 deactivating all); ln=$(LW_LAG=3 ladder_world "$PRIMARY" "$st" 1)
+    if [[ "$ln" != "rc=0|"*"|status=PRIMARY SELF-FENCE — HARD STOP ✅|"* || "$(printf '%s\n' "$lg" | grep -c -F 'I [self-fence] validator pid 4242 gone 4s after SIGKILL')" != "1" \
+          || "$al" != *"KILL9,SLEEP 1,SLEEP 1,SLEEP 1,SLEEP 1,SLEEP 7,"* ]]; then w_ok=0; w_why="$w_why [$st: $ln :: $al :: $(printf '%s' "$lg" | tr '\n' ';' | cut -c1-200)]"; fi
+done
+if [[ $w_ok -eq 1 ]]; then
+    ok "(22i) the pid still visible 1, 2 and 3 polls after the SIGKILL and gone at the 4th: rc 0, the ✅ page, ONE INFO line '[self-fence] validator pid 4242 gone 4s after SIGKILL', four 1 s sleeps and then the re-verify's HARD_STOP_REVERIFY_SECS - on the fast branch and on the normal ladder (the old code read once, 1 s after the kill: FAILED)"
+else
+    bad "(22i) exit wait:$w_why"
+fi
+# (22j) the bound: alive at it -> FAILED (the page says how long it waited), exactly that many polls, no re-verify; a non-number is the default, a leading zero is decimal, 0 is still one poll
+x_ok=1; x_why=""
+x_chk() {   # x_chk <label> <HARD_STOP_EXIT_WAIT_SECS, or "-" for unset> <expected polls>
+    local lab="$1" kn="$2" want="$3" al ln ms n
+    if [[ "$kn" == "-" ]]; then
+        al=$(LW_LAG=99 ladder_world "$PRIMARY" T 1 0 0 deactivating all); ln=$(LW_LAG=99 ladder_world "$PRIMARY" T 1); ms=$(LW_LAG=99 ladder_world "$PRIMARY" T 1 0 0 deactivating msg)
+    else
+        al=$(LW_LAG=99 LW_EXITWAIT="$kn" ladder_world "$PRIMARY" T 1 0 0 deactivating all); ln=$(LW_LAG=99 LW_EXITWAIT="$kn" ladder_world "$PRIMARY" T 1); ms=$(LW_LAG=99 LW_EXITWAIT="$kn" ladder_world "$PRIMARY" T 1 0 0 deactivating msg)
+    fi
+    n=$(printf '%s' "$al" | grep -o 'SLEEP 1,' | wc -l | tr -d ' ')
+    if [[ "$ln" != "rc=1|"*"|status=PRIMARY SELF-FENCE — HARD STOP FAILED 🚨|"* || "$n" != "$want" || "$al" == *"SLEEP 7"* || "$ms" != *"still running (pid 4242) ${want}s after SIGKILL"* ]]; then x_ok=0; x_why="$x_why [$lab: polls=$n want=$want :: $ln :: $al :: $ms]"; fi
+}
+x_chk default - 15; x_chk four 4 4; x_chk one 1 1; x_chk zero 0 1; x_chk text abc 15; x_chk leading-zero 08 8; x_chk empty "" 15
+if [[ $x_ok -eq 1 ]]; then
+    ok "(22j) a process still alive at the bound -> HARD STOP FAILED (rc 1), the page says 'still running (pid 4242) Ns after SIGKILL', exactly N polls and no re-verify: N = 15 by default, 4 / 1 as set, 0 -> one poll, 'abc' / empty -> 15, 08 -> 8 (decimal)"
+else
+    bad "(22j) the bound:$x_why"
+fi
+# (22k) startup: HARD_STOP_EXIT_WAIT_SECS has a floor of 1 in BOTH daemons (0, empty and a non-number refuse to start; 1 and 15 pass) and is defined once with the default 15
+k_ok=1; k_why=""
+for sc in "$PRIMARY" "$STANDBY"; do
+    r_def=$(rc_of "$sc"); r_0=$(rc_of "$sc" 'HARD_STOP_EXIT_WAIT_SECS=0'); r_1=$(rc_of "$sc" 'HARD_STOP_EXIT_WAIT_SECS=1'); r_abc=$(rc_of "$sc" 'HARD_STOP_EXIT_WAIT_SECS=abc'); r_15=$(rc_of "$sc" 'HARD_STOP_EXIT_WAIT_SECS=15'); r_e=$(rc_of "$sc" 'HARD_STOP_EXIT_WAIT_SECS=')
+    d_def=$(grep -c '^HARD_STOP_EXIT_WAIT_SECS=15$' "$sc")
+    if [[ "$r_def" != "0" || "$r_0" != "1" || "$r_1" != "0" || "$r_abc" != "1" || "$r_15" != "0" || "$r_e" != "1" || "$d_def" != "1" ]]; then k_ok=0; k_why="$k_why [$(basename "$sc"): default=$r_def 0=$r_0 1=$r_1 abc=$r_abc 15=$r_15 empty=$r_e defined-once=$d_def]"; fi
+done
+if [[ $k_ok -eq 1 ]]; then
+    ok "(22k) HARD_STOP_EXIT_WAIT_SECS (both daemons): defined once with default 15; 15 and 1 pass, 0 / empty / 'abc' refuse to start (floor 1)"
+else
+    bad "(22k) knob validation:$k_why"
+fi
+p_exit_validated() { [[ "$(rc_of "$1" 'HARD_STOP_EXIT_WAIT_SECS=0')" == "1" ]]; }
+# (22l) structure: the wait goes through _watchdog_sleep (chunked and petted under the armed unit; a plain sleep otherwise) - no raw `sleep 1; pid=$(_validator_pid)` survives in either ladder
+p_wait_struct() {
+    local f="$1" code; code=$(sed -n '/^_selffence_hard_stop() {/,/^}/p' "$f" | grep -v '^[[:space:]]*#')
+    [[ "$(printf '%s\n' "$code" | grep -c '_watchdog_sleep 1; _hs_i=\$((_hs_i + 1)); pid=\$(_validator_pid)')" == "1" && "$(printf '%s\n' "$code" | grep -c -E '^[[:space:]]*sleep 1; pid=')" == "0" \
+      && "$(printf '%s\n' "$code" | grep -c 'gone ${_hs_i}s after SIGKILL')" == "1" ]]
+}
+if p_wait_struct "$PRIMARY" && p_wait_struct "$STANDBY"; then
+    ok "(22l) both ladders poll with '_watchdog_sleep 1' (one plain sleep outside the armed unit, a pet per second inside it), log 'gone Ns after SIGKILL' once, and keep no raw 'sleep 1; pid=...' read"
+else
+    bad "(22l) wait structure: primary=$(p_wait_struct "$PRIMARY" && echo ok || echo bad) standby=$(p_wait_struct "$STANDBY" && echo ok || echo bad)"
 fi
 
 
@@ -938,6 +994,17 @@ ctl_rc fast-no-stop-request "$LG"'{ /^            _hs_nb_out=\$(timeout -k 5 15 
 ctl_rc fast-kill-before-request "$LG"'s/^            _hs_nb_out=\$(timeout -k 5 15 systemctl stop --no-block /            kill -9 "$pid" 2>\/dev\/null; _hs_nb_out=$(timeout -k 5 15 systemctl stop --no-block /' p_fast_T
 ctl_rc fast-state-read-dropped "$LG"'{ /^                _hs_as=\$(timeout 5 systemctl show -p ActiveState /d; }' p_fast_T
 ctl_rc fast-mask-back "$LG"'s/^        sc_out=""; sc_rc=1$/        sc_out=""; sc_rc=1; timeout -k 5 15 systemctl mask --runtime "${VALIDATOR_SERVICE:-solana}"/' p_fast_T
+p_exit_wait() {   # (22i) and (22j): the process 3 polls late is a confirmed stop; the 15-poll bound FAILS
+    local s="$1"
+    [[ "$(LW_LAG=3 ladder_world "$s" T 1 0 0 deactivating all)" == *"KILL9,SLEEP 1,SLEEP 1,SLEEP 1,SLEEP 1,SLEEP 7,"* && "$(LW_LAG=99 ladder_world "$s" T 1 0 0 deactivating all | grep -o 'SLEEP 1,' | wc -l | tr -d ' ')" == "15" ]]
+}
+p_exit_log() { [[ "$(LW_LAG=3 ladder_world "$1" T 1 0 0 deactivating log | grep -c -F 'gone 4s after SIGKILL')" == "1" ]]; }
+p_exit_wait_knob() { [[ "$(LW_LAG=99 LW_EXITWAIT=4 ladder_world "$1" T 1 0 0 deactivating all | grep -o 'SLEEP 1,' | wc -l | tr -d ' ')" == "4" ]]; }
+ctl_rc exit-wait-single-poll "$LG"'s/^            \[\[ -z "\$pid" || \$_hs_i -ge \$_hs_w \]\] && break$/            break/' p_exit_wait
+ctl_rc exit-wait-no-log "$LG"'{ /^        \[\[ -z "\$pid" \]\] && log_info "\[self-fence\] validator pid \$_hs_kp gone /d; }' p_exit_log
+ctl_rc exit-wait-raw-sleep "$LG"'s/^            _watchdog_sleep 1; _hs_i=/            sleep 1; _hs_i=/' p_wait_struct
+ctl_rc exit-wait-knob-ignored "$LG"'s/_hs_w="\${HARD_STOP_EXIT_WAIT_SECS:-15}"/_hs_w=15/' p_exit_wait_knob
+ctl_rc exit-wait-unvalidated 's/^    _validate_numeric HARD_STOP_EXIT_WAIT_SECS 1 /    : HARD_STOP_EXIT_WAIT_SECS /' p_exit_validated
 ctl_rc normal-mask-back "$LG"'s/^    # Fallback (non-systemd \/ stuck unit): SIGTERM the validator PID, then SIGKILL if it ignores it\.$/    [[ $sc_rc -ne 0 ]] \&\& timeout -k 5 15 systemctl mask --runtime "${VALIDATOR_SERVICE:-solana}"/' p_normal_S
 ctl_rc fast-keeps-sigterm "$LG"'s/^        if \[\[ -z "\$_hs_fast" \]\]; then .*$/        if true; then/' p_fast_T
 ctl_rc fast-no-reverify "$LG"'s/^    _watchdog_sleep "\${HARD_STOP_REVERIFY_SECS:-15}".*$/    :/' p_fast_verified
