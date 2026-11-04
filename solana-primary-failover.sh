@@ -271,9 +271,10 @@ HOLDER_GAP_DEMOTE_SECS=30
 # growing, a local RPC that answers, a validator that restarted (since the last readable read, or during the episode) - is NOT stopped (a voting validator with a wedged admin socket is left alone: a
 # restart costs minutes of missed votes): a page, throttled by ALERT_THROTTLE. DRY_RUN=true pages what it would stop and stops nothing.
 # Floor 20. Needs VOTE_PUBKEY (the external read looks the vote account up).
-# THE LADDER'S TWO BRANCHES: a process in state T (stopped) or D (uninterruptible sleep) cannot handle SIGTERM, so `systemctl stop` would only wait
-# out its timeout - the ladder skips it and goes straight to mask --runtime, SIGKILL, verify. Any other state (or a state that cannot be read)
-# takes the normal ladder: systemctl stop first, then mask --runtime if that failed, SIGTERM, SIGKILL, verify.
+# THE LADDER'S TWO BRANCHES: a process in state T (stopped) or D (uninterruptible sleep) cannot handle SIGTERM, so a blocking `systemctl stop` would only wait
+# out its timeout - the ladder skips it, asks systemd for the stop without waiting (`systemctl stop --no-block`: a requested stop, so Restart= does not apply
+# to the SIGKILL that follows at once), SIGKILLs, waits for the process to be gone, verifies, re-verifies. Any other state (or a state that cannot be read)
+# takes the normal ladder: systemctl stop first, then SIGTERM, SIGKILL, wait, verify, re-verify.
 # TIMING (the real loop and the real ladder over a simulated clock: tests/test_primary_gap_demote.sh (23)): unreadable cycles are 11 s apart (the 8 s identity
 # read + CHECK_INTERVAL 3) and the first one also takes the baseline read of the vote account (about 1 s), so the rung's clock reads 0, 12, 23, 34 s and it acts
 # on the first reading at or after this many seconds: 30 is the fourth (34 s after the first unreadable cycle), 22 would be the third (23 s; so would any value
@@ -297,11 +298,18 @@ SETIDENTITY_TIMEOUT=15
 SELF_FENCE_HARD_STOP=true
 # v0.6.9 (H2): a hard-stop must survive Restart=always. When systemctl stop did not cleanly succeed and
 # the PID was killed directly, systemd restarts the validator after RestartSec (typically 10s) — AFTER the
-# immediate down-verify passed — and it resurrects VOTING STAKED. Two-part fix: (a) mask the unit
-# (--runtime, so a reboot clears it — fail toward recoverability) before escalating to SIGTERM/SIGKILL;
-# (b) RE-verify the down-state after this many seconds (>= typical RestartSec). A resurrected process =
-# HARD STOP FAILED (page, INTERVENE NOW). FAILURE DIRECTION: toward reporting failure / paging the
-# operator — never a false "confirmed DOWN".
+# immediate down-verify passed — and it resurrects VOTING STAKED. The v0.6.9 fix was two-part: (a) mask the
+# unit (--runtime) before the SIGTERM/SIGKILL; (b) RE-verify the down-state after this many seconds (>= typical
+# RestartSec). A resurrected process = HARD STOP FAILED (page, INTERVENE NOW). FAILURE DIRECTION: toward
+# reporting failure / paging the operator — never a false "confirmed DOWN".
+# v0.7 (rc1 F18): part (a) is gone. `mask --runtime` writes its /dev/null link under /run/systemd/system, and a unit file
+# under /etc/systemd/system (where a validator's unit normally lives) takes precedence over it (systemd.unit(5), load path):
+# measured on systemd 255, the "masked" unit stayed `loaded` with Restart=always and the validator was restarted 1.1 s after
+# the SIGKILL. What protects a direct kill from Restart= is a REQUESTED STOP (systemd.service(5): a unit stopped by
+# `systemctl stop` is not restarted, `--no-block` included - the stop job is queued before the kill, so the process's death
+# ends that job instead of starting a restart). The normal ladder's blocking `systemctl stop` is that request; the fast
+# branch (state T/D) sends `systemctl stop --no-block` and then the SIGKILL, back to back.
+# Part (b) stays: the re-verify is the catch for what a request cannot promise (a stop that could not be queued).
 HARD_STOP_REVERIFY_SECS=15
 # v0.6.9 (M5): collision detector — while STAKED, periodically compare where gossip says the staked
 # pubkey lives (external T2/T3 view) against our OWN gossip endpoint (LOCAL view). Two consecutive
@@ -2949,8 +2957,8 @@ _sd_notify() {
 #     carries its own per-op pet, so the ≈ 22 s max-gap claim below is unchanged.
 #   - Incident-path cycles COMPOUND bounds: a tiered confirm (curl -m 15 × 2 + -m 10), a
 #     demote/take ladder (2 × (SETIDENTITY_TIMEOUT 15 + kill-grace 5) = 40), a hard stop
-#     (stop 20 + mask 20 + kill-grace 3 + re-verify 15) and each page (Telegram -m 10 +
-#     webhook -m 10) stack past ~170 s of bound inside ONE cycle.
+#     (stop 20 + kill-grace 3 + re-verify 15) and each page (Telegram -m 10 +
+#     webhook -m 10) stack past ~150 s of bound inside ONE cycle.
 # Therefore, per the A3 rule (worst case ≫ 15 s): pets fire ADDITIONALLY after EVERY bounded
 # network/admin op (≥ 5 s bound — and, since the Block 6.3 fix round (M6), the standby's two
 # curl -m 3 LOCAL getSlot reads too: Tier-1's precedes a petted TIER2 read, and the unpetted pair
@@ -5544,40 +5552,26 @@ _selffence_hard_stop() {
         return 1
     fi
     log_error "[self-fence] demote wedged ($why) — HARD-STOPPING the validator so the staked identity stops voting"
-    local sc_out sc_rc pid_found="" pid masked="" mask_out mask_rc _hs_st="" _hs_fast=""
-    # v0.7 (AG-3.8): a validator in state T (stopped) or D (uninterruptible sleep) cannot handle SIGTERM, so `systemctl stop` would only wait out its
-    # timeout (15 s + 5 s kill-after) before the mask and the kill below. Read the state of the unit's process FIRST: T or D skips the stop and goes
-    # straight to mask --runtime -> SIGKILL -> verify -> re-verify. Any other state, and a state that cannot be read (no /proc entry, no pid, an unexpected
-    # shape), takes the NORMAL ladder: the failure direction is the existing ladder, never a skipped stop.
+    local sc_out sc_rc pid_found="" pid _hs_st="" _hs_fast="" _hs_nb_out _hs_nb_rc _hs_as
+    # v0.7 (AG-3.8): a validator in state T (stopped) or D (uninterruptible sleep) cannot handle SIGTERM, so a blocking `systemctl stop` would only wait out its
+    # timeout (15 s + 5 s kill-after) before the kill below. Read the state of the unit's process FIRST: T or D skips the blocking stop and goes straight to
+    # the stop REQUEST (`systemctl stop --no-block`, v0.7 rc1 F18) -> SIGKILL -> verify -> re-verify. Any other state, and a state that cannot be read (no /proc
+    # entry, no pid, an unexpected shape), takes the NORMAL ladder: the failure direction is the existing ladder, never a skipped stop.
     pid=$(_validator_pid)
     [[ -n "$pid" ]] && _hs_st=$(_proc_state "$pid")
     _hs_branch="normal ladder (process state ${_hs_st:-unknown})"
-    case "$_hs_st" in T|D) _hs_fast=1; _hs_branch="fast: process state ${_hs_st}, systemctl stop skipped" ;; esac
+    case "$_hs_st" in T|D) _hs_fast=1; _hs_branch="fast: process state ${_hs_st}, blocking systemctl stop skipped (stop requested with --no-block)" ;; esac
     if [[ -n "$_hs_fast" ]]; then
         sc_out=""; sc_rc=1
-        log_warn "[self-fence] validator pid $pid is in state $_hs_st (stopped or uninterruptible): it cannot handle SIGTERM — skipping 'systemctl stop', going straight to mask --runtime + SIGKILL"
+        log_warn "[self-fence] validator pid $pid is in state $_hs_st (stopped or uninterruptible): it cannot handle SIGTERM — skipping the blocking 'systemctl stop'; the stop is requested with --no-block just before the SIGKILL"
     else
         sc_out=$(timeout -k 5 15 systemctl stop "${VALIDATOR_SERVICE:-solana}" 2>&1); sc_rc=$?
         [[ -n "$sc_out" ]] && log_info "systemctl stop: $sc_out"
     fi
     _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
-    # v0.6.9 (H2): systemctl stop did NOT cleanly succeed → the unit is still Restart=always, so a
-    # direct SIGTERM/SIGKILL below would be undone by systemd after RestartSec (the validator resurrects
-    # VOTING STAKED after the immediate verify passed). Mask the unit FIRST — --runtime so a reboot
-    # clears the mask (fail toward recoverability). A failed mask never skips the kill (the delayed
-    # re-verify below catches a resurrect either way). FAILURE DIRECTION: extra stopping power only —
-    # masking can never keep a validator voting.
-    if [[ $sc_rc -ne 0 ]]; then
-        mask_out=$(timeout -k 5 15 systemctl mask --runtime "${VALIDATOR_SERVICE:-solana}" 2>&1); mask_rc=$?
-        [[ -n "$mask_out" ]] && log_info "systemctl mask --runtime: $mask_out"
-        _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
-        if [[ $mask_rc -eq 0 ]]; then
-            masked=1
-            log_warn "[self-fence] unit ${VALIDATOR_SERVICE:-solana} masked (--runtime) so Restart=always cannot resurrect it; unmask with: systemctl unmask --runtime ${VALIDATOR_SERVICE:-solana}"
-        else
-            log_warn "[self-fence] systemctl mask --runtime failed (rc $mask_rc) — continuing with the kill path; the delayed re-verify below will catch a Restart=always resurrect"
-        fi
-    fi
+    # v0.6.9 (H2) masked the unit here when the stop had failed; v0.7 (rc1 F18) does not: a runtime mask is shadowed by a unit file under
+    # /etc/systemd/system (see HARD_STOP_REVERIFY_SECS) and protected nothing. A REQUESTED STOP is what Restart= respects: the blocking stop above
+    # is one (its timeout leaves the stop job queued), the fast branch sends its own right before the SIGKILL. The re-verify below is the catch.
     # Fallback (non-systemd / stuck unit): SIGTERM the validator PID, then SIGKILL if it ignores it.
     pid=$(_validator_pid)
     if [[ -n "$pid" ]]; then
@@ -5589,6 +5583,23 @@ _selffence_hard_stop() {
     fi
     if [[ -n "$pid" ]]; then
         if [[ -n "$_hs_fast" ]]; then
+            # v0.7 (rc1 F18): ask systemd for the stop FIRST, without waiting (the process cannot answer a stop job's SIGTERM, so the blocking form would sit out its
+            # timeout), and SIGKILL at once - no sleep between: the stop job is queued before the process dies, so its death ends that job instead of starting a
+            # Restart=always restart. The ActiveState read only RECORDS whether the request took (deactivating / inactive / failed expected); whatever it says, the kill
+            # proceeds - the re-verify below is the catch. A failed request is logged and the kill proceeds too.
+            _hs_nb_out=$(timeout -k 5 15 systemctl stop --no-block "${VALIDATOR_SERVICE:-solana}" 2>&1); _hs_nb_rc=$?
+            log_info "[self-fence] systemctl stop --no-block ${VALIDATOR_SERVICE:-solana}: rc $_hs_nb_rc${_hs_nb_out:+ ($_hs_nb_out)}"
+            _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
+            if [[ $_hs_nb_rc -eq 0 ]]; then
+                _hs_as=$(timeout 5 systemctl show -p ActiveState --value "${VALIDATOR_SERVICE:-solana}" 2>/dev/null)
+                _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
+                case "$_hs_as" in
+                    deactivating|inactive|failed) log_info "[self-fence] unit ${VALIDATOR_SERVICE:-solana} reads ActiveState=$_hs_as after the stop request" ;;
+                    *) log_warn "[self-fence] unit ${VALIDATOR_SERVICE:-solana} reads ActiveState='${_hs_as:-unreadable}' after the stop request (expected deactivating, inactive or failed): Restart= may still apply to the SIGKILL — killing anyway, the re-verify below is the catch" ;;
+                esac
+            else
+                log_warn "[self-fence] systemctl stop --no-block failed (rc $_hs_nb_rc): Restart= may still apply to the SIGKILL — killing anyway, the re-verify below is the catch"
+            fi
             kill -9 "$pid" 2>/dev/null || true; log_warn "[self-fence] fast branch (state $_hs_st) — sent SIGKILL to validator pid $pid"
         else
             kill -9 "$pid" 2>/dev/null || true; log_warn "[self-fence] SIGTERM ignored — sent SIGKILL to validator pid $pid"
@@ -5615,15 +5626,11 @@ _selffence_hard_stop() {
     pid=$(_validator_pid)
     if [[ -n "$pid" ]]; then
         log_error "[self-fence] HARD STOP FAILED — validator RESURRECTED (pid $pid) within ${HARD_STOP_REVERIFY_SECS:-15}s (Restart=always); keeping the fence armed to retry"
-        alert "Hard-stop FAILED ($why) — the validator was stopped but RESURRECTED (pid $pid, Restart=always) within ${HARD_STOP_REVERIFY_SECS:-15}s; it may be voting staked again. INTERVENE NOW (systemctl mask --runtime ${VALIDATOR_SERVICE:-solana}; then stop it)." "$STAKED_PUBKEY" "PRIMARY SELF-FENCE — HARD STOP FAILED 🚨"
+        alert "Hard-stop FAILED ($why) — the validator was stopped but RESURRECTED (pid $pid, Restart=always) within ${HARD_STOP_REVERIFY_SECS:-15}s; it may be voting staked again. INTERVENE NOW (systemctl stop ${VALIDATOR_SERVICE:-solana})." "$STAKED_PUBKEY" "PRIMARY SELF-FENCE — HARD STOP FAILED 🚨"
         return 1
     fi
-    # v0.6.9 (H2): the ✅ page names the mask state + the exact unmask command for recovery.
-    if [[ -n "$masked" ]]; then
-        alert "Demote set-identity wedged ($why); HARD-STOPPED the validator — confirmed DOWN (re-verified after ${HARD_STOP_REVERIFY_SECS:-15}s). Unit ${VALIDATOR_SERVICE:-solana} is MASKED (--runtime): recover with 'systemctl unmask --runtime ${VALIDATOR_SERVICE:-solana}' before restarting (restart on the unstaked identity; the staked identity moves only by the warm swap — docs/SAFETY.md, Alpenglow — and a vote-history file is never deleted)." "$STAKED_PUBKEY" "PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)"
-    else
-        alert "Demote set-identity wedged ($why); HARD-STOPPED the validator — confirmed DOWN (re-verified after ${HARD_STOP_REVERIFY_SECS:-15}s). Node is down; recover manually (restart on the unstaked identity; the staked identity moves only by the warm swap — docs/SAFETY.md, Alpenglow — and a vote-history file is never deleted)." "$STAKED_PUBKEY" "PRIMARY SELF-FENCE — HARD STOP ✅"
-    fi
+    # v0.7 (rc1 F18): one ✅ page. The unit was stopped by a requested stop, so Restart= does not apply; the recovery is a start (on the unstaked identity).
+    alert "Demote set-identity wedged ($why); HARD-STOPPED the validator — confirmed DOWN (re-verified after ${HARD_STOP_REVERIFY_SECS:-15}s). The unit is stopped by a requested stop (Restart= does not apply): recover with 'systemctl start ${VALIDATOR_SERVICE:-solana}' on the UNSTAKED identity after confirming no spare holds the staked identity (the staked identity moves only by the warm swap — docs/SAFETY.md, Alpenglow — and a vote-history file is never deleted)." "$STAKED_PUBKEY" "PRIMARY SELF-FENCE — HARD STOP ✅"
     return 0
 }
 
@@ -6870,7 +6877,7 @@ _hung_check() {
         log_warn "[DRY RUN] Would HARD-STOP the hung validator - ${facts}"
         if [[ ${_hung_page_ts:-0} -eq 0 || $(( now - _hung_page_ts )) -ge ${ALERT_THROTTLE:-600} ]]; then
             _hung_page_ts=$now
-            alert "Hung holder: ${facts}. DRY_RUN=true: nothing was stopped; a live daemon would HARD-STOP the validator now (systemctl stop, mask --runtime, SIGTERM/SIGKILL, verify)." "$STAKED_PUBKEY" "[DRY RUN] WOULD HARD-STOP the hung validator"
+            alert "Hung holder: ${facts}. DRY_RUN=true: nothing was stopped; a live daemon would HARD-STOP the validator now (systemctl stop [--no-block on a stopped or uninterruptible process], SIGTERM/SIGKILL, verify, re-verify)." "$STAKED_PUBKEY" "[DRY RUN] WOULD HARD-STOP the hung validator"
         fi
         return 0
     fi

@@ -929,11 +929,15 @@ s_pets=$(grep -cE '^[[:space:]]*_watchdog_pet[[:space:]]+# §5 end-of-cycle pet'
 # bounded admin ops - `authorized-voter add`, then `set-identity` with the cold flag, each `timeout -k 5 $SETIDENTITY_TIMEOUT` - exactly as the retained take's
 # pair below them does. A3 re-derived: each op is bounded by SETIDENTITY_TIMEOUT 15 + kill-grace 5 = 20 s and its pet follows the op, so the 22 s worst case
 # (SETIDENTITY_TIMEOUT 15 + kill-grace 5 still governs) is unchanged. Totals standby 54 -> 56.
+# +1 in the PRIMARY, -1 in the STANDBY at rc1 F18 (the pins MOVED, deliberately, in that diff): the v0.6.9 H2 `systemctl mask --runtime` step is gone from both hard-stop ladders (it was measured inert
+# for a unit under /etc/systemd/system) and took its post-op pet with it (-1 each); the PRIMARY's fast branch (state T / D) gained two bounded ops, each petted post-op - `systemctl stop --no-block`
+# (timeout -k 5 15) and the ActiveState read after it (timeout 5) - so the primary nets +1 and the standby -1. A3 re-derived: each new op is one bounded op + its pet (the request 20 s at its worst,
+# the read 5 s), inside the 22 s worst case; the kill that follows them is not an op that waits. Totals primary 51 -> 52, standby 56 -> 55.
 p_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$PRIMARY")
 s_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$STANDBY")
-[[ "$p_total" == "51" && "$s_total" == "56" ]] \
-    && ok "(14b) total pet call-site pins: primary 50 calls (+def=51), standby 55 calls (+def=56) — deletion of any pet line trips this" \
-    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 51, standby=$s_total pinned 56) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
+[[ "$p_total" == "52" && "$s_total" == "55" ]] \
+    && ok "(14b) total pet call-site pins: primary 51 calls (+def=52), standby 54 calls (+def=55) — deletion of any pet line trips this" \
+    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 52, standby=$s_total pinned 55) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
 if ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$PRIMARY" && ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$STANDBY" && ! grep -qE '^[[:space:]]*sleep "\$RECOVERY_CHECK_INTERVAL"' "$PRIMARY"; then
     ok "(14c) the >=15s sleeps (STARTUP_GRACE x3, RECOVERY_CHECK_INTERVAL, hard-stop re-verify) go through _watchdog_sleep"
 else

@@ -5,6 +5,22 @@ All notable changes are documented here. Versions follow the project's internal 
 
 ## v0.7.0-rc1 — release candidate (v0.7 line, unreleased)
 
+- **rc1 fix round 2 (F18) — the hard stop no longer masks the unit; a requested stop is what `Restart=` respects.** Since v0.6.9 (H2) the self-fence's hard stop - a demote or give-back that wedged, and the
+  primary's hung-holder rung - ran `systemctl mask --runtime <unit>` before the direct kill when `systemctl stop` had failed (the rung's fast branch, which skips the stop, always did), to keep
+  `Restart=always` from resurrecting the validator. Measured on systemd 255 (a real host and a replay): `mask --runtime` writes `/run/systemd/system/<unit>` -> `/dev/null`, but a unit file under
+  `/etc/systemd/system` takes precedence over `/run` (systemd.unit(5), the unit load path), so the unit stayed `loaded` with `Restart=always` and the validator was restarted 1.1 s after the SIGKILL. The H2 mask was
+  inert for a unit under `/etc/systemd/system`; what caught a resurrection was the re-verify (`HARD_STOP_REVERIFY_SECS`, default 15 - unchanged), which turns it into `HARD STOP FAILED` instead of a false ✅.
+  - **What protects a direct kill from `Restart=` is a requested stop** (systemd.service(5): a unit stopped by `systemctl stop` - `--no-block` included - is not restarted; the stop job is queued before the process dies,
+    so the death ends the job instead of starting a restart). The normal ladder is the same minus the mask: `systemctl stop` (blocking, bounded at 15 s + 5 s kill grace) is the request, then SIGTERM, 2 s, SIGKILL, verify, re-verify.
+  - **The fast branch** (the primary's ladder, for a validator process in state T or D, which cannot handle SIGTERM) still skips the blocking stop, but now sends `systemctl stop --no-block <unit>` (bounded) right before the
+    SIGKILL, records the unit's `ActiveState` (bounded read; logged - `deactivating`, `inactive` or `failed` expected, otherwise one WARN) and kills at once. A failed request is a WARN too and the kill goes on: the re-verify is
+    the catch for anything a stop request cannot promise. The `HOLDER HUNG` page names the branch: `fast: process state T, blocking systemctl stop skipped (stop requested with --no-block)`.
+  - **Pages:** the two `(unit masked)` success pages (`PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)`, `STANDBY SELF-FENCE — HARD STOP ✅ (unit masked)`) are one page each now, whichever way the stop went: the unit is
+    stopped by a requested stop (`Restart=` does not apply) and the page says to recover with `systemctl start <unit>` on the UNSTAKED identity. The page for a resurrected validator ends `INTERVENE NOW (systemctl stop <unit>)`
+    (it said `systemctl mask --runtime <unit>; then stop it`).
+  - **Recovery** after a hard stop is `systemctl start <unit>`: the validator comes up on its own UNSTAKED identity, as every start does; there is nothing to unmask. A mask that a v0.6.9 daemon left behind is `--runtime`:
+    a reboot clears it, and `systemctl unmask --runtime <unit>` removes it. The fence script's own stop ladder (`systemd/failover-fence.sh`) is not part of this change.
+
 - **AG-3 (rc1) — the armed cold take under Alpenglow, opt-in; the holder's gap rule and hung-validator rung; unit and ceremony hygiene.** A standby with `AG_ARMED_TAKE=true`
   (default `false`; only the literal `true` arms, anything else is not armed and says so once at start) takes the staked identity itself - cold - when every gate
   of the page has said "take now" and a readiness margin also holds. The primary never takes, armed or not. Every figure and limit:
@@ -20,7 +36,7 @@ All notable changes are documented here. Versions follow the project's internal 
     identity read. Pairing rule: the spare's `TAKEOVER_DELAY` ≥ that + 30; `TAKEOVER_DELAY` stays 60 (the standby's floor) = that sum - pinned by the `facts` job together with the other armed-take defaults. An armed spare whose `TAKEOVER_DELAY` is below 60 refuses to start (`DRY_RUN` is no exception); one that is not armed logs a warning.
   - **The hung holder's rung (AG-3.8):** `HOLDER_UNREACHABLE_STOP_SECS=30` (floor 20): a validator last seen STAKED whose identity stays unreadable for that long is hard-stopped by its own daemon when it is
     still the same process, LOCAL `getSlot` is silent and the vote account's `lastVote` is frozen while the cluster tip advances (`HOLDER HUNG — HARD STOP`); any doubt is a page, never a kill
-    (`HOLDER UNREACHABLE — not stopped`). A process in state T or D skips `systemctl stop` (the fast branch of the ladder). Reason, measured on the pair (S11a): at 4c6bbc5 the daemon never fenced a SIGSTOPped
+    (`HOLDER UNREACHABLE — not stopped`). A process in state T or D skips the blocking `systemctl stop` (the fast branch of the ladder; since rc1 F18 it asks for the stop with `--no-block` right before the SIGKILL - see the first entry of this section). Reason, measured on the pair (S11a): at 4c6bbc5 the daemon never fenced a SIGSTOPped
     holder - it paged once, kept the identity and voted again on SIGCONT. The unit's `MainPID` is now the validator pid the ladder kills (pgrep stays the fallback). A validator that restarted since the last readable identity read (a crash and a restart on the unstaked identity: the identity unreadable, the local RPC silent, `lastVote` frozen while it loads) is never stopped: the rung compares the process's start time with the last readable read, logs one INFO line and stays quiet until the identity reads again; a start time it cannot read is a page (`cannot tell a hung validator from a restarted one`), never a kill.
   - **Unit and ceremony:** the monitor unit carries an `ExecStop=` that re-sends a lost TERM; `failover arm` refuses a real arm without a readable `LEDGER_PATH` (precondition `P6-ledger`) and
     verifies that the rendered monitor unit carries the `ExecStop=`; both deploy scripts now write the ledger directory they detect into `LEDGER_PATH`.

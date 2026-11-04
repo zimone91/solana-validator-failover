@@ -619,10 +619,10 @@ SETIDENTITY_TIMEOUT=15
 # double-sign). false = alert only, do NOT stop (NOT recommended — re-opens the gap). Never in DRY_RUN or
 # on the recovery/promote path.
 SELF_FENCE_HARD_STOP=true
-# v0.6.9 (H2): when systemctl stop did not cleanly succeed, the unit is masked (--runtime; a reboot
-# clears it) before the direct kill, and the down-state is RE-verified after this many seconds (>= the
-# unit's RestartSec) so Restart=always cannot silently resurrect a staked-voting validator. Recovery:
-# systemctl unmask --runtime solana (the ✅ page names it).
+# v0.6.9 (H2): the down-state of a hard-stop is RE-verified after this many seconds (>= the unit's
+# RestartSec) so Restart=always cannot silently resurrect a staked-voting validator. The unit is NOT
+# masked (a runtime mask is shadowed by a unit file under /etc/systemd/system): the stop is a requested
+# systemctl stop, which Restart= does not undo. Recovery: systemctl start solana, on the UNSTAKED identity.
 HARD_STOP_REVERIFY_SECS=15
 
 # --- Collision detector (v0.6.9 M5) ---

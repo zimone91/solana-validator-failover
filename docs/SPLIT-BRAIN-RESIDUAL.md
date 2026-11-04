@@ -56,8 +56,11 @@ live on the 2-node testnet:
 **Bounded demote + hard-stop (v0.6.8 B1; hardened v0.6.9 H2/H4).** A self-fence is only as good as
 its demote actually *completing*. Every demote/admin-socket call is bounded
 (`timeout -k 5 $SETIDENTITY_TIMEOUT`) — since v0.6.9 (H4) on the **standby's take/give-back too**;
-a wedged `set-identity` escalates to `_selffence_hard_stop` (`systemctl stop` →
-`systemctl mask --runtime` when the stop failed → SIGTERM → SIGKILL) which **verifies the validator
+a wedged `set-identity` escalates to `_selffence_hard_stop` (`systemctl stop` → SIGTERM → SIGKILL; the
+unit is not masked — v0.6.9 masked it, but a runtime mask is shadowed by a unit file under
+`/etc/systemd/system`, so v0.7 relies on what `Restart=always` does respect, a *requested* stop; on the
+primary, a validator process that is stopped or in uninterruptible sleep gets `systemctl stop --no-block`
+and the SIGKILL at once) which **verifies the validator
 is actually down before reporting success**, and since v0.6.9 (H2) **re-verifies after
 `HARD_STOP_REVERIFY_SECS`** so a `Restart=always` resurrect reads as HARD STOP FAILED instead of a
 false ✅. The promote/take path is bounded but never kills (fail-safe direction).

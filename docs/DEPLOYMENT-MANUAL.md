@@ -18,9 +18,11 @@
 > before any spare takes" invariant now also covers the **STANDBY→BACKUP hop**, and a self-fenced
 > standby is **locked out of re-taking** for `SELF_FENCE_RETAKE_COOLDOWN=600s` (its own fenced vote
 > account looks delinquent — that's why it fenced). **H2:** a hard-stop now survives
-> `Restart=always` — the unit is masked (`--runtime`) when `systemctl stop` fails, and the
-> down-state is **re-verified after `HARD_STOP_REVERIFY_SECS=15`** so a resurrected validator pages
-> `HARD STOP FAILED` instead of a false ✅. **H3:** the self-fence baseline (frozen-slot /
+> `Restart=always` — it is a *requested* stop (`systemctl stop`; `systemctl stop --no-block` just before
+> the SIGKILL when the primary's validator process is stopped or in uninterruptible sleep), which
+> `Restart=` does not undo, and the unit is not masked (v0.6.9 masked it; v0.7 does not — see
+> **Manual switch-back**); the down-state is **re-verified after `HARD_STOP_REVERIFY_SECS=15`** so a
+> resurrected validator pages `HARD STOP FAILED` instead of a false ✅. **H3:** the self-fence baseline (frozen-slot /
 > no-answer / vote-lag clocks) is **persisted every cycle and restored** across a monitor restart
 > (freshness-gated by `STATE_MAX_AGE_SECS=900`, continuity-gated on first-read evidence), so a
 > daemon restart mid-stall no longer disarms the fence; the startup wait loop keeps the watchdog
@@ -482,13 +484,13 @@ offer and M8's re-prompt-on-equal). Hand-edits: `systemctl restart solana-failov
 | `STANDBY_SELF_FENCE` | `true` | Master switch for the promoted-holder self-fence (the PRIMARY's port). `false` = pre-v0.6.9 "hold unfenced" (NOT recommended in 3-node mode). |
 | `SELF_FENCE_ISOLATION_SECS` / `SELF_FENCE_NOANSWER_SECS` / `SELF_FENCE_MAX_BEHIND` / `SELF_FENCE_VOTE_LAG_SLOTS` / `SELF_FENCE_VOTE_LAG_SECS` / `SELF_FENCE_VOTE_LAG_RESET_CYCLES` | `30/30/150/32/20/3` | Same signals, names and defaults as the PRIMARY's block — see **PRIMARY self-fence / "vote lease"** under *Compatibility & tuning notes*. LOCAL signals only; demote = give-back to this node's own unstaked key. Do **not** raise the `*_SECS` without raising the BACKUP's `EXPECTED_PRIMARY_SELF_FENCE_SECS` + `TAKEOVER_DELAY` in lock-step. |
 | `SETIDENTITY_TIMEOUT` | `15` | H4: bounds every take/give-back admin-socket call (≥ 8). Take timeout → fail toward NOT taking; give-back timeout → escalate. |
-| `SELF_FENCE_HARD_STOP` | `true` | A wedged give-back (identity did not flip) hard-stops the validator (stop → mask → SIGTERM → SIGKILL, verified + re-verified). Never fires on the take path or in DRY_RUN. |
+| `SELF_FENCE_HARD_STOP` | `true` | A wedged give-back (identity did not flip) hard-stops the validator (stop → SIGTERM → SIGKILL, verified + re-verified; the unit is not masked). Never fires on the take path or in DRY_RUN. |
 | `SELF_FENCE_RETAKE_COOLDOWN` | `600` | **Safety-critical.** After a self-fence demote, `attempt_takeover` refuses for this long (persisted across monitor restarts) — the fenced vote account looks delinquent *because we stopped voting it*; without the lockout the standby would take the identity right back. After expiry every normal gate must pass fresh. `0` disables (NOT recommended). |
 
 ### H2/H3/M5 — both daemons (`failover.env` + `failover-standby.env`)
 | Knob | Default | Meaning |
 |---|---|---|
-| `HARD_STOP_REVERIFY_SECS` | `15` | H2: re-verify the hard-stop after this delay (≥ the validator unit's `RestartSec`). A resurrected process = `HARD STOP FAILED` page. When `systemctl stop` failed, the unit is masked `--runtime` first — recovery: `systemctl unmask --runtime solana`. |
+| `HARD_STOP_REVERIFY_SECS` | `15` | H2: re-verify the hard-stop after this delay (≥ the validator unit's `RestartSec`). A resurrected process = `HARD STOP FAILED` page. The hard stop does not mask the unit (v0.6.9 did): it is a requested stop (`systemctl stop`; `--no-block` on a stopped or uninterruptible process), which `Restart=` does not undo, and this re-verify is the catch for anything such a request cannot promise. Recovery after a hard stop: `systemctl start solana`, which boots on the unstaked identity (see **Manual switch-back**). |
 | `STATE_MAX_AGE_SECS` | `900` | H3: restore the persisted self-fence baseline only from a save fresher than this (stale = discarded; fresh timers). |
 | `STARTUP_STAKED_UNREACHABLE_ALERT_SECS` | `60` | H3: persisted-STAKED + validator unreachable this long at monitor startup → 🚨 `… UNREACHABLE WHILE STAKED` (once per startup). |
 | `COLLISION_CHECK_INTERVAL` | `60` | M5: while STAKED, compare the external gossip endpoint of the staked pubkey vs our own; 2 consecutive mismatches → 🚨 `STAKED IDENTITY SEEN ELSEWHERE (possible collision)` (throttled). **Detection-only — never demotes** (loser-selection under a real collision is the operator's call; see *Emergency: Split-Brain*). |
@@ -893,16 +895,23 @@ agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-v
 Recovery is **operator-driven** — the scripts never auto-return the staked identity to
 PRIMARY (production runs `RECOVERY_MODE=manual`). Once the incident is resolved:
 
-> **v0.6.9 (H2) — after a masked hard-stop, unmask FIRST.** If the incident involved a wedged
-> demote and the self-fence hard-stopped the validator with `systemctl stop` failing, the unit was
-> **masked** (`systemctl mask --runtime`) so `Restart=always` could not resurrect it voting staked
-> (the ✅ page says `HARD STOP ✅ (unit masked)` and names the command). Before restarting that
-> validator:
+> **After a hard stop, the unit is simply stopped — start it on the UNSTAKED identity.** If the incident
+> involved a wedged demote or a hung holder and the self-fence hard-stopped the validator (the
+> `HARD STOP ✅` page says it is confirmed DOWN), the unit was stopped by a *requested* stop —
+> `systemctl stop`, or `systemctl stop --no-block` just before the SIGKILL when the primary's validator
+> process was stopped or in uninterruptible sleep — so `Restart=always` does not apply, and a v0.7 hard
+> stop masks nothing. Confirm that no other node holds the staked identity (it moves only by the warm
+> swap below; a vote-history file is never deleted), then:
 >
 > ```bash
-> systemctl unmask --runtime solana     # the mask is --runtime, so a reboot also clears it
 > systemctl start solana                # boots on the UNSTAKED startup identity (F2 invariant)
 > ```
+>
+> *History:* v0.6.9 masked the unit (`systemctl mask --runtime`) after a failed `systemctl stop`; v0.7 does
+> not: that mask is a link under `/run/systemd/system`, and a unit file under `/etc/systemd/system` takes
+> precedence over it (systemd.unit(5)), so for such a unit it did not keep `Restart=always` from restarting
+> the validator. A mask a v0.6.9 daemon left behind (its page said `HARD STOP ✅ (unit masked)`) is
+> `--runtime`: a reboot clears it, and `systemctl unmask --runtime solana` removes it.
 
 1. **Demote the old holder FIRST** (usually the STANDBY that holds the staked identity), then read the vote-history file's sha256 twice — equal both times means the file has stopped changing:
 
