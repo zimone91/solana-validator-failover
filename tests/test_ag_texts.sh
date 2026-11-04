@@ -26,6 +26,11 @@
 #   (8)  the fence's ledger (D0 F3, F4): the manual says to set LEDGER_PATH before 'failover arm', why, and that -l is not detected
 #   (9)  CONTROLS for (5)-(8): a wizard line back to the symlink advice, a hard-stop alert back to 'scp tower', the manual's voter/identity order broken, a
 #        promise put back in each of the files of (7), a banner line deleted
+#   (7+) rc1 F18 (the hard stop's mask): no shipped text claims that `mask --runtime` keeps Restart=always from resurrecting the validator - the v0.6.9 step was measured
+#        inert for a unit under /etc/systemd/system and is gone; the pages say `systemctl start <unit>` (success) and `systemctl stop <unit>` (resurrected), the comments
+#        and the documents say a REQUESTED STOP is what Restart= respects. The rows are A (old claim GONE) and P (new wording THERE) rows of the (7) table, over the daemons,
+#        the wizard, both templates, the manual, NOTIFICATIONS, SPLIT-BRAIN-RESIDUAL and SAFETY; each has a put-back control in (9). The FENCE units' own mask texts (fence rot,
+#        `unmask+start` after the Block-5 fence) are about a different unit and are not touched.
 # RED ON THE BASE (the AG-1.5 / AG-1.4 tree): no constant, preset 15, the wizard says ~150 slots (~60s), no text names its bound; AG-1.7: every old phrase is
 # still there and no new one is.
 #
@@ -358,6 +363,63 @@ safety|P|1|exit is not a guarantee when the forks diverge
 safety|P|1|systemd does not expand `$HOME` in an `EnvironmentFile=`
 safety|P|1|That line is in the monitor skeleton (AG-3.5)
 safety|A|0|That is unit work, not part of this release.
+primary|A|0|masked (--runtime) so Restart=always cannot resurrect it
+primary|A|0|unmask with: systemctl unmask --runtime
+primary|A|0|(unit masked)
+primary|A|0|is MASKED (--runtime)
+primary|A|0|systemctl mask --runtime ${VALIDATOR_SERVICE:-solana}; then stop it
+primary|A|0|goes straight to mask --runtime
+primary|A|0|then mask --runtime if that failed
+primary|A|0|straight to mask --runtime -> SIGKILL
+primary|A|0|systemctl stop, mask --runtime, SIGTERM/SIGKILL
+primary|A|0|stop 20 + mask 20
+primary|A|0|Node is down; recover manually (restart on the unstaked identity;
+primary|P|1|The unit is stopped by a requested stop (Restart= does not apply): recover with
+primary|P|1|INTERVENE NOW (systemctl stop
+primary|P|1|What protects a direct kill from Restart= is a REQUESTED STOP
+primary|P|1|systemctl stop [--no-block on a stopped or uninterruptible process], SIGTERM/SIGKILL, verify, re-verify
+primary|P|1|systemctl stop --no-block "${VALIDATOR_SERVICE:-solana}"
+standby|A|0|masked (--runtime) so Restart=always cannot resurrect it
+standby|A|0|unmask with: systemctl unmask --runtime
+standby|A|0|(unit masked)
+standby|A|0|is MASKED (--runtime)
+standby|A|0|systemctl mask --runtime ${VALIDATOR_SERVICE:-solana}; then stop it
+standby|A|0|systemctl stop → mask --runtime → SIGTERM → SIGKILL
+standby|A|0|the H2 mask + re-verify port
+standby|A|0|stop 20 + mask 20
+standby|P|1|The unit is stopped by a requested stop (Restart= does not apply): recover with
+standby|P|1|INTERVENE NOW (systemctl stop
+deploy_p|A|0|the unit is masked (--runtime
+deploy_p|A|0|systemctl unmask --runtime solana
+deploy_p|P|1|The unit is NOT
+templates|A|0|straight to mask --runtime
+templates|A|0|Recovery after a masked hard-stop
+templates|A|0|systemctl stop → mask --runtime → SIGTERM → SIGKILL
+templates|A|0|the unit is masked (--runtime
+templates|P|2|The unit is NOT masked
+manual|A|0|the unit is masked (`--runtime`) when
+manual|A|0|after a masked hard-stop
+manual|A|0|(stop → mask → SIGTERM → SIGKILL
+manual|A|0|masked `--runtime` first
+manual|A|0|HARD STOP ✅ (unit masked)` and names
+manual|P|1|After a hard stop, the unit is simply stopped
+manual|P|1|and the unit is not masked (v0.6.9 masked it; v0.7 does not
+notifications|A|0|(unit masked)
+notifications|A|0|masked-`--runtime`
+notifications|A|0|names `systemctl unmask --runtime <unit>`
+notifications|P|1|nothing is masked
+splitbrain|A|0|`systemctl mask --runtime` when the stop failed
+splitbrain|P|1|unit is not masked
+safety|A|0|with the mask at its
+safety|A|0|stop and the mask
+safety|A|0|a prompt mask
+safety|A|0|goes `mask --runtime`
+safety|A|0|`systemctl mask --runtime` (15 s
+safety|A|0|before the mask and the kill
+safety|A|0|until an operator unmasks the unit
+safety|P|1|asks systemd for the stop without waiting (`systemctl stop --no-block`
+safety|P|1|**Holds at prompt RPC I/O**
+safety|P|1|until an operator starts the unit
 sysd|P|1|unless it is armed (`AG_ARMED_TAKE=true`'
 claims_for() {   # claims_for <key> <file…> -> the claims that do not hold, empty = all hold
     local key="$1" k kind min ph n c f why=""; shift
@@ -434,7 +496,7 @@ ctl9() {   # ctl9 <label> <file> <sed expr> <checker…> - the checker prints so
 g5_probe() { cnt 'Anza' "$1" | grep -v '^0$'; }
 ctl9 g5-wizard-fail "$WIZ" 's/Fix it: the validator.s startup --identity is this node.s own UNSTAKED keypair, never re-pointed: every restart comes up unstaked\./Set the startup --identity to the UNSTAKED keypair (Anza identity.json symlink recommended)./' g5_probe
 g6_probe() { cnt 'scp tower' "$1" | grep -v '^0$'; }
-ctl9 g6-hardstop-scp-tower "$PRIMARY" 's/Node is down; recover manually (restart on the unstaked identity;/Node is down; recover manually (scp tower, restart on the unstaked identity;/' g6_probe
+ctl9 g6-hardstop-scp-tower "$PRIMARY" 's/The unit is stopped by a requested stop (Restart= does not apply): recover with /The unit is stopped by a requested stop (Restart= does not apply): scp tower, recover with /' g6_probe
 order_probe() { local o; o=$(order_of "$1"); [[ "$o" == "0/3" ]] || printf '%s' "$o"; }
 ctl9 g6-order "$MANUAL" 's/^   agave-validator --ledger \/root\/solana\/ledger authorized-voter add \/root\/solana\/mainnet-validator-keypair.json$/   agave-validator --ledger \/root\/solana\/ledger authorized-voter add \/root\/solana\/other-keypair.json/' order_probe
 cw() { claims_for wizard "$1"; }
@@ -511,6 +573,24 @@ ctl9 p-sysd-armed "$SYSD" 's/unless it is armed (`AG_ARMED_TAKE=true`: a cold ta
 ctl9 p-sysd-timer "$SYSD" 's/in Alpenglow mode the spare takes nothing/the spare takes on its timer path/' csd
 led_probe() { chk_text "$1" "Arming the fence \\(v0.7\\): set .LEDGER_PATH. explicitly" 5 "has no such detection" "falls to its stop path" "short form \`-l\`"; }
 ctl9 led-no-detection "$MANUAL" 's/but the fence (`failover-fence.sh`, run by the unit.s `OnFailure=`) has no such detection/but the fence (`failover-fence.sh`, run by the unit'"'"'s `OnFailure=`) reads it like the daemons/' led_probe
+# rc1 F18: the hard stop's mask - the old claim put back in each file turns its key red (the new wording missing, the old one there)
+cdp() { claims_for deploy_p "$1"; }
+ctl9 f18-primary-page "$PRIMARY" 's/The unit is stopped by a requested stop (Restart= does not apply): recover with /Unit is MASKED (--runtime): recover with /' cp_
+ctl9 f18-primary-resurrect "$PRIMARY" 's/INTERVENE NOW (systemctl stop \${VALIDATOR_SERVICE:-solana})\./INTERVENE NOW (systemctl mask --runtime ${VALIDATOR_SERVICE:-solana}; then stop it)./' cp_
+ctl9 f18-primary-dry "$PRIMARY" 's/systemctl stop \[--no-block on a stopped or uninterruptible process\], SIGTERM\/SIGKILL, verify, re-verify/systemctl stop, mask --runtime, SIGTERM\/SIGKILL, verify/' cp_
+ctl9 f18-primary-comment "$PRIMARY" 's/the ladder skips it, asks systemd for the stop without waiting/the ladder skips it and goes straight to mask --runtime, asks systemd for the stop without waiting/' cp_
+ctl9 f18-primary-h2 "$PRIMARY" 's/What protects a direct kill from Restart= is a REQUESTED STOP/What protects a direct kill from Restart= is the mask/' cp_
+ctl9 f18-primary-budget "$PRIMARY" 's/(stop 20 + kill-grace 3 + re-verify 15)/(stop 20 + mask 20 + kill-grace 3 + re-verify 15)/' cp_
+ctl9 f18-standby-page "$STANDBY" 's/The unit is stopped by a requested stop (Restart= does not apply): recover with /Unit is MASKED (--runtime): recover with /' cs
+ctl9 f18-standby-header "$STANDBY" 's/# validator (systemctl stop → SIGTERM → SIGKILL, verified + re-verified per H2) so the/# validator (systemctl stop → mask --runtime → SIGTERM → SIGKILL, verified + re-verified per H2) so the/' cs
+ctl9 f18-deploy-comment "$DEPLOY_P" 's/validator\. The unit is NOT$/validator. the unit is masked (--runtime/' cdp
+ctl9 f18-template-recovery "$ENV_P" 's/^# Recovery after a hard stop: /# Recovery after a masked hard-stop: /' cpt
+ctl9 f18-manual-callout "$MANUAL" 's/^> \*\*After a hard stop, the unit is simply stopped — start it on the UNSTAKED identity\.\*\*/> **v0.6.9 (H2) — after a masked hard-stop, unmask FIRST.**/' cm
+ctl9 f18-notif-title "$NOTIF" 's/^| `PRIMARY SELF-FENCE — HARD STOP ✅` | v0.6.8 (B1)/| `PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)` | v0.6.8 (B1)/' cn
+ctl9 f18-splitbrain "$SPLIT" 's/(`systemctl stop` → SIGTERM → SIGKILL; the$/(`systemctl stop` → `systemctl mask --runtime` when the stop failed → SIGTERM → SIGKILL; the/' cx
+ctl9 f18-safety-unmask "$SAFETY" 's/a downtime that lasts until an operator starts the unit/a downtime that lasts until an operator unmasks the unit/' cq
+ctl9 f18-safety-ladder "$SAFETY" 's/^ladder skips it, asks systemd for the stop without waiting (`systemctl stop --no-block`: a requested stop, so `Restart=` does not bring the unit back after the kill), notes the unit.s `ActiveState` in the log and goes SIGKILL/ladder skips it and goes `mask --runtime` → SIGKILL/' cq
+ctl9 f18-safety-normal "$SAFETY" 's/before the kill: 50 to 53 s/before the mask and the kill: 50 to 53 s/' cq
 [[ $c9_ok -eq 1 ]] && ok "(9) every put-back turns its case red:$c9_rows" || bad "(9) a control did not turn its case red"
 
 results_banner

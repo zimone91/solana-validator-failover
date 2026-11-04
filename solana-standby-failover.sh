@@ -198,11 +198,14 @@ SELF_FENCE_VOTE_LAG_RESET_CYCLES=3        # B2 hysteresis: consecutive healthy c
 # TAKE (spare promote) timeout, NEVER escalate — re-read what applied and fail toward NOT taking.
 SETIDENTITY_TIMEOUT=15
 # v0.6.9 (H1, B1 port): when a give-back (demote) wedges and the identity did not flip, hard-stop the
-# validator (systemctl stop → mask --runtime → SIGTERM → SIGKILL, verified + re-verified per H2) so the
+# validator (systemctl stop → SIGTERM → SIGKILL, verified + re-verified per H2) so the
 # staked identity provably stops voting. false = alert only (NOT recommended — leaves the gap open).
 SELF_FENCE_HARD_STOP=true
 # v0.6.9 (H2): re-verify the hard-stop after this many seconds (>= typical RestartSec) — a directly-
 # killed validator under Restart=always resurrects VOTING STAKED after the immediate verify passed.
+# (The v0.6.9 hard stop also masked the unit with `mask --runtime`; v0.7 rc1 F18 dropped that: a runtime mask is
+# shadowed by a unit file under /etc/systemd/system. The blocking `systemctl stop` is the REQUESTED STOP that
+# Restart= respects - see the primary's HARD_STOP_REVERIFY_SECS comment for the measurement.)
 HARD_STOP_REVERIFY_SECS=15
 # v0.6.9 (H1.3, safety-critical): post-self-fence RE-TAKE LOCKOUT. After a self-fence demote the staked
 # vote account WILL look delinquent+frozen (WE were the voter and we stopped) — every normal takeover
@@ -3571,7 +3574,7 @@ take_staked_identity() {
 # (bounded — get_local_identity carries its own timeout) to learn what actually applied:
 #   - already unstaked → the demote landed before the wedge; proceed as success + ⚠️ verify-health page;
 #   - still staked / unreadable → the holder may STILL BE VOTING → 🚨 page + escalate to the hard stop
-#     (H1/B1 discipline, gated by SELF_FENCE_HARD_STOP — the H2 mask + re-verify port).
+#     (H1/B1 discipline, gated by SELF_FENCE_HARD_STOP — the H2 re-verify port; no mask since v0.7 rc1 F18).
 # FAILURE DIRECTION: a holder demote fails toward STOPPING the validator (a stopped validator cannot
 # double-sign) — never toward silently staying staked.
 _giveback_wedged_escalate() {
@@ -3876,8 +3879,8 @@ _sd_notify() {
 #     carries its own per-op pet, so the ≈ 22 s max-gap claim below is unchanged.
 #   - Incident-path cycles COMPOUND bounds: a tiered confirm (curl -m 15 × 2 + -m 10), a
 #     demote/take ladder (2 × (SETIDENTITY_TIMEOUT 15 + kill-grace 5) = 40), a hard stop
-#     (stop 20 + mask 20 + kill-grace 3 + re-verify 15) and each page (Telegram -m 10 +
-#     webhook -m 10) stack past ~170 s of bound inside ONE cycle.
+#     (stop 20 + kill-grace 3 + re-verify 15) and each page (Telegram -m 10 +
+#     webhook -m 10) stack past ~150 s of bound inside ONE cycle.
 # Therefore, per the A3 rule (worst case ≫ 15 s): pets fire ADDITIONALLY after EVERY bounded
 # network/admin op (≥ 5 s bound — and, since the Block 6.3 fix round (M6), the standby's two
 # curl -m 3 LOCAL getSlot reads too: Tier-1's precedes a petted TIER2 read, and the unpetted pair
@@ -6437,7 +6440,7 @@ _fence_rot_check() {
 # _enforce_one_arm_state; test_fence_rot (10) baits both layers).
 _rot_graceful_demote() { give_back_identity "$1"; }
 
-# v0.6.9 (H1, B1+S4 port incl. the H2 mask + re-verify): the give-back admin-socket call wedged and
+# v0.6.9 (H1, B1+S4 port incl. the H2 re-verify; v0.7 rc1 F18 dropped the H2 mask): the give-back admin-socket call wedged and
 # the identity did not flip — the self-fence's contract is that the staked identity STOPS voting even
 # when set-identity cannot run, so escalate to a HARD STOP of the validator (the safe direction: a
 # dead validator cannot double-sign). Gated by SELF_FENCE_HARD_STOP. Never reached in DRY_RUN
@@ -6451,25 +6454,13 @@ _selffence_hard_stop() {
         return 1
     fi
     log_error "[self-fence] demote wedged ($why) — HARD-STOPPING the validator so the staked identity stops voting"
-    local sc_out sc_rc pid_found="" pid masked="" mask_out mask_rc
+    local sc_out sc_rc pid_found="" pid
     sc_out=$(timeout -k 5 15 systemctl stop "${VALIDATOR_SERVICE:-solana}" 2>&1); sc_rc=$?
     [[ -n "$sc_out" ]] && log_info "systemctl stop: $sc_out"
     _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
-    # v0.6.9 (H2): stop did NOT cleanly succeed → mask the unit (--runtime; a reboot clears it — fail
-    # toward recoverability) BEFORE the direct kill, so Restart=always cannot resurrect it voting
-    # staked after the immediate verify. A failed mask never skips the kill (the delayed re-verify
-    # catches a resurrect either way). FAILURE DIRECTION: extra stopping power only.
-    if [[ $sc_rc -ne 0 ]]; then
-        mask_out=$(timeout -k 5 15 systemctl mask --runtime "${VALIDATOR_SERVICE:-solana}" 2>&1); mask_rc=$?
-        [[ -n "$mask_out" ]] && log_info "systemctl mask --runtime: $mask_out"
-        _watchdog_pet   # §5 per-op pet (Block 5.2): bounded op completed — no-op outside the armed unit
-        if [[ $mask_rc -eq 0 ]]; then
-            masked=1
-            log_warn "[self-fence] unit ${VALIDATOR_SERVICE:-solana} masked (--runtime) so Restart=always cannot resurrect it; unmask with: systemctl unmask --runtime ${VALIDATOR_SERVICE:-solana}"
-        else
-            log_warn "[self-fence] systemctl mask --runtime failed (rc $mask_rc) — continuing with the kill path; the delayed re-verify below will catch a Restart=always resurrect"
-        fi
-    fi
+    # v0.6.9 (H2) masked the unit here when the stop had failed; v0.7 (rc1 F18) does not: a runtime mask is shadowed by a unit file under
+    # /etc/systemd/system and protected nothing. The blocking stop above is the REQUESTED STOP Restart= respects (its timeout leaves the stop job
+    # queued); the re-verify below is the catch.
     # Fallback (non-systemd / stuck unit): SIGTERM the validator PID, then SIGKILL if it ignores it.
     pid=$(_validator_pid)
     if [[ -n "$pid" ]]; then
@@ -6498,15 +6489,11 @@ _selffence_hard_stop() {
     pid=$(_validator_pid)
     if [[ -n "$pid" ]]; then
         log_error "[self-fence] HARD STOP FAILED — validator RESURRECTED (pid $pid) within ${HARD_STOP_REVERIFY_SECS:-15}s (Restart=always); keeping the fence armed to retry"
-        alert "Hard-stop FAILED ($why) — the validator was stopped but RESURRECTED (pid $pid, Restart=always) within ${HARD_STOP_REVERIFY_SECS:-15}s; it may be voting staked again. INTERVENE NOW (systemctl mask --runtime ${VALIDATOR_SERVICE:-solana}; then stop it)." "$STAKED_PUBKEY" "STANDBY SELF-FENCE — HARD STOP FAILED 🚨"
+        alert "Hard-stop FAILED ($why) — the validator was stopped but RESURRECTED (pid $pid, Restart=always) within ${HARD_STOP_REVERIFY_SECS:-15}s; it may be voting staked again. INTERVENE NOW (systemctl stop ${VALIDATOR_SERVICE:-solana})." "$STAKED_PUBKEY" "STANDBY SELF-FENCE — HARD STOP FAILED 🚨"
         return 1
     fi
-    # v0.6.9 (H2): the ✅ page names the mask state + the exact unmask command for recovery.
-    if [[ -n "$masked" ]]; then
-        alert "Give-back wedged ($why); HARD-STOPPED the validator — confirmed DOWN (re-verified after ${HARD_STOP_REVERIFY_SECS:-15}s). Unit ${VALIDATOR_SERVICE:-solana} is MASKED (--runtime): recover with 'systemctl unmask --runtime ${VALIDATOR_SERVICE:-solana}' before restarting (restart on the unstaked identity, confirm a remaining spare took over)." "$STAKED_PUBKEY" "STANDBY SELF-FENCE — HARD STOP ✅ (unit masked)"
-    else
-        alert "Give-back wedged ($why); HARD-STOPPED the validator — confirmed DOWN (re-verified after ${HARD_STOP_REVERIFY_SECS:-15}s). Node is down; recover manually (restart on the unstaked identity, confirm a remaining spare took over)." "$STAKED_PUBKEY" "STANDBY SELF-FENCE — HARD STOP ✅"
-    fi
+    # v0.7 (rc1 F18): one ✅ page. The unit was stopped by a requested stop, so Restart= does not apply; the recovery is a start (on the unstaked identity).
+    alert "Give-back wedged ($why); HARD-STOPPED the validator — confirmed DOWN (re-verified after ${HARD_STOP_REVERIFY_SECS:-15}s). The unit is stopped by a requested stop (Restart= does not apply): recover with 'systemctl start ${VALIDATOR_SERVICE:-solana}' on the UNSTAKED identity (confirm a remaining spare took over)." "$STAKED_PUBKEY" "STANDBY SELF-FENCE — HARD STOP ✅"
     return 0
 }
 

@@ -26,9 +26,10 @@
 #            4, the delta panel 3's TS3-D6-KBOUND; a call with no -k never returns); STOPHANG=1 the `systemctl stop` client
 #            times out (STOPK=1: at its bound + its -k) and
 #            the validator ignores SIGTERM (the daemon's own SIGKILL stops it) unless TERMOK=1 (PID 1 slow, the validator
-#            honouring the daemon's SIGTERM); STOPSECS: how long a prompt `systemctl stop` takes. Fix round 2 (S4 — the
-#            delta panel's CK-1): MASKHANG=1 the `systemctl mask --runtime` the hard stop runs after a FAILED stop (and
-#            before the kill) times out at its 15 s bound (MASKK=1: + its -k), MASKSECS: how long a prompt one takes;
+#            honouring the daemon's SIGTERM); STOPSECS: how long a prompt `systemctl stop` takes. (Fix round 2 (S4 — the delta
+#            panel's CK-1) modelled the `systemctl mask --runtime` the v0.6.9 hard stop ran after a FAILED stop, MASKHANG / MASKK /
+#            MASKSECS: removed at v0.7 rc1 F18 with the step itself - measured inert for a unit under /etc/systemd/system - and
+#            every row that carried the mask bound moved down by it: -15 s for a mask at its plain bound, -20 s at its -k bound);
 #            the other wedge order — RASECS=<s> remove-all ANSWERS after <s> s (RASECS=max: at SETIDENTITY_TIMEOUT − 1 from the
 #            seam, the admin latency SLOWADMIN included — fix round 4), then SIWEDGE=1 the set-identity to unstaked hangs to
 #            its SETIDENTITY_TIMEOUT (SIWEDGEK=1: + its -k)
@@ -49,7 +50,7 @@
 #       column's own two I/O mixes and with the admin socket's latency alone — the latest over the MEASURED mixes, not a
 #       maximum over every mix): trigger + the demote (remove-all to
 #       SETIDENTITY_TIMEOUT (+ its -k 5), or remove-all answering and then the set-identity to unstaked to its bound
-#       (+ 5)) + the systemctl stop bound (+ 5) + after a failed stop the `systemctl mask --runtime` bound (+ 5) + 2 s,
+#       (+ 5)) + the systemctl stop bound (+ 5) + 2 s (v0.7 rc1 F18: the v0.6.9 `systemctl mask --runtime` bound that sat before the 2 s is gone),
 #       at SETIDENTITY_TIMEOUT = 15 (the default; the daemon only lower-bounds it, at 8); its slow-I/O forms phase-swept
 #   (d) the WORST-CASE I/O column (F4): CHECK_INTERVAL 3, the tiers at their -m bounds, the admin socket at 7 s, every
 #       LOCAL read at 4 s — every row phase-swept
@@ -155,18 +156,13 @@ $region
                     _adv "$bound"; echo "wedge t=$(_t) set-identity timed out" >> "$EV"; return 124
                 fi
                 [[ -n "${SLOWADMIN:-}" ]] && _adv "$SLOWADMIN"; echo "FENCE t=$(_t) kind=demote" >> "$EV"; echo U1 > "$IDF"; return 0 ;;
+            *"systemctl stop --no-block"*) return 0 ;;   # v0.7 rc1 F18: the fast branch's stop request (state T / D only - this world's process has no /proc state, so the normal ladder runs); it returns at once
             *"systemctl stop"*)
                 if [[ "${STOPHANG:-0}" == "1" ]]; then
                     if [[ "${STOPK:-0}" == "1" ]]; then _tkill "stophang systemctl stop client"; return 137; fi
                     _adv "$bound"; echo "stophang t=$(_t) systemctl stop client timed out" >> "$EV"; return 124
                 fi
                 _adv "${STOPSECS:-0}"; echo "FENCE t=$(_t) kind=hardstop" >> "$EV"; : > "$W/stopped"; return 0 ;;
-            *"systemctl mask"*)   # fix round 2 (S4 — CK-1): the hard stop masks the unit after a failed stop, BEFORE the kill
-                if [[ "${MASKHANG:-0}" == "1" ]]; then
-                    if [[ "${MASKK:-0}" == "1" ]]; then _tkill "maskhang systemctl mask"; return 137; fi
-                    _adv "$bound"; echo "maskhang t=$(_t) systemctl mask timed out" >> "$EV"; return 124
-                fi
-                _adv "${MASKSECS:-0}"; return 0 ;;
         esac
         "$@"
     }
@@ -387,19 +383,17 @@ for ci in 3 5; do
         hlaunch "w_${ci}_$k"     MODE=frozen CKI=$ci WEDGE=1 INST=$st:-1 HORIZON=200
         hlaunch "wk_${ci}_$k"    MODE=frozen CKI=$ci WEDGE=1 WEDGEK=1 INST=$st:-1 HORIZON=200
         hlaunch "wkh_${ci}_$k"   MODE=frozen CKI=$ci WEDGE=1 WEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
-        # fix round 2 (S4 — the delta panel's CK-1): the hard stop's `systemctl mask --runtime` (after the failed stop,
-        # before the kill) and the other wedge order (remove-all answers, the set-identity to unstaked hangs)
-        hlaunch "wm0_${ci}_$k"   MODE=frozen CKI=$ci WEDGE=1 STOPHANG=1 MASKHANG=1 INST=$st:-1 HORIZON=200
-        hlaunch "wkhm_${ci}_$k"  MODE=frozen CKI=$ci WEDGE=1 WEDGEK=1 STOPHANG=1 MASKHANG=1 INST=$st:-1 HORIZON=200
-        hlaunch "wkhmk_${ci}_$k" MODE=frozen CKI=$ci WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 INST=$st:-1 HORIZON=200
-        hlaunch "wp_${ci}_$k"    MODE=frozen CKI=$ci WEDGE=1 STOPHANG=1 MASKHANG=1 TERMOK=1 INST=$st:-1 HORIZON=200
+        # fix round 2 (S4 — the delta panel's CK-1): the stop client and remove-all at their plain bounds, every op at its -k bound, PID 1 slow;
+        # (rc1 F18: the v0.6.9 mask rows - wm0 / wkhm / s7m - are gone with the mask) and the other wedge order (remove-all answers, the set-identity to unstaked hangs)
+        hlaunch "wh_${ci}_$k"    MODE=frozen CKI=$ci WEDGE=1 STOPHANG=1 INST=$st:-1 HORIZON=200
+        hlaunch "wkhk_${ci}_$k"  MODE=frozen CKI=$ci WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 INST=$st:-1 HORIZON=200
+        hlaunch "wp_${ci}_$k"    MODE=frozen CKI=$ci WEDGE=1 STOPHANG=1 TERMOK=1 INST=$st:-1 HORIZON=200
         hlaunch "s7_${ci}_$k"    MODE=frozen CKI=$ci RASECS=7 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
         hlaunch "s14_${ci}_$k"   MODE=frozen CKI=$ci RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 INST=$st:-1 HORIZON=200
-        hlaunch "s7m_${ci}_$k"   MODE=frozen CKI=$ci RASECS=7 SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 MASKHANG=1 INST=$st:-1 HORIZON=200
-        # fix round 3 (U4 — the delta panel 2's CKB-1): the other order with the stop and the mask at their -k bounds too,
+        # fix round 3 (U4 — the delta panel 2's CKB-1): the other order with the stop at its -k bound too,
         # remove-all answering after 14 s (SETIDENTITY_TIMEOUT − 1 — the latest answer on this integer clock; RASECS=max since
         # fix round 4 derives it from the seam's SETIDENTITY_TIMEOUT)
-        hlaunch "s14k_${ci}_$k"  MODE=frozen CKI=$ci RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 INST=$st:-1 HORIZON=200
+        hlaunch "s14k_${ci}_$k"  MODE=frozen CKI=$ci RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 INST=$st:-1 HORIZON=200
     done
 done
 # the phase-swept (c) rows (T1-D6 — the tiers at their bounds, then every LOCAL read at 4 s): worst / best offsets
@@ -407,25 +401,23 @@ for ci in 3 5; do
     case $ci in 3) wT=113; bT=135; wL=138; bL=134 ;; 5) wT=111; bT=105; wL=111; bL=134 ;; esac
     phlaunch wkhT    $ci $wT $bT "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 TMODE=hang HORIZON=200
     phlaunch wkhTL   $ci $wL $bL "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 TMODE=hang SLOWLOCAL=4 HORIZON=260
-    phlaunch wkhmT   $ci $wT $bT "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 MASKHANG=1 TMODE=hang HORIZON=260
-    phlaunch wkhmTL  $ci $wL $bL "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 MASKHANG=1 TMODE=hang SLOWLOCAL=4 HORIZON=260
-    phlaunch wkhmkT  $ci $wT $bT "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang HORIZON=260
-    phlaunch wkhmkTL $ci $wL $bL "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWLOCAL=4 HORIZON=300
+    phlaunch wkhkT   $ci $wT $bT "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 TMODE=hang HORIZON=260
+    phlaunch wkhkTL  $ci $wL $bL "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 TMODE=hang SLOWLOCAL=4 HORIZON=300
     # fix round 3 (U4 — CKB-1): the other wedge order with every op at its -k bound, in the same two slow-I/O forms (its
-    # worst / best offsets are c4mk's / c5mk's: every value is theirs + 14 s — D6_SWEEP=full, fix round 3)
-    phlaunch s14kT   $ci $wT $bT "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang HORIZON=260
-    phlaunch s14kTL  $ci $wL $bL "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWLOCAL=4 HORIZON=300
+    # worst / best offsets are c4k's / c5k's: every value is theirs + 14 s — D6_SWEEP=full, fix round 3; the offsets did not move with the mask's removal: it sat after the decision, a constant)
+    phlaunch s14kT   $ci $wT $bT "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 TMODE=hang HORIZON=260
+    phlaunch s14kTL  $ci $wL $bL "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 TMODE=hang SLOWLOCAL=4 HORIZON=300
     # fix round 4 (G2 — the delta panel 3's CC3-2): both wedge orders with every op at its -k bound, composed with the worst-case
     # column's OWN I/O mixes and with the admin socket's latency alone; worst / best offsets from D6_SWEEP=full (fix round 4)
     case $ci in 3) wD=113; bD=112; wB=113; bB=112; wA=100; bA=102 ;; 5) wD=111; bD=110; wB=111; bB=135; wA=101; bA=100 ;; esac
-    phlaunch wkhmkA  $ci $wA $bA "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 SLOWADMIN=7 HORIZON=260
-    phlaunch s14kA   $ci $wA $bA "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 SLOWADMIN=7 HORIZON=260
-    phlaunch wkhmkTb $ci $wB $bB "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWLOCAL=b HORIZON=320
-    phlaunch s14kTb  $ci $wB $bB "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWLOCAL=b HORIZON=320
-    phlaunch wkhmkD  $ci $wD $bD "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=4 HORIZON=320
-    phlaunch s14kD   $ci $wD $bD "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=4 HORIZON=320
-    phlaunch wkhmkDb $ci $wD $bD "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=b HORIZON=320
-    phlaunch s14kDb  $ci $wD $bD "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 MASKHANG=1 MASKK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=b HORIZON=320
+    phlaunch wkhkA   $ci $wA $bA "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 SLOWADMIN=7 HORIZON=260
+    phlaunch s14kA   $ci $wA $bA "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 SLOWADMIN=7 HORIZON=260
+    phlaunch wkhkTb  $ci $wB $bB "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 TMODE=hang SLOWLOCAL=b HORIZON=320
+    phlaunch s14kTb  $ci $wB $bB "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 TMODE=hang SLOWLOCAL=b HORIZON=320
+    phlaunch wkhkD   $ci $wD $bD "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=4 HORIZON=320
+    phlaunch s14kD   $ci $wD $bD "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=4 HORIZON=320
+    phlaunch wkhkDb  $ci $wD $bD "@:-1" MODE=frozen WEDGE=1 WEDGEK=1 STOPHANG=1 STOPK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=b HORIZON=320
+    phlaunch s14kDb  $ci $wD $bD "@:-1" MODE=frozen RASECS=max SIWEDGE=1 SIWEDGEK=1 STOPHANG=1 STOPK=1 TMODE=hang SLOWADMIN=7 SLOWLOCAL=b HORIZON=320
 done
 # (d) — every row phase-swept (T1-D6; before fix round 2: 8 offsets 10 s apart, which missed the worst of four of the seven
 # rows — frozen, dead-refusing, dead-at-bound, tiers-only; garbage and both N6 rows already had theirs: the delta panel 2's CKB-7)
@@ -500,43 +492,42 @@ row b8 "(1)'s restart member: a second restart 1 or 4 cycles into the first rest
 # ── (c) the wedged demote → hard stop (F3; fix round 2 S4 — the delta panel's CK-1) ─────────────────────
 echo ""; echo "─── (c) F3/CK-1: the wedged demote → the hard stop, every daemon term; CHECK_INTERVAL 3 / 5 over every phase ───"
 # The stop lands at: trigger + the demote (remove-all to SETIDENTITY_TIMEOUT, + its -k 5; or remove-all ANSWERING after
-# r s and then the set-identity to unstaked to SETIDENTITY_TIMEOUT, + 5) + `systemctl stop` (15 s, + 5) + — only after a
-# FAILED stop — `systemctl mask --runtime` (15 s, + 5) + SIGTERM, 2 s, SIGKILL. SETIDENTITY_TIMEOUT = 15 (the default;
+# r s and then the set-identity to unstaked to SETIDENTITY_TIMEOUT, + 5) + `systemctl stop` (15 s, + 5) + SIGTERM, 2 s, SIGKILL.
+# (v0.7 rc1 F18: the v0.6.9 hard stop ran `systemctl mask --runtime` (15 s, + 5) between the failed stop and the SIGTERM; the step is gone - it was
+# measured inert for a unit under /etc/systemd/system - so every row that carried the mask bound is 15 s earlier (the mask at its plain bound) or
+# 20 s earlier (at its -k bound), and the rows that existed only to vary the mask - wm0, wkhm, s7m, c4m, c5m - are gone or are the rows
+# they now equal.) SETIDENTITY_TIMEOUT = 15 (the default;
 # the daemon lower-bounds it at 8 and sets no upper bound — a larger value moves every fixed-r cell below by the
 # difference, and the other order's LATEST (r up to SETIDENTITY_TIMEOUT − 1) by TWICE the difference: the timeout
 # bounds both r and the set-identity after it — the delta panel 2's CKB-1). Its maximum at the default, every op at
-# its -k bound: trigger + 14 + 20 + 20 + 20 + 2 = 76 s after the trigger (c3h), 14 s later than the first order's (c3c).
+# its -k bound: trigger + 14 + 20 + 20 + 2 = 56 s after the trigger (c3h), 14 s later than the first order's (c3c).
 g35() { printf '%s / %s' "$(span "${1}_3_" 3)" "$(span "${1}_5_" 5)"; }
 g35p() { printf '%s / %s' "$(spanp "$1" 3)" "$(spanp "$1" 5)"; }   # a phase-swept row
 row c1 "remove-all at its 15 s bound, a prompt systemctl stop" "45-47 / 45-49" "$(g35 w)" 49
 row c2 "… and the CLI needs its -k 5 (bound + 5)" "50-52 / 50-54" "$(g35 wk)" 54
-row c3 "… and the systemctl stop client times out (15 s) with the validator ignoring SIGTERM (the daemon's SIGKILL, + 2 s) — a PROMPT mask" "67-69 / 67-71" "$(g35 wkh)" 71
-row c3a "remove-all at its plain 15 s bound, the stop client AND the mask each at their 15 s bounds, SIGTERM ignored" "77-79 / 77-81" "$(g35 wm0)" 81
-row c3b "c3 with the mask at its 15 s bound (fix round 1's row modelled the mask instant)" "82-84 / 82-86" "$(g35 wkhm)" 86
-row c3c "every op at its -k bound (remove-all, stop, mask: each 15 + 5 s), SIGTERM ignored" "92-94 / 92-96" "$(g35 wkhmk)" 96
-row c3d "PID 1 slow: the stop and the mask each at their 15 s bounds, the validator HONOURING the daemon's SIGTERM (remove-all at its plain bound)" "75-77 / 75-79" "$(g35 wp)" 79
-row c3e "the OTHER wedge order: remove-all ANSWERS in 7 s (the worst-case column's admin latency), then the set-identity to unstaked hangs to its bound + 5; the stop client times out, SIGTERM ignored, a prompt mask" "74-76 / 74-78" "$(g35 s7)" 78
+row c3 "… and the systemctl stop client times out (15 s) with the validator ignoring SIGTERM (the daemon's SIGKILL, + 2 s)" "67-69 / 67-71" "$(g35 wkh)" 71
+row c3a "remove-all at its plain 15 s bound, the stop client at its 15 s bound, SIGTERM ignored" "62-64 / 62-66" "$(g35 wh)" 66
+row c3c "every op at its -k bound (remove-all, stop: each 15 + 5 s), SIGTERM ignored" "72-74 / 72-76" "$(g35 wkhk)" 76
+row c3d "PID 1 slow: the stop at its 15 s bound, the validator HONOURING the daemon's SIGTERM (remove-all at its plain bound)" "60-62 / 60-64" "$(g35 wp)" 64
+row c3e "the OTHER wedge order: remove-all ANSWERS in 7 s (the worst-case column's admin latency), then the set-identity to unstaked hangs to its bound + 5; the stop client times out, SIGTERM ignored" "74-76 / 74-78" "$(g35 s7)" 78
 row c3f "… remove-all answering in 14 s" "81-83 / 81-85" "$(g35 s14)" 85
-row c3g "… remove-all in 7 s and the mask at its 15 s bound" "89-91 / 89-93" "$(g35 s7m)" 93
-row c3h "the other wedge order with EVERY op at its -k bound: remove-all answering in 14 s (SETIDENTITY_TIMEOUT − 1), the set-identity, the stop and the mask each at 15 + 5 s, SIGTERM ignored — the row's latest at prompt RPC I/O with a prompt admin socket (c3j: the admin socket at 7 s) (fix round 3, the delta panel 2's CKB-1)" "106-108 / 106-110" "$(g35 s14k)" 110
+row c3h "the other wedge order with EVERY op at its -k bound: remove-all answering in 14 s (SETIDENTITY_TIMEOUT − 1), the set-identity and the stop each at 15 + 5 s, SIGTERM ignored — the row's latest at prompt RPC I/O with a prompt admin socket (c3j: the admin socket at 7 s) (fix round 3, the delta panel 2's CKB-1)" "86-88 / 86-90" "$(g35 s14k)" 90
 row c4 "c3 + the tiers at their -m bounds (the collision check's reads; phase-swept — at the read phases only: 70-72 / 68-72)" "67-89 / 67-91" "$(g35p wkhT)" 91
-row c4m "c4 + the mask at its bound" "82-104 / 82-106" "$(g35p wkhmT)" 106
-row c4mk "c4 with every op at its -k bound" "92-114 / 92-116" "$(g35p wkhmkT)" 116
+row c4k "c4 with every op at its -k bound" "72-94 / 72-96" "$(g35p wkhkT)" 96
 row c5 "c4 + every LOCAL read at 4 s (phase-swept — at the read phases only: 85-87 / 87-91)" "80-106 / 84-135" "$(g35p wkhTL)" 135
-row c5m "c5 + the mask at its bound" "95-121 / 99-150" "$(g35p wkhmTL)" 150
-row c5mk "c5 with every op at its -k bound" "105-131 / 109-160" "$(g35p wkhmkTL)" 160
-row c4h "c3h + the tiers at their -m bounds (phase-swept)" "106-128 / 106-130" "$(g35p s14kT)" 130
-row c5h "c3h + the tiers at their bounds + every LOCAL read at 4 s (phase-swept)" "119-145 / 123-174" "$(g35p s14kTL)" 174
-# fix round 4 (G2 — the delta panel 3's CC3-2): the row composed with the admin socket at 7 s alone and with the worst-case column's own
-# I/O mixes, (d) and (d′) — both orders with every op at its -k bound, phase-swept; the latest over the measured mixes is c6h's 195 s:
-row c3i "c3c with ONLY the admin socket at 7 s (the tiers and every LOCAL read prompt)" "92-101 / 98-109" "$(g35p wkhmkA)" 109
-row c3j "c3h with ONLY the admin socket at 7 s (remove-all answering in 14 s, its 7 s latency included)" "106-115 / 112-123" "$(g35p s14kA)" 123
-row c5b "c4mk + every LOCAL read 1 s inside its own -m bound (a prompt admin socket)" "98-169 / 97-175" "$(g35p wkhmkTb)" 175
-row c5bh "c4h + every LOCAL read 1 s inside its own -m bound (a prompt admin socket)" "112-183 / 111-189" "$(g35p s14kTb)" 189
-row c6 "the (d) mix — the tiers at their bounds, the admin socket at 7 s, every LOCAL read at 4 s — with c3c's ops" "100-175 / 102-181" "$(g35p wkhmkD)" 181
-row c6h "the (d) mix with c3h's ops (remove-all answering in 14 s, its 7 s admin latency included) — the row's latest over the measured mixes" "114-189 / 116-195" "$(g35p s14kD)" 195
-row "c6′" "the (d′) mix — the tiers at their bounds, the admin socket at 7 s, every LOCAL read 1 s inside its own -m bound — with c3c's ops" "105-135 / 107-139" "$(g35p wkhmkDb)" 139
-row "c6′h" "the (d′) mix with c3h's ops" "119-149 / 121-153" "$(g35p s14kDb)" 153
+row c5k "c5 with every op at its -k bound" "85-111 / 89-140" "$(g35p wkhkTL)" 140
+row c4h "c3h + the tiers at their -m bounds (phase-swept)" "86-108 / 86-110" "$(g35p s14kT)" 110
+row c5h "c3h + the tiers at their bounds + every LOCAL read at 4 s (phase-swept)" "99-125 / 103-154" "$(g35p s14kTL)" 154
+# fix round 4 (G2 — the delta panel 3's CC3-2): the row composed with the admin socket at 7 s alone and with the worst-case
+# column's own I/O mixes, (d) and (d′) — both orders with every op at its -k bound, phase-swept; the latest over the measured mixes is c6h's 175 s:
+row c3i "c3c with ONLY the admin socket at 7 s (the tiers and every LOCAL read prompt)" "72-81 / 78-89" "$(g35p wkhkA)" 89
+row c3j "c3h with ONLY the admin socket at 7 s (remove-all answering in 14 s, its 7 s latency included)" "86-95 / 92-103" "$(g35p s14kA)" 103
+row c5b "c4k + every LOCAL read 1 s inside its own -m bound (a prompt admin socket)" "78-149 / 77-155" "$(g35p wkhkTb)" 155
+row c5bh "c4h + every LOCAL read 1 s inside its own -m bound (a prompt admin socket)" "92-163 / 91-169" "$(g35p s14kTb)" 169
+row c6 "the (d) mix — the tiers at their bounds, the admin socket at 7 s, every LOCAL read at 4 s — with c3c's ops" "80-155 / 82-161" "$(g35p wkhkD)" 161
+row c6h "the (d) mix with c3h's ops (remove-all answering in 14 s, its 7 s admin latency included) — the row's latest over the measured mixes" "94-169 / 96-175" "$(g35p s14kD)" 175
+row "c6′" "the (d′) mix — the tiers at their bounds, the admin socket at 7 s, every LOCAL read 1 s inside its own -m bound — with c3c's ops" "85-115 / 87-119" "$(g35p wkhkDb)" 119
+row "c6′h" "the (d′) mix with c3h's ops" "99-129 / 101-133" "$(g35p s14kDb)" 133
 
 # ── (d) the worst-case I/O column (F4; fix round 2 S4 — T1-D6: every row phase-swept) ──────────────────
 echo ""; echo "─── (d) F4: the worst-case I/O column — CHECK_INTERVAL 3, the tiers at their bounds, the admin socket at 7 s, LOCAL reads at 4 s, over the collision check's 60 s phase ───"

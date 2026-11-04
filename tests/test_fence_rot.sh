@@ -789,8 +789,10 @@ echo ""; echo "─── (13) allowlist census: every systemctl line is a string
 # EXECUTES). Unbalanced quotes err toward KEEPING a line: the census fails CLOSED. The
 # remainder must equal the enumerated site list EXACTLY:
 #   1 in-block bounded read FUNNEL (timeout -k 2 5 systemctl "$@") — the ONE sweep read path;
-#   2 hard-stop ACTUATORS (`timeout -k 5 15 systemctl stop|mask --runtime`, the H2 path —
-#     mutations, not property reads; they do not belong in the sweep);
+#   hard-stop ACTUATORS (`timeout -k 5 15 systemctl stop ...` - mutations, not property reads; they do not
+#     belong in the sweep): the PRIMARY has 2 (the ladder's blocking stop and, since the v0.7 rc1 F18, the fast
+#     branch's `stop --no-block`), the STANDBY 1 (the blocking stop). The v0.6.9 H2 `mask --runtime` actuator is
+#     gone from both (measured inert for a unit under /etc/systemd/system: the F18 commit message);
 #   1 startup-path fallback READ, get_validator_args's
 #     `timeout -k 2 5 systemctl show ${VALIDATOR_SERVICE} -p ExecStart` — pre-existing, cached,
 #     reached only when /proc/<pid>/cmdline is unreadable; NOT absorbed into the sweep (it reads
@@ -824,12 +826,14 @@ for script in "$PRIMARY" "$STANDBY"; do
     # Both are `timeout 5 systemctl show -p <property> --value "${VALIDATOR_SERVICE...}"`. B7.1: the STANDBY carries the first of them too - its _validator_pid has the primary's body (the
     # unit's MainPID first, for the same reason: its hard stop kills what the function returns) - and not the second (_hung_unit_busy is the holder's rung): 5 lines, 1 in the family.
     pro_show=$(printf '%s\n' "$inv" | grep -cE 'timeout 5 systemctl show -p (MainPID|ActiveState) --value "\$\{VALIDATOR_SERVICE')
-    want_n=5; want_pro=1; pro_txt=" + the standby's 1 B7.1 read-only show (MainPID)"
-    [[ "$name" == "solana-primary-failover.sh" ]] && { want_n=6; want_pro=2; pro_txt=" + the primary's 2 AG-3.8 read-only shows (MainPID, ActiveState)"; }
-    if [[ "$n_inv" == "$want_n" && "$pro_show" == "$want_pro" && "$funnel" == "1" && "$hard" == "2" && "$known_show" == "1" && "$bounded_show" == "1" ]]; then
-        ok "(13) $name: allowlist census EXACT — $want_n systemctl-bearing invocation lines = the in-block funnel + 2 hard-stop actuators + 1 startup ExecStart read (BOUNDED since the 5.4 GO condition — the spelling is asserted, a bare revert goes red)$pro_txt; every other systemctl line is a pure string mention"
+    # rc1 F18: the v0.6.9 `mask --runtime` actuator is gone from both daemons; the primary's fast branch gained `systemctl stop --no-block` (a second actuator) and one more bounded read-only
+    # `timeout 5 systemctl show -p ActiveState --value` (the state of the unit after that request) - the same spelling as the hung rung's busy check.
+    want_n=4; want_pro=1; want_hard=1; hard_txt="1 hard-stop actuator (the ladder's blocking stop)"; pro_txt=" + the standby's 1 B7.1 read-only show (MainPID)"
+    [[ "$name" == "solana-primary-failover.sh" ]] && { want_n=7; want_pro=3; want_hard=2; hard_txt="2 hard-stop actuators (the blocking stop and the fast branch's --no-block stop request)"; pro_txt=" + the primary's 3 read-only shows (MainPID; ActiveState for the hung rung's busy check; ActiveState after the F18 stop request)"; }
+    if [[ "$n_inv" == "$want_n" && "$pro_show" == "$want_pro" && "$funnel" == "1" && "$hard" == "$want_hard" && "$known_show" == "1" && "$bounded_show" == "1" ]]; then
+        ok "(13) $name: allowlist census EXACT — $want_n systemctl-bearing invocation lines = the in-block funnel + $hard_txt + 1 startup ExecStart read (BOUNDED since the 5.4 GO condition — the spelling is asserted, a bare revert goes red)$pro_txt; no mask actuator (rc1 F18); every other systemctl line is a pure string mention"
     else
-        bad "(13) $name: systemctl census moved (total=$n_inv want=$want_n pro_show=$pro_show want=$want_pro funnel=$funnel hard=$hard known_show=$known_show bounded_show=$bounded_show) — REVIEW: $(printf '%s\n' "$inv" | head -5 | tr '\n' ' ')"
+        bad "(13) $name: systemctl census moved (total=$n_inv want=$want_n pro_show=$pro_show want=$want_pro funnel=$funnel hard=$hard want=$want_hard known_show=$known_show bounded_show=$bounded_show) — REVIEW: $(printf '%s\n' "$inv" | head -5 | tr '\n' ' ')"
     fi
 done
 

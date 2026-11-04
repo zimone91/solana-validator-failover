@@ -353,10 +353,10 @@ if p_hung_stop "$ev13" && [[ "$t13" == *"the identity has been unreadable for 33
 else
     bad "(13) hung holder: hardstops=$(hs_n "$ev13") pages=$(n_of "$ev13" '^PAGE HOLDER HUNG') wpages=$(wp_n "$ev13") samples=$(n_of "$ev13" '^SAMPLE') :: $(printf '%s' "$ev13" | grep -E '^(HARDSTOP|PAGE|WPAGE|TXT)' | tr '\n' ';' | cut -c1-300)"
 fi
-ev13f=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen "HS_BRANCH='fast: process state T, systemctl stop skipped'")
-p_branch_named() { printf '%s\n' "$1" | grep -q -F 'Ladder branch: fast: process state T, systemctl stop skipped.'; }
+ev13f=$(gap_world "$PRIMARY" "$PL9" XREAD=8 LVMODE=frozen "HS_BRANCH='fast: process state T, blocking systemctl stop skipped (stop requested with --no-block)'")
+p_branch_named() { printf '%s\n' "$1" | grep -q -F 'Ladder branch: fast: process state T, blocking systemctl stop skipped (stop requested with --no-block).'; }
 if p_branch_named "$ev13f" && printf '%s\n' "$t13" | grep -q -F 'Ladder branch: normal ladder (process state S).'; then
-    ok "(13b) the page names the branch the ladder took: 'Ladder branch: fast: process state T, systemctl stop skipped.' when the ladder reports the fast branch, 'Ladder branch: normal ladder (process state S).' when it reports the normal one"
+    ok "(13b) the page names the branch the ladder took: 'Ladder branch: fast: process state T, blocking systemctl stop skipped (stop requested with --no-block).' when the ladder reports the fast branch, 'Ladder branch: normal ladder (process state S).' when it reports the normal one"
 else
     bad "(13b) branch in the page: fast=[$(printf '%s' "$ev13f" | grep '^TXT Hung holder' | cut -c1-80)...] normal=[$(printf '%s' "$t13" | cut -c180-330)]"
 fi
@@ -497,10 +497,10 @@ w21=$(hung_struct_why "$PRIMARY")
 [[ "$(grep -c '_hung_\|^HOLDER_UNREACHABLE_STOP_SECS=' "$STANDBY")" == "0" ]] \
     && ok "(21b) the hung-holder rung is the holder's: the standby carries neither its state nor the knob's definition (its texts may name the knob)" || bad "(21b) the standby carries the hung-holder rung"
 
-# ── (22) the ladder's FAST branch: a stopped (T) or uninterruptible (D) process skips `systemctl stop` ─────────────────────
-echo ""; echo "─── (22) the real _selffence_hard_stop: state T or D -> mask --runtime, SIGKILL, verify (no systemctl stop, no SIGTERM); any other or unreadable state -> the normal ladder ───"
-ladder_world() {   # ladder_world <script> <process state letter or empty> <rc of systemctl stop> [resurrect 1] -> rc=<rc>|branch=<_hs_branch>|status=<the last alert's status>|events=<STOP/MASK/TERM/KILL9 in order>
-    local script="$1" st="$2" rc_stop="$3" resurrect="${4:-0}"
+# ── (22) the ladder's FAST branch: a stopped (T) or uninterruptible (D) process skips the BLOCKING `systemctl stop`; rc1 F18: it asks for the stop with --no-block right before the SIGKILL; no ladder masks the unit ─────────────────────
+echo ""; echo "─── (22) the real _selffence_hard_stop: state T or D -> systemctl stop --no-block, the unit's ActiveState read, SIGKILL, verify (no blocking stop, no SIGTERM, no mask); any other or unreadable state -> the normal ladder (stop, SIGTERM, SIGKILL; no mask) ───"
+ladder_world() {   # ladder_world <script> <process state letter or empty> <rc of systemctl stop> [resurrect 1] [rc of stop --no-block, 0] [what the ActiveState read prints, deactivating] [out: line|msg|log|all|nb] -> rc=<rc>|branch=<_hs_branch>|status=<the last alert's status>|events=<STOP/STOPNB/SHOW/MASK/TERM/KILL9 in order>   (msg: the last alert's text; log: the INFO/WARN lines; all: the events with the sleeps; nb: the argv of the stop request)
+    local script="$1" st="$2" rc_stop="$3" resurrect="${4:-0}" rc_nb="${5:-0}" as="${6-deactivating}" out="${7:-line}"
     (
         set +e
         SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$script" > "$SRC"
@@ -508,49 +508,58 @@ ladder_world() {   # ladder_world <script> <process state letter or empty> <rc o
         source "$SRC" 2>/dev/null; rm -f "$SRC"
         STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VALIDATOR_TYPE="agave"; VALIDATOR_SERVICE="solana"
         SELF_FENCE_HARD_STOP=true; HARD_STOP_REVERIFY_SECS=7; TG_ENABLED=false
-        log_info(){ :; }; log_warn(){ :; }; log_error(){ :; }; send_telegram(){ return 0; }; send_webhook(){ :; }; _watchdog_pet(){ :; }
-        _STATUS=""; alert(){ _STATUS="$3"; }
-        EV=$(mktemp); trap 'rm -f "$EV" "$EV.dead"' EXIT
+        EV=$(mktemp); trap 'rm -f "$EV" "$EV.dead" "$EV.log" "$EV.all" "$EV.nb"' EXIT
+        log_info(){ echo "I $*" >> "$EV.log"; }; log_warn(){ echo "W $*" >> "$EV.log"; }; log_error(){ :; }; send_telegram(){ return 0; }; send_webhook(){ :; }; _watchdog_pet(){ :; }
+        _STATUS=""; _MSG=""; alert(){ _MSG="$1"; _STATUS="$3"; }
         _PROC=1
         timeout(){   # runs in a $( ) subshell: "the stop worked" is a file, not a variable
             case "$*" in
-                *systemctl\ stop*) echo STOP >> "$EV"; [[ "$rc_stop" == "0" ]] && : > "$EV.dead"; return "$rc_stop" ;;
-                *systemctl\ mask*) echo MASK >> "$EV"; return 0 ;;
+                *systemctl\ stop\ --no-block*) echo STOPNB >> "$EV"; echo STOPNB >> "$EV.all"; echo "$*" >> "$EV.nb"; return "$rc_nb" ;;
+                *systemctl\ stop*) echo STOP >> "$EV"; echo STOP >> "$EV.all"; [[ "$rc_stop" == "0" ]] && : > "$EV.dead"; return "$rc_stop" ;;
+                *systemctl\ mask*) echo MASK >> "$EV"; echo MASK >> "$EV.all"; return 0 ;;
+                *systemctl\ show*ActiveState*) echo SHOW >> "$EV"; echo SHOW >> "$EV.all"; printf '%s' "$as"; return 0 ;;
             esac
             return 0
         }
         pgrep(){ [[ "$_PROC" == "1" && ! -e "$EV.dead" ]] && echo 4242; return 0; }
         _proc_state(){ printf '%s' "$st"; }
-        kill(){ if [[ "$1" == "-9" ]]; then echo KILL9 >> "$EV"; _PROC=0; else echo TERM >> "$EV"; fi; return 0; }   # SIGTERM is ignored: only SIGKILL ends the process
-        sleep(){ [[ "$1" == "$HARD_STOP_REVERIFY_SECS" && "$resurrect" == "1" ]] && _PROC=1; :; }
+        kill(){ if [[ "$1" == "-9" ]]; then echo KILL9 >> "$EV"; echo KILL9 >> "$EV.all"; _PROC=0; else echo TERM >> "$EV"; echo TERM >> "$EV.all"; fi; return 0; }   # SIGTERM is ignored: only SIGKILL ends the process
+        sleep(){ echo "SLEEP $1" >> "$EV.all"; [[ "$1" == "$HARD_STOP_REVERIFY_SECS" && "$resurrect" == "1" ]] && _PROC=1; :; }
         _selffence_hard_stop "test wedge"; rc=$?
-        printf 'rc=%s|branch=%s|status=%s|events=%s\n' "$rc" "$_hs_branch" "$_STATUS" "$(tr '\n' ',' < "$EV")"
+        case "$out" in
+            msg) printf '%s' "$_MSG" ;;
+            log) cat "$EV.log" 2>/dev/null ;;
+            all) tr '\n' ',' < "$EV.all" ;;
+            nb)  cat "$EV.nb" 2>/dev/null ;;
+            *)   printf 'rc=%s|branch=%s|status=%s|events=%s\n' "$rc" "$_hs_branch" "$_STATUS" "$(tr '\n' ',' < "$EV")" ;;
+        esac
     )
 }
-FAST_T="rc=0|branch=fast: process state T, systemctl stop skipped|status=PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)|events=MASK,KILL9,"
-FAST_D="rc=0|branch=fast: process state D, systemctl stop skipped|status=PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)|events=MASK,KILL9,"
-NORM_S="rc=0|branch=normal ladder (process state S)|status=PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)|events=STOP,MASK,TERM,KILL9,"
-NORM_U="rc=0|branch=normal ladder (process state unknown)|status=PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)|events=STOP,MASK,TERM,KILL9,"
+NB_BR="fast: process state T, blocking systemctl stop skipped (stop requested with --no-block)"
+FAST_T="rc=0|branch=$NB_BR|status=PRIMARY SELF-FENCE — HARD STOP ✅|events=STOPNB,SHOW,KILL9,"
+FAST_D="rc=0|branch=${NB_BR/state T/state D}|status=PRIMARY SELF-FENCE — HARD STOP ✅|events=STOPNB,SHOW,KILL9,"
+NORM_S="rc=0|branch=normal ladder (process state S)|status=PRIMARY SELF-FENCE — HARD STOP ✅|events=STOP,TERM,KILL9,"
+NORM_U="rc=0|branch=normal ladder (process state unknown)|status=PRIMARY SELF-FENCE — HARD STOP ✅|events=STOP,TERM,KILL9,"
 p_fast_T() { [[ "$(ladder_world "$1" T 1)" == "$FAST_T" ]]; }
 p_fast_D() { [[ "$(ladder_world "$1" D 1)" == "$FAST_D" ]]; }
 p_normal_S() { [[ "$(ladder_world "$1" S 1)" == "$NORM_S" ]]; }
 p_normal_unreadable() { [[ "$(ladder_world "$1" "" 1)" == "$NORM_U" ]]; }
-p_fast_verified() { [[ "$(ladder_world "$1" T 1 1)" == "rc=1|branch=fast: process state T, systemctl stop skipped|status=PRIMARY SELF-FENCE — HARD STOP FAILED 🚨|events=MASK,KILL9," ]]; }
+p_fast_verified() { [[ "$(ladder_world "$1" T 1 1)" == "rc=1|branch=$NB_BR|status=PRIMARY SELF-FENCE — HARD STOP FAILED 🚨|events=STOPNB,SHOW,KILL9," ]]; }
 l_t=$(ladder_world "$PRIMARY" T 1); l_d=$(ladder_world "$PRIMARY" D 1)
 if [[ "$l_t" == "$FAST_T" && "$l_d" == "$FAST_D" ]]; then
-    ok "(22a) state T and state D: NO systemctl stop and NO SIGTERM - the events are exactly 'MASK,KILL9' (mask --runtime first, then SIGKILL), rc 0, the branch reads 'fast: process state T|D, systemctl stop skipped', the ✅ page says 'unit masked'"
+    ok "(22a) state T and state D: NO blocking systemctl stop, NO SIGTERM and NO mask - the events are exactly 'STOPNB,SHOW,KILL9' (systemctl stop --no-block, the ActiveState read, then SIGKILL), rc 0, the branch reads 'fast: process state T|D, blocking systemctl stop skipped (stop requested with --no-block)', ONE ✅ page title (no '(unit masked)')"
 else
     bad "(22a) fast branch: T=[$l_t] D=[$l_d]"
 fi
 l_s=$(ladder_world "$PRIMARY" S 1); l_s0=$(ladder_world "$PRIMARY" S 0); l_u=$(ladder_world "$PRIMARY" "" 1); l_r=$(ladder_world "$PRIMARY" R 1); l_tt=$(ladder_world "$PRIMARY" t 1); l_z=$(ladder_world "$PRIMARY" Z 1)
 if [[ "$l_s" == "$NORM_S" && "$l_s0" == "rc=0|branch=normal ladder (process state S)|status=PRIMARY SELF-FENCE — HARD STOP ✅|events=STOP," && "$l_u" == "$NORM_U" \
       && "$l_r" == "${NORM_S//state S/state R}" && "$l_tt" == "${NORM_S//state S/state t}" && "$l_z" == "${NORM_S//state S/state Z}" ]]; then
-    ok "(22b) state S (stop fails): STOP, MASK, TERM, KILL9 in the old order; state S with a clean stop: STOP only, no mask; an unreadable state, R, a tracing stop (t) and Z: the same normal ladder - the failure direction is the existing ladder, never a skipped stop"
+    ok "(22b) state S (stop fails): STOP, TERM, KILL9 - the old order without the mask (v0.6.9 masked between STOP and TERM; rc1 F18 measured that mask inert and dropped it); state S with a clean stop: STOP only; an unreadable state, R, a tracing stop (t) and Z: the same normal ladder - the failure direction is the existing ladder, never a skipped stop"
 else
     bad "(22b) normal ladder: S=[$l_s] S0=[$l_s0] unreadable=[$l_u] R=[$l_r] t=[$l_tt] Z=[$l_z]"
 fi
 if p_fast_verified "$PRIMARY"; then
-    ok "(22c) the fast branch still re-verifies: a validator that is back after HARD_STOP_REVERIFY_SECS makes the stop FAIL (rc 1, 'HARD STOP FAILED' page) - the fast branch skips the stop, not the proof"
+    ok "(22c) the fast branch still re-verifies: a validator that is back after HARD_STOP_REVERIFY_SECS makes the stop FAIL (rc 1, 'HARD STOP FAILED' page) - the fast branch skips the blocking stop, not the proof"
 else
     bad "(22c) fast branch + resurrect: $(ladder_world "$PRIMARY" T 1 1)"
 fi
@@ -570,6 +579,57 @@ if [[ "$pr1" == "T" && "$pr2" == "D" && "$pr3" == "S" && "$pr4" == "" && "$pr5" 
     ok "(22d) _proc_state reads the letter after 'State:' in /proc/<pid>/status (T, D, S); a missing file, a non-numeric pid and a file without a State line answer nothing (so the ladder takes the normal branch)"
 else
     bad "(22d) _proc_state: T=[$pr1] D=[$pr2] S=[$pr3] missing=[$pr4] abc=[$pr5] noline=[$pr6]"
+fi
+
+
+# (22e) rc1 F18: the stop request comes BEFORE the SIGKILL and nothing sleeps between them (the whole point: a queued stop job is what Restart= respects, and the process must not get time to be restarted or to flush); the sleeps are the verify's 1 s and the re-verify's HARD_STOP_REVERIFY_SECS
+a_t=$(ladder_world "$PRIMARY" T 1 0 0 deactivating all); a_d=$(ladder_world "$PRIMARY" D 1 0 0 deactivating all); a_s=$(ladder_world "$PRIMARY" S 1 0 0 deactivating all)
+nb_t=$(ladder_world "$PRIMARY" T 1 0 0 deactivating nb); nb_d=$(ladder_world "$PRIMARY" D 1 0 0 deactivating nb)
+if [[ "$a_t" == "STOPNB,SHOW,KILL9,SLEEP 1,SLEEP 7," && "$a_d" == "STOPNB,SHOW,KILL9,SLEEP 1,SLEEP 7," && "$a_s" == "STOP,TERM,SLEEP 2,KILL9,SLEEP 1,SLEEP 7," \
+      && "$nb_t" == "-k 5 15 systemctl stop --no-block solana" && "$nb_d" == "$nb_t" ]]; then
+    ok "(22e) the fast branch (T and D) runs 'timeout -k 5 15 systemctl stop --no-block solana' (the validator's unit), the ActiveState read and then SIGKILL back to back - no sleep between the request and the kill; the normal ladder is STOP, TERM, 2 s, KILL9, 1 s, the re-verify - no mask call in either"
+else
+    bad "(22e) order: T=[$a_t] D=[$a_d] S=[$a_s] request argv: T=[$nb_t] D=[$nb_d]"
+fi
+# (22f) the ActiveState read only RECORDS: deactivating / inactive / failed -> one INFO line; anything else (active, activating, nothing readable) -> exactly one WARN line; a stop request that failed -> one WARN line and no read; the kill proceeds in every case
+f_ok=1; f_why=""
+for as in deactivating inactive failed; do
+    lg=$(ladder_world "$PRIMARY" T 1 0 0 "$as" log); ev=$(ladder_world "$PRIMARY" T 1 0 0 "$as")
+    if [[ "$(printf '%s\n' "$lg" | grep -c -F "I [self-fence] unit solana reads ActiveState=$as after the stop request")" != "1" || "$(printf '%s\n' "$lg" | grep -c '^W .*ActiveState')" != "0" \
+          || "$(printf '%s\n' "$lg" | grep -c -F 'I [self-fence] systemctl stop --no-block solana: rc 0')" != "1" || "$ev" != "$FAST_T" ]]; then f_ok=0; f_why="$f_why [$as: $(printf '%s' "$lg" | tr '\n' ';' | cut -c1-300)]"; fi
+done
+for as in active activating ""; do
+    lg=$(ladder_world "$PRIMARY" T 1 0 0 "$as" log); ev=$(ladder_world "$PRIMARY" T 1 0 0 "$as"); shown="${as:-unreadable}"
+    if [[ "$(printf '%s\n' "$lg" | grep -c -F "W [self-fence] unit solana reads ActiveState='$shown' after the stop request (expected deactivating, inactive or failed)")" != "1" || "$(printf '%s\n' "$lg" | grep -c '^W .*ActiveState')" != "1" \
+          || "$ev" != "$FAST_T" ]]; then f_ok=0; f_why="$f_why [${as:-empty}: $(printf '%s' "$lg" | tr '\n' ';' | cut -c1-300) :: $ev]"; fi
+done
+lg=$(ladder_world "$PRIMARY" T 1 0 124 deactivating log); ev=$(ladder_world "$PRIMARY" T 1 0 124 deactivating)
+if [[ "$(printf '%s\n' "$lg" | grep -c -F 'W [self-fence] systemctl stop --no-block failed (rc 124)')" != "1" || "$(printf '%s\n' "$lg" | grep -c 'ActiveState')" != "0" \
+      || "$ev" != "rc=0|branch=$NB_BR|status=PRIMARY SELF-FENCE — HARD STOP ✅|events=STOPNB,KILL9," ]]; then f_ok=0; f_why="$f_why [rc124: $(printf '%s' "$lg" | tr '\n' ';' | cut -c1-300) :: $ev]"; fi
+if [[ $f_ok -eq 1 ]]; then
+    ok "(22f) the stop request's rc is logged (INFO 'systemctl stop --no-block solana: rc 0'); the unit's ActiveState after it: deactivating / inactive / failed = one INFO line, active / activating / unreadable = exactly one WARN line, a failed request = one WARN line and no read - and the SIGKILL, the verify and the ✅ follow in every case (the re-verify is the catch)"
+else
+    bad "(22f) ActiveState / request-rc logging:$f_why"
+fi
+# (22g) the pages: ONE ✅ page (the same text on every path - no '(unit masked)' title), it says how to recover (systemctl start, on the UNSTAKED identity, Restart= does not apply) and mentions no mask; the resurrected-validator page says 'systemctl stop <unit>'
+m_f=$(ladder_world "$PRIMARY" T 1 0 0 deactivating msg); m_n=$(ladder_world "$PRIMARY" S 1 0 0 deactivating msg); m_c=$(ladder_world "$PRIMARY" S 0 0 0 deactivating msg)
+m_rf=$(ladder_world "$PRIMARY" T 1 1 0 deactivating msg); m_rn=$(ladder_world "$PRIMARY" S 1 1 0 deactivating msg)
+p_pages() {   # the five pages, read by the caller
+    [[ "$m_f" == "$m_n" && "$m_n" == "$m_c" && "$m_f" == *"confirmed DOWN (re-verified after 7s). The unit is stopped by a requested stop (Restart= does not apply): recover with 'systemctl start solana' on the UNSTAKED identity after confirming no spare holds the staked identity"* \
+      && "$m_rf" == *"INTERVENE NOW (systemctl stop solana)."* && "$m_rn" == *"INTERVENE NOW (systemctl stop solana)."* \
+      && -z "$(printf '%s\n%s\n%s\n%s\n%s' "$m_f" "$m_n" "$m_c" "$m_rf" "$m_rn" | grep -i 'mask')" ]]
+}
+if p_pages; then
+    ok "(22g) one ✅ page on every path (fast, normal with a failed stop, normal with a clean stop): 'The unit is stopped by a requested stop (Restart= does not apply): recover with systemctl start solana on the UNSTAKED identity after confirming no spare holds the staked identity'; the resurrected-validator page says 'INTERVENE NOW (systemctl stop solana).'; none of the five mentions a mask"
+else
+    bad "(22g) pages: fast=[$m_f] normal=[$m_n] clean=[$m_c] resurrect-fast=[$m_rf] resurrect-normal=[$m_rn]"
+fi
+# (22h) structure: neither ladder's CODE mentions a mask (v0.6.9's step and its flag, mask_out / mask_rc / masked, are gone from both daemons)
+p_no_mask_code() { [[ "$(sed -n '/^_selffence_hard_stop() {/,/^}/p' "$1" | grep -v '^[[:space:]]*#' | grep -ci 'mask')" == "0" ]]; }
+if p_no_mask_code "$PRIMARY" && p_no_mask_code "$STANDBY"; then
+    ok "(22h) no 'mask' in the code of either daemon's _selffence_hard_stop (comment lines excluded): the step, its variables and both '(unit masked)' pages are gone"
+else
+    bad "(22h) a mask survives in a ladder: primary=$(sed -n '/^_selffence_hard_stop() {/,/^}/p' "$PRIMARY" | grep -v '^[[:space:]]*#' | grep -ci 'mask') standby=$(sed -n '/^_selffence_hard_stop() {/,/^}/p' "$STANDBY" | grep -v '^[[:space:]]*#' | grep -ci 'mask')"
 fi
 
 
@@ -614,6 +674,7 @@ $region
             t="$1"; shift
             case "$*" in
                 *contact-info*) adv "$t"; return 124 ;;   # the admin socket of a hung validator: the read runs into its bound
+                *systemctl\ stop\ --no-block*) return 0 ;;   # rc1 F18: the fast branch's stop request returns at once (the host's own work counted as zero, like the rest of the model)
                 *systemctl\ stop*)
                     case "$ladder" in
                         healthy) adv 2; echo "$(mono_now)" > "$CLK.dead"; return 0 ;;   # the stop takes 2 s and works
@@ -663,7 +724,7 @@ if [[ $tl_ok -eq 1 ]]; then
 else
     bad "(23a) the default rung timeline moved:$tl_bad"
 fi
-# (23b) the normal ladder: a stop that works in 2 s, and a stop that is wedged for its whole bound (timeout -k 5 15 = 20 s, then the mask and the 2 s after SIGTERM before SIGKILL)
+# (23b) the normal ladder: a stop that works in 2 s, and a stop that is wedged for its whole bound (timeout -k 5 15 = 20 s, then the 2 s after SIGTERM before SIGKILL)
 tl_ok=1; tl_bad=""
 for phi in 0 3; do
     tl_expect "stamp=$((8 + phi)) n=34 start=$((48 + phi)) down=$((50 + phi))" "$PRIMARY" 30 $phi healthy 1
@@ -863,7 +924,7 @@ ctl hung-no-latch "$HG"'s/^        _hung_done=1$/        :/' "$PL9" p_hung_stop 
 ctl hung-no-throttle "$HG"'s/-ge \${ALERT_THROTTLE:-600} \]\]; then$/-ge 0 ]]; then/' "$PL9" p_growing_kept XREAD=8 LVMODE=growing
 ctl hung-no-retry-wait "$HG"'s/^        _hung_try_ts=\$(mono_now)$/        :/' "$PL9" p_failed_once XREAD=8 LVMODE=frozen HS_RC=1
 ctl hung-staked-only-dropped "$HG"'s/^    \[\[ "\$_last_known_identity" == "\$STAKED_PUBKEY" .* || return 0$/    [[ ${_hung_done:-0} -eq 0 ]] || return 0/' "U X X X X X X X X" p_unstaked_quiet XREAD=8 LVMODE=frozen
-ctl hung-page-no-branch "$HG"'s/ Ladder branch: \${_hs_branch:-unknown}\.//' "$PL9" p_branch_named XREAD=8 LVMODE=frozen "HS_BRANCH='fast: process state T, systemctl stop skipped'"
+ctl hung-page-no-branch "$HG"'s/ Ladder branch: \${_hs_branch:-unknown}\.//' "$PL9" p_branch_named XREAD=8 LVMODE=frozen "HS_BRANCH='fast: process state T, blocking systemctl stop skipped (stop requested with --no-block)'"
 ctl_rc hung-knob-floor 's/_validate_numeric HOLDER_UNREACHABLE_STOP_SECS 20 /_validate_numeric HOLDER_UNREACHABLE_STOP_SECS 0 /' p_hung19_refused
 ctl_rc hung-struct-moved '/^        _hung_check   # v0.7 (AG-3.8)/d; s/^        display_status "N\/A"$/        display_status "N\/A"; _hung_check/' hung_struct_ok
 ctl_rc vp-no-mainpid '/^_validator_pid() {/,/^}/ { /kill -0/d; }' p_vp_pref
@@ -873,7 +934,11 @@ ctl_rc fast-detects-always "$LG"'s/case "\$_hs_st" in T|D) _hs_fast=1;/case "$_h
 ctl_rc fast-detects-always-u "$LG"'s/case "\$_hs_st" in T|D) _hs_fast=1;/case "$_hs_st" in *) _hs_fast=1;/' p_normal_unreadable
 ctl_rc fast-detection-removed "$LG"'s/case "\$_hs_st" in T|D) _hs_fast=1;/case "$_hs_st" in Z) _hs_fast=1;/' p_fast_T
 ctl_rc fast-D-forgotten "$LG"'s/case "\$_hs_st" in T|D) _hs_fast=1;/case "$_hs_st" in T) _hs_fast=1;/' p_fast_D
-ctl_rc fast-no-mask "$LG"'s/^        sc_out=""; sc_rc=1$/        sc_out=""; sc_rc=0/' p_fast_T
+ctl_rc fast-no-stop-request "$LG"'{ /^            _hs_nb_out=\$(timeout -k 5 15 systemctl stop --no-block /d; }' p_fast_T
+ctl_rc fast-kill-before-request "$LG"'s/^            _hs_nb_out=\$(timeout -k 5 15 systemctl stop --no-block /            kill -9 "$pid" 2>\/dev\/null; _hs_nb_out=$(timeout -k 5 15 systemctl stop --no-block /' p_fast_T
+ctl_rc fast-state-read-dropped "$LG"'{ /^                _hs_as=\$(timeout 5 systemctl show -p ActiveState /d; }' p_fast_T
+ctl_rc fast-mask-back "$LG"'s/^        sc_out=""; sc_rc=1$/        sc_out=""; sc_rc=1; timeout -k 5 15 systemctl mask --runtime "${VALIDATOR_SERVICE:-solana}"/' p_fast_T
+ctl_rc normal-mask-back "$LG"'s/^    # Fallback (non-systemd \/ stuck unit): SIGTERM the validator PID, then SIGKILL if it ignores it\.$/    [[ $sc_rc -ne 0 ]] \&\& timeout -k 5 15 systemctl mask --runtime "${VALIDATOR_SERVICE:-solana}"/' p_normal_S
 ctl_rc fast-keeps-sigterm "$LG"'s/^        if \[\[ -z "\$_hs_fast" \]\]; then .*$/        if true; then/' p_fast_T
 ctl_rc fast-no-reverify "$LG"'s/^    _watchdog_sleep "\${HARD_STOP_REVERIFY_SECS:-15}".*$/    :/' p_fast_verified
 ctl_rc proc-state-wrong-letter '/^_proc_state() {/,/^}/ s/\${_st:0:1}/${_st:2:1}/' p_proc_state
