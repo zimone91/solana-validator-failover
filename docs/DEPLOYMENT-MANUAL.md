@@ -1,4 +1,4 @@
-# Solana Validator Failover System v0.7.0-rc1 — Deployment Manual
+# Solana Validator Failover System v0.7.0-rc2 — Deployment Manual
 
 > **Status:** read the honest-limits note in the [README](../README.md) and the safety model in
 > [SAFETY.md](SAFETY.md) before arming anything. `DRY_RUN=true` is the shipped default everywhere.
@@ -473,9 +473,9 @@ fails ends the unit `failed`, which dispatches the real fence; `DRY_RUN=false` b
 
 ---
 
-## v0.7.0-rc2 candidates — primary knobs (`failover.env`)
+## v0.7.0-rc2 — primary knobs (`failover.env`)
 
-Added or changed after the rc1 candidate. A knob here is read by the PRIMARY daemon only; an env file without it runs on the daemon's default.
+Added or changed since v0.7.0-rc1. A knob here is read by the PRIMARY daemon only; an env file without it runs on the daemon's default.
 
 | Knob | Default | Meaning |
 |---|---|---|

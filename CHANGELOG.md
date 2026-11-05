@@ -3,9 +3,7 @@
 All notable changes are documented here. Versions follow the project's internal `v0.6.x` line;
 `v0.6.9` is the first public release.
 
-## Unreleased — v0.7.0-rc2 candidates (on top of the rc1 candidate)
-
-A release moves these entries under their own version heading in the same diff as the version bump (the CI version step reads the first `## v<version>` heading).
+## v0.7.0-rc2 — 2026-11-05
 
 - **rc2 F21 — an UNSTAKED primary pages when nobody is voting the staked identity (`STAKED IDENTITY SILENT 🚨`).** Measured on the testnet pair (S18b, `2266130`): with the standby holder's daemon stopped and its validator killed, the healthy unstaked primary paged nothing - 420 s in `RECOVERY_MODE=manual` (one INFO line a minute) and 720 s in `rpc` (the recovery pass returned at its first gate, `Still delinquent (Tier 1) — not recovering`, every 3 s, and never reached the re-take's `WITHHELD` page). In Alpenglow mode the primary never takes the identity, so a page is all FO can give, and there was none. Pre-existing since v0.6.
   - **What it does:** in the UNSTAKED branch of the main loop, before the `RECOVERY_MODE` dispatch and whatever the mode, the daemon reads the staked vote account's public `lastVote` and the cluster tip from one `getVoteAccounts` payload (`get_staked_liveness_sample`: `TIER2_RPC`, then `TIER3_RPC`; one read per `VOTE_LIVENESS_MIN_INTERVAL`) and pages `STAKED IDENTITY SILENT 🚨` once two reads of the same provider show the tip advanced and `lastVote` unchanged for `SILENT_STAKE_PAGE_SECS` seconds. The page reads `nobody is voting the staked identity: public lastVote <slot> frozen for <N>s (tip <slot>); this node is UNSTAKED and never takes in Alpenglow mode — check the holder (the spare's host) and start it, or move the identity by the warm swap (docs/SAFETY.md)`. The first page is immediate when the span is reached, repeats follow `ALERT_THROTTLE`, one INFO line (`[silent-stake] staked identity votes again …`) says when the votes resume, and the next freeze is a new episode.
