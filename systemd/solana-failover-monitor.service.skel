@@ -1,5 +1,5 @@
 # SKELETON (v0.7 Block 5) — installed ONLY by the `failover arm` ceremony (failover-arm.sh,
-# Block 5.3 — shipped, EXECUTED only at the v0.7 rollout); NOTHING in this repository installs
+# Block 5.3 — shipped, run by the operator at the v0.7 rollout); no other script installs
 # units. The Block-5 entry blocker (all four nodes on v0.6.10+) gates the first real installation.
 #
 # The monitor under the NATIVE systemd watchdog (DESIGN-v0.7-ADDENDUM §2.2/§2.6 +
@@ -94,13 +94,43 @@ TimeoutStartSec=90s
 #
 # R8 (load-bearing, see the [Unit] comment): NEVER a restarting policy on this unit. Post-fence
 # restart of the monitor is the FENCE's explicit action (two marker states, §2.2), not PID 1's.
+# THE DAEMON'S EXIT CONTRACT under it (Block 6.3 fix round, M5): exit 0 ONLY on a shutdown request
+# (SIGTERM/SIGINT/SIGHUP → cleanup) or the HOLD marker-clear — the unit goes `inactive`, no
+# OnFailure; a main loop that ends any other way (a bash expansion error discards the whole
+# top-level loop) logs an ERROR and exits 1 → terminal `failed` → OnFailure (the fence on a
+# holder, the page on a spare). Before M5 that abort fell through to exit 0: dead and unfenced.
 Restart=no
+# THE ONE OTHER CLEAN EXIT (v0.7 Block 7, B7.2): exit 3 AFTER READY=1. A second copy of the role that loses the
+# single-instance lock (an operator's copy started by hand beside the unit, a legacy unit that won the boot race)
+# pages `SECOND INSTANCE REFUSED`, sends READY=1 and exits 3 - status 3 is that refusal's alone (the only `exit 3`
+# in either daemon). Under Type=notify an exit BEFORE READY=1 ends the unit `failed` whatever the exit status -
+# SuccessExitStatus= does not change that - and `failed` dispatches OnFailure=: the REAL fence, on a validator that
+# is perfectly healthy. After READY=1 a status the unit counts as success ends it `inactive`, with nothing
+# dispatched. MEASURED on systemd 255 (Ubuntu 24.04, six throwaway units; the table is in systemd/README.md, "A
+# refused second copy"); 249 (Ubuntu 22.04) is expected to behave the same and was not measured. Exit 1 and the
+# watchdog's SIGABRT stay failures.
+SuccessExitStatus=3
 # Watchdog expiry sends SIGABRT (the default — explicit for audit; research record assumption
 # 4). A bash monitor has nothing to core-dump: TimeoutAbortSec=5s SIGKILLs a SIGABRT-ignoring
 # monitor fast so the unit settles into `failed` (and thus the fence) without delay. The daemon
 # must NOT trap/ignore SIGABRT.
 WatchdogSignal=SIGABRT
 TimeoutAbortSec=5s
+# AG-3.5 ("(12e) option 1", docs/SAFETY.md, Known bash behaviour): a TERM can be LOST. bash 5.2 drops a
+# TERM that arrives while it runs a command substitution (5 / 2,400 on 5.2.21, 19 / 2,400 on 5.2.37; the
+# real standby loop on 5.2.21: 1 of 320), the daemon keeps monitoring - and acting - and a plain `systemctl
+# stop` runs to the stop timeout and ends in SIGKILL with no 'stopped' page. ExecStop= runs BEFORE systemd's
+# own TERM: it re-sends TERM up to 3 times, 1 s apart, while the main PID lives (each TERM is an independent
+# chance: two consecutive losses are about 1e-5 at the measured rate), then exits 0 - ALWAYS 0: a failing
+# ExecStop leaves the unit `failed`, and `failed` dispatches OnFailure= (the fence). systemd then sends its
+# own TERM and escalates per TimeoutStopSec (the default, deliberately not set here).
+# The line is written for systemd's own parser, not for the shell's: the script is ONE single-quoted word;
+# `$$` is systemd's escape for a literal `$` (so the shell sees $i and $((i + 1))); ${MAINPID} is substituted
+# by systemd inside a word (it is also set in the environment of ExecStop commands, so the shell would
+# expand it itself if systemd did not); no `%` (a systemd specifier) and no backslash (a C-style escape) in
+# it. An unknown main PID expands to nothing: `kill -0` then fails at once and the line exits 0 without
+# sending anything. tests/test_arm_ceremony.sh (18) runs this very line against a bash that drops TERMs.
+ExecStop=/bin/sh -c 'i=0; while [ $$i -lt 3 ] && kill -0 ${MAINPID} 2>/dev/null; do kill -TERM ${MAINPID} 2>/dev/null; i=$$((i + 1)); sleep 1; done; exit 0'
 User=root
 LimitNOFILE=1000000
 StandardOutput=journal

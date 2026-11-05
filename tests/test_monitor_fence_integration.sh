@@ -79,6 +79,7 @@
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+harness_ag_off   # AG-1.2: these worlds test the RETAINED take path - AG mode is shadowed off (tests/lib/harness.sh)
 FENCE="$HARNESS_DIR/systemd/failover-fence.sh"
 BASH_BIN="${BASH:-/bin/bash}"
 
@@ -232,7 +233,7 @@ drive_cycle() {
         eval "run_cycle() {
 $region
 }"
-        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _fence_rot_check() { :; }   # 5.4: the rot sweep is its own suite (test_fence_rot); unstubbed it would hit real systemctl on systemd-bearing runners
+        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _vat_cycle() { :; }; _fence_rot_check() { :; }   # 5.4: the rot sweep is its own suite (test_fence_rot); unstubbed it would hit real systemctl on systemd-bearing runners
         flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }
         window_push() { :; }; window_mostly_clear() { return 1; }
         get_local_identity() { echo "U1"; }
@@ -297,7 +298,7 @@ drive_cycle_primary() {
         eval "run_cycle() {
 $region
 }"
-        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _fence_rot_check() { :; }   # 5.4: same stub as drive_cycle
+        rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _vat_cycle() { :; }; _fence_rot_check() { :; }   # 5.4: same stub as drive_cycle
         flush_pending_alerts() { :; }; display_status() { :; }; save_state() { :; }
         window_push() { :; }; window_mostly_clear() { return 1; }
         check_internet() { echo "op:inet" >> "$EV"; return 0; }
@@ -380,6 +381,9 @@ drive_markers() {
 # before the fix, a _rot_capture_intent splice in the HOLD loop is pure file tests and tripped
 # NOTHING (60/60 green); _fence_rot_check was caught only INDIRECTLY (timeout-shim → the
 # systemctl bait), a chain that breaks if the sweep's gate or read path moves. Named = direct.
+# Block 6.3: the per-cycle proof-provider steps are NAMED baits too — _elapsed_step (6.3) and
+# _g2_step (6.2, which had joined the loop without one): both no-op unless armed + spare +
+# registered, so a HOLD-loop splice of either could otherwise trip nothing on an unpaired drive.
 _HOLD_BAITS="attempt_takeover local_check_delinquency tier1_check_local_health
 tier2_check_delinquency tier3_confirm_delinquency confirm_delinquency_external
 take_staked_identity give_back_identity check_self_fence_isolation check_identity_collision
@@ -388,7 +392,7 @@ tier1_get_vote_latency switch_to_unstaked switch_to_staked attempt_safe_recovery
 check_standby_has_identity check_primary_dropped_identity staked_is_actively_voting
 get_staked_liveness_sample peer_has_relinquished _prewarm_voter_add _check_rpc_delinquency
 _check_single_rpc _selffence_hard_stop _selffence_demote _fence_rot_check _rot_capture_intent
-curl systemctl"
+_g2_step _elapsed_step curl systemctl"
 drive_hold() {
     local script="$1"
     (
@@ -868,11 +872,72 @@ s_pets=$(grep -cE '^[[:space:]]*_watchdog_pet[[:space:]]+# §5 end-of-cycle pet'
 # separate requests, so the region lost one curl site and its pet — G2's contribution went 5 → 4
 # and the totals 42 → 41 / 43 → 42. The region's A3 worst added gap fell 36 s → 24 s with it
 # (test_g2_provider (6a)/(6b) census both counts against the live run and the source).
+# +1 per daemon at Block 6.3 (the pin MOVED, deliberately, in that diff): the [elapsed-provider]
+# twin region's ONE own read — the independent head, LOCAL_RPC getSlot, curl -m 5 — petted post-op;
+# the liveness sampler it calls pets its own reads (already counted here). Totals 41 → 42 / 42 → 43.
+# Worst added gap per evaluation 48 s, argued in the region's own A3-style census (the sampler's
+# two tiers 34 s + the head read 14 s); the 6.3 text claimed consecutive pets stay <= one op + one pet
+# ~ 17 s — MEASURED 20 s at the fix round (corrected below); always in the take-LATER direction
+# (test_elapsed_provider (8a)/(8b) census the live run and the source).
+# +2 on the STANDBY at the Block 6.3 FIX ROUND (M6 — panel INT-2/CC-6a; the pin MOVED, deliberately, in
+# that diff): the two curl -m 3 LOCAL getSlot reads — Tier-1's (after getHealth ok) and
+# local_check_delinquency's MAX_DELINQUENT_SLOTS read — are petted post-op. Each went unpetted (below
+# the >= 5 s per-op threshold) and each preceded a petted TIER2 read (the elapsed evaluation's sampler /
+# the pin's prefetch sampler, curl -m 10): the stacked pair measured a 20 s gap between consecutive pets
+# (house counting: getSlot 3 + T2 10 + pet 7). With both petted the gap is one op + one pet: MEASURED
+# 17 s at MAX_DELINQUENT_SLOTS 0 and 15, and each removal alone measured back at 20 s
+# (test_elapsed_provider (12f)). The PRIMARY has neither read: its pin is unchanged. Totals 42 / 43 → 42 / 45.
+# +1 on the STANDBY at the Block 6.3 FIX ROUND 2 (R2 census — the pin MOVED, deliberately, in that
+# diff): tier2_check_delinquency's lastVote RE-READ after its MAX_DELINQUENT_SLOTS reference — a TIER2
+# getVoteAccounts at curl -m 15 (5 in turbo), petted post-op. A3 re-derived: one bounded op + its pet,
+# inside the 22 s worst case (the single longest op, SETIDENTITY_TIMEOUT 15 + kill-grace 5, still
+# governs); it runs only when the first latency already exceeds MAX_DELINQUENT_SLOTS, so it can only
+# DELAY a delinquent confirmation (MEASURED over the round's 1,115-world sweep: 7 takes later, none
+# sooner). local_check_delinquency's reference moved AHEAD of its payload (R2) and its pet moved with
+# it — count unchanged: it now separates the reference from the own-bank payload (curl -m 5; unpetted,
+# the pair measured 15 s — test_elapsed_provider (12f)). The PRIMARY is unchanged. Totals 42 / 45 → 42 / 46.
+# +2 per daemon at Block 6.3.1 (the pin MOVED, deliberately, in that diff): the [own-view] twin region's
+# two LOCAL reads, each a curl -m 2 petted post-op — _own_head_sample (one LOCAL getSlot{confirmed} per
+# take-path cycle of an open episode / recovery-eligible cycle) and _own_view_veto (the ONE bounded local
+# veto read between the fresh re-check and set-identity). A3 re-derived: each is one bounded op + its pet
+# (2 + 7 = 9 s), inside the 22 s worst case (SETIDENTITY_TIMEOUT 15 + kill-grace 5 still governs); the
+# veto's pet now separates the re-check's last sampler pet from set-identity (one op + one pet on either
+# side). Totals 42 / 46 → 44 / 48.
+# +1 per daemon at AG-1.3 (the pin MOVED, deliberately, in that diff): _vh_class's ONE bounded hash of the vote-history file
+# (_sha256_of: `timeout -k 2 10` sha256sum / shasum, petted post-op). It runs in the log line after a CONFIRMED demote only
+# (_vh_log_after_demote) - never on a take path, and the demote's own admin calls are petted per op before it. A3 re-derived:
+# one bounded op (10 s + its 2 s kill grace) + its pet, inside the 22 s worst case (SETIDENTITY_TIMEOUT 15 + kill-grace 5 still
+# governs). Totals 44 / 48 -> 45 / 49.
+# +1 per daemon at AG-1.5 (the pin MOVED, deliberately, in that diff): _local_version's ONE LOCAL getVersion read (curl -m 3),
+# petted post-op; it runs from the top of the main loop (_version_startup_check, ONE read per 60 s until the version is
+# determined, then none) and never on a take path. _health_class reads nothing: it names an answer its caller already has.
+# A3 re-derived: one bounded op + its pet (3 + 7 = 10 s), inside the 22 s worst case. Totals 45 / 49 -> 46 / 50.
+# +2 per daemon at AG-1.4 (the pin MOVED, deliberately, in that diff): the two LOCAL reads of the vote-set admission, each a
+# curl -m 3 petted post-op - _vat_read (ONE batch getEpochInfo / getVoteAccounts / getEpochInfo; from the top of the main loop on
+# its schedule, and right before a VOTE-BASED demote) and _vat_reason (ONE getAccountInfo, only to word the page). A3 re-derived:
+# each is one bounded op + its pet (3 + 7 = 10 s), inside the 22 s worst case; on the demote path the read adds <= 3 s before
+# the demote's own petted admin calls (test_d6_holder (d5, d6, d'4, d'5) re-measured). Totals 46 / 50 -> 48 / 52.
+# +2 per daemon at AG-1.2 (the pin MOVED, deliberately, in that diff): the AG page's two LOCAL reads, each a curl -m 3 petted post-op -
+# _ag_slot_final (getSlot{finalized}) and _ag_health_text (getHealth). They run only at an AG decision point, AFTER every gate of the take and
+# BEFORE the page - the mutation they would precede is not made (the stop returns first), so the A3 span they sit in is not a take's. A3
+# re-derived: each is one bounded op + its pet (3 + 7 = 10 s), inside the 22 s worst case. Totals 48 / 52 -> 50 / 54.
+# +1 in the PRIMARY at AG-3.8 (the pin MOVED, deliberately, in that diff; the standby is unchanged): _hung_local_slot's ONE LOCAL getSlot read
+# (curl -m 5), petted post-op. It runs only in the unreachable branch for a node last seen STAKED (the hung-holder rung), never on a take path, and
+# the rung's other reads pet themselves (get_staked_liveness_sample per provider, the hard-stop ladder per op). A3 re-derived: one bounded op
+# (5 s) + its pet (7 s), inside the 22 s worst case. Totals primary 50 -> 51.
+# +2 in the STANDBY at AG-3.3 (the pin was NOT moved in that diff and stood stale; moved here): take_staked_identity's AG-mode COLD take pets each of its two
+# bounded admin ops - `authorized-voter add`, then `set-identity` with the cold flag, each `timeout -k 5 $SETIDENTITY_TIMEOUT` - exactly as the retained take's
+# pair below them does. A3 re-derived: each op is bounded by SETIDENTITY_TIMEOUT 15 + kill-grace 5 = 20 s and its pet follows the op, so the 22 s worst case
+# (SETIDENTITY_TIMEOUT 15 + kill-grace 5 still governs) is unchanged. Totals standby 54 -> 56.
+# +1 in the PRIMARY, -1 in the STANDBY at rc1 F18 (the pins MOVED, deliberately, in that diff): the v0.6.9 H2 `systemctl mask --runtime` step is gone from both hard-stop ladders (it was measured inert
+# for a unit under /etc/systemd/system) and took its post-op pet with it (-1 each); the PRIMARY's fast branch (state T / D) gained two bounded ops, each petted post-op - `systemctl stop --no-block`
+# (timeout -k 5 15) and the ActiveState read after it (timeout 5) - so the primary nets +1 and the standby -1. A3 re-derived: each new op is one bounded op + its pet (the request 20 s at its worst,
+# the read 5 s), inside the 22 s worst case; the kill that follows them is not an op that waits. Totals primary 51 -> 52, standby 56 -> 55.
 p_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$PRIMARY")
 s_total=$(grep -cE '^[[:space:]]*_watchdog_pet\b' "$STANDBY")
-[[ "$p_total" == "41" && "$s_total" == "42" ]] \
-    && ok "(14b) total pet call-site pins: primary 40 calls (+def=41), standby 41 calls (+def=42) — deletion of any pet line trips this" \
-    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 41, standby=$s_total pinned 42) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
+[[ "$p_total" == "52" && "$s_total" == "55" ]] \
+    && ok "(14b) total pet call-site pins: primary 51 calls (+def=52), standby 54 calls (+def=55) — deletion of any pet line trips this" \
+    || bad "(14b) total pet call-site count moved (primary=$p_total pinned 52, standby=$s_total pinned 55) — a pet line was added/deleted; re-derive the A3 arithmetic and move the pin in the same diff"
 if ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$PRIMARY" && ! grep -qE '^[[:space:]]*sleep "\$STARTUP_GRACE"' "$STANDBY" && ! grep -qE '^[[:space:]]*sleep "\$RECOVERY_CHECK_INTERVAL"' "$PRIMARY"; then
     ok "(14c) the >=15s sleeps (STARTUP_GRACE x3, RECOVERY_CHECK_INTERVAL, hard-stop re-verify) go through _watchdog_sleep"
 else
@@ -916,9 +981,8 @@ out=$( (
     UNSTAKED_KEYPAIR="$MOCK_DIR/uk.json"; printf '[1]' > "$MOCK_DIR/uk.json"
     STAKED_PUBKEY=S1; UNSTAKED_PUBKEY=U1; SETIDENTITY_TIMEOUT=15
     # admin ops wedge (rc 124); the _sd_notify socat pipeline passes through to the sd: logger
-    timeout() { case "$*" in (*socat*) if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@" ;; (*) echo "op:wedge" >> "$EV"; return 124 ;; esac; }
+    timeout() { case "$*" in (*socat*|*" tr "*) if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@" ;; (*) echo "op:wedge" >> "$EV"; return 124 ;; esac; }   # (B7.1b: the bounded cmdline read of _validator_pid is no admin op)
     _selffence_hard_stop() { echo "op:hardstop" >> "$EV"; return 1; }
-    get_tower_path() { echo "$MOCK_DIR/tower"; }
     switch_to_unstaked "FF-B1 probe"
     w=$(ev_line 'op:wedge'); h=$(ev_line 'op:hardstop'); p=$(ev_line '^sd:WATCHDOG=1')
     okr=0; [[ -n "$p" && -n "$w" && -n "$h" && $p -gt $w && $p -lt $h ]] && okr=1
@@ -937,7 +1001,7 @@ out=$( (
     UNSTAKED_KEYPAIR="$MOCK_DIR/uk.json"; printf '[1]' > "$MOCK_DIR/uk.json"
     STAKED_PUBKEY=S1; UNSTAKED_PUBKEY=U1; SETIDENTITY_TIMEOUT=15
     # admin ops wedge (rc 124); the _sd_notify socat pipeline passes through to the sd: logger
-    timeout() { case "$*" in (*socat*) if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@" ;; (*) echo "op:wedge" >> "$EV"; return 124 ;; esac; }
+    timeout() { case "$*" in (*socat*|*" tr "*) if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@" ;; (*) echo "op:wedge" >> "$EV"; return 124 ;; esac; }   # (B7.1b: the bounded cmdline read of _validator_pid is no admin op)
     _selffence_hard_stop() { echo "op:hardstop" >> "$EV"; return 1; }
     get_local_identity() { echo "op:idread" >> "$EV"; printf ''; }
     window_reset() { :; }

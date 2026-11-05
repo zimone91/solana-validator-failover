@@ -41,7 +41,10 @@ live on the 2-node testnet:
    `SELF_FENCE_ISOLATION_SECS` (30) — a confirmed slot only advances when the supermajority
    confirms this node's view.
 2. **LOCAL JSON-RPC silent** (v0.6.5 F1): the local RPC answers nothing for
-   `SELF_FENCE_NOANSWER_SECS` (30), only armed once a baseline exists. Measured live: fires ~+33s.
+   `SELF_FENCE_NOANSWER_SECS` (30), only armed once a canonical baseline exists. Measured live: fires ~+33s.
+   The fresh-start gap it leaves (a node silent before any canonical answer — including one that
+   answered only non-canonical values first, or restarted over a stale / non-canonical-`SAVE_TS` save —
+   is not fenced by this timer) is named in `DEPLOYMENT-MANUAL.md` (PRIMARY self-fence).
 3. **Own votes not landing / N6** (v0.6.7): own `lastVote` lags the same-payload cluster-max by
    > 32 slots sustained 20s — closes the **egress-only** blindness ("can hear, can't be heard")
    that the first two signals miss (found live as a −25s inversion in rc.1; re-tested after the
@@ -53,8 +56,11 @@ live on the 2-node testnet:
 **Bounded demote + hard-stop (v0.6.8 B1; hardened v0.6.9 H2/H4).** A self-fence is only as good as
 its demote actually *completing*. Every demote/admin-socket call is bounded
 (`timeout -k 5 $SETIDENTITY_TIMEOUT`) — since v0.6.9 (H4) on the **standby's take/give-back too**;
-a wedged `set-identity` escalates to `_selffence_hard_stop` (`systemctl stop` →
-`systemctl mask --runtime` when the stop failed → SIGTERM → SIGKILL) which **verifies the validator
+a wedged `set-identity` escalates to `_selffence_hard_stop` (`systemctl stop` → SIGTERM → SIGKILL; the
+unit is not masked — v0.6.9 masked it, but a runtime mask is shadowed by a unit file under
+`/etc/systemd/system`, so v0.7 relies on what `Restart=always` does respect, a *requested* stop; on the
+primary, a validator process that is stopped or in uninterruptible sleep gets `systemctl stop --no-block`
+and the SIGKILL at once) which **verifies the validator
 is actually down before reporting success**, and since v0.6.9 (H2) **re-verifies after
 `HARD_STOP_REVERIFY_SECS`** so a `Restart=always` resurrect reads as HARD STOP FAILED instead of a
 false ✅. The promote/take path is bounded but never kills (fail-safe direction).
@@ -126,8 +132,10 @@ closure options below.
   guarantee") — a sufficiently adversarial partition timing, a mis-tuned or disabled self-fence,
   or a dishonest LOCAL RPC could still leave a narrow overlap. The v0.6.9 collision detector (M5)
   makes the resulting two-holder state *visible* (🚨 page) but deliberately does not auto-resolve
-  it; the v0.7 watchdog fence + relinquish proof narrows this further, and external providers (#3)
-  remain v0.8 options.
+  it; the v0.7 watchdog fence narrows this further, and external providers (#3) remain v0.8
+  options. The relinquish-proof gate (`require_relinquish_proof`) is built and tested but wired
+  into no take path in this release, so it narrows nothing yet ([SAFETY.md](SAFETY.md),
+  "Verified-demote (G2)").
 
 ## The three closure options
 
@@ -172,7 +180,14 @@ slashing. The residual above is exactly a vote-equivocation event.
 > mitigation, and the isolation/flap/egress-only testnet scenarios ([SAFETY.md](SAFETY.md#what-has-been-tested))
 > are the validation gate.
 
-> **Alpenglow note (research pending):** Alpenglow replaces TowerBFT (and the tower file) with
-> Votor/BLS certificates. This design deliberately never transfers tower files, which ages well —
-> but the vote-liveness fence and delinquency semantics (`lastVote`, lockouts) will need to be
-> re-derived against Votor before this tool is certified on an Alpenglow cluster.
+> **Alpenglow note (v0.7):** Alpenglow replaces TowerBFT (and the tower file) with Votor/BLS certificates
+> and a **vote-history file** in the ledger directory (`vote_history-<staked pubkey>.bin`). The design above
+> assumed the spare takes over from the chain's last landed vote and that no state moves between nodes; under
+> Alpenglow that is a *cold swap*, whose safety FO cannot see from outside, so by default **v0.7 never takes the staked
+> identity automatically** (Alpenglow mode): a take every gate approves is withheld and paged, and the operator
+> does the *warm swap* — the old holder demoted first, the history file copied with a sha check, then
+> `authorized-voter add` and `set-identity` on the new holder ([SAFETY.md — Alpenglow](SAFETY.md#alpenglow-mode-v07)).
+> The one opt-in is a standby armed with `AG_ARMED_TAKE=true` (default `false`): it takes cold, voter first, once a
+> readiness margin also holds ([SAFETY.md — Armed cold take](SAFETY.md#armed-cold-take-opt-in-rc1)).
+> The vote-liveness fence and the delinquency semantics (`lastVote`) still decide *when the page is sent* (or, armed,
+> when the cold take is made); re-deriving them against Votor is open work.

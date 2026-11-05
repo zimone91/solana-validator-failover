@@ -6,8 +6,10 @@
 # This codebase is written against bash-3.2 substitution semantics; restore them everywhere.
 # (No-op error on bash < 5.2, hence the || true.)
 shopt -u patsub_replacement 2>/dev/null || true
+# v0.7 (Block 7, B7.6): the version the operator reads - the banner, the generated unit's Description and the test messages below. The facts job pins it equal to the daemons' FO_VERSION and the CHANGELOG head.
+FO_VERSION="0.7.0-rc2"
 # ============================================================================
-# Solana STANDBY Failover v0.6.9 — Interactive Deploy
+# Solana STANDBY Failover — Interactive Deploy
 # Run on STANDBY node as root.
 # ============================================================================
 
@@ -172,12 +174,12 @@ done
 
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
-echo -e "  ${BOLD}${CYAN}Solana Failover  ·  STANDBY / BACKUP  ·  v0.6.10${NC}"
-echo -e "  Automatic staked-identity hot-swap for Solana validators"
+echo -e "  ${BOLD}${CYAN}Solana Failover  ·  STANDBY / BACKUP  ·  v${FO_VERSION}${NC}"
+echo -e "  Staked-identity failover monitor for Solana validators — Alpenglow mode: it detects and pages, the swap is yours"
 echo ""
 echo -e "  ${DIM}Author:${NC}     zim.one  ·  https://zim.one"
 echo -e "  ${DIM}Validator:${NC}  ${CYAN}2zykwzzo1pd3H2oSj5j5SRLTvmpa9Nr2S2Bh8tTVd5Tq${NC}"
-echo -e "  ${DIM}Tested on:${NC}  agave & Jito-Solana  4.2.x (earlier: 3.1.x / 4.0.x / 4.1.x)"
+echo -e "  ${DIM}Tested on:${NC}  agave & Jito-Solana  4.4.0 (v0.7 gate: testnet pair; earlier: 3.1.x / 4.0.x / 4.1.x / 4.2.x)"
 echo -e "  ${DIM}Networks:${NC}   testnet · mainnet"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
 sleep 2
@@ -202,7 +204,16 @@ fi
 if [[ -z "$LEDGER" ]]; then
     LEDGER=$(systemctl show solana -p ExecStart --value 2>/dev/null | sed -nE 's/.*--ledger[[:space:]=]+([^[:space:]]+).*/\1/p' | head -1)
 fi
-[[ -n "$LEDGER" ]] && ok "Ledger: $LEDGER" || warn "Ledger not auto-detected (set LEDGER_PATH in env if needed)"
+[[ -n "$LEDGER" ]] && ok "Ledger: $LEDGER" || warn "Ledger not auto-detected (set LEDGER_PATH in env if needed - the fence does not auto-detect it: fill it before 'failover arm')"
+# AG-3.5: systemd/failover-fence.sh reads LEDGER_PATH from the env file ONLY (no detection), and 'failover arm' refuses a real arm without it
+# (P6-ledger): the env file below gets what was detected here, written through _envq like every other value. Only a path that is a directory
+# on this host is written (a truncated or unexpanded --ledger word would also stop the daemons' own start-up detection); anything else stays EMPTY.
+CFG_LEDGER=""
+if [[ -n "$LEDGER" && -d "$LEDGER" ]]; then
+    CFG_LEDGER="$LEDGER"
+elif [[ -n "$LEDGER" ]]; then
+    warn "Ledger '$LEDGER' is not a directory on this host - LEDGER_PATH is left EMPTY: fill it before 'failover arm'"
+fi
 
 # Check for existing config
 EXISTING_ENV=""
@@ -228,18 +239,25 @@ step "Server role"
 echo ""
 echo -e "  ${BOLD}Choose the role for this server:${NC}"
 echo ""
-echo -e "  ${GREEN}STANDBY${NC}  — Hot spare. Takes over at ${REC_TAKEOVER_DELAY}s if PRIMARY fails (the PRIMARY"
-echo -e "            self-fences at ~30s, plus a 30s cross-node safety margin = ${REC_TAKEOVER_DELAY}s)."
+echo -e "  ${GREEN}STANDBY${NC}  — Monitoring spare. Pages you at ${REC_TAKEOVER_DELAY}s if PRIMARY fails (the PRIMARY"
+echo -e "            self-fences at ~30s, plus a 30s cross-node safety margin = ${REC_TAKEOVER_DELAY}s). Alpenglow mode (always on"
+echo -e "            in v0.7): it NEVER takes the staked identity itself — the warm swap is yours (docs/SAFETY.md, Alpenglow)."
 echo -e "            Use for your main backup server in a different DC."
 echo ""
-echo -e "  ${YELLOW}BACKUP${NC}   — Cold spare. Takes over at 120s, only if BOTH PRIMARY"
-echo -e "            and STANDBY are down. Last line of defense."
+echo -e "  ${YELLOW}BACKUP${NC}   — Cold spare. Pages you at 120s, only if BOTH PRIMARY"
+echo -e "            and STANDBY are down. Last line of defense; it never takes the identity either."
+echo -e "  ${DIM}v0.7: the last gate before either spare pages is one bounded read of its OWN node (curl -m 2 plus a watchdog${NC}"
+echo -e "  ${DIM}pet) that holds the page back if the holder shows voting there; with its own-head samples a cycle${NC}"
+echo -e "  ${DIM}makes 5-12 bounded local reads (more armed or with the fast path) — milliseconds on a${NC}"
+echo -e "  ${DIM}healthy node, +9-15s when each takes 1s with prompt RPCs; a node whose local reads take 2s or${NC}"
+echo -e "  ${DIM}more never pages the swap, nor one whose Tier 2 fails slowly (times out, or errors late) while${NC}"
+echo -e "  ${DIM}Tier 3 is slow (it pages the starvation warning instead).${NC}"
 echo ""
 echo -e "  ${BOLD}${CYAN}Recommended 3-node setup:${NC}"
 echo ""
 echo -e "     ${GREEN}PRIMARY${NC}  ${DIM}──self-fence ~30s──►${NC}  ${GREEN}${BOLD}STANDBY${NC}  ${DIM}──60s──►${NC}  ${YELLOW}BACKUP${NC}"
-echo -e "     ${DIM}holds staked, steps down       takes staked       takes staked${NC}"
-echo -e "     ${DIM}                                                  (only if STANDBY${NC}"
+echo -e "     ${DIM}holds staked, steps down       pages: the swap    pages: the swap${NC}"
+echo -e "     ${DIM}                               is yours           (only if STANDBY${NC}"
 echo -e "     ${DIM}                                                   is also down)${NC}"
 echo ""
 
@@ -262,36 +280,41 @@ ask_choice "Install mode" "simple" "simple" "advanced"
 INSTALL_MODE="$REPLY"
 if [[ "$INSTALL_MODE" == "advanced" ]]; then ADVANCED=true; else ADVANCED=false; fi
 
+# v0.7 (AG-1.6; G11): the fast-delinquency preset lives HERE, once; every line below reads it. Alpenglow's healthy vote lag measured p50 2, p90 8,
+# max 9 slots (665 mainnet accounts, 2026-11-01), so the old preset 15 sat close to the tail of the lag it is compared with; 24 is the floor of
+# the existing N6 band (24-48: a lag a healthy holder does not reach). 0 = off. The rule the tests pin: a preset is 0 or >= 24.
+MAX_DELINQ_PRESET=24
+
 # Set recommended defaults based on role.
 # v0.6.6 (N1): TAKEOVER_DELAY must be >= PRIMARY self-fence worst case (30) + margin (30) = 60 so the
 # PRIMARY relinquishes BEFORE this spare can take (no cross-node double-stake). Fast-detect
-# (MAX_DELINQUENT_SLOTS=15) shaves the delinquency head-start D — safe, because the invariant does NOT
+# (MAX_DELINQUENT_SLOTS, the preset above) shaves the delinquency head-start D — safe, because the invariant does NOT
 # rely on D (the binding gate is still TAKEOVER_DELAY).
 if [[ "$CFG_ROLE" == "STANDBY" ]]; then
     ROLE_TAKEOVER_DELAY=60
     ROLE_CHECK_INTERVAL=3
     ROLE_GOSSIP_VERIFY=true
-    ROLE_MAX_DELINQ_SLOTS=15
+    ROLE_MAX_DELINQ_SLOTS=$MAX_DELINQ_PRESET
     ROLE_NODE_SUFFIX="-STANDBY"
-    ok "Role: STANDBY (safe-fast takeover, gossip verified)"
+    ok "Role: STANDBY (monitoring spare, gossip verified; in Alpenglow mode it pages and never takes)"
     echo ""
-    echo -e "  ${CYAN}Preset: TAKEOVER_DELAY=60s, CHECK_INTERVAL=3s, GOSSIP_VERIFY=true, MAX_DELINQUENT_SLOTS=15${NC}"
+    echo -e "  ${CYAN}Preset: TAKEOVER_DELAY=60s, CHECK_INTERVAL=3s, GOSSIP_VERIFY=true, MAX_DELINQUENT_SLOTS=${MAX_DELINQ_PRESET}${NC}"
 else
     ROLE_TAKEOVER_DELAY=120
     ROLE_CHECK_INTERVAL=5
     ROLE_GOSSIP_VERIFY=false
-    ROLE_MAX_DELINQ_SLOTS=15
+    ROLE_MAX_DELINQ_SLOTS=$MAX_DELINQ_PRESET
     ROLE_NODE_SUFFIX="-BACKUP"
-    ok "Role: BACKUP (delayed takeover, gossip OFF, vote-liveness fence ON)"
+    ok "Role: BACKUP (delayed page, gossip OFF, vote-liveness fence ON; in Alpenglow mode it never takes)"
     echo ""
-    echo -e "  ${CYAN}Preset: TAKEOVER_DELAY=120s, CHECK_INTERVAL=5s, GOSSIP_VERIFY=false, MAX_DELINQUENT_SLOTS=15${NC}"
+    echo -e "  ${CYAN}Preset: TAKEOVER_DELAY=120s, CHECK_INTERVAL=5s, GOSSIP_VERIFY=false, MAX_DELINQUENT_SLOTS=${MAX_DELINQ_PRESET}${NC}"
     echo ""
     echo -e "  ${YELLOW}Why GOSSIP_VERIFY=false for BACKUP?${NC}"
-    echo -e "  If STANDBY took identity and then crashed, gossip still shows staked on"
-    echo -e "  STANDBY's endpoint for 5-10 min — gossip-verify ON would block BACKUP."
-    echo -e "  So gossip is OFF, but ${BOLD}vote-liveness (v0.6.2) is ON${NC}: BACKUP takes over"
-    echo -e "  only once the staked vote account stops advancing (the crashed STANDBY"
-    echo -e "  is no longer voting). A real fence — no longer a blind takeover."
+    echo -e "  If STANDBY held the identity (after a warm swap you ran) and then crashed, gossip still shows staked on"
+    echo -e "  STANDBY's endpoint for ~48 h (advisory since v0.6.3) — a gossip check that decided would block BACKUP."
+    echo -e "  So gossip is OFF, but ${BOLD}vote-liveness (v0.6.2) is ON${NC}: BACKUP pages only once the staked"
+    echo -e "  vote account stops advancing (the crashed STANDBY is no longer voting). A real fence — never a blind"
+    echo -e "  verdict; in Alpenglow mode BACKUP pages and never takes."
 fi
 echo ""
 
@@ -367,9 +390,9 @@ if [[ -n "$STARTUP_IDENTITY" && -f "$STARTUP_IDENTITY" ]]; then
     STARTUP_IDENTITY_PUB=$("$SOLANA_PATH/solana-keygen" pubkey "$STARTUP_IDENTITY" 2>/dev/null) || true
     if [[ "${STARTUP_IDENTITY_PUB:-}" == "$STAKED_PUB" ]]; then
         if [[ "$ALLOW_STAKED_STARTUP_IDENTITY" == "true" ]]; then
-            warn "⚠️ Validator startup --identity is STAKED — proceeding ONLY because --allow-staked-startup-identity was given. A solana.service restart boots this node VOTING (double-sign-on-restart). Repoint the startup --identity to the UNSTAKED key (Anza identity.json symlink) ASAP."
+            warn "⚠️ Validator startup --identity is STAKED — proceeding ONLY because --allow-staked-startup-identity was given. A solana.service restart boots this node VOTING (double-sign-on-restart). Fix it ASAP: the validator's startup --identity is this node's own UNSTAKED keypair, never re-pointed: every restart comes up unstaked."
         else
-            fail "Validator startup --identity is the STAKED key: a solana.service restart would boot this node VOTING (double-sign-on-restart). Set the startup --identity to the UNSTAKED keypair (Anza identity.json symlink recommended), or re-run with --allow-staked-startup-identity to override."
+            fail "Validator startup --identity is the STAKED key: a solana.service restart would boot this node VOTING (double-sign-on-restart). Fix it: the validator's startup --identity is this node's own UNSTAKED keypair, never re-pointed: every restart comes up unstaked. (Or re-run with --allow-staked-startup-identity to override.)"
         fi
     elif [[ -n "${STARTUP_IDENTITY_PUB:-}" ]]; then
         ok "Startup --identity is not the staked key — fail-safe"
@@ -435,11 +458,13 @@ CFG_DELINQ_RETRIES="$REPLY"
 
 # v0.6.7: calm one-line "why" + a RED nudge if the operator goes below the cross-node-safe floor.
 echo -e "  ${CYAN}Recommended ${REC_TAKEOVER_DELAY}s — it gives the PRIMARY its worst-case self-fence time plus a cross-node margin to step down BEFORE this spare may take.${NC}"
+echo -e "  ${DIM}The PRIMARY pages STAKED IDENTITY SILENT after its SILENT_STAKE_PAGE_SECS (90 s shipped) of silence: keep this delay at most that minus 30, or the page comes during a failover that works.${NC}"
 ask_numeric "Takeover delay (seconds of sustained delinquency)" "${TAKEOVER_DELAY:-$ROLE_TAKEOVER_DELAY}" 1
 CFG_TAKEOVER_DELAY="$REPLY"
 warn_if_below_rec_takeover_delay "$CFG_TAKEOVER_DELAY" "$REC_TAKEOVER_DELAY" || true   # nudge only (N1 clamp below enforces the floor)
 
-ask_numeric "Local health max behind (slots; own-node lag tolerance)" "${LOCAL_HEALTH_MAX_BEHIND:-100}" 0
+echo -e "  ${DIM}This value enters no decision: Tier-1 is ready iff getHealth answers ok — within the validator's own --health-check-slot-distance (agave's default 128); every 'behind' report fails Tier-1. Above that distance it is clamped at start (loud WARN); at or below it, it has no effect. To bound how far behind this spare may be at the take cycle's Tier-1 check (a lag that grows during a slow take cycle is not bounded by it), lower the validator's own --health-check-slot-distance.${NC}"
+ask_numeric "Local health max behind (slots; no effect at or below the node's health-check distance, default 128 — clamped above it)" "${LOCAL_HEALTH_MAX_BEHIND:-128}" 0
 CFG_MAX_BEHIND="$REPLY"
 
 echo ""
@@ -472,23 +497,23 @@ done
 # Normalize to base-10 so a leading-zero entry is stored in the env as a plain decimal.
 CFG_WINDOW_SIZE=$((10#$CFG_WINDOW_SIZE)); CFG_WINDOW_THRESHOLD=$((10#$CFG_WINDOW_THRESHOLD))
 
-# v0.6.9 (Phase A): expert knob — SHOWN only in advanced mode; simple uses the safe preset 15.
+# v0.6.9 (Phase A): expert knob — SHOWN only in advanced mode; simple uses the safe preset (MAX_DELINQ_PRESET).
 if [[ "$ADVANCED" == "true" ]]; then
 echo ""
 echo -e "  ${BOLD}Fast delinquency detection:${NC}"
-echo -e "  By default, Solana RPC marks a validator 'delinquent' after ~150 slots (~60s)."
+echo -e "  By default, Solana RPC marks a validator 'delinquent' after 128 slots without a vote: 26 to 51 s (200-400 ms slots), about 27 s at Alpenglow's rate."
 echo -e "  With this option, STANDBY checks lastVote directly — if it's N slots behind,"
 echo -e "  it counts as delinquent immediately. Much faster detection."
-echo -e "  ${YELLOW}Preset 15 (v0.6.6): shaves the detection head-start D. Safe — the cross-node${NC}"
+echo -e "  ${YELLOW}Preset ${MAX_DELINQ_PRESET} (v0.7): shaves the detection head-start D. Safe — the cross-node${NC}"
 echo -e "  ${YELLOW}timing invariant does NOT rely on D (the binding gate is TAKEOVER_DELAY). 0 = off.${NC}"
 echo ""
 
 # v0.6.7: why-note only — detection SPEED, not a double-sign value, so no danger warning either way.
-echo -e "  ${CYAN}Recommended 15 — detects a stopped PRIMARY quickly without affecting safety; 0 disables fast-detect (slower failover).${NC}"
-ask_numeric "Fast delinquency (slots behind, 0=off, 15=fast preset)" "${MAX_DELINQUENT_SLOTS:-$ROLE_MAX_DELINQ_SLOTS}" 0
+echo -e "  ${CYAN}Recommended ${MAX_DELINQ_PRESET} — detects a stopped PRIMARY quickly without affecting safety; 0 disables fast-detect (slower failover).${NC}"
+ask_numeric "Fast delinquency (slots behind, 0=off, ${MAX_DELINQ_PRESET}=fast preset)" "${MAX_DELINQUENT_SLOTS:-$ROLE_MAX_DELINQ_SLOTS}" 0
 CFG_MAX_DELINQ_SLOTS="$REPLY"
 else
-    CFG_MAX_DELINQ_SLOTS=15   # simple-mode safe default (verified preset)
+    CFG_MAX_DELINQ_SLOTS=$MAX_DELINQ_PRESET   # simple-mode safe default (the preset above)
 fi
 
 echo ""
@@ -523,8 +548,9 @@ if [[ "$ADVANCED" == "true" ]]; then
     CFG_VOTE_LIVENESS="$REPLY"
     if [[ "$CFG_VOTE_LIVENESS" != "true" ]]; then
         warn "Vote-liveness is the authoritative split-brain fence. With it OFF the daemon REFUSES to start"
-        warn "unless you accept an UNFENCED takeover — there is then NO double-sign protection at all."
-        ask_choice "Accept UNFENCED takeover (dangerous)?" "false" "false" "true"
+        warn "unless you accept an UNFENCED takeover (retained path: Alpenglow mode withholds every take in v0.7, so no take is made either way)"
+        warn "— and then NO double-sign protection stands behind the page or a later release that takes."
+        ask_choice "Accept UNFENCED takeover (dangerous; retained path — v0.7 never takes)?" "false" "false" "true"
         CFG_ALLOW_UNFENCED="$REPLY"
     fi
 else
@@ -563,9 +589,9 @@ fi
 # (it cannot compute the take-visibility floor), so collect it in ALL modes — not only under Option A.
 CFG_STANDBY_TAKEOVER_DELAY=""
 if [[ "$CFG_ROLE" == "BACKUP" ]]; then
-    echo -e "  ${YELLOW}A BACKUP takes over only AFTER the STANDBY has. Enter the STANDBY's TAKEOVER_DELAY${NC}"
-    echo -e "  ${YELLOW}(NOT this BACKUP's) so this node waits until the STANDBY's take is externally visible${NC}"
-    echo -e "  ${YELLOW}before it may take — otherwise two spares could take at once (double-sign).${NC}"
+    echo -e "  ${YELLOW}A BACKUP pages only AFTER the STANDBY would have. Enter the STANDBY's TAKEOVER_DELAY${NC}"
+    echo -e "  ${YELLOW}(NOT this BACKUP's) so this node waits until the STANDBY's take would be externally visible${NC}"
+    echo -e "  ${YELLOW}(the retained take path's rule: otherwise two spares could take at once — v0.7 pages instead).${NC}"
     # Re-run safety: an existing env holds this BACKUP's configured STANDBY_TAKEOVER_DELAY — the
     # default must follow it (a hard-coded 60 here would let one Enter lower the take-visibility
     # floor this node's cross-node timing is computed from).
@@ -695,7 +721,7 @@ if [[ "$CFG_NTFY_ENABLED" == "true" ]]; then
     echo -e "  Sending test notification..."
     # shellcheck disable=SC2034  # output captured for potential debug; only the exit code is checked
     NTFY_TEST=$(curl -s -m 10 -X POST "$CFG_WEBHOOK_URL" \
-        -H "Title: [${CFG_NODE_NAME}] STANDBY Failover v0.6.9 — deploy test" \
+        -H "Title: [${CFG_NODE_NAME}] STANDBY Failover v${FO_VERSION} — deploy test" \
         -H "Priority: urgent" \
         -H "Tags: white_check_mark" \
         -d "STANDBY node connected to this channel." 2>&1)
@@ -762,7 +788,7 @@ VALIDATOR_TYPE=$(_envq "${CFG_VALIDATOR_TYPE}")
 STAKED_KEYPAIR=$(_envq "${CFG_STAKED}")
 UNSTAKED_KEYPAIR=$(_envq "${CFG_UNSTAKED}")
 SOLANA_PATH="\$HOME/.local/share/solana/install/active_release/bin"
-LEDGER_PATH=""
+LEDGER_PATH=$(_envq "${CFG_LEDGER}")
 
 # --- Three-Tier RPC ---
 LOCAL_RPC=$(_envq "${CFG_LOCAL_RPC}")
@@ -830,6 +856,7 @@ SELF_FENCE_VOTE_LAG_RESET_CYCLES=3
 SETIDENTITY_TIMEOUT=15
 SELF_FENCE_HARD_STOP=true
 HARD_STOP_REVERIFY_SECS=15
+HARD_STOP_EXIT_WAIT_SECS=15
 SELF_FENCE_RETAKE_COOLDOWN=600
 
 # --- Collision detector (v0.6.9 M5) ---
@@ -867,13 +894,17 @@ WITNESS_FASTPATH_FIRST_SPARE=${CFG_WITNESS_FASTPATH_FIRST_SPARE}
 # --- v0.7 (Block 6.2): G2 verified-demote proof vantages (ARMED spares only; inert otherwise) ---
 # Default A=TIER2_RPC, B=TIER3_RPC (already required distinct). Uncomment ONLY to pin different
 # bank-bearing RPC providers in DISTINCT failure domains; identical/same-host values page CRITICAL
-# and leave G2 cannot-determine for the run (fail toward NOT-taking). BOTH vantages must support
+# and leave G2 cannot-determine for the run (no G2 answer conditions a take in this release; once the
+# gate is wired, verified-demote cannot prove here). BOTH vantages must support
 # JSON-RPC batching ([getSlot, getClusterNodes] in one POST) and must not resolve to the same
-# address — `failover arm` probes both and refuses with REFUSE[P6-batch] / REFUSE[P6-vantage].
+# address — \`failover arm\` probes both and refuses with REFUSE[P6-batch] / REFUSE[P6-vantage].
 # RECOMMENDED: point at least ONE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN (a different
 # OPERATOR). On the defaults these ARE the vote-liveness tiers, so one compromised vantage supplies
 # BOTH halves of the double-sign condition and the proof gate's additivity does not hold; the arm
-# MEASURES and prints this, and the armed daemon warns at every start (docs/SAFETY.md).
+# MEASURES and prints this, and the armed daemon warns at every start. A third endpoint restores that
+# additivity for G2 ONLY: the armed spare's other proof, watchdog-elapsed, measures the holder's
+# silence through TIER2_RPC/TIER3_RPC on EVERY config (one input with the vote-frozen observation).
+# Full statement: docs/SAFETY.md, 'Shared vantages'.
 # G2_VANTAGE_A=""
 # G2_VANTAGE_B=""
 
@@ -919,7 +950,7 @@ step "Creating systemd service"
 
 cat > /etc/systemd/system/solana-failover-standby.service << 'SERVICEEOF'
 [Unit]
-Description=Solana STANDBY Node Failover Protection v0.6.10
+Description=Solana STANDBY Node Failover Protection v@FO_VERSION@
 After=solana.service
 Wants=solana.service
 
@@ -929,6 +960,7 @@ User=root
 ExecStart=/opt/solana-failover/solana-standby-failover.sh
 Restart=always
 RestartSec=10
+RestartPreventExitStatus=3
 LimitNOFILE=1000000
 TimeoutStopSec=15
 KillSignal=SIGTERM
@@ -939,6 +971,7 @@ SyslogIdentifier=solana-failover-standby
 [Install]
 WantedBy=multi-user.target
 SERVICEEOF
+sed -i "s/@FO_VERSION@/${FO_VERSION}/" /etc/systemd/system/solana-failover-standby.service   # v0.7 (B7.6): the quoted heredoc above expands nothing
 
 systemctl daemon-reload
 ok "Systemd service created"
@@ -987,7 +1020,7 @@ fi
 if [[ "$CFG_TG_ENABLED" == "true" && -n "$CFG_TG_TOKEN" && -n "$CFG_TG_CHAT" ]]; then
     TG_RESULT=$(curl -s -m 10 -X POST "https://api.telegram.org/bot${CFG_TG_TOKEN}/sendMessage" \
         -d chat_id="$CFG_TG_CHAT" \
-        -d text="[${CFG_NODE_NAME}] 🔧 Deploy complete — STANDBY failover v0.6.9 ready" \
+        -d text="[${CFG_NODE_NAME}] 🔧 Deploy complete — STANDBY failover v${FO_VERSION} ready" \
         -d parse_mode="HTML" 2>/dev/null) || true
     echo "$TG_RESULT" | jq -e '.ok' &>/dev/null && ok "Telegram: test message sent" || warn "Telegram: send failed"
 fi
@@ -1022,9 +1055,9 @@ if [[ "$CFG_ROLE" == "BACKUP" ]]; then
     echo ""
     echo -e "  ${BOLD}${YELLOW}BACKUP NOTE${NC}"
     echo -e "    ${DIM}GOSSIP_VERIFY=$CFG_GOSSIP_VERIFY  VOTE_LIVENESS_VERIFY=$CFG_VOTE_LIVENESS  TAKEOVER_DELAY=${CFG_TAKEOVER_DELAY}s${NC}"
-    echo -e "    ${DIM}BACKUP takes over only after BOTH PRIMARY and STANDBY stop voting the staked${NC}"
+    echo -e "    ${DIM}BACKUP pages only after BOTH PRIMARY and STANDBY stop voting the staked${NC}"
     echo -e "    ${DIM}identity (vote-liveness fence) AND ${CFG_TAKEOVER_DELAY}s elapse — a real fence,${NC}"
-    echo -e "    ${DIM}not a blind takeover.${NC}"
+    echo -e "    ${DIM}not a blind verdict (Alpenglow mode: it never takes).${NC}"
 fi
 
 # v0.7 (Block 6.1, §2.7 (c) [6.0-COND-4]): this wizard writes a SPARE config with NO pairing
@@ -1034,10 +1067,12 @@ fi
 echo ""
 echo -e "  ${BOLD}${YELLOW}ATTESTATION NOTE (v0.7)${NC}"
 echo -e "    ${DIM}This config carries NO pairing attestation. Once this spare is ARMED ('failover arm'),${NC}"
-echo -e "    ${DIM}it runs proof providers: verified-demote ONLY — holder not attested; silence-based${NC}"
-echo -e "    ${DIM}take disabled — and pages CRITICAL at every start until paired. Upgrade+arm the${NC}"
-echo -e "    ${DIM}HOLDER first (its arm prints the pairing token), then re-run this spare's arm with${NC}"
-echo -e "    ${DIM}ARM_PAIRING_TOKEN='<token line>'. Un-armed hosts: no behavior change.${NC}"
+echo -e "    ${DIM}it pages CRITICAL at every start until paired (holder not attested). This release has no${NC}"
+echo -e "    ${DIM}relinquish-proof gate: armed or not, the spare takes on v0.6.x semantics, which the 6.3${NC}"
+echo -e "    ${DIM}re-check and the own-view veto can only hold; from the release that wires the gate, an${NC}"
+echo -e "    ${DIM}unpaired spare's silence-based take is disabled. Upgrade+arm the HOLDER first (its arm${NC}"
+echo -e "    ${DIM}prints the pairing token), then re-run this spare's arm with ARM_PAIRING_TOKEN='<token line>'.${NC}"
+echo -e "    ${DIM}Un-armed hosts: no behavior change.${NC}"
 
 sleep 2
 

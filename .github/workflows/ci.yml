@@ -15,21 +15,51 @@
 #   caught the bash-5.2 alert-death bug BEFORE v0.6.9 shipped it to every Ubuntu 24.04 /
 #   Debian 12 install. That is the badge's meaning.
 #
-# Job summary:
-#   linux-bash52  — the deploy target (Ubuntu 24.04, /bin/bash 5.2): full suite.
-#   macos-bash32  — the compatibility floor (macOS, pinned /bin/bash 3.2.57): full suite.
+# Job summary (each job's interpreter and awk). Every job runs in GitHub's environment — CI=true, GITHUB_*, RUNNER_* —
+# which no test reads (the facts job checks it). Each suite job sets run_all's per-suite cap, RUN_ALL_SUITE_CAP, from its
+# own runner's model (3600 s Linux, 7200 s macOS, 5400 s under strace; each derived at its job): a suite still running at
+# it is killed by run_all and fails the run, named, with whatever it left in its process group; each job's
+# timeout-minutes, derived in its comment, leaves room for one such kill on top of its run at the modeled speed.
+#   linux-bash52  — the deploy target (Ubuntu 24.04, /bin/bash 5.2; awk: mawk, pinned — the stock Ubuntu
+#                   24.04 awk a deploy host runs, fingerprinted and selected by the "awk fingerprint" step,
+#                   which fails loudly if awk still resolves to anything else): full suite.
+#   macos-bash32  — the compatibility floor (macOS, pinned /bin/bash 3.2.57; awk: the macOS system awk, the
+#                   BWK "one true awk" — printed, not pinned): full suite.
 #                   Pinning /bin/bash matters: bare `bash` on a macOS runner may resolve to a newer
 #                   Homebrew bash, which would silently re-open the class where a bash-4-only
 #                   construct parses "green" while the 3.2 interpreter never runs the suite.
-#   shellcheck    — `-S error` on the seven shipped scripts (the same bar every change has met).
-#   facts         — claims-vs-reality: the suite count stated in README and pinned in run_all.sh
+#   strace-hermetic — no network at the syscall level (Ubuntu 24.04, /bin/bash 5.2; awk: mawk, pinned the
+#                   same way): the WHOLE tests/run_all.sh under `strace -f` (tests/strace-hermetic.sh, its
+#                   filter tests/lib/strace-net.awk) — a syscall line's family is its socket's own (socket()'s first
+#                   argument, else the line's sockaddr; a decoded netlink payload's family word is not the socket's)
+#                   — red on any AF_INET/AF_INET6 socket's syscall from any process (loopback included), on any socket
+#                   of another family than AF_UNIX/AF_LOCAL and AF_NETLINK (AF_PACKET, AF_VSOCK, an unknown one …), on
+#                   any exec of a client on the net guard's list by its basename from outside the run's stand-in and
+#                   stub directories (a symlink to it or a copy under the same name included; a RENAMED copy and an
+#                   exec through a file descriptor are the named limit, seen by the socket rules once they open one),
+#                   on a stub directory listed outside the run's own temp root (the script points TMPDIR there), on a
+#                   failing run_all, and on a run that does not end (strace still tracing 30 s after run_all exited, or
+#                   the step's STRACE_HERMETIC_BOUND reached: every process still traced is named and stopped). run_all's
+#                   output streams into the step log as it runs. run_all's own stage (4) catches the network clients a
+#                   suite reaches through PATH on every leg; of what that stage cannot see (its LIMIT, tests/HARNESS.md),
+#                   this job sees whatever opens a socket.
+#   shellcheck    — `-S error` on the shipped scripts, the test harness lib and the strace job's script (the
+#                   same bar every change has met; runs no interpreter).
+#   facts         — (Ubuntu 24.04, the runner's bash and default awk, not pinned: its awk programs are POSIX
+#                   awk, no {m,n} interval, exercised under mawk, gawk, busybox awk and the BWK awk)
+#                   claims-vs-reality: the suite count stated in README and pinned in run_all.sh
 #                   must equal the actual number of test files. Exists because a frozen published
 #                   claim drifted from reality three separate times in this project's history
 #                   (a stale suite count, a nonexistent "tested on" tag, and release bodies
 #                   carrying retracted wording). Numbers in public claims are now checked
 #                   mechanically, not remembered. v0.7 (pre-Block-4, №10): the same job also pins
 #                   the per-daemon counts of `date +%s` (wall-clock) and `${var//…}` (patsub)
-#                   lines — growth in either is a review-stop, enforced the same way.
+#                   lines — growth in either is a review-stop, enforced the same way. v0.7 Block 6.3.1:
+#                   the same job checks that every page the daemons send has an entry in docs/NOTIFICATIONS.md
+#                   (a status as a whole code span, a heading as a whole span or the opening of one followed by
+#                   "…"), that bash's /dev/tcp and /dev/udp redirections appear in one test fixture only (the step
+#                   reads every *.sh file, the two *.env.example templates and the five systemd/*.service.skel
+#                   skeletons), and that no test reads a variable GitHub's runner sets (CI, GITHUB_*, RUNNER_*).
 
 name: ci
 on:
@@ -44,48 +74,133 @@ jobs:
   linux-bash52:
     name: tests · ubuntu 24.04 · bash 5.2 (deploy target)
     runs-on: ubuntu-24.04
+    # Sized from the gate's ubuntu-mawk leg — set up as this job is: stock ubuntu:24.04, /bin/bash 5.2, mawk, jq, a
+    # non-root runner, CI=true, on ONE docker vCPU — measured on the 6.3.1 fix round 8 gate (two runs, 54/54 green): one
+    # run took 1,897 s start to end, the other 1,879 s summed over its suites (1,886 s start to end); their slowest suite,
+    # test_own_view, 967 and 996 s. The model: a hosted core up to half that vCPU's speed (the hosted runner has four), so
+    # up to 2x.
+    # RUN_ALL_SUITE_CAP (on the suite step): 3600 s, 1.81x the slowest suite at the model (2 x 996 = 1,992 s).
+    # timeout-minutes: the run at the model plus ONE suite killed at the cap (+5 s for its SIGKILL), so a single hang still
+    # ends as a named red inside this job: 2 x 1,897 + 3,600 + 5 = 7,399 s (124 min). Set CONSERVATIVELY to 180 until
+    # this job is measured on GitHub (then about 2x the measured job time): a false red on the first public run costs more
+    # than the minutes. A second hang can reach the timeout; every KILLED line is in the step log by then (run_all prints
+    # it as it happens).
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v5
       - name: interpreter fingerprint
         run: /bin/bash --version | head -1
       - name: deps
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+      - name: awk fingerprint (must be mawk — the stock Ubuntu 24.04 awk; fail loudly if it cannot be selected)
+        # The same shape as the macOS job's bash 3.2 pin: the suites' awk programs must run, green, under the awk
+        # a deploy host has. A runner whose `awk` resolves elsewhere gets mawk selected (installed if absent).
+        run: |
+          a=$(readlink -f "$(command -v awk)"); echo "runner awk: $a"
+          case "$a" in
+            */mawk) ;;
+            *) command -v mawk > /dev/null 2>&1 || sudo apt-get install -y -qq mawk || true
+               sudo update-alternatives --set awk "$(command -v mawk || echo /usr/bin/mawk)" || true ;;
+          esac
+          a=$(readlink -f "$(command -v awk)")
+          case "$a" in */mawk) ;; *) echo "awk resolves to $a, not mawk — pin mawk or update this gate consciously"; exit 1 ;; esac
+          echo "awk: $a — $(awk -W version 2>&1 | head -1)"
       - name: full suite (parse gate + run gate + suite-count manifest)
+        env:
+          RUN_ALL_SUITE_CAP: 3600   # this job's model (its comment above)
         run: cd tests && /bin/bash run_all.sh
 
   macos-bash32:
     name: tests · macOS · /bin/bash 3.2.57 (compatibility floor)
     runs-on: macos-latest
+    # Sized from each suite run alone on the measuring Mac (an Apple M5 Max, 18 cores, /bin/bash 3.2, CI=true; this tree,
+    # 6.3.1 fix round 9): its wall time w and its CPU time c. Three cores of that speed (the hosted macos-latest runner has
+    # three) run a suite within w + c/3 (its longest chain plus its work shared three ways); the model takes cores up to
+    # half that speed, so up to 2x.
+    # RUN_ALL_SUITE_CAP (on the suite step): 7200 s. The slowest suite at the model is test_own_view — w 482 s, c 4,444 s
+    # here; w 487 s, c 4,650 s in the delta panel 8's run — at most 2 x (487 + 4,650 / 3) = 4,074 s: the cap is 1.77x that.
+    # timeout-minutes: the run at the model plus ONE suite killed at the cap (+5 s for its SIGKILL), so a single hang still
+    # ends as a named red inside this job: the sum of w + c/3 over the suites is 4,626 s; 2 x 4,626 + 7,200 + 5 = 16,457 s,
+    # rounded up to the next 15 min. A second hang can reach the timeout; every KILLED line is in the step log by then
+    # (run_all prints it as it happens).
+    timeout-minutes: 285
     steps:
       - uses: actions/checkout@v5
       - name: interpreter fingerprint (must be 3.2.x — fail loudly if the runner ever changes it)
         run: |
           /bin/bash --version | head -1
           /bin/bash --version | head -1 | grep -q "version 3\.2" || { echo "runner /bin/bash is not 3.2 — pin a 3.2 interpreter or update this gate consciously"; exit 1; }
+          echo "awk: $(command -v awk) — $(awk --version 2>&1 | head -1)"
       - name: deps
         run: which jq || brew install jq
       - name: full suite under the PINNED interpreter
+        env:
+          RUN_ALL_SUITE_CAP: 7200   # this job's model (its comment above)
         run: cd tests && /bin/bash run_all.sh
 
+  strace-hermetic:
+    name: no network at the syscall level · ubuntu 24.04 · bash 5.2 · run_all under strace
+    runs-on: ubuntu-24.04
+    # Sized as linux-bash52, from the 6.3.1 fix round 8 gate's two runs of the whole run_all under strace -f, each as a
+    # non-root runner in ubuntu:24.04 with real clients, CI=true, on ONE docker vCPU: the tracked tests/strace-hermetic.sh
+    # took 2,599 s start to end (1.37x that gate's plain run, 1,897 s start to end); the gate's own strace leg — the same
+    # strace -f under its own filter, not this script — took 2,620 s summed over its suites (1.39x the plain run's 1,879 s
+    # summed the same way; 2,627 s start to end). Their slowest suite, test_own_view: 1,394 and 1,392 s. At the same 2x model:
+    #   RUN_ALL_SUITE_CAP 5400 s — 1.94x the slowest suite at the model (2 x 1,394 = 2,788 s);
+    #   STRACE_HERMETIC_BOUND 10645 s — where the script ends the run itself, a named red listing every process still
+    #   traced: the run at the model plus ONE suite killed at the cap, 2 x 2,620 + 5,400 + 5 = 10,645 s (2,620 s: the
+    #   larger run, summed over its suites; its 2,627 s start to end gives 10,659 s, inside the 10 min below);
+    #   timeout-minutes: at least the bound plus 10 min for the steps around it (11,245 s, 188 min); set CONSERVATIVELY
+    #   to 270 until this job is measured on GitHub (then about 2x the measured job time).
+    # So a hang ends as a named red before GitHub's timeout: run_all's KILLED line streams into the step log as it happens,
+    # a process that outlives run_all is named and stopped 30 s after run_all's end, and anything else at the bound.
+    timeout-minutes: 270
+    steps:
+      - uses: actions/checkout@v5
+      - name: interpreter fingerprint
+        run: /bin/bash --version | head -1
+      - name: deps (strace; the suites' jq and socat; REAL network clients, so a leaking exec would really connect)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq socat strace curl wget iputils-ping dnsutils netcat-openbsd openssh-client git rsync telnet traceroute whois python3 perl openssl
+      - name: awk fingerprint (must be mawk — the stock Ubuntu 24.04 awk; fail loudly if it cannot be selected)
+        # The same shape as the macOS job's bash 3.2 pin: the suites' awk programs must run, green, under the awk
+        # a deploy host has. A runner whose `awk` resolves elsewhere gets mawk selected (installed if absent).
+        run: |
+          a=$(readlink -f "$(command -v awk)"); echo "runner awk: $a"
+          case "$a" in
+            */mawk) ;;
+            *) command -v mawk > /dev/null 2>&1 || sudo apt-get install -y -qq mawk || true
+               sudo update-alternatives --set awk "$(command -v mawk || echo /usr/bin/mawk)" || true ;;
+          esac
+          a=$(readlink -f "$(command -v awk)")
+          case "$a" in */mawk) ;; *) echo "awk resolves to $a, not mawk — pin mawk or update this gate consciously"; exit 1 ;; esac
+          echo "awk: $a — $(awk -W version 2>&1 | head -1)"
+      - name: the whole run_all under strace -f (tests/strace-hermetic.sh — its header holds the rules)
+        env:
+          RUN_ALL_SUITE_CAP: 5400        # this job's model (its comment above)
+          STRACE_HERMETIC_BOUND: 10645   # the same comment: the run at the model + one capped hang
+        run: /bin/bash tests/strace-hermetic.sh "$RUNNER_TEMP/strace-hermetic"
+
   shellcheck:
-    name: shellcheck -S error · eight shipped scripts + test harness lib
+    name: shellcheck -S error · eight shipped scripts + test harness lib + the strace job's script
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: shellcheck
         # v0.7 Block 5.1: the two fence scripts are REAL shippable artifacts (in SHA256SUMS and
         # the run_all parse gate) — their EXECUTION on a host happens only at the v0.7 rollout
-        # (`failover arm`, upgrade-then-arm); nothing in this repository installs them.
+        # (`failover arm`, upgrade-then-arm, run by the operator); nothing else in this repository installs them.
         # install.sh: in SHA256SUMS since it shipped, but absent from this list until the
         # Block-5.1 panel found the gap (pre-existing, not a fence regression) — closed here.
         # v0.7 Block 5.3: failover-arm.sh — the `failover arm` ceremony itself (the installer
         # of the fence); same shippable-not-executed boundary as the fence scripts.
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -S error install.sh solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh failover-arm.sh tests/lib/harness.sh systemd/failover-fence.sh systemd/failover-fence-page-only.sh
+          shellcheck -S error install.sh solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh failover-arm.sh tests/lib/harness.sh systemd/failover-fence.sh systemd/failover-fence-page-only.sh tests/strace-hermetic.sh
 
   facts:
-    name: claims match reality (suite count, wall-clock/patsub pins, checksums)
+    name: claims match reality (suite count, wall-clock/patsub pins, checksums, every page documented, /dev/tcp, runner variables)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -139,9 +254,391 @@ jobs:
           # G2_CLOCK_BUDGET 20→25); C1 added the shared-vantage startup warn in _g2_register,
           # which compares URLs via _norm_rpc_url/_g2_url_host (prefix/suffix expansion, no
           # patsub) and reads no clock at all — neither counter's subject changed.
-          [ "$d_pri" = "21" ] || { echo "primary 'date +%s' lines: $d_pri != pinned 21 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
-          [ "$d_sby" = "22" ] || { echo "standby 'date +%s' lines: $d_sby != pinned 22 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
+          # v0.7 Block 6.3: pins RE-DERIVED by grep and UNCHANGED at 21/22 and 4/4 — the
+          # [elapsed-provider] twin region reads only mono_now (zero `date +%s`) and has no patsub
+          # site (test_elapsed_provider (8b) censuses both inside the region). What moved in that
+          # diff, deliberately and with its own comment, is the (14b) pet census 41/42 → 42/43.
+          # v0.7 Block 6.3 FIX ROUND 1: pins RE-DERIVED by grep and UNCHANGED at 21/22 and 4/4 — the
+          # round's new mono stamps (post-read silence starts, observed_at) are mono_now, the
+          # canonical-integer validator uses no patsub, and the M9 LOCAL_HEALTH_MAX_BEHIND warn reads
+          # no clock. What moved, deliberately and with its own comment, is the (14b) pet census
+          # 42/43 → 42/45 (the standby's two curl -m 3 LOCAL getSlot reads, now petted: M6).
+          # v0.7 Block 6.3.1: pins RE-DERIVED by grep and UNCHANGED at 21/22 and 4/4 — the [own-view]
+          # twin region reads only mono_now (zero `date +%s`) and has no patsub site; the
+          # LOCAL_HEALTH_MAX_BEHIND clamp reads no clock. What moved, deliberately and with its own
+          # comment, is the (14b) pet census 42/46 → 44/48 (the region's two petted LOCAL reads).
+          # v0.7 Block 6.3.1 FIX ROUND 1: pins RE-DERIVED by grep and UNCHANGED at 21/22 and 4/4 — the
+          # take cycle's added own-head samples and the recovery ladder's sampled tail call the existing
+          # sampler (mono_now only), the Tier-1 health verdict and its clamp read no clock, and none adds a
+          # patsub site; the pet census is unchanged (the sampler's one pet serves every new call site).
+          # v0.7 AG-1.2: 21→22 / 22→23 — the ONE new site per daemon is the episode wall-time in _ag_take_withheld (the [ag] twin block): the
+          # AG page hands _vh_class the wall time of the episode's first liveness sample, because the vote-history file's mtime is wall
+          # time and "older than the episode" is compared against it. A DISPLAY value: no timer, gate or decision reads it (the page's
+          # episode marker and every pacing stamp are mono_now); the monotonic-timer rule is untouched. Patsub stays 4/4 (the block uses
+          # prefix removal only).
+          [ "$d_pri" = "22" ] || { echo "primary 'date +%s' lines: $d_pri != pinned 22 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
+          [ "$d_sby" = "23" ] || { echo "standby 'date +%s' lines: $d_sby != pinned 23 — a new wall-clock site is a review-stop (safety timers are monotonic; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$p_pri" = "4" ]  || { echo "primary patsub \${var//} lines: $p_pri != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
           [ "$p_sby" = "4" ]  || { echo "standby patsub \${var//} lines: $p_sby != pinned 4 — a new patsub site is a review-stop (the bash-5.2 patsub_replacement alert-death class; addendum §3b.4); a legitimate change updates this pin in the same diff"; exit 1; }
+      - name: the Alpenglow feature id matches the agave and jito sources; AG mode is unconditional (v0.7 AG-1.1)
+        # RULE 1: ALPENGLOW_FEATURE_ID is assigned once per daemon, to the same value in both, and that value is the id the
+        # agave v4.4.0 and jito v4.4.0-jito sources declare for `pub mod alpenglow` (feature-set/src/lib.rs; D0.3 — the file is
+        # byte-identical in the two tags). The id of 6ce2d93 was a stale one (a probe on it reads `absent` for ever). This is
+        # the one facts step that reads the network (raw.githubusercontent.com, pinned tags, 5 retries): it is RED when a
+        # source cannot be read — a pin that passes on a failed fetch would be vacuous. A planted-source control runs first:
+        # the extractor must read the declared id of `pub mod alpenglow`, not its neighbour `alpenglow_fast_leader_handover`,
+        # and a source that declares another id must read as that other id (so the comparison can go red).
+        # RULE 2: `_ag_mode() { return 0; }` is defined exactly once per daemon, as that line: AG mode is unconditional in a
+        # shipped script (no knob, no state file and no RPC answer can turn it off; tests shadow it after sourcing a daemon).
+        # LIMIT: a definition in another shape (eval, a nested one) is the function census's to catch (tests/test_own_view.sh (0d)).
+        run: |
+          w=$(mktemp -d); bad=0
+          src_id() { awk '/^pub mod alpenglow \{/ { f = 1; next } f && /declare_id!\("/ { s = $0; sub(/^.*declare_id!\("/, "", s); sub(/".*$/, "", s); print s; exit }'; }
+          ctl=$(printf 'pub mod alpenglow_fast_leader_handover {\n    solana_pubkey::declare_id!("FastLeaderHandover11111111111111111111111111");\n}\npub mod alpenglow {\n    solana_pubkey::declare_id!("A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJT");\n}\n' | src_id)
+          [ "$ctl" = "A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJT" ] || { echo "control: the extractor read '$ctl' from a planted source"; exit 1; }
+          ids=""
+          for f in solana-primary-failover.sh solana-standby-failover.sh; do
+            n=$(grep -c '^ALPENGLOW_FEATURE_ID=' "$f" || true)
+            id=$(sed -n 's/^ALPENGLOW_FEATURE_ID="\([^"]*\)".*$/\1/p' "$f")
+            if [ "$n" != 1 ] || [ -z "$id" ]; then echo "$f: $n ALPENGLOW_FEATURE_ID assignment(s), id='$id' — want exactly one, quoted"; bad=1; continue; fi
+            ids="$ids $id"
+            a=$(grep -c '^_ag_mode()' "$f" || true); b=$(grep -c '^_ag_mode() { return 0; }$' "$f" || true)
+            [ "$a" = 1 ] && [ "$b" = 1 ] || { echo "$f: _ag_mode defined $a time(s), $b of them as the unconditional 'return 0' — AG mode must be unconditional in a shipped script"; bad=1; }
+          done
+          [ "$(printf '%s\n' $ids | sort -u | wc -l | tr -d ' ')" = 1 ] || { echo "the two daemons name different Alpenglow feature ids:$ids"; bad=1; }
+          want=$(printf '%s\n' $ids | sort -u | head -1)
+          for t in anza-xyz/agave/v4.4.0 jito-foundation/jito-solana/v4.4.0-jito; do
+            u="https://raw.githubusercontent.com/$t/feature-set/src/lib.rs"
+            if ! curl -fsS -m 30 --retry 5 --retry-delay 4 --retry-all-errors -o "$w/lib.rs" "$u"; then echo "cannot read $u — the pin is not checked, and is RED rather than vacuous"; bad=1; continue; fi
+            up=$(src_id < "$w/lib.rs")
+            [ -n "$up" ] || { echo "no 'pub mod alpenglow' declare_id in $u"; bad=1; continue; }
+            [ "$up" = "$want" ] && echo "$t declares $up — the daemons' id" || { echo "$t declares $up but the daemons carry '$want'"; bad=1; }
+          done
+          rm -rf "$w"
+          [ "$bad" = 0 ] || { echo "RED: the Alpenglow feature id or the unconditional AG-mode predicate moved (rule: this step's comment)"; exit 1; }
+          echo "ALPENGLOW_FEATURE_ID is one id in both daemons and the id both agave v4.4.0 and jito v4.4.0-jito declare; _ag_mode is the unconditional 'return 0', once per daemon"
+      - name: MIN_VALIDATOR_VERSION defaults to 4.4.0 everywhere it is written (v0.7 AG-1.5)
+        # RULE: the minimum validator version the AG page calls ready is ONE value, the release line of the two tags the step above
+        # reads (agave v4.4.0, jito v4.4.0-jito): both daemons assign MIN_VALIDATOR_VERSION="4.4.0" once and announce drift against
+        # 4.4.0 once (the shared safety-knob table), and both env templates carry MIN_VALIDATOR_VERSION=4.4.0 once. A default moved in
+        # one place only would let one role call a validator ready that the other calls not ready. A legitimate change updates all of
+        # them and this step in the same diff.
+        run: |
+          bad=0
+          for f in solana-primary-failover.sh solana-standby-failover.sh; do
+            n=$(grep -c '^MIN_VALIDATOR_VERSION="4\.4\.0"$' "$f" || true)
+            d=$(grep -c '^    _drift_check MIN_VALIDATOR_VERSION 4\.4\.0 semver ' "$f" || true)
+            [ "$n" = 1 ] && [ "$d" = 1 ] || { echo "$f: MIN_VALIDATOR_VERSION default lines=$n, drift-table lines=$d (want 1 and 1, both 4.4.0)"; bad=1; }
+          done
+          for f in failover.env.example failover-standby.env.example; do
+            n=$(grep -c '^MIN_VALIDATOR_VERSION=4\.4\.0 ' "$f" || true)
+            [ "$n" = 1 ] || { echo "$f: $n MIN_VALIDATOR_VERSION=4.4.0 line(s) (want 1)"; bad=1; }
+          done
+          [ "$bad" = 0 ] || { echo "RED: the MIN_VALIDATOR_VERSION default moved in one place (rule: this step's comment)"; exit 1; }
+          echo "MIN_VALIDATOR_VERSION is 4.4.0 in both daemons, their drift tables and both env templates"
+      - name: the version string is ONE value everywhere an operator reads it - FO_VERSION in both daemons and both deploy scripts, the CHANGELOG head, the templates, the manual, the start pages (v0.7 B7.6)
+        # RULE: FO_VERSION="<x>" is assigned exactly once in each of the four scripts that print a version (solana-primary-failover.sh, solana-standby-failover.sh, deploy-failover.sh,
+        # deploy-failover-standby.sh), all four equal, and equal to the version of CHANGELOG.md's FIRST release heading (## v<x> - ...). The banner, the start pages, --version, the deploy banner, the
+        # generated unit's Description and the deploy test messages say ${FO_VERSION} - no printed line of those scripts carries a literal version. Line 2 of both env templates and the title of
+        # docs/DEPLOYMENT-MANUAL.md carry v<x>, and docs/NOTIFICATIONS.md names the two start pages with it. A release moves the constant, the CHANGELOG head, the templates, the manual and the
+        # notification entries in the same diff and updates this step's comment: the label an operator reads is the version that runs.
+        run: |
+          bad=0
+          want=$(sed -n 's/^## v\([0-9][0-9A-Za-z.+-]*\) .*$/\1/p' CHANGELOG.md | head -1)
+          [ -n "$want" ] || { echo "cannot read a version from the first '## v<version> ...' heading of CHANGELOG.md"; exit 1; }
+          for f in solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh; do
+            n=$(grep -c -E '^FO_VERSION="[^"]+"' "$f" || true)
+            v=$(sed -n 's/^FO_VERSION="\([^"]*\)".*$/\1/p' "$f" | head -1)
+            { [ "$n" = 1 ] && [ "$v" = "$want" ]; } || { echo "$f: FO_VERSION assignments=$n value='$v' (want exactly 1, equal to '$want' = the CHANGELOG head)"; bad=1; }
+          done
+          for f in failover.env.example failover-standby.env.example; do
+            n=$(sed -n 2p "$f" | grep -c -F " Failover v$want " || true)
+            [ "$n" = 1 ] || { echo "$f: line 2 does not carry ' Failover v$want '"; bad=1; }
+          done
+          n=$(sed -n 1p docs/DEPLOYMENT-MANUAL.md | grep -c -F " v$want " || true)
+          [ "$n" = 1 ] || { echo "docs/DEPLOYMENT-MANUAL.md: line 1 (the title) does not carry ' v$want '"; bad=1; }
+          for r in PRIMARY STANDBY; do
+            a=$(grep -c -F "🚀 $r v$want started [DRY_RUN]" docs/NOTIFICATIONS.md || true)
+            b=$(grep -c -F "🚀 $r v$want started [LIVE]" docs/NOTIFICATIONS.md || true)
+            { [ "$a" = 1 ] && [ "$b" = 1 ]; } || { echo "docs/NOTIFICATIONS.md: the $r start pages are not named with v$want (DRY_RUN lines=$a, LIVE lines=$b)"; bad=1; }
+          done
+          lit=$(grep -n -E '(echo|alert_info|Title:|Description=|-d text=).*(Failover|failover|Protection|PRIMARY|STANDBY)[^"]{0,24}v[0-9]+\.[0-9]+\.[0-9]+' solana-primary-failover.sh solana-standby-failover.sh deploy-failover.sh deploy-failover-standby.sh | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*#' || true)
+          [ -z "$lit" ] || { echo "a printed label carries a literal version (use \${FO_VERSION}):"; echo "$lit"; bad=1; }
+          [ "$bad" = 0 ] || { echo "RED: the version string is not one value (rule: this step's comment)"; exit 1; }
+          echo "FO_VERSION=$want in both daemons and both deploy scripts, the CHANGELOG head, both templates' line 2, the manual's title and the start-page entries"
+      - name: the armed take's defaults are one set of values everywhere they are written - unarmed, margin 200, delay 60 >= gap 30 + 30, rung 30 (v0.7 AG-3)
+        # RULE: AG_ARMED_TAKE defaults to false (only the literal true arms the take) in the standby and its template; AG_TAKE_MARGIN_SLOTS is
+        # 200 in both; TAKEOVER_DELAY is 60 in the standby and its template; HOLDER_GAP_DEMOTE_SECS is 30 and HOLDER_UNREACHABLE_STOP_SECS is 30 in
+        # the primary and its template; and the PAIRING RULE holds on those defaults: the spare's TAKEOVER_DELAY >= the holder's
+        # HOLDER_GAP_DEMOTE_SECS + 30 (60 >= 30 + 30). The primary cannot read the spare's env (it is another host), so this arithmetic is the only
+        # place the rule is checked. A legitimate change moves the pair together and updates this step and docs/SAFETY.md (Armed cold take) in the same diff.
+        # The same holds for the silent-stake page (v0.7 rc2 F21): SILENT_STAKE_PAGE_SECS is 90 in the primary and its template and is >= the spare's TAKEOVER_DELAY + 30 (90 >= 60 + 30),
+        # so a failover that works (an armed spare's take, 73 to 79 s after the holder's last vote at MAX_DELINQUENT_SLOTS 15, about 3 s later at the v0.7 wizard's 24) ends before the unstaked primary's page; docs/SAFETY.md (The silent stake) states the margin.
+        # And for the Internet-lost floor (v0.7 rc2 F22): CONNECTIVITY_RETRIES is 6 in the primary and its template, and on the primary's defaults CONNECTIVITY_RETRIES x (CHECK_INTERVAL + 2) >= SELF_FENCE_ISOLATION_SECS
+        # (6 x 5 = 30 >= 30; a round is CHECK_INTERVAL + the fixed 1.5 s wait for the pings + the 1 s curl fallback, CONNECTIVITY_TIMEOUT does not enter): the Internet-lost demote must not fire below the isolation rung; docs/SAFETY.md (The Internet-lost floor) states the rule.
+        run: |
+          bad=0
+          one() { n=$(grep -c -E -e "$2" "$1" || true); [ "$n" = 1 ] || { echo "$1: $n line(s) match $2 - want exactly 1"; bad=1; }; }
+          one solana-standby-failover.sh '^AG_ARMED_TAKE=false( |$)'
+          one failover-standby.env.example '^AG_ARMED_TAKE=false( |$)'
+          one solana-standby-failover.sh '^AG_TAKE_MARGIN_SLOTS=200( |$)'
+          one failover-standby.env.example '^AG_TAKE_MARGIN_SLOTS=200( |$)'
+          one solana-standby-failover.sh '^TAKEOVER_DELAY=60( |$)'
+          one failover-standby.env.example '^TAKEOVER_DELAY=60( |$)'
+          one solana-primary-failover.sh '^HOLDER_GAP_DEMOTE_SECS=30( |$)'
+          one failover.env.example '^HOLDER_GAP_DEMOTE_SECS=30( |$)'
+          one solana-primary-failover.sh '^HOLDER_UNREACHABLE_STOP_SECS=30( |$)'
+          one failover.env.example '^HOLDER_UNREACHABLE_STOP_SECS=30( |$)'
+          one solana-primary-failover.sh '^SILENT_STAKE_PAGE_SECS=90( |$)'
+          one failover.env.example '^SILENT_STAKE_PAGE_SECS=90( |$)'
+          one solana-primary-failover.sh '^CONNECTIVITY_RETRIES=6( |$)'
+          one failover.env.example '^CONNECTIVITY_RETRIES=6( |$)'
+          delay=$(sed -n 's/^TAKEOVER_DELAY=\([0-9][0-9]*\).*$/\1/p' solana-standby-failover.sh | head -1)
+          gap=$(sed -n 's/^HOLDER_GAP_DEMOTE_SECS=\([0-9][0-9]*\).*$/\1/p' solana-primary-failover.sh | head -1)
+          case "$delay$gap" in *[!0-9]*|'') echo "cannot read TAKEOVER_DELAY ('$delay') or HOLDER_GAP_DEMOTE_SECS ('$gap')"; bad=1 ;; *)
+            [ "$delay" -ge $((gap + 30)) ] || { echo "pairing rule broken: TAKEOVER_DELAY $delay < HOLDER_GAP_DEMOTE_SECS $gap + 30"; bad=1; } ;;
+          esac
+          silent=$(sed -n 's/^SILENT_STAKE_PAGE_SECS=\([0-9][0-9]*\).*$/\1/p' solana-primary-failover.sh | head -1)
+          case "$delay$silent" in *[!0-9]*|'') echo "cannot read TAKEOVER_DELAY ('$delay') or SILENT_STAKE_PAGE_SECS ('$silent')"; bad=1 ;; *)
+            [ "$silent" -ge $((delay + 30)) ] || { echo "pairing rule broken: SILENT_STAKE_PAGE_SECS $silent < TAKEOVER_DELAY $delay + 30"; bad=1; } ;;
+          esac
+          retries=$(sed -n 's/^CONNECTIVITY_RETRIES=\([0-9][0-9]*\).*$/\1/p' solana-primary-failover.sh | head -1)
+          cki=$(sed -n 's/^CHECK_INTERVAL=\([0-9][0-9]*\).*$/\1/p' solana-primary-failover.sh | head -1)
+          floor=$(sed -n 's/^SELF_FENCE_ISOLATION_SECS=\([0-9][0-9]*\).*$/\1/p' solana-primary-failover.sh | head -1)
+          case "$retries,$cki,$floor" in *[!0-9,]*|,*|*,,*|*,) echo "cannot read CONNECTIVITY_RETRIES ('$retries'), CHECK_INTERVAL ('$cki') or SELF_FENCE_ISOLATION_SECS ('$floor')"; bad=1 ;; *)
+            [ $((retries * (cki + 2))) -ge "$floor" ] || { echo "floor broken: CONNECTIVITY_RETRIES $retries x ($cki + 2) < SELF_FENCE_ISOLATION_SECS $floor"; bad=1; } ;;
+          esac
+          [ "$bad" = 0 ] || { echo "RED: an armed-take default moved in one place (rule: this step's comment)"; exit 1; }
+          echo "AG_ARMED_TAKE=false, AG_TAKE_MARGIN_SLOTS=200, TAKEOVER_DELAY=60, HOLDER_GAP_DEMOTE_SECS=30, HOLDER_UNREACHABLE_STOP_SECS=30, SILENT_STAKE_PAGE_SECS=90 and CONNECTIVITY_RETRIES=6 in the daemons and their templates; $delay >= $gap + 30, $silent >= $delay + 30, $((retries * (cki + 2))) >= $floor"
+      - name: the agave flag that switches the vote-history requirement off is named once in the standby and in no other shipped file (v0.7 AG-3.3)
+        # RULE: the flag that lets a validator set-identity without its vote-history file has ONE place in the shipped code: the standby's
+        # armed cold take (AG-3.3 - `_AG_COLD_FLAG`, the single definition the one armed set-identity and the banner use). It is named
+        # in no other shipped script or template: not the primary (it never takes: G10, switch_to_staked stays withheld), not the
+        # installers, the arm, the fence scripts, the units, the env templates - and not in a test (the suites assemble it from two
+        # halves, and so does this step, so this file does not carry it either). Docs may name it: they explain the cold take. A legitimate
+        # change (a second take site, a flag in a template) is a reviewed decision and updates this step.
+        run: |
+          flag="do-not-require""-vote-history"
+          bad=0
+          n=$(grep -cF -e "$flag" solana-standby-failover.sh || true)
+          [ "$n" = 1 ] || { echo "solana-standby-failover.sh names the flag $n time(s) - want exactly 1 (the _AG_COLD_FLAG definition)"; bad=1; }
+          others=$(find . -type f -not -path './.git/*' -not -path './docs/*' -not -name 'solana-standby-failover.sh' -not -name '*.md' -not -name 'ci.yml' -exec grep -lIF -e "$flag" {} + 2>/dev/null || true)
+          [ -z "$others" ] || { echo "the flag is also named in: $others"; bad=1; }
+          [ "$bad" = 0 ] || { echo "RED: the cold-take flag moved (rule: this step's comment)"; exit 1; }
+          echo "the vote-history requirement flag is named once, in solana-standby-failover.sh, and in no other script, template, unit or test"
+      - name: no shipped script deletes, moves, copies or rewrites a vote-history, tower or ledger path — the crude line grep (v0.7 AG-1 fix round)
+        # RULE: FO never deletes, moves, copies, truncates or redirects into a vote-history file, a tower file or the ledger (the warm swap is
+        # the operator's, with the file intact: docs/SAFETY.md, Alpenglow). In the eight shipped scripts no non-comment line combines a mutating
+        # verb (rm, mv, cp, truncate, tee, dd, ln, shred, install, unlink, rsync, scp, touch) with a vote_history / vote-history / tower /
+        # TOWER_PATH / LEDGER_PATH word, and none redirects (> or >>) into a target that carries one. A planted control runs first: five planted
+        # lines must each be flagged and three innocent ones (a comment, a log text that quotes the path, a read) must not - so the grep can go
+        # red, and does not cry wolf on the paths the scripts only name.
+        # LIMIT: the cheap second line of defence, by LINE. A path assembled in a variable, a verb on another line than its path and a
+        # destructive tool outside the list are not seen here; the real census is tests/test_tower_handling.sh (6), by bash's own parse with the
+        # variable taint, and it runs in the VM legs only - this step runs in GitHub CI on pushes to main and on pull requests.
+        run: |
+          w=$(mktemp -d)
+          scan() {
+            for f in "$@"; do
+              grep -nE '(^|[^A-Za-z0-9_./-])(rm|mv|cp|truncate|tee|dd|ln|shred|install|unlink|rsync|scp|touch)( |$)' "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -E 'vote_history|vote-history|tower|TOWER_PATH|LEDGER_PATH' | sed "s|^|$f:|" || true
+              grep -nE "(^|[[:space:]0-9])>>?[[:space:]]*[\"']?[^&[:space:]]*(vote_history|vote-history|tower|TOWER_PATH|LEDGER_PATH)" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | sed "s|^|$f:|" || true
+            done
+          }
+          printf '%s\n' '    rm -f "$LEDGER_PATH/vote_history-$STAKED_PUBKEY.bin"' '    mv "$LEDGER_PATH/tower-1_9-$STAKED_PUBKEY.bin" /tmp/t' '    : > "$LEDGER_PATH/vote_history-X.bin"' '    truncate -s 0 "${LEDGER_PATH}/vote-history"' '    cp "$f" "$TOWER_PATH"' > "$w/planted"
+          printf '%s\n' '    # rm -f "$LEDGER_PATH/vote_history-X.bin" would be wrong' '    log_info "[vote-history] ${LEDGER_PATH:-<LEDGER_PATH empty>}/vote_history-${K:-<k unknown>}.bin is $(_vh_class)"' '    sha256sum "$LEDGER_PATH/vote_history-X.bin" > "$w/sum"' > "$w/innocent"
+          np=$(scan "$w/planted" | wc -l | tr -d ' '); ni=$(scan "$w/innocent" | wc -l | tr -d ' ')
+          rm -rf "$w"
+          [ "$np" = 5 ] && [ "$ni" = 0 ] || { echo "control: the grep flagged $np of 5 planted lines and $ni of 0 innocent ones"; exit 1; }
+          hits=$(scan solana-standby-failover.sh solana-primary-failover.sh failover-arm.sh deploy-failover.sh deploy-failover-standby.sh install.sh systemd/failover-fence.sh systemd/failover-fence-page-only.sh)
+          [ -z "$hits" ] || { printf '%s\n' "$hits"; echo "RED: a shipped script has a line that deletes, moves, copies, truncates or redirects into a vote-history, tower or ledger path (rule: this step's comment)"; exit 1; }
+          echo "no line of the eight shipped scripts puts a destructive verb or an output redirection on a vote-history, tower or ledger path (5 planted lines flagged, 3 innocent ones not)"
       - name: SHA256SUMS manifest matches the tree (regen — sha256sum <files> > SHA256SUMS)
         run: sha256sum -c SHA256SUMS
+      - name: bash's /dev/tcp and /dev/udp redirections — the A5 test fixture only (v0.7 Block 6.3.1)
+        # RULE: bash's network redirection (/dev/tcp/<host>/<port>, /dev/udp/…) opens a socket with no client binary, so
+        # run_all's net guard (stage 4) cannot see it (its LIMIT, tests/HARNESS.md); the strace job sees it at run time, and
+        # this step sees it in the source. It reads every *.sh file of the tree and the shipped files bash sources or runs
+        # that are not *.sh — the config templates failover.env.example and failover-standby.env.example and the five unit
+        # skeletons systemd/*.service.skel (find, not git ls-files: the step also runs on an exported tree); find hands
+        # every name to the reader as it is (-exec … {} +: blanks and quotes included). The step runs in the C locale
+        # (LC_ALL=C: every byte is one character to sed, tr, grep and read, so a NUL byte or a byte invalid in UTF-8 cannot
+        # hide a line or join two). Each file is read whole: a DE-QUOTED copy of it — every NUL byte dropped (bash drops it
+        # from a script line), then the $ of $'…' and $"…" (a $ right before a quote), then every ' " and \ removed, as bash
+        # removes them before it resolves the path, so /dev/"tcp"/…, "/dev/tc"p/…, /dev/tcp\/…, /dev/'udp'/…, /dev/$'tcp'/…,
+        # /dev/tc$""p/… and a /dev/tcp/… with a NUL byte inside it match like /dev/tcp/… — is searched with grep -a, grep's
+        # own exit status must be 0 or 1, and an unreadable file is red; the step prints how many files were read against
+        # how many it found. A match is /dev/tcp/ or /dev/udp/ in the de-quoted line, on ANY line, comment lines included
+        # (fail-closed: a line of an unquoted here-document that begins with # is code to bash, which runs its $( )); the
+        # line is reported as it is written, each on its own line (a file's last line without a newline included). The ONE
+        # permitted line is tests/test_own_view.sh's A5 fixture — text a mutant inserts into a copy of a daemon for a static
+        # census, never executed: `{ exec 9<>/dev/tcp/127.0.0.1/8899 && … }` — required EXACTLY once (a scan that read
+        # nothing cannot pass). Anything else is red, listed. LIMIT: a path assembled at run time (a variable, an escape in
+        # an ANSI-C $'…' string, a line continued by a backslash-newline) is not seen here; the strace job sees the socket
+        # it opens.
+        run: |
+          export LC_ALL=C
+          w=$(mktemp -d); re='/dev/(tcp|udp)/'; dd="s/[\$]\([\"']\)/\1/g"; dq="\"'\\\\"
+          find . -type f -not -path './.git/*' \( -name '*.sh' -o -name '*.env.example' -o -path './systemd/*.service.skel' \) > "$w/found"
+          [ -s "$w/found" ] || { echo "no file found — run from the repository root"; exit 1; }
+          find . -type f -not -path './.git/*' \( -name '*.sh' -o -name '*.env.example' -o -path './systemd/*.service.skel' \) -exec sh -c '
+            w=$1; re=$2; dd=$3; dq=$4; shift 4
+            for f do
+              tr -d "\\000" < "$f" > "$w/nz" && sed "$dd" "$w/nz" > "$w/dd" && tr -d "$dq" < "$w/dd" > "$w/dq" || { echo "could not read $f" >> "$w/err"; continue; }
+              grep -n -a -E -e "$re" "$w/dq" > "$w/ln"; r=$?; [ "$r" -le 1 ] || { echo "grep -n exited $r on $f" >> "$w/err"; continue; }
+              printf "%s\n" "$f" >> "$w/read"
+              while IFS=: read -r n x; do printf "%s:%s:%s\n" "$f" "$n" "$(sed -n "${n}p" "$f")" >> "$w/hits"; done < "$w/ln"
+            done
+            exit 0' sh "$w" "$re" "$dd" "$dq" {} +
+          : >> "$w/read"; : >> "$w/hits"
+          if [ -s "$w/err" ]; then sed 's/^/READ FAILED: /' "$w/err"; echo "RED: the tree could not be read"; exit 1; fi
+          nf=$(wc -l < "$w/found" | tr -d ' '); nr=$(wc -l < "$w/read" | tr -d ' ')
+          cp "$w/hits" "$w/h"
+          a5='    { exec 9<>/dev/tcp/127.0.0.1/8899 && printf "GET /health HTTP/1.0\r\n\r\n" >&9 && exec 9>&-; } 2>/dev/null || true'
+          bad=0; na5=0
+          while IFS= read -r h || [ -n "$h" ]; do
+            f=${h%%:*}; r=${h#*:}; ln=${r%%:*}; code=${r#*:}
+            if [ "$f" = "./tests/test_own_view.sh" ] && [ "$code" = "$a5" ]; then na5=$((na5 + 1)); continue; fi
+            echo "NETWORK REDIRECTION outside the A5 fixture — $f:$ln: $code"; bad=1
+          done < "$w/h"
+          [ "$na5" -eq 1 ] || { echo "the A5 fixture line appears $na5 times in tests/test_own_view.sh — it is required exactly once"; bad=1; }
+          [ "$nr" -eq "$nf" ] || { echo "read $nr of the $nf files found"; bad=1; }
+          echo "$nf files found (*.sh, the two *.env.example, the five systemd/*.service.skel), $nr read whole (de-quoted, grep -a, LC_ALL=C); /dev/tcp|udp lines: $(wc -l < "$w/h" | tr -d ' ') (the A5 fixture: $na5)"
+          rm -rf "$w"
+          [ "$bad" = 0 ] || { echo "RED: bash's network redirection outside the one permitted fixture (rule: this step's comment)"; exit 1; }
+          echo "no /dev/tcp or /dev/udp path in any line of those files, de-quoted (every NUL byte, the \$ of \$'…' and \$\"…\", every quote and backslash removed), but the A5 fixture, read once"
+      - name: no test reads a variable GitHub's runner sets — CI, GITHUB_*, RUNNER_* (v0.7 Block 6.3.1)
+        # RULE: GitHub sets CI=true in every job, and GITHUB_* / RUNNER_* variables; a test that uses such a name as its own
+        # knob reads the runner's value instead of its default — three suites used CI as their check-interval knob, bash
+        # arithmetic read `true` as 0, their simulated clocks stopped, and two of them never ended (the delta panel 7's
+        # CIP-1). Every line of tests/*.sh, tests/lib/*.sh, tests/lib/*.awk and tests/strace-hermetic.sh that is not
+        # comment-only (its first character other than a space or a tab is #: the blanks bash skips before a word, so a
+        # line that begins with a CR, VT or FF byte before its # is code to bash, and read here) is red when it holds the
+        # word CI, or a word beginning GITHUB_ or RUNNER_ (a word: not preceded or followed by a letter, a digit or _), in
+        # any context — an expansion, an assignment or a prefix assignment, an arithmetic name, awk's ENVIRON, a string:
+        # fail-closed, so a code line names the workflow otherwise (ci.yml). The step runs in the C locale (LC_ALL=C: every
+        # byte is one character to tr and grep, so a byte invalid in UTF-8 right after a name ends the word, as it ends the
+        # name for bash: $CI<0xE9> is $CI). Each file is read whole, every NUL byte dropped first (bash drops it from a
+        # script line: ${C<NUL>I} is ${CI}), the rest read as text (grep -a); grep's exit status must be 0 or 1, and an
+        # unreadable file is red; the step prints how many files were read against how many it found. LIMIT: a name split
+        # by a backslash-newline (${C\ on one line, I} on the next), by quotes or a backslash (printenv C''I, C\I), or
+        # assembled at run time (${!v}, eval) is not seen; and a line that begins with # but is not a comment to bash — in
+        # an unquoted here-document or a "…" string spanning lines — is skipped, though bash expands its ${ }.
+        run: |
+          export LC_ALL=C
+          w=$(mktemp -d); re='(^|[^A-Za-z0-9_])(CI|GITHUB_[A-Za-z0-9_]*|RUNNER_[A-Za-z0-9_]*)([^A-Za-z0-9_]|$)'
+          find tests -type f \( -name '*.sh' -o -name '*.awk' \) > "$w/found"
+          [ -s "$w/found" ] || { echo "no test file found — run from the repository root"; exit 1; }
+          find tests -type f \( -name '*.sh' -o -name '*.awk' \) -exec sh -c '
+            w=$1; re=$2; shift 2
+            for f do
+              tr -d "\\000" < "$f" > "$w/nz" || { echo "could not read $f" >> "$w/err"; continue; }
+              grep -n -a -E -e "$re" "$w/nz" > "$w/ln"; r=$?; [ "$r" -le 1 ] || { echo "grep -n exited $r on $f" >> "$w/err"; continue; }
+              printf "%s\n" "$f" >> "$w/read"
+              while IFS= read -r l; do printf "%s:%s\n" "$f" "$l" >> "$w/hits"; done < "$w/ln"
+            done
+            exit 0' sh "$w" "$re" {} +
+          : >> "$w/read"; : >> "$w/hits"
+          if [ -s "$w/err" ]; then sed 's/^/READ FAILED: /' "$w/err"; echo "RED: the tests could not be read"; exit 1; fi
+          nf=$(wc -l < "$w/found" | tr -d ' '); nr=$(wc -l < "$w/read" | tr -d ' ')
+          grep -a -vE '^[^:]+:[0-9]+:[[:blank:]]*#' "$w/hits" > "$w/h" || true
+          nh=$(wc -l < "$w/h" | tr -d ' ')
+          sed 's/^/A NAME GITHUB SETS, IN A TEST — /' "$w/h"
+          echo "$nf test files found, $nr read whole (NUL bytes dropped, grep -a, LC_ALL=C); lines naming CI / GITHUB_* / RUNNER_*: $nh"
+          rm -rf "$w"
+          [ "$nr" -eq "$nf" ] || { echo "RED: read $nr of the $nf test files"; exit 1; }
+          [ "$nh" -eq 0 ] || { echo "RED: a test names a variable GitHub's runner sets (rule: this step's comment)"; exit 1; }
+          echo "no test names CI, GITHUB_* or RUNNER_* in a line that is not comment-only, every NUL byte dropped and every other byte read as one character"
+      - name: every page the daemons send has an entry in docs/NOTIFICATIONS.md (v0.7 Block 6.3.1)
+        # RULE: tests/lib/notif-titles.awk reads both daemons (its header holds how it reads a line) and lists every page
+        # they send, by its title as sent — an `alert` call's status (its third argument, verbatim), an `alert_warn`
+        # message's heading, and the title of a DIRECT send outside the four sinks alert, alert_warn, alert_info and
+        # flush_pending_alerts, whose sends carry their callers' pages: a `send_telegram`'s heading (its first argument) and
+        # a `send_webhook`'s status (its THIRD argument, verbatim — the title its receiver shows: ntfy's Title header, the
+        # JSON text's "status:"); a heading is the message's leading literal text, up to the first $ or ` expansion,
+        # trailing blanks dropped (the whole message when it has none). It reads a call wherever bash runs one: past
+        # assignment words and redirections, past `time` and its -p / --, inside $( ) and backticks at any depth — a
+        # double-quoted "…", an unquoted ${ … } (which ends at its first } as bash ends it: a bare { in it is text), a
+        # $(( … )) quoted or not, and an array value NAME=( … ) included. It includes the calls of every WRAPPER, found
+        # mechanically: a function whose body passes its own "$N" as such a title (today _recheck_abort_alert,
+        # _own_veto_alert and _g2_env_alert, each `alert_warn "$1"`).
+        # A title is NAMED when docs/NOTIFICATIONS.md has an ENTRY for it — a table row whose first cell holds code spans,
+        # or a list item that begins with code spans joined by " / " — with a span that holds it: a STATUS (an alert's, a
+        # direct send_webhook's) only as a whole span (`STATUS`); a HEADING as a whole span, or as the opening of one
+        # followed by "…" or by a blank and "…" (`HEADING…rest`, `HEADING …rest`).
+        # RED on a title with no such entry; RED on every call the reader marks UNREADABLE — a status or webhook title that
+        # is not a literal, a title with fewer than 10 letters or digits beyond its emoji and punctuation (an empty heading
+        # included), a line ending in a backslash, a quote open at the line's end, fewer arguments, a call word with any
+        # quoted part or a backslash (bash removes the quotes and runs it: "alert", al"ert", $'alert', \alert), a command
+        # word holding an ANSI-C escape the reader does not decode, or a daemon word alert / alert_warn / send_telegram /
+        # send_webhook / a wrapper's name standing where no call was read (an argument; a name in a $(( … ))), or a line
+        # the reader ends inside a quote or a level it opened — a '…', $'…' or "…", a ${ … } or $(( … )), or a $( … ),
+        # <( … ), >( … ), NAME=( … ) or backticks on a line not continued by a backslash (a construct spanning lines, or a
+        # line the reader lost its place on) — unless NT_ALLOW below lists that call with the literal values it can take
+        # and where they come from (each value is then matched the same way; the value - for a line that sends no page);
+        # RED on a function the reader cannot see (defined in another shape than `name() {` at column 0), and when a
+        # daemon yields no page at all.
+        # OUTSIDE the check: alert_info (Telegram-only — its coverage is counted and printed) and the fence scripts'
+        # journal PAGE[…] lines. LIMIT: the reader's (its header) — a command word assembled at run time, a call in a string
+        # eval or trap runs, a $( … ), <( … ), >( … ), NAME=( … ) or backticks a backslash-newline continues on the next
+        # line (each line is read on its own: the shipped `x=$(curl … \` lines), a backslash-escaped backtick inside
+        # backticks (a nested command substitution in the old spelling: read as a quoted character, not as code; the
+        # daemons have no backtick in their code). POSIX tools; the awk is mawk-safe (no {m,n} interval).
+        run: |
+          w=$(mktemp -d); tab=$(printf '\t'); doc=docs/NOTIFICATIONS.md; bad=0
+          d1=solana-primary-failover.sh; d2=solana-standby-failover.sh
+          awk -f tests/lib/notif-titles.awk "$d1" "$d2" "$d1" "$d2" > "$w/rows" || { echo "tests/lib/notif-titles.awk failed"; exit 1; }
+          # NT_ALLOW — a call the reader marks unreadable, listed with the literal values it can take; one row per value,
+          # four TAB-separated fields: <daemon file> <text on the call's line, verbatim> <value> <where the value comes from>.
+          # Empty: every page title in both daemons reads as a literal today.
+          cat > "$w/allow" <<'NT_ALLOW'
+          NT_ALLOW
+          for f in "$d1" "$d2"; do
+            n=$(awk -F'\t' -v f="$f" '$1 == "T" && index($2, f ":") == 1' "$w/rows" | wc -l | tr -d ' ')
+            [ "$n" -gt 0 ] || { echo "no page read from $f — the reader is broken, not the doc complete"; bad=1; }
+          done
+          awk -F'\t' '$1 == "W" { printf "  wrapper: %s() forwards its %s to %s\n", $2, $4, $3 }' "$w/rows" | sort -u
+          awk -F'\t' '$1 == "X" { printf "UNSEEN FUNCTION SHAPE at %s: %s\n", $2, $3 }' "$w/rows" > "$w/x"
+          [ -s "$w/x" ] && { cat "$w/x"; bad=1; }
+          # the doc's ENTRIES, one code span per line: a table row's first cell, or the leading " / "-joined spans of a list item
+          awk '/^[ \t]*\|/ { c = $0; sub(/^[ \t]*\|/, "", c); i = index(c, "|"); if (i) c = substr(c, 1, i - 1)
+                             n = split(c, P, "`"); for (k = 2; k < n; k += 2) print P[k]; next }
+               /^[ \t]*[-*] `/ { c = $0; sub(/^[ \t]*[-*] /, "", c)
+                                 while (substr(c, 1, 1) == "`") { j = index(substr(c, 2), "`"); if (!j) break; print substr(c, 2, j - 1); c = substr(c, j + 2)
+                                                                   if (substr(c, 1, 3) == " / ") c = substr(c, 4); else break } }' "$doc" > "$w/entries"
+          [ -s "$w/entries" ] || { echo "no entry read from $doc — the matcher is broken, not the doc complete"; exit 1; }
+          awk -F'\t' '$1 == "T" { k = $3 "\t" $4; if (!(k in at)) { n++; o[n] = k; at[k] = $2 } else at[k] = at[k] " " $2 }
+            END { for (i = 1; i <= n; i++) print o[i] "\t" at[o[i]] }' "$w/rows" > "$w/t"
+          awk -F'\t' '$1 == "U" { print $2 "\t" $3 "\t" $4 }' "$w/rows" > "$w/u"
+          while IFS="$tab" read -r at kind why; do
+            f=${at%%:*}; n=${at##*:}; text=$(sed -n "${n}p" "$f"); listed=0
+            while IFS="$tab" read -r af atext aval asrc; do
+              [ "$af" = "$f" ] || continue
+              case "$text" in *"$atext"*) ;; *) continue ;; esac
+              listed=1
+              [ "$aval" = "-" ] && [ "$kind" = "call" ] && continue
+              printf '%s\t%s\t%s\n' "$kind" "$aval" "listed value of the call at $at, from $asrc" >> "$w/t"
+            done < "$w/allow"
+            [ "$listed" = 1 ] || { echo "UNREADABLE $kind at $at ($why) — list the call in NT_ALLOW with the literal values it can take and where they come from"; bad=1; }
+          done < "$w/u"
+          # the matcher: a status or a webhook title as a whole span; a heading or a direct send_telegram's heading as a whole
+          # span or a span's opening + "…" / " …"
+          awk -F'\t' 'NR == FNR { E[++ne] = $0; next }
+            { ok = 0; for (k = 1; k <= ne; k++) { e = E[k]; if (e == $2 || ($1 != "status" && $1 != "webhook" && (index(e, $2 "…") == 1 || index(e, $2 " …") == 1))) { ok = 1; break } }
+              if (!ok) printf "MISSING %s: %s   [%s]\n", $1, $2, $3 }' "$w/entries" "$w/t" > "$w/missing"
+          [ -s "$w/missing" ] && { cat "$w/missing"; bad=1; }
+          st=$(awk -F'\t' '$1 == "T" && $3 == "status"' "$w/rows" | wc -l | tr -d ' ')
+          sd=$(awk -F'\t' '$1 == "T" && $3 == "status" { print $4 }' "$w/rows" | sort -u | wc -l | tr -d ' ')
+          ht=$(awk -F'\t' '$1 == "T" && $3 == "heading"' "$w/rows" | wc -l | tr -d ' ')
+          hd=$(awk -F'\t' '$1 == "T" && $3 == "heading" { print $4 }' "$w/rows" | sort -u | wc -l | tr -d ' ')
+          dt=$(awk -F'\t' '$1 == "T" && $3 == "direct"' "$w/rows" | wc -l | tr -d ' ')
+          wt=$(awk -F'\t' '$1 == "T" && $3 == "webhook"' "$w/rows" | wc -l | tr -d ' ')
+          nu=$(wc -l < "$w/u" | tr -d ' '); nw=$(awk -F'\t' '$1 == "W"' "$w/rows" | wc -l | tr -d ' '); ne=$(wc -l < "$w/entries" | tr -d ' ')
+          ni=$(awk -F'\t' '$1 == "I" { print $2 }' "$w/rows")
+          awk -F'\t' '$1 == "N" { print "info\t" $4 }' "$w/rows" | sort -u > "$w/info"
+          nid=$(wc -l < "$w/info" | tr -d ' ')
+          nif=$(awk -F'\t' 'NR == FNR { E[++ne] = $0; next } { for (k = 1; k <= ne; k++) if (E[k] == $2 || index(E[k], $2 "…") == 1 || index(E[k], $2 " …") == 1) { c++; break } } END { print c + 0 }' "$w/entries" "$w/info")
+          echo "pages read: $st alert calls ($sd distinct statuses), $ht alert_warn calls ($hd distinct headings; $nw wrapper definitions), $dt direct send_telegram and $wt direct send_webhook sends; $nu unreadable; $ne doc entries"
+          echo "alert_info (Telegram-only, OUTSIDE the check): $ni calls, $nid distinct headings, $nif of them with an entry in $doc"
+          rm -rf "$w"
+          [ "$bad" = 0 ] || { echo "RED: a page the daemons send has no entry in $doc, or a call is unreadable (rule: this step's comment)"; exit 1; }
+          echo "every alert status, alert_warn heading and direct send of both daemons, and every wrapper's, has an entry in $doc: a status (an alert's, a direct send_webhook's) as a whole code span, a heading as a whole span or the opening of one followed by an ellipsis, directly or after a blank"

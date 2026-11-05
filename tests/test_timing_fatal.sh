@@ -155,7 +155,7 @@ if [[ -f "$V068" ]]; then
     [[ $v8 -ge 1 ]] && ok "(F-e2) v0.6.8 baseline used '|| true' (warn-only) → the M9 escalation is new" \
                     || bad "(F-e2) v0.6.8 baseline unexpected ($v8)"
 else
-    ok "(F-e2) v0.6.8 baseline not present to compare (skipped)"
+    echo "  ⏭ SKIP: (F-e2) v0.6.8 baseline not present to compare"
 fi
 
 # ── (U) v0.7 (pre-Block-4, №3): unstaked-uniqueness startup refusal ────────────────────────────

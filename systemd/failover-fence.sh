@@ -1,9 +1,9 @@
 #!/bin/bash
 # failover-fence.sh (v0.7 Block 5.1) — the REAL fence body, dispatched by
 # solana-failover-fence.service when the monitor unit reaches terminal `failed` (first missed
-# watchdog pet). Installed only by the `failover arm` ceremony at the v0.7 rollout
-# (upgrade-then-arm, release checklist); repo-tracked and CI-linted as a shippable artifact —
-# NOTHING in this repository installs it anywhere.
+# watchdog pet). Installed only by the `failover arm` ceremony, which the operator runs at the
+# v0.7 rollout (upgrade-then-arm); repo-tracked and CI-linted as a shippable artifact — no
+# other script installs it.
 #
 # Failure-direction rule (every branch below labels its direction): toward stop/page, NEVER
 # toward silently-staked. Marker direction: claim MORE fencing than proven, never less.
@@ -79,11 +79,44 @@ _fence_page_info() { _fence_log "PAGE[INFO]: $*"; }
 
 # The daemons' _validator_pid idiom (v0.6.9 H1/S4): pid of the running validator, any client,
 # or empty if none is running.
+# v0.7 (B7.1): and never an ADMIN CLIENT. `agave-validator --ledger L set-identity | authorized-voter | contact-info | monitor | exit | wait-for-restart-window` has the validator's
+# process name (the monitor daemon's own bounded calls and the operator's run beside the fence), and `pgrep | head -1` could answer one: the pid is mapped to a unit through its
+# cgroup just below and killed by the stop path, so a client of the MONITOR unit would be taken for the validator's unit. Every pgrep hit's argv is read from
+# ${FENCE_PROC_ROOT:-/proc}/<pid>/cmdline (NUL-separated; the same fixture-/proc test seam as the cgroup read). A hit with one of those six words as an argument after argv[0], as a
+# WHOLE word, is a client and is passed over (--identity /keys/set-identity.json is not one; the word after --ledger is that option's value, so a ledger directory called `monitor`
+# is not one either). The first hit with --ledger and no such word wins, else the first hit that is not a client. A cmdline that cannot be read proves nothing: that hit counts as
+# not-a-client, so with no readable cmdline at all the answer is the first pgrep hit, as before. Only clients alive = no validator = empty (the callers test for a NON-EMPTY pid, never
+# the rc). One pgrep per process name, in the old order (the suite's stub counts invocations); the cmdline is read through ONE bounded `timeout -k 1 2 tr '\0' '\n'` (v0.7 B7.1b: a validator wedged inside the kernel can hold the mm lock that /proc/<pid>/cmdline takes, and an unbounded read would block this function - and the hard stop, the fence's stop path or the ceremony's check with it; a read that times out is a cmdline that cannot be read, which proves nothing). NO MainPID here: the fence deliberately does not know the daemons'
+# VALIDATOR_SERVICE (see _detect_validator_unit). The daemons' copies are this selection plus their unit lines; BYTE-IDENTICAL to failover-arm.sh's copy (test_arm_ceremony (13a));
+# the selection is pinned as one text in all four by test_block7_rc1 (B7.1-14).
 _validator_pid() {
-    local p; p=$(pgrep -x agave-validator 2>/dev/null | head -1)
-    [[ -z "$p" && "$VALIDATOR_TYPE" == "frankendancer" ]] && p=$(pgrep -x fdctl 2>/dev/null | head -1)
-    [[ -z "$p" ]] && p=$(pgrep -x solana-validator 2>/dev/null | head -1)
-    printf '%s' "$p"
+    local n c f w i sk sub led first pick _cl
+    for n in agave-validator fdctl solana-validator; do
+        [[ "$n" == "fdctl" && "$VALIDATOR_TYPE" != "frankendancer" ]] && continue
+        first=""; pick=""
+        for c in $(pgrep -x "$n" 2>/dev/null); do
+            f="${FENCE_PROC_ROOT:-/proc}/$c/cmdline"; sub=""; led=""; sk=""; i=0
+            if [[ -r "$f" ]]; then
+                _cl=$(timeout -k 1 2 tr '\0' '\n' < "$f" 2>/dev/null)
+                while IFS= read -r w; do
+                    i=$((i + 1))
+                    [[ $i -gt 1 ]] || continue
+                    [[ -z "$sk" ]] || { sk=""; continue; }
+                    case "$w" in
+                        --ledger) led=1; sk=1 ;;
+                        --ledger=*) led=1 ;;
+                        set-identity|authorized-voter|contact-info|monitor|exit|wait-for-restart-window) sub=1 ;;
+                    esac
+                done <<< "$_cl"
+            fi
+            [[ -z "$sub" ]] || continue
+            [[ -n "$first" ]] || first=$c
+            [[ -z "$led" ]] || { pick=$c; break; }
+        done
+        pick=${pick:-$first}
+        [[ -z "$pick" ]] || { printf '%s' "$pick"; return 0; }
+    done
+    return 0
 }
 
 # VALIDATOR_UNIT from the validator process's cgroup (/proc/<pid>/cgroup) — kills the hard-coded

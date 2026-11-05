@@ -1,4 +1,4 @@
-# `systemd/` — v0.7 Block-5 fence scripts (real) + unit skeletons (installed by NOTHING)
+# `systemd/` — v0.7 Block-5 fence scripts (real) + unit skeletons (installed only by the `failover arm` ceremony)
 
 **Two kinds of file live here (Block 5.1 + 5.3):**
 
@@ -6,8 +6,7 @@
   ladder/§2.2 verdict body, tested by `tests/test_fence_script.sh`) and
   `failover-fence-page-only.sh` (the §2.3 structural-DRY_RUN twin). They are in `SHA256SUMS`,
   the CI shellcheck list, and `run_all.sh`'s parse gate. Shippable is NOT installed: their
-  EXECUTION on a host happens only at the v0.7 rollout (`failover arm`, upgrade-then-arm, per
-  the release checklist).
+  EXECUTION on a host happens only at the v0.7 rollout (`failover arm`, upgrade-then-arm).
 - **Every `.service.skel` stays a skeleton — repo-only.** Units are installed ONLY by the
   `failover arm` ceremony (`failover-arm.sh` at the repo root — shipped since Block 5.3,
   EXECUTED only at the rollout; tested by `tests/test_arm_ceremony.sh` with every root in
@@ -16,12 +15,15 @@
   render into `ARM_RUNTIME_DIR` (default `/run/systemd/system` — tmpfs, ephemeral by
   construction) for the §2.1-rev2.1 probe, and are cleaned by the ceremony in the same run.
 
-Nothing in this repository writes to `/etc/systemd/system`, runs `systemctl enable`, or
-`daemon-reload`s on behalf of these Block-5 units. (Scoped deliberately: the legacy deploy
+Nothing in this repository except `failover-arm.sh` — the `failover arm` ceremony, run by the
+operator — writes to `/etc/systemd/system`, runs `systemctl enable`, or `daemon-reload`s on behalf
+of these Block-5 units. (Scoped deliberately: the legacy deploy
 scripts DO enable and install the pre-fence `solana-failover` service they ship today —
 `deploy-failover.sh`, `deploy-failover-standby.sh` — and are superseded at the v0.7 rollout;
-no script other than `failover-arm.sh` and the daemons' classifier constants references any
-Block-5 unit name.) The **Block-5 entry blocker** gates the first
+no script outside `tests/` other than `failover-arm.sh`, `failover-fence.sh` (the monitor
+unit it restarts) and the daemons' unit-name constants (the two fence-unit paths the
+arm-state classifier tests, the monitor unit the fence-rot sweep reads) references any
+Block-5 unit name in code.) The **Block-5 entry blocker** gates the first
 real installation: **all four nodes confirmed on v0.6.10+** (the patsub alert-death class —
 pre-v0.6.10 daemons on bash 5.2 silently fail to deliver Telegram pages, and the fence's
 semantics is "does not act, loudly"). The blocker lifts on host answers, not on code readiness.
@@ -55,6 +57,75 @@ semantics is "does not act, loudly"). The blocker lifts on host answers, not on 
           fenced-demoted  → normal demoted-holder monitoring (READY, watchdog re-armed)
           (no marker + §2.2 third branch: startup evidence → pre-READY extension, no stop)
 ```
+
+## The daemon's exit contract under `Restart=no` (Block 6.3 fix round, M5)
+
+`OnFailure=` fires only on the terminal `failed` state, so the daemon's exit code is part of the
+fence contract. It exits **0 only on a shutdown request** (SIGTERM/SIGINT/SIGHUP → `cleanup`) or
+the HOLD marker-clear below — the unit goes `inactive` and nothing dispatches. A main loop that
+ends **any other way** — a bash expansion error discards the whole top-level loop (a non-canonical
+number in arithmetic was the measured case) — logs an `ERROR` and exits **1**: terminal `failed` →
+`OnFailure` (the fence on a holder, the page on a spare). Before the fix that abort fell through to
+`Main loop exited.` and exit 0 — the armed monitor sat dead and unfenced. The shipped v0.6.x unit
+(`Restart=always`) restarts the daemon either way. The one other exit status is **3**, a **refused
+second copy**: under the armed unit it exits after `READY=1` (next section).
+
+## A refused second copy (Block 7, B7.2): `READY=1`, then exit 3
+
+Each daemon takes `flock -n` on `$STATE_DIR/.<role>.lock` right after its banner, at the start of
+`startup_checks` and before any identity read, fence-marker consumption or state-file access; a second
+copy of the same role pages `SECOND INSTANCE REFUSED` and exits **3**. The ceremony's
+retirement of the legacy units (below) stays THE mechanism against two monitors; the lock is a guard
+for a copy the operator starts by hand, or a unit that comes up beside a running one.
+
+Under the armed unit that exit must not happen **before** `READY=1`. Measured on systemd 255
+(255.4-1ubuntu8.18, Ubuntu 24.04), in a user manager, with six throwaway `Type=notify` units
+(`NotifyAccess=all`, `Restart=no`, `TimeoutStartSec=20s`), each with `OnFailure=` a oneshot that
+touches a marker file (the `READY=1` of rows 3 and 4 was sent with `systemd-notify --ready`):
+
+| the unit's main process | extra | end state / result | `OnFailure=` |
+|---|---|---|---|
+| `exit 3` | — | failed / exit-code | **fired** |
+| `exit 3` | `SuccessExitStatus=3` | failed / protocol | **fired** |
+| `READY=1`, 1 s, `exit 3` | `SuccessExitStatus=3` | inactive / success | not fired |
+| `READY=1`, 1 s, `exit 0` | — | inactive / success | not fired |
+| `exit 0` | — | failed / protocol | **fired** |
+| 1 s, `exit 0` | `RemainAfterExit=yes` | failed / protocol | **fired** |
+
+Any exit before `READY=1` ends a `Type=notify` unit in `failed` — `exit-code` for a failing status,
+`protocol` for a success status, with or without `SuccessExitStatus=` — and `failed` dispatches
+`OnFailure=`, which on the armed unit is the real fence. Only an exit after `READY=1`, with a status
+the unit counts as success, ends it `inactive`. So:
+
+- a refused copy under the armed unit (`NOTIFY_SOCKET` and `WATCHDOG_USEC` set) sends `READY=1` after
+  its page — `_watchdog_ready_refused`, in the `[watchdog]` block, behind the same gate as the rest of
+  it — and exits 3 at once (the watchdog arms at READY, and this copy pets nothing);
+- the monitor skeleton carries `SuccessExitStatus=3` once, so that this exit ends the unit
+  `inactive`; status 3 is the refusal's alone (the only `exit 3` in either daemon), and exit 1 and the
+  watchdog's SIGABRT stay failures. `SuccessExitStatus=3` **without** the `READY=1` is no fix: row 2;
+- outside the armed unit (the wizards' legacy units, a copy started by hand) nothing is sent; the units
+  the deploy scripts write refuse the restart of exit 3 (`RestartPreventExitStatus=3`; a unit
+  installed by an older deploy keeps its old text until it is re-deployed).
+
+The shape the daemon uses was measured as well: a child process sends `READY=1` (`systemd-notify --ready`,
+the shortest-lived sender, so the worst case for the sender-attribution race the daemons document at
+`_sd_notify`) and the main process exits 3 at once. With `SuccessExitStatus=3`, 300 of 300 runs ended
+`inactive` / success and `OnFailure=` never fired; without it, 30 of 30 ended `failed` / exit-code and
+it fired; an exit 3 before any `READY=1` fired 30 of 30. The daemon's own sender is `socat`, which was
+not installed on the measuring host, so `systemd-notify` is the stand-in that was measured.
+
+Scope: systemd 255 was measured. The `protocol` result for a notify service that exits before `READY`
+exists since systemd v240, so 249 (Ubuntu 22.04) is expected to behave the same; it was not measured.
+
+## `ExecStop=` — the TERM re-send (AG-3.5; the (12e) TERM race)
+
+The monitor skeleton carries one `ExecStop=` (the arm renders it into the armed unit and verifies it
+byte-exact): while `$MAINPID` lives it re-sends TERM, at most 3 times, 1 s apart, and always exits 0.
+It covers the bash behaviour in `docs/SAFETY.md` ("Known bash behaviour"): on some bash 5.2 builds
+the shell catches a TERM and never runs the trap, so a `systemctl stop` would run to the stop timeout,
+end in SIGKILL and send no 'stopped' page, while a second TERM ends the daemon at once. It must exit 0
+— a failing `ExecStop=` leaves the unit `failed`, and `failed` dispatches `OnFailure=` (the fence).
+systemd's own TERM follows it as before.
 
 ## HOLD, as implemented (supersedes addendum §2.2's original wording)
 
@@ -124,7 +195,10 @@ wording could not ship, both directions traced:
    command printed and the one documented dangerous override
    `ARM_ACCEPT_UNVERIFIED_IDENTITY=1`, which arms with a LOUD WARN naming exactly what was
    not verified; page-only proceeds with a WARN and needs none of this; frankendancer states
-   the stop-only posture and skips); and the §2.3 one-arm-state announcement (DRY_RUN decides
+   the stop-only posture and skips); **P6-ledger** (AG-3.5): a REAL arm refuses when the env's
+   `LEDGER_PATH` is empty or not a readable directory — the fence reads it from the env file only
+   and cannot detect it, and an empty value turns every real fence dispatch into a validator
+   stop (a page-only arm only warns); and the §2.3 one-arm-state announcement (DRY_RUN decides
    WHICH unit).
 2. **Probe before arming (§2.1-rev2.1 condition 1, shipped):** render the two `arm-probe`
    skeletons into `ARM_RUNTIME_DIR` (tmpfs — ephemeral by construction), daemon-reload, start
@@ -144,9 +218,11 @@ wording could not ship, both directions traced:
    `stop` → `disable` → VERIFIED retired BEFORE the new monitor is enabled; any failure or
    verify disagreement → `REFUSE[INSTALL-legacy]` with the manual commands printed, no enable,
    no token; the unit FILE stays on disk — deleting it is the operator's cleanup. Supersession
-   is an ACTION the ceremony performs, not a rollout plan — and deliberately NOT a daemon-side
-   single-instance flock: a Type=notify monitor losing that race never goes READY → start
-   timeout → `failed` → OnFailure → a REAL fence on a healthy validator); then `enable` the
+   is an ACTION the ceremony performs, not a rollout plan — and not a daemon-side single-instance
+   flock: the daemons' lock (Block 7) is only a guard for a hand-started copy, and a lock alone
+   would turn the losing notify monitor into an exit before READY → `failed` → OnFailure → a REAL
+   fence on a healthy validator, which is why a refused copy sends `READY=1` and exits 3 — see "A
+   refused second copy" above); then `enable` the
    monitor (the only enable of a Block-5 unit); NEVER start/restart the validator unit. Then a
    `_fence_unit_state`-equivalent
    re-read must agree with the intent (render→verify, not render→hope), the persisted
@@ -166,9 +242,13 @@ wording could not ship, both directions traced:
    record `verify-rot-properties.md`, private tree). Verified fence-killing drift pages
    CRITICAL immediately (exact element + exact fix) and, only after `FENCE_ROT_GRACE` of
    persistence while verifiably STAKED, gracefully self-demotes via the daemon's existing
-   demote path (§2.1-rev2.1 №2). Structurally inert on every un-armed host. What remains for
-   Block 6 (deliberately NOT daemon work here): the zero-stake verification of the unstaked
-   key — it is G2's arm condition and its consumer/wiring is spare-side.
+   demote path (§2.1-rev2.1 №2). Structurally inert on every un-armed host. The zero-stake
+   verification of the unstaked key (G2's arm condition) is not daemon work: it ships in the
+   ceremony as precondition P5, on a spare's arm — for each `PRIMARY_UNSTAKED_PUBKEY` entry in
+   the env file, a bounded `getVoteAccounts` read (`TIER2_RPC`, then `TIER3_RPC`); the arm
+   refuses (`REFUSE[P5-staked-unstaked]`) when a vote account lists the key as `nodePubkey` with
+   activated stake, or when no usable answer comes (cannot-verify refuses); an empty
+   `PRIMARY_UNSTAKED_PUBKEY` skips it, said aloud.
 
 ## Frankendancer: STOP-ONLY fencing in v0.7 (named limitation — reviewer-packet item)
 
@@ -177,8 +257,10 @@ On a `VALIDATOR_TYPE=frankendancer` box **every real-fence dispatch takes the st
 bans the daemons' fd identity read (a localhost curl `getIdentity`) like any other network call,
 and no `fdctl` demote rung exists in the fence. A monitor failure on fd therefore means full
 validator stop + `fenced-stopped` + HOLD (operator-owned recovery) — and a stopped node never
-re-advertises the unstaked flip, so the spare's G2 verified-demote proof cannot form (slower or
-no takeover). The daemons DO demote fd (bounded `fdctl set-identity`); the fence deliberately
+re-advertises the unstaked flip, so from the release that wires the relinquish-proof gate the spare's G2
+verified-demote proof cannot form there (a slower takeover, or none); in this release no proof conditions a
+take, and in Alpenglow mode the spare takes nothing unless it is armed (`AG_ARMED_TAKE=true`: a cold take, after a readiness margin also holds - docs/SAFETY.md): when its timer and its gates pass an unarmed spare pages (only the retained path took, on its
+timer path). The daemons DO demote fd (bounded `fdctl set-identity`); the fence deliberately
 does not in v0.7. An fd-native demote rung is future work; until then, arming a frankendancer
 box means accepting stop-only fencing.
 
@@ -195,7 +277,7 @@ execs these, CI ships none of them, and the monitor skeleton's `<role>` placehol
 uninstallable as-is); for the two fence scripts and `failover-arm.sh` the guard is that no
 code path in this repository RUNS them — they ship in the release artifact, the ceremony is
 the only thing that places the fence bodies on a host, and the ceremony itself runs only by
-the operator's hand at the rollout (upgrade-then-arm, release checklist). Their tests mock
+the operator's hand at the rollout (upgrade-then-arm). Their tests mock
 every actuator (`systemctl`, the admin-socket CLI, `pgrep`, `/proc` reads, `socat`, `flock`)
 and point every arm root (`ARM_SYSTEMD_DIR`, `ARM_RUNTIME_DIR`, `ARM_INSTALL_DIR`,
 `FENCE_MARKER_DIR`, `ARM_STATE_DIR`) at mktemp; no real `systemctl` call runs from any test.
@@ -208,6 +290,6 @@ and point every arm root (`ARM_SYSTEMD_DIR`, `ARM_RUNTIME_DIR`, `ARM_INSTALL_DIR
    ignoring"), the failing unit reaches terminal `failed` normally, and the existing unit in a
    two-unit list dispatches despite the missing sibling. Load-bearing in ANY design (every
    un-armed host names a nonexistent unit) — executed, not reasoned (the gate-B class). Full
-   record: the project design records (`verify-onfailure-missing-unit.md`). The §2.1-rev2.1
+   record: a private design record, not in this repository. The §2.1-rev2.1
    arm-time probe remains: the record proves systemd's semantics, the probe proves THIS host's
    wiring.

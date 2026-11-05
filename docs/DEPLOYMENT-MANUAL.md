@@ -1,7 +1,14 @@
-# Solana Validator Failover System v0.6.9 — Deployment Manual
+# Solana Validator Failover System v0.7.0-rc2 — Deployment Manual
 
 > **Status:** read the honest-limits note in the [README](../README.md) and the safety model in
 > [SAFETY.md](SAFETY.md) before arming anything. `DRY_RUN=true` is the shipped default everywhere.
+
+> **v0.7 — ALPENGLOW MODE (always on).** By default FO never takes the staked identity automatically: the standby's take, the primary's `RECOVERY_MODE=rpc` re-take and the pre-warm are
+> withheld, and a take that every gate approves is **paged once per episode** (`TAKEOVER WITHHELD — Alpenglow mode`). The staked identity moves by the operator's *warm swap* —
+> see **Manual switch-back** below and [SAFETY.md — Alpenglow](SAFETY.md#alpenglow-mode-v07). The one opt-in is a standby armed with `AG_ARMED_TAKE=true` (default `false`): it takes cold, voter first,
+> once a readiness margin (`AG_TAKE_MARGIN_SLOTS`, default 200) also holds - read [SAFETY.md — Armed cold take](SAFETY.md#armed-cold-take-opt-in-rc1) before setting it; the pairing rule is
+> `TAKEOVER_DELAY` (standby, default 60) ≥ `HOLDER_GAP_DEMOTE_SECS` (primary, default 30) + 30. Everywhere this manual describes a spare *taking* the identity, the takeover timelines,
+> `ALLOW_UNFENCED_TAKEOVER`, `RECOVERY_MODE=rpc` or give-back, it describes the **retained path**, which v0.7 does not run: the same gates decide when the *page* is sent (or, armed, when the cold take is made).
 
 > **v0.6.9 changes (vs v0.6.8) — `DRY_RUN=true` default unchanged.**
 > **"Post-failover symmetry" hardening** — the protection the PRIMARY demote path already had is
@@ -11,9 +18,11 @@
 > before any spare takes" invariant now also covers the **STANDBY→BACKUP hop**, and a self-fenced
 > standby is **locked out of re-taking** for `SELF_FENCE_RETAKE_COOLDOWN=600s` (its own fenced vote
 > account looks delinquent — that's why it fenced). **H2:** a hard-stop now survives
-> `Restart=always` — the unit is masked (`--runtime`) when `systemctl stop` fails, and the
-> down-state is **re-verified after `HARD_STOP_REVERIFY_SECS=15`** so a resurrected validator pages
-> `HARD STOP FAILED` instead of a false ✅. **H3:** the self-fence baseline (frozen-slot /
+> `Restart=always` — it is a *requested* stop (`systemctl stop`; `systemctl stop --no-block` just before
+> the SIGKILL when the primary's validator process is stopped or in uninterruptible sleep), which
+> `Restart=` does not undo, and the unit is not masked (v0.6.9 masked it; v0.7 does not — see
+> **Manual switch-back**); the down-state is **re-verified after `HARD_STOP_REVERIFY_SECS=15`** so a
+> resurrected validator pages `HARD STOP FAILED` instead of a false ✅. **H3:** the self-fence baseline (frozen-slot /
 > no-answer / vote-lag clocks) is **persisted every cycle and restored** across a monitor restart
 > (freshness-gated by `STATE_MAX_AGE_SECS=900`, continuity-gated on first-read evidence), so a
 > daemon restart mid-stall no longer disarms the fence; the startup wait loop keeps the watchdog
@@ -58,7 +67,8 @@
 > holder is already silent before STANDBY checks. **Installer guardrails:** the deploy prompts now show a
 > calm one-line "why" note for the safety-timing values and a RED nudge if `TAKEOVER_DELAY` is set below
 > the cross-node-safe floor (`EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS`, derived in one
-> place); the four hardcoded self-fence values stay hardcoded with a "don't tune in isolation" comment.
+> place); the four values that floor rests on are never prompted for and carry coupling comments (listed
+> under **Installer guardrails** below).
 > No fence/liveness/window/switch/takeover body changed (byte-identical vs v0.6.6, incl.
 > `staked_is_actively_voting`); `DRY_RUN=true` default unchanged; **deploy-prompt UX only** (no daemon
 > behavior change). Built on the unmerged v0.6.6; the off-prod the internal testnet runbook still gates
@@ -72,7 +82,7 @@
 > `SELF_FENCE_ISOLATION_SECS`), raises the STANDBY `TAKEOVER_DELAY` preset 20 → **60** (= PRIMARY
 > self-fence worst case 30 + a 30s cross-node margin), adds the STANDBY/BACKUP knobs
 > `EXPECTED_PRIMARY_SELF_FENCE_SECS`/`SELF_FENCE_MARGIN_SECS` with a **loud startup warning** when
-> `TAKEOVER_DELAY < EXPECTED + margin`, and enables fast-detect (`MAX_DELINQUENT_SLOTS=15`) so the
+> `TAKEOVER_DELAY < EXPECTED + margin`, and enables fast-detect (`MAX_DELINQUENT_SLOTS=15`; the wizard preset is 24 since v0.7) so the
 > end-to-end takeover stays ~70s. **N2:** the no-answer self-fence now demotes BEFORE its alert (the
 > safety action never waits on notification I/O). The anti-double-sign margin is **unchanged** — only
 > availability is traded (faster PRIMARY relinquish). No fence/liveness/window/switch/takeover body
@@ -123,18 +133,18 @@
 
 ```
 ┌──────────────────────────────────┐     ┌──────────────────────────────────┐
-│       PRIMARY (v0.6.2)           │     │      STANDBY (v0.6.2)            │
+│       PRIMARY (v0.7)             │     │      STANDBY (v0.7)              │
 │                                  │     │                                  │
 │  LOCAL: delinquency (every 1-3s) │     │  LOCAL: delinquency (every 1-3s) │
 │  LOCAL: internet ping (parallel) │     │  LOCAL: own health (getHealth)   │
 │  T2/T3: confirm only on trigger  │     │  T2/T3: confirm only on trigger  │
 │                                  │     │  Fence: liveness (gossip advis.) │
 │  Identity: STAKED                │────→│  Identity: UNSTAKED              │
-│  (normal operation)              │     │  (hot spare)                     │
+│  (normal operation)              │     │  (monitoring spare)              │
 └──────────────────────────────────┘     └──────────────────────────────────┘
                                                           │
                                          ┌────────────────▼────────────────┐
-                                         │      BACKUP (v0.6.2)            │
+                                         │      BACKUP (v0.7)              │
                                          │  TAKEOVER_DELAY=120s            │
                                          │  GOSSIP_VERIFY=false            │
                                          │  Fence: vote-liveness (real!)   │
@@ -143,7 +153,12 @@
 
 ### RPC cost model
 
-Normal operation: **0 external RPC calls**. Everything via LOCAL RPC.
+Normal operation: the per-cycle checks read **LOCAL RPC only**. External RPC is read on timers: while
+STAKED, the collision check (`getClusterNodes` on `TIER2` and on `TIER3`, every `COLLISION_CHECK_INTERVAL`,
+60 s); in both daemons, the Alpenglow tripwire (`getAccountInfo` of the feature account on `TIER2`, then
+`TIER3` if that fails, every `ALPENGLOW_GATE_CHECK_HOURS`, 6 h, and every 15 min while it fails); on an
+armed spare with `PRIMARY_UNSTAKED_PUBKEY` set and two distinct G2 vantages, the G2 baseline
+(`getClusterNodes` on one vantage, alternating, every 60 s).
 
 | Function | RPC | When called |
 |    ---    |    ---    |    ---    |
@@ -154,10 +169,12 @@ Normal operation: **0 external RPC calls**. Everything via LOCAL RPC.
 
 ### Failure scenario (3-server)
 
-1. PRIMARY: Internet lost → parallel pings fail 3x → switch to unstaked (~9s). OR isolated from the
+1. PRIMARY: Internet lost → parallel pings fail 6x (`CONNECTIVITY_RETRIES`, rc2 F22 — it was 3) → switch to unstaked (24 to 34 s: five sleeps of the 3 s
+   `CHECK_INTERVAL` plus six failed ping checks of 1.5 to 2.5 s — not pinned
+   by a test; 5.5 s a round measured on the testnet pair). OR isolated from the
    supermajority (LOCAL confirmed slot frozen / LOCAL JSON-RPC silent) → **self-fence** to unstaked at
    ~30s (`SELF_FENCE_ISOLATION_SECS`/`SELF_FENCE_NOANSWER_SECS`) — it relinquishes BEFORE any spare takes.
-2. STANDBY: LOCAL RPC sees delinquent → sliding window 7/10 → external confirm → **fence (vote-liveness authoritative; gossip advisory)** → takes staked (~70s: `TAKEOVER_DELAY=60` after the PRIMARY has relinquished at ~30s, with a 30s cross-node margin)
+2. STANDBY: LOCAL RPC sees delinquent → sliding window 7/10 → external confirm → **fence (vote-liveness authoritative; gossip advisory)** → in Alpenglow mode **pages** that the staked identity is free to be moved (unarmed, the default) or, armed (`AG_ARMED_TAKE=true`), takes it cold, voter first, once the readiness margin also holds (the retained path took it, ~70s: `TAKEOVER_DELAY=60` after the PRIMARY has relinquished at ~30s, with a 30s cross-node margin)
 3. BACKUP: Same with 120s delay + the **vote-liveness** fence (no longer blind). Only activates if STANDBY also stopped voting (~130s)
 4. PRIMARY (rpc mode): checks T2/T3 → sees STANDBY holds/votes the identity → stays unstaked
 
@@ -216,11 +233,11 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   - **The daemon emits an URGENT alert at startup** if the validator was started on the staked
     identity. It does **not** refuse to run — refusing would leave the node unmonitored; a loud,
     persistent page is the safer choice.
-  - **Recommended fix — the Anza `identity.json` symlink.** Point `solana.service`'s startup
-    `--identity` at a soft link (e.g. `identity.json`) that targets the **unstaked** keypair, and
-    repoint it on each transition. A restart then always fails safe to unstaked. If your
-    validator's unit is managed by your own deployment tooling, make that startup-flag change
-    through that tooling so it survives redeploys.
+  - **The fix — this node's own unstaked keypair, never re-pointed.** The validator's startup
+    `--identity` is this node's own **unstaked** keypair file — a fixed path, not a link that is moved at
+    each transition — so every restart comes up unstaked, whatever happened last. The staked identity is
+    only ever set at runtime (the warm swap, below). If your validator's unit is managed by your own
+    deployment tooling, make that startup-flag change through that tooling so it survives redeploys.
 - **`staked ≠ unstaked`.** Each node has a unique unstaked keypair; the staked keypair is
   shared. The scripts refuse to start (and deploy refuses to finish) if the two are equal,
   or if either pubkey cannot be derived.
@@ -239,25 +256,42 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   external RPCs to sample `lastVote`, so a both-externals-down takeover blocked regardless. The one
   explicit emergency local-only path is `ALLOW_UNFENCED_TAKEOVER=true` with `VOTE_LIVENESS_VERIFY=false`,
   which disables the split-brain fence entirely.)*
-- **Automatic `set-identity` runs WITHOUT `--require-tower`;** PRIMARY still deletes the
-  staked tower when it goes unstaked. `--require-tower` is correct only in the operator-
-  driven switch-back, where the live tower is copied with the identity (see Manual
-  switch-back).
-  - **Why no-tower `set-identity` is safe here (the on-chain floor).** Without a local tower,
-    agave does **not** vote from an empty tower — it seeds the lockout floor from the **on-chain
-    vote account** (`initialize_lockouts_from_bank`), i.e. the vote account's *last landed* vote.
-    That floor is a real safety net, but it lags **in-flight votes** (submitted but not yet landed),
-    so a no-tower takeover is double-sign-safe **only while the previous holder is genuinely not
-    voting** — which is exactly what the delinquency-confirm + vote-liveness fences are built to ensure
-    (they are strong evidence, not proof — see SPLIT-BRAIN-RESIDUAL.md). This
-    is why vote-liveness is mandatory and `TAKEOVER_DELAY` covers the in-flight-vote window. A
-    *corrupt/wrong* tower does not silently fall back — agave exits; only a truly-missing/too-old
-    tower rebuilds from the bank.
+- **FO never touches the vote-history file (v0.7, Alpenglow).** Alpenglow replaces the tower with a
+  vote-history file, `vote_history-<STAKED_PUBKEY>.bin`, in the ledger directory. FO classifies it
+  (absent / present / older than the episode) and logs its sha256 after a demote; it never deletes,
+  moves, copies, truncates or rewrites it — **a vote-history file is never deleted**. (Before v0.7 the
+  PRIMARY deleted the staked tower when it went unstaked; that deletion is gone.) The staked identity
+  moves only by the **warm swap** (see *Manual switch-back*), and FO withholds every automatic take.
+  - **Why the file matters.** It is the record of the slots the identity has voted on. A node that
+    starts voting the staked identity from an older record (or none) can vote on a slot the previous
+    holder already voted on — a double-sign — and FO cannot see from outside whether the old holder's
+    last real vote is above the new holder's root (the on-chain `lastVote` is only a lower bound of
+    it). The warm swap makes the new holder start from the old holder's current record. A `set-identity`
+    runs WITHOUT `--require-tower`: that is a TowerBFT flag and Alpenglow has no tower.
 - **Delinquency threshold = 128 slots** (`DELINQUENT_VALIDATOR_SLOT_DISTANCE`; `getHealth` uses the
   same 128). A vote account is `current` iff `lastVote > tip − 128`, else `delinquent`. Reason in
-  **slots, not seconds** — mainnet slot time varies and `lastVote` (read at finalized by default)
-  lags and advances in bursts; the daemon samples liveness at `processed` and uses a slot-delta
-  rule, never a wall-clock conversion.
+  **slots, not seconds** — mainnet slot time varies and `lastVote` (the detection reads use
+  `finalized`, spelled out in every request since v0.7 Block 6.3.1 — agave's default) lags and
+  advances in bursts; the daemon samples liveness at `processed` and uses a slot-delta rule, never a
+  wall-clock conversion. At the take, the spare re-reads its **own** node at `confirmed` (the own-view
+  veto, v0.7): the slow reliable view triggers, the fast one vetoes.
+- **`LOCAL_HEALTH_MAX_BEHIND` (STANDBY, Tier-1) — enters no decision; the threshold is the node's own
+  health-check distance.** agave's `getHealth` reports "behind" only beyond the validator's
+  `--health-check-slot-distance` (128 by default) and reports no lag inside it, so since v0.7 (Block
+  6.3.1, tightened in its fix round 1) Tier-1 is ready iff `getHealth` answers ok and treats **every**
+  "behind" report as not ready, whatever this knob says. A value above that distance (read from the
+  validator's command line, else agave's 128) is **clamped** at start with a loud WARN — it could never
+  take effect; a value at or below it has **no effect** (below it an info line says so; at it — the default
+  128 at agave's default distance — the daemon is silent): it cannot tighten Tier-1.
+  To bound how far behind a spare may be when it takes (the own view's residuals 2 and 6 in
+  `docs/SAFETY.md`: a spare lagging L seconds can take a holder that resumed within those L seconds), lower
+  the validator's own `--health-check-slot-distance`. The default is 128 (up to ≈ 51 s: the slowest rate of the slot-params table, 2.5 slots/s, gives the
+  UPPER bound, and about 27 s at Alpenglow's measured 4.667 — in time the bound is the distance ÷ the cluster's slot rate:
+  64 slots are 25.6 s at 2.5 slots/s, 32 s at 2.0); measured
+  at the shipped defaults, 2.5 slots/s and a constant lag, at 64 slots a holder resuming inside the episode is
+  taken at most 25 s into its voting, at 38 slots at most 15 s. The distance bounds the lag at the take
+  cycle's Tier-1 check (the cycle's start) — a lag that grows during a slow take cycle is not bounded by it —
+  and a spare that lags past its distance there cannot take at all.
 
 ### Compatibility & tuning notes
 
@@ -273,6 +307,17 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   delinquent before the cluster marks the node delinquent. It only moves PRIMARY toward
   *unstaked* (the safe direction) and STANDBY still requires external confirmation + the authoritative vote-liveness fence (gossip advisory),
   so it is safe to opt into; left opt-in to avoid false positives on a busy node.
+  - **Payload-first read order (`MAX_VOTE_LATENCY` PRIMARY path — fixed in v0.7 Block 6.3.1):** on
+    this opt-in path `tier1_get_vote_latency` reads its `getVoteAccounts` payload **first**, then its
+    `getSlot` reference, so a stall or pet between the two (up to 27 s: both reads at their
+    `curl -m 10` bound and a 7 s pet) can only make the holder look *less* current — the demote comes
+    sooner, never later. (Until 6.3 the reference came first and the bias could delay the demote by a
+    full STAKED loop cycle; the measured numbers are in `docs/SAFETY.md`.) The price: a live holder
+    whose two reads straddle a long stall reads over-limit on that cycle — a demote still needs
+    `DELINQUENCY_RETRIES` consecutive over-limit reads and Tier-2's own verdict (or, when Tier-2 gives
+    no usable answer, those local reads alone). This path is **not**
+    part of the cross-node invariant: it may fire after a spare's take; the margin `B` bounds the
+    self-fence only (whose own-vote-lag check reads a single same-payload snapshot). Off by default.
 - **Recovery mode (`RECOVERY_MODE`):** `manual` is the **default and recommended** path —
   operator-driven switch-back (see Manual switch-back). `rpc` is an **opt-in** automatic path:
   in v0.6.3 it gets **vote-liveness parity** — PRIMARY re-takes the staked identity only when the
@@ -280,7 +325,17 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
   advancing (the STANDBY holds it), recovery is refused. The v0.6.2 full-`ip:port` gossip check
   stays as advisory corroboration (it can still abort recovery — the safe direction). `manual`
   remains recommended because automatic re-take is inherently riskier than a human deciding. The
-  daemon logs a startup notice when `rpc` is selected. `auto` is reserved/disabled.
+  daemon logs a startup notice when `rpc` is selected. `auto` is reserved/disabled. Since v0.7 the
+  `rpc` re-take passes only inside a band of the staked account's age (128–158 slots after its last
+  vote), so at the shipped defaults, at any cluster rate depending on phase (measured at 1.0 and 2.5
+  slots/s), **the veto band can keep an `rpc` recovery from ever completing, and nothing pages but the
+  veto's own throttled page** (`docs/SAFETY.md`, *What it costs, measured*): the daemon logs the held pass
+  at INFO ("Still delinquent (Tier 1)") and stays unstaked — watch for it and switch back manually when
+  the account is safe. After a failover an `rpc`-mode PRIMARY sends no page at all: while its own node
+  sees the STANDBY voting the identity, each recovery pass ends before the fence, so the "Recovery
+  blocked … ACTIVELY VOTING elsewhere" page is not sent — the STANDBY's `TOOK STAKED ✅` is the signal. (An earlier v0.7 build paged such a
+  recovery; that page misfired — in recoveries that complete, and forever in the ordinary failed-over
+  state — and was removed.) The default `RECOVERY_MODE=manual` is unaffected.
 
 - **PRIMARY self-fence / "vote lease" (`PRIMARY_SELF_FENCE`, v0.6.3):** mitigates the residual
   partition case — a PRIMARY that is alive but **isolated from the supermajority** (partition /
@@ -298,9 +353,13 @@ These hold on every node; the deploy scripts and the failover daemon enforce or 
     exists**, that silent-but-staked state is itself isolation: the node may be partitioned/wedged yet
     still voting, while STANDBY confirms delinquency + frozen liveness and takes over → heal
     double-sign. The daemon then **demotes to unstaked first, then urgent-alerts** (v0.6.6 N2: the safety action never waits on notification I/O). It never arms on a
-    fresh start (no baseline) and any successful read resets the timer.
+    fresh start — no CANONICAL baseline slot yet. Named members of that gap (a silent LOCAL is then
+    not fenced by this timer, and silent reads do not run the frozen-slot clock): a LOCAL that has so
+    far answered only non-canonical values and then goes silent, and a restart whose saved state is
+    stale or carries a non-canonical `SAVE_TS`. Only a **canonical** answer resets the timer; a present
+    non-canonical answer does not (it keeps the clock running and counts as "not advancing").
   - It can **only ever** lead to `switch_to_unstaked` (the safe direction), respects `DRY_RUN`
-    (logs "would self-fence", no swap) and the startup / manual-change grace, and is disabled with
+    (logs `[DRY RUN] Would switch to UNSTAKED — self-fence: …`, no swap) and the startup / manual-change grace, and is disabled with
     `PRIMARY_SELF_FENCE=false`.
   - **Fully-wedged residual.** The demote uses `set-identity` via the admin RPC; in the target case
     (admin RPC up, JSON-RPC silent) it succeeds. If the validator is *fully* wedged (admin RPC down
@@ -324,13 +383,31 @@ STANDBY/BACKUP (/opt/solana-failover/):
 /etc/systemd/system/
 ├── solana-failover.service           # PRIMARY systemd unit
 └── solana-failover-standby.service   # STANDBY/BACKUP systemd unit
+
+Armed by `failover arm` (v0.7) — the role's unit above is stopped and disabled (its file stays) and the host gets:
+/opt/solana-failover/
+├── failover-fence.sh                 # the fence bodies (the ceremony places both)
+└── failover-fence-page-only.sh
+/etc/systemd/system/
+├── solana-failover-monitor.service   # the armed monitor: runs the role's script above
+└── solana-failover-fence.service     # exactly one fence unit: this one (DRY_RUN=false)
+                                      #   or solana-failover-fence-page-only.service (any other DRY_RUN)
+
+The release (each file below has its sha256 in SHA256SUMS):
+├── install.sh                        # bootstrap: fetches a role's wizard + script, verifies them, runs the wizard
+├── deploy-failover.sh, deploy-failover-standby.sh
+├── solana-primary-failover.sh, solana-standby-failover.sh
+├── failover.env.example, failover-standby.env.example
+├── failover-arm.sh                   # the `failover arm` ceremony, run from the release tree (it reads systemd/)
+├── systemd/failover-fence.sh, systemd/failover-fence-page-only.sh
+└── systemd/*.service.skel            # 5 unit skeletons: monitor, fence, fence-page-only, arm-probe, arm-probe-fence
 ```
 
 ---
 
 ## Core features (added in v0.5.9, carried forward)
 
-- **LOCAL-first architecture**: normal cycle uses only LOCAL RPC (0 external calls, 0 CU)
+- **LOCAL-first architecture**: the normal cycle's checks use LOCAL RPC; its external reads outside an episode are the timed ones of *RPC cost model* above
 - **Turbo mode**: adaptive interval — 1s checks when delinquency detected, normal 3-5s otherwise
 - **Parallel pings**: PRIMARY internet detection runs all 3 pings simultaneously (~1.5s vs ~3s)
 - **Gossip pre-fetch**: STANDBY starts gossip query during takeover delay, ready when delay expires
@@ -364,6 +441,13 @@ bash deploy-failover-standby.sh
 # Deploy asks: STANDBY or BACKUP role — sets defaults automatically
 ```
 
+### Arming the fence (v0.7): set `LEDGER_PATH` explicitly
+
+Set `LEDGER_PATH` in `failover.env` to the validator's ledger directory **before** `failover arm`. The wizards write the ledger they detected (when it is a directory on that host) and leave it empty otherwise; the daemons fill an empty value in from the running validator's `--ledger`,
+but the fence (`failover-fence.sh`, run by the unit's `OnFailure=`) has no such detection: with the value empty, every admin-socket call it makes fails to connect and it falls to its stop path
+(the validator is stopped instead of demoted). Note also that the daemons detect the ledger only from the long form `--ledger`: a validator started with the short form `-l` makes them exit 1 at startup
+and ask for `LEDGER_PATH` — set it there too. `failover arm` refuses a REAL arm when the value is empty or not a readable directory (precondition P6-ledger; a page-only arm only warns). The fence reading the ledger the way the daemons do is tracked for the release that decides what stays armed.
+
 ### Update existing (no re-deploy)
 
 ```bash
@@ -373,6 +457,30 @@ cp solana-standby-failover.sh /opt/solana-failover/
 systemctl restart solana-failover
 systemctl restart solana-failover-standby
 ```
+
+On a host armed with `failover arm` (v0.7) the monitor is the unit `solana-failover-monitor.service`, which the ceremony renders from `systemd/solana-failover-monitor.service.skel` (it runs
+`/opt/solana-failover/solana-<role>-failover.sh`) and enables, and the ceremony has stopped and disabled the wizard's unit, `solana-failover` or `solana-failover-standby` (its unit file stays on disk).
+The ceremony does not start the monitor: it enables it and stops the wizard's unit, so until you run `systemctl start solana-failover-monitor` (or the host boots) nothing monitors the host; the ceremony's closing output names this step.
+To update an armed host, copy the role's script as above, then run `systemctl restart solana-failover-monitor`; wherever this manual starts, restarts or stops `solana-failover[-standby]`, an armed host means
+`solana-failover-monitor`. Leave the retired unit stopped: the ceremony retired it so that the host runs one monitor, not two. Under the armed unit a daemon that exits with an error, at its start
+too, ends the unit `failed`, and `OnFailure=` dispatches the fence (a page on a spare). The copy replaces the script only: the fence scripts and the unit files on that host are the ones
+`failover arm` placed, and a re-run of the ceremony replaces them. After an update that changes `failover-arm.sh`, the fence scripts or the unit skeletons, re-run `failover arm` from the new
+release tree: it re-renders the units and verifies them, and a holder's re-arm prints a new pairing token that every spare re-pairs with.
+`DRY_RUN` is part of an armed host's state. The ceremony reads it to choose the fence unit (`false`: the real fence; anything else: the page-only fence, and it removes the other unit), and the daemon
+checks the pair at every start. Change it only through the ceremony: edit the env file, re-run `failover arm`, then restart `solana-failover-monitor` — not with a `sed` and a restart alone (the `sed` of
+Phase 3 flips the value and leaves the fence unit as it was). `DRY_RUN=true` beside the real fence unit makes the daemon refuse to start (exit 1, a CRITICAL page), and under the armed unit a start that
+fails ends the unit `failed`, which dispatches the real fence; `DRY_RUN=false` beside the page-only unit starts, with a warning that the holder is not really fenced.
+
+---
+
+## v0.7.0-rc2 — primary knobs (`failover.env`)
+
+Added or changed since v0.7.0-rc1. A knob here is read by the PRIMARY daemon only; an env file without it runs on the daemon's default.
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `SILENT_STAKE_PAGE_SECS` | `90` | F21: while this node is UNSTAKED it reads the staked vote account's public `lastVote` (`TIER2_RPC`, then `TIER3_RPC`, one read per `VOTE_LIVENESS_MIN_INTERVAL`) and pages `STAKED IDENTITY SILENT 🚨` when it has not moved for this many seconds while the cluster tip did: nobody is voting the staked identity (the spare's host is dead, or its validator is down). **Monitor-only** - no action in any `RECOVERY_MODE`, none in `DRY_RUN`. Floor 30; needs `VOTE_PUBKEY` (off without it, and the start banner says so). **Pairing rule:** keep it at least the spare's `TAKEOVER_DELAY` + 30 (the shipped pair: 90 >= 60 + 30), or an armed spare's ordinary take pages; a value other than 90 is announced at start (`[config-drift]`). The spare's template and wizard carry the same rule from its side (its `TAKEOVER_DELAY` <= this - 30). The first page comes when the span is reached, repeats follow `ALERT_THROTTLE`, and the log says when the votes resume. See `docs/SAFETY.md`, *The silent stake*. |
+| `CONNECTIVITY_RETRIES` | `6` | F22: failed Internet rounds (`ping` to 8.8.8.8 / 1.1.1.1 / 9.9.9.9, one round per cycle) before the PRIMARY demotes itself with `Internet lost (<n>x)`. A round is `CHECK_INTERVAL` + a fixed 1.5 s wait for the pings + the 1 s curl fallback (`CONNECTIVITY_TIMEOUT` does not change it; 5.5 s measured at the defaults), so 6 is about 33 s. **The floor:** `CONNECTIVITY_RETRIES` × (`CHECK_INTERVAL` + 2) must stay ≥ `SELF_FENCE_ISOLATION_SECS` (30): the isolation rung is the intended floor, and a shorter Internet rule demotes the holder on a WAN hiccup (3 rounds demoted a holder at +17 s on a 20 s egress blip - docs/SAFETY.md, *The Internet-lost floor*). With the self-fence on, a value below the floor starts, with one `[config-drift] CONNECTIVITY_RETRIES=…` warning that names the computed seconds and the smallest value that meets the floor (nothing is refused); the banner prints `Inet retries: 6 (≈ 30s to the Internet-lost demote; floor 30s)`. The wizard offers 6. Older envs that carry `CONNECTIVITY_RETRIES=3` keep 3 - loudly while the self-fence is on: set 6. The standby has no such knob. |
 
 ---
 
@@ -385,15 +493,16 @@ offer and M8's re-prompt-on-equal). Hand-edits: `systemctl restart solana-failov
 | Knob | Default | Meaning |
 |---|---|---|
 | `STANDBY_SELF_FENCE` | `true` | Master switch for the promoted-holder self-fence (the PRIMARY's port). `false` = pre-v0.6.9 "hold unfenced" (NOT recommended in 3-node mode). |
-| `SELF_FENCE_ISOLATION_SECS` / `SELF_FENCE_NOANSWER_SECS` / `SELF_FENCE_MAX_BEHIND` / `SELF_FENCE_VOTE_LAG_SLOTS` / `SELF_FENCE_VOTE_LAG_SECS` / `SELF_FENCE_VOTE_LAG_RESET_CYCLES` | `30/30/150/32/20/3` | Same signals, names and defaults as the PRIMARY's block — see the PRIMARY self-fence section. LOCAL signals only; demote = give-back to this node's own unstaked key. Do **not** raise the `*_SECS` without raising the BACKUP's `EXPECTED_PRIMARY_SELF_FENCE_SECS` + `TAKEOVER_DELAY` in lock-step. |
+| `SELF_FENCE_ISOLATION_SECS` / `SELF_FENCE_NOANSWER_SECS` / `SELF_FENCE_MAX_BEHIND` / `SELF_FENCE_VOTE_LAG_SLOTS` / `SELF_FENCE_VOTE_LAG_SECS` / `SELF_FENCE_VOTE_LAG_RESET_CYCLES` | `30/30/150/32/20/3` | Same signals, names and defaults as the PRIMARY's block — see **PRIMARY self-fence / "vote lease"** under *Compatibility & tuning notes*. LOCAL signals only; demote = give-back to this node's own unstaked key. Do **not** raise the `*_SECS` without raising the BACKUP's `EXPECTED_PRIMARY_SELF_FENCE_SECS` + `TAKEOVER_DELAY` in lock-step. |
 | `SETIDENTITY_TIMEOUT` | `15` | H4: bounds every take/give-back admin-socket call (≥ 8). Take timeout → fail toward NOT taking; give-back timeout → escalate. |
-| `SELF_FENCE_HARD_STOP` | `true` | A wedged give-back (identity did not flip) hard-stops the validator (stop → mask → SIGTERM → SIGKILL, verified + re-verified). Never fires on the take path or in DRY_RUN. |
+| `SELF_FENCE_HARD_STOP` | `true` | A wedged give-back (identity did not flip) hard-stops the validator (stop → SIGTERM → SIGKILL, verified + re-verified; the unit is not masked). Never fires on the take path or in DRY_RUN. |
 | `SELF_FENCE_RETAKE_COOLDOWN` | `600` | **Safety-critical.** After a self-fence demote, `attempt_takeover` refuses for this long (persisted across monitor restarts) — the fenced vote account looks delinquent *because we stopped voting it*; without the lockout the standby would take the identity right back. After expiry every normal gate must pass fresh. `0` disables (NOT recommended). |
 
 ### H2/H3/M5 — both daemons (`failover.env` + `failover-standby.env`)
 | Knob | Default | Meaning |
 |---|---|---|
-| `HARD_STOP_REVERIFY_SECS` | `15` | H2: re-verify the hard-stop after this delay (≥ the validator unit's `RestartSec`). A resurrected process = `HARD STOP FAILED` page. When `systemctl stop` failed, the unit is masked `--runtime` first — recovery: `systemctl unmask --runtime solana`. |
+| `HARD_STOP_REVERIFY_SECS` | `15` | H2: re-verify the hard-stop after this delay (≥ the validator unit's `RestartSec`). A resurrected process = `HARD STOP FAILED` page. The hard stop does not mask the unit (v0.6.9 did): it is a requested stop (`systemctl stop`; `--no-block` on a stopped or uninterruptible process), which `Restart=` does not undo, and this re-verify is the catch for anything such a request cannot promise. Recovery after a hard stop: `systemctl start solana`, which boots on the unstaked identity (see **Manual switch-back**). |
+| `HARD_STOP_EXIT_WAIT_SECS` | `15` | F19 (v0.7 rc1): after the SIGKILL, poll the killed validator once per second for up to this many seconds (floor 1) and call the stop `HARD STOP FAILED` only if it is still running at the bound. A validator with a large resident set needs seconds to be torn down (about 2.4 s measured for ~150 GB); the single check 1 s after the kill that v0.6.9 made reported such a stop as failed. The re-verify (`HARD_STOP_REVERIFY_SECS`) then runs as before; the failed page says how long the ladder waited. |
 | `STATE_MAX_AGE_SECS` | `900` | H3: restore the persisted self-fence baseline only from a save fresher than this (stale = discarded; fresh timers). |
 | `STARTUP_STAKED_UNREACHABLE_ALERT_SECS` | `60` | H3: persisted-STAKED + validator unreachable this long at monitor startup → 🚨 `… UNREACHABLE WHILE STAKED` (once per startup). |
 | `COLLISION_CHECK_INTERVAL` | `60` | M5: while STAKED, compare the external gossip endpoint of the staked pubkey vs our own; 2 consecutive mismatches → 🚨 `STAKED IDENTITY SEEN ELSEWHERE (possible collision)` (throttled). **Detection-only — never demotes** (loser-selection under a real collision is the operator's call; see *Emergency: Split-Brain*). |
@@ -442,7 +551,10 @@ timer unchanged). The interactive installers write them; you can also hand-edit 
 
 **What the fast-path does NOT change.** It only skips the *timer wait*. A take still requires the
 external-confirm to say delinquent **and** `staked_is_actively_voting()==frozen` (a fresh ≥`MIN_INTERVAL`
-sample); `voting` and `cannot-determine` both BLOCK exactly as on the timer path. The holder must already
+sample); `voting` and `cannot-determine` both BLOCK exactly as on the timer path. Since v0.7 (Block 6.3.1,
+fix round 1) it never skips the spare's **own-bank** timer either: while its own node showed the holder
+voting within the last `TAKEOVER_DELAY`, a presented flip does not skip the wait (measured on the review's
+forged-flip world: the take moved from t66 to t119 — a full delay after the last own-bank voting read, t59). The holder must already
 be on its unstaked identity (which structurally cannot vote the staked account) for the flip to be visible.
 
 **The flip is anchored to the holder (v0.6.8 F-A).** The fast-path fires only when a watched unstaked
@@ -483,7 +595,7 @@ startup banner prints the live fast-path state (`ARMED` / `DISABLED (fail-closed
 | Knob | Default | Meaning |
 |---|---|---|
 | `G2_VANTAGE_A` | `TIER2_RPC` | First pinned vantage for the verified-demote (G2) proof provider on an **armed** spare: the holder's unstaked identity must be observed at the staked identity's exact endpoint on **both** vantages at T1 and still be there ≥60 s later. Any bank-bearing RPC node works. **Recommended override: a third endpoint in a separate failure domain** — see the note below. |
-| `G2_VANTAGE_B` | `TIER3_RPC` | Second pinned vantage — **must be a distinct provider in a distinct failure domain**. Identical or same-host values page CRITICAL at startup and leave G2 *cannot-determine* for the whole run (fail toward not-taking). |
+| `G2_VANTAGE_B` | `TIER3_RPC` | Second pinned vantage — **must be a distinct provider in a distinct failure domain**. Identical or same-host values page CRITICAL at startup and leave G2 *cannot-determine* for the whole run: in this release no G2 answer conditions any take; from the release that wires the gate, verified-demote cannot prove on that host. |
 
 **Recommended: point at least one vantage at a THIRD endpoint in a separate failure domain.** On
 the defaults, G2's vantages *are* `TIER2_RPC`/`TIER3_RPC` — the same two endpoints every
@@ -493,7 +605,10 @@ the proof gate's additivity does not hold on that host. This is **not** refused 
 run exactly two RPCs — but `failover arm` measures it, names which vantage matched which tier by
 which comparison, and repeats it in the end-of-summary; the armed daemon warns at every start.
 A different *operator* is what separates the failure domain: another hostname or another API key
-for a provider you already use is the same domain. Full statement: `docs/SAFETY.md`.
+for a provider you already use is the same domain. A separate vantage restores that additivity for
+G2 only: the armed spare's other proof, watchdog-elapsed, measures the holder's silence through
+`TIER2_RPC`/`TIER3_RPC` on every configuration, so its proof and the vote-frozen observation stay one
+input. Full statement: `docs/SAFETY.md` (*Shared vantages*).
 
 **Both vantages must support JSON-RPC batching.** Each G2 snapshot is one POST carrying
 `[getSlot, getClusterNodes]`, so the freshness anchor rides in the same response as the proof
@@ -545,7 +660,7 @@ configs are complete before the wiring lands.
 | CHECK_INTERVAL | 3 | 3 | 5 |
 | TURBO_INTERVAL | 1 | 1 | 1 |
 | TAKEOVER_DELAY | — | **60** | 120 |
-| MAX_DELINQUENT_SLOTS | — | 15 | 15 |
+| MAX_DELINQUENT_SLOTS | — | 24 | 24 |
 | SELF_FENCE_ISOLATION_SECS | 30 | — | — |
 | SELF_FENCE_NOANSWER_SECS | **30** | — | — |
 | EXPECTED_PRIMARY_SELF_FENCE_SECS | — | **30** | **30** |
@@ -557,7 +672,8 @@ configs are complete before the wiring lands.
 | WINDOW (threshold/size) | 7/10 | 7/10 | 7/10 |
 
 GOSSIP_VERIFY=false for BACKUP: if STANDBY took identity and crashed, gossip
-still shows staked on STANDBY's endpoint for 5-10 min, which would block BACKUP.
+still shows staked on STANDBY's endpoint for ~48 h (a staked pubkey's CRDS entry lingers that long — see
+**Split-brain fence**), which would block BACKUP if gossip still decided the take (it is advisory since v0.6.3).
 So gossip is off, but **VOTE_LIVENESS_VERIFY=true** gives BACKUP a real fence:
 it takes over only once the staked vote account stops advancing (the crashed
 STANDBY is no longer voting) — plus the 120s delay + window + external confirm.
@@ -575,10 +691,13 @@ entered **below** the cross-node-safe floor — `EXPECTED_PRIMARY_SELF_FENCE_SEC
 (`= 60` by default), derived in one place so the note, the nudge, and the daemon's startup warning all
 agree. It is a *nudge, not a block*: the existing clamp still raises a too-low value to the floor.
 `MAX_DELINQUENT_SLOTS` gets a why-note only (it is detection speed, not a double-sign value). The four
-hardcoded self-fence values (`SELF_FENCE_ISOLATION_SECS`/`SELF_FENCE_NOANSWER_SECS` on the PRIMARY;
-`EXPECTED_PRIMARY_SELF_FENCE_SECS`/`SELF_FENCE_MARGIN_SECS` on the spares) stay hardcoded, each with a
-"don't raise without raising every spare's `EXPECTED` + `TAKEOVER_DELAY` in lock-step" comment. No daemon
-behavior changed.
+values that floor rests on (`SELF_FENCE_ISOLATION_SECS`/`SELF_FENCE_NOANSWER_SECS` on the PRIMARY;
+`EXPECTED_PRIMARY_SELF_FENCE_SECS`/`SELF_FENCE_MARGIN_SECS` on the spares) are never prompted for. The
+PRIMARY's two carry the comment "Do NOT raise without raising every spare's EXPECTED_PRIMARY_SELF_FENCE_SECS
+and TAKEOVER_DELAY by the same amount"; the spares' pair sits under "EXPECTED must MATCH the PRIMARY's
+self-fence worst-case (the larger of its SELF_FENCE_ISOLATION_SECS/NOANSWER_SECS) — derive it from the
+PRIMARY config; do not tune independently". (The PRIMARY wizard also writes `SELF_FENCE_MAX_BEHIND` and
+the three `SELF_FENCE_VOTE_LAG_*` values unprompted, without that comment.) No daemon behavior changed.
 
 **Cross-node delay ordering (operator-enforced; FATAL at startup since v0.6.9 M9).** Two hard rules
 keep the nodes from ever holding the staked identity at the same time. Each daemon validates its own
@@ -646,20 +765,51 @@ timeline is identical to v0.6.6 (~70s).
 
 ## Expected timelines
 
+> **Alpenglow mode (v0.7):** these are the *retained* take path's timelines — by default v0.7 sends the page at the moment the take would have been made, and nobody takes; a standby armed with `AG_ARMED_TAKE=true` takes cold, voter first, at that moment if the readiness margin also holds, else at a later decision point once it does ([SAFETY.md — Armed cold take](SAFETY.md#armed-cold-take-opt-in-rc1)).
+
+> **v0.7 (Block 6.3.1):** every take below ends with the spare's own-view veto — one bounded read of
+> its own node (`curl -m 2` + a watchdog pet) that withdraws the take if the holder shows voting there,
+> the read fails, or the spare's own head is not advancing — and the spare samples its own head through
+> the episode and before each external read of the take cycle: five to twelve bounded local reads per
+> take cycle at the defaults (one more on an armed unit, up to four more with the opt-in witness fast
+> path; the counts are not pinned by a test), milliseconds on a healthy node; measured +9 to +15 s when every local read takes 1 s with prompt
+> tiers (+9 s at the wizard's preset), up to +40 s in the measured cells with a slow tier as well (harness measurement on a v0.7 development build, not pinned by a test); as a
+> local read nears its 2 s bound the take slides later, and at 2 s or more the spare never takes (loudly:
+> the veto page, then the starvation page) (`docs/SAFETY.md`, *What it costs, measured*). Nor does a spare
+> whose `TIER2` fails slowly — times out, or answers an error or garbage late — while `TIER3` is slow:
+> `TIER2`'s time to failure + `TIER3`'s answer + both local reads past 16 s (after a timeout, `TIER3` 7 s or
+> later; 5 s when every local read takes 1 s; on a real host one second less is vetoed too, at some
+> phases): the own view's residual 7, introduced by 6.3.1's own-view veto (the 6.3 build has no veto and takes
+> these holders) and paged as `⚠️ Take VETOED by this spare's own view (it could not testify): …`, then
+> `⚠️ TAKEOVER STARVATION: …` — repair that `TIER2`, or while it is broken leave `TIER2_RPC` empty
+> (the witness fast path, which needs two tiers, is then off; on an armed spare with `PRIMARY_UNSTAKED_PUBKEY`
+> set G2's vantage A defaults to `TIER2_RPC`, so the daemon pages CRITICAL "G2 VANTAGES NOT DISTINCT" at every
+> start — verified-demote cannot prove for the run once the gate is wired, and conditions no take in this release — and
+> `failover arm`'s P6 warns, unless
+> `G2_VANTAGE_A` names another provider), or use a `TIER3` that answers the full
+> `getVoteAccounts` well under ~5 s (about 3 s when every local read takes 1 s); a `TIER2` that refuses at
+> once does not starve the take. The per-class measurement of the whole
+> ordering — holder fence vs the spare's earliest take, including the rows where it does not hold — is in
+> `docs/SAFETY.md`, *The cross-node invariant*.
+
 > **Read the cross-node invariant first (v0.6.6 N1).** The spare's `TAKEOVER_DELAY` must be **≥
 > `EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS` (= 60 by default)** so the PRIMARY
-> *always relinquishes first*. The binding case is **not** the fast internet-loss path (PRIMARY
-> unstaked ~9s) — it is an **isolated-but-still-voting** PRIMARY, which holds the staked identity until
-> its self-fence demotes it at ~30s. A spare must take only **after** that, with margin.
+> *always relinquishes first*. The binding case is an **isolated-but-still-voting** PRIMARY, which holds the staked identity until
+> its self-fence demotes it at ~30s — not the internet-loss path (since rc2 F22 its six failed rounds land at 24 to 34 s,
+> beside the isolation rung and no longer far ahead of it; it never sets the bound). A spare must take only **after** that, with margin.
 > **Pre-N1 fast presets (`TAKEOVER_DELAY=10`/`20`) are UNSAFE and must not be used** — they would let
 > the spare take before the PRIMARY self-fences (double-sign on heal). The examples below use the
-> shipped-safe presets.
+> v0.6.6 presets (`TAKEOVER_DELAY=60`, `MAX_DELINQUENT_SLOTS=15`). The v0.7 wizard writes 24 for
+> `MAX_DELINQUENT_SLOTS`: the first delinquent read then comes 9 slots later (about 4 s at 2.5 slots/s,
+> less at a faster rate), and every STANDBY and BACKUP line after it moves with it. The PRIMARY lines
+> do not move, so the ordering shown holds.
 
 ### STANDBY — shipped v0.6.6 (MAX_DELINQUENT_SLOTS=15, TAKEOVER_DELAY=60)
 
 ```
 # PRIMARY relinquishes FIRST (whichever trigger applies):
-PRIMARY t=~9s:    internet-loss path → SWITCHED TO UNSTAKED
+PRIMARY t=24-34s:     internet-loss path (CONNECTIVITY_RETRIES=6, rc2 F22) → SWITCHED TO UNSTAKED
+#   (the code's bounds added up, not pinned by a test; 5.5 s a failed round measured on the testnet pair)
    …or (the BINDING cross-node case)…
 PRIMARY t=~30s:   isolated-but-voting → SELF-FENCE → SWITCHED TO UNSTAKED (demote before alert, N2)
 # STANDBY (fast-detect 15, delay 60):
@@ -681,9 +831,9 @@ BACKUP t=~132s:   TAKEOVER_DELAY (120s) elapsed + liveness frozen (crashed STAND
 ### Without fast-detect (MAX_DELINQUENT_SLOTS=0, TAKEOVER_DELAY=60)
 
 ```
-PRIMARY t=~9-30s: SWITCHED TO UNSTAKED (internet-loss or self-fence, as above)
-STANDBY t=~60s:   RPC delinquent list (~128 slots) → first-delinquent → window starts
-STANDBY t=~120s:  TAKEOVER_DELAY (60s) elapsed + Window 7/10 → TOOK STAKED
+PRIMARY t=24-34s:   SWITCHED TO UNSTAKED (internet-loss or self-fence, as above)
+STANDBY t=~60s:     RPC delinquent list (~128 slots) → first-delinquent → window starts
+STANDBY t=~120s:    TAKEOVER_DELAY (60s) elapsed + Window 7/10 → TOOK STAKED
 # ⇒ slower detection (no fast-detect) only LENGTHENS the spare's takeover — the cross-node margin is preserved.
 ```
 
@@ -708,7 +858,7 @@ Verify: startup alert received, heartbeat every 10 min, no errors.
 iptables -I OUTPUT 1 ! -o lo -j DROP; sleep 40; iptables -D OUTPUT ! -o lo -j DROP
 ```
 
-Expected: `[DRY RUN] Would switch to UNSTAKED`, then `Internet recovered`.
+Expected: `[DRY RUN] Would switch to UNSTAKED`, then `✅ PRIMARY internet recovered after N fail(s)`.
 
 ### Phase 3 — Real switch (PRIMARY only)
 
@@ -716,8 +866,8 @@ Expected: `[DRY RUN] Would switch to UNSTAKED`, then `Internet recovered`.
 sed -i 's/DRY_RUN=true/DRY_RUN=false/' /opt/solana-failover/failover.env
 systemctl restart solana-failover
 # Test, then restore manually (path-as-argument, NOT stdin redirection):
-agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-validator-keypair.json
 agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/mainnet-validator-keypair.json
+agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-validator-keypair.json
 ```
 
 ### Phase 4 — Full integration (PRIMARY + STANDBY)
@@ -728,18 +878,9 @@ Both `DRY_RUN=false`. On PRIMARY:
 iptables -I OUTPUT 1 ! -o lo -j DROP; sleep 120; iptables -D OUTPUT ! -o lo -j DROP
 ```
 
-After test, restore (see [Manual switch-back](#manual-switch-back-standby--primary-after-an-incident) for the tower-aware procedure):
-
-```bash
-# On STANDBY — give back (hand the live tower to PRIMARY for vote continuity):
-scp /root/solana/ledger/tower-1_9-<STAKED_PUBKEY>.bin root@PRIMARY:/root/solana/ledger/
-agave-validator --ledger /root/solana/ledger authorized-voter remove-all
-agave-validator --ledger /root/solana/ledger set-identity /path/to/unstaked.json
-
-# On PRIMARY — take back (tower now present → assert it with --require-tower):
-agave-validator --ledger /root/solana/ledger set-identity --require-tower /root/solana/mainnet-validator-keypair.json
-agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/mainnet-validator-keypair.json
-```
+After test, restore with the warm swap — the three steps of [Manual switch-back](#manual-switch-back-standby--primary-after-an-incident): demote the node that holds the staked identity and
+check the vote-history file's sha256 twice, copy it to the other node with a sha check, then `authorized-voter add` and `set-identity` there. (In v0.7 an unarmed STANDBY, the default, does not make the take in this phase:
+it pages `TAKEOVER WITHHELD — Alpenglow mode`, and the swap is yours; one armed with `AG_ARMED_TAKE=true` takes cold, voter first, once the readiness margin also holds.)
 
 ---
 
@@ -753,9 +894,10 @@ residual partition case — see SPLIT-BRAIN-RESIDUAL.md):
 agave-validator --ledger /root/solana/ledger authorized-voter remove-all
 agave-validator --ledger /root/solana/ledger set-identity /path/to/unstaked.json
 
-# Step 2: PRIMARY → force staked
-agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-validator-keypair.json
+# Step 2: bring the staked identity back on the node whose vote-history file is the CURRENT one (usually the node that held it last) —
+# if that is not PRIMARY, do the warm swap (Manual switch-back) instead. Voter first, then identity:
 agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/mainnet-validator-keypair.json
+agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-validator-keypair.json
 ```
 
 ---
@@ -765,40 +907,50 @@ agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/m
 Recovery is **operator-driven** — the scripts never auto-return the staked identity to
 PRIMARY (production runs `RECOVERY_MODE=manual`). Once the incident is resolved:
 
-> **v0.6.9 (H2) — after a masked hard-stop, unmask FIRST.** If the incident involved a wedged
-> demote and the self-fence hard-stopped the validator with `systemctl stop` failing, the unit was
-> **masked** (`systemctl mask --runtime`) so `Restart=always` could not resurrect it voting staked
-> (the ✅ page says `HARD STOP ✅ (unit masked)` and names the command). Before restarting that
-> validator:
+> **After a hard stop, the unit is simply stopped — start it on the UNSTAKED identity.** If the incident
+> involved a wedged demote or a hung holder and the self-fence hard-stopped the validator (the
+> `HARD STOP ✅` page says it is confirmed DOWN), the unit was stopped by a *requested* stop —
+> `systemctl stop`, or `systemctl stop --no-block` just before the SIGKILL when the primary's validator
+> process was stopped or in uninterruptible sleep — so `Restart=always` does not apply, and a v0.7 hard
+> stop masks nothing. Confirm that no other node holds the staked identity (it moves only by the warm
+> swap below; a vote-history file is never deleted), then:
 >
 > ```bash
-> systemctl unmask --runtime solana     # the mask is --runtime, so a reboot also clears it
 > systemctl start solana                # boots on the UNSTAKED startup identity (F2 invariant)
 > ```
+>
+> *History:* v0.6.9 masked the unit (`systemctl mask --runtime`) after a failed `systemctl stop`; v0.7 does
+> not: that mask is a link under `/run/systemd/system`, and a unit file under `/etc/systemd/system` takes
+> precedence over it (systemd.unit(5)), so for such a unit it did not keep `Restart=always` from restarting
+> the validator. A mask a v0.6.9 daemon left behind (its page said `HARD STOP ✅ (unit masked)`) is
+> `--runtime`: a reboot clears it, and `systemctl unmask --runtime solana` removes it.
 
-1. **On the node currently holding the staked identity (usually STANDBY)** — copy the
-   *live* tower to PRIMARY so vote lockouts move with the identity, then drop to unstaked:
+1. **Demote the old holder FIRST** (usually the STANDBY that holds the staked identity), then read the vote-history file's sha256 twice — equal both times means the file has stopped changing:
 
    ```bash
-   scp /root/solana/ledger/tower-1_9-<STAKED_PUBKEY>.bin root@PRIMARY:/root/solana/ledger/
    agave-validator --ledger /root/solana/ledger authorized-voter remove-all
    agave-validator --ledger /root/solana/ledger set-identity /root/solana/unstaked-standby.json
+   sha256sum /root/solana/ledger/vote_history-<STAKED_PUBKEY>.bin; sleep 5; sha256sum /root/solana/ledger/vote_history-<STAKED_PUBKEY>.bin
    ```
 
-2. **On PRIMARY** — bring the staked identity back. Because you just copied the tower, use
-   `--require-tower` so agave refuses to vote if it is missing. This is the **one place
-   `--require-tower` is correct** — you deliberately moved the tower; the automatic
-   codepaths omit it because they have none:
+2. **Copy the file to the new holder** (PRIMARY) and check the sha256 there against step 1:
 
    ```bash
-   agave-validator --ledger /root/solana/ledger set-identity --require-tower /root/solana/mainnet-validator-keypair.json
-   agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/mainnet-validator-keypair.json
+   scp /root/solana/ledger/vote_history-<STAKED_PUBKEY>.bin root@PRIMARY:/root/solana/ledger/
+   ssh root@PRIMARY sha256sum /root/solana/ledger/vote_history-<STAKED_PUBKEY>.bin
    ```
 
-> Why not let PRIMARY auto-recover with its OLD tower? After a long outage PRIMARY's own
-> tower is stale; reusing it risks voting on slots STANDBY already voted (double-sign).
-> PRIMARY therefore **deletes its staked tower** when it goes unstaked, and switch-back
-> uses the *current* tower copied from the node that held the identity.
+3. **On the new holder** — the voter first, then the identity, with no extra flags:
+
+   ```bash
+   agave-validator --ledger /root/solana/ledger authorized-voter add /root/solana/mainnet-validator-keypair.json
+   agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-validator-keypair.json
+   ```
+
+> Why a warm swap and not a quick `set-identity`? Under Alpenglow the vote-history file is the record of the slots the identity has voted on. A node that starts voting the staked identity
+> from an older record — or none — can vote on a slot the previous holder already voted on (a double-sign), and nobody can see from outside whether the old holder's last real vote is above
+> the new holder's root. Demoting first stops the file changing; the two equal sha256 reads prove it stopped; the copy hands the new holder the current record. **A vote-history file is never
+> deleted** — by FO or by you — and FO itself never moves or rewrites one.
 
 ---
 
@@ -813,7 +965,7 @@ tail -20 /var/log/solana-failover-standby.log
 systemctl restart solana-failover
 systemctl restart solana-failover-standby
 
-# Graceful stop (sends Telegram + ntfy alert):
+# Graceful stop (sends a Telegram message only, no ntfy/webhook alert):
 systemctl stop solana-failover
 ```
 
@@ -875,8 +1027,8 @@ The monitor emits notifications through four tiers. Channels are chosen in the e
 
 **Routed through `alert_warn` (Telegram **and** ntfy) as of v0.6.4** — previously Telegram-only:
 local validator unreachable (PRIMARY + STANDBY), STANDBY node too far behind, TIER2 unreachable
-during takeover confirmation, "delinquent but fence not clear / waiting", emergency-mode takeover
-(external RPCs down), and recovery-blocked / STANDBY-holds-staked-identity.
+during takeover confirmation, "delinquent but fence not clear / waiting", and recovery-blocked /
+STANDBY-holds-staked-identity.
 
 > `alert_warn` uses ntfy **high** priority (not `urgent`), so warnings stay distinguishable from the
 > critical switch/takeover alerts on your phone. `alert()` and the `_pending_alert` retry are unchanged.
@@ -897,7 +1049,8 @@ Every 10 minutes (configurable via `HEARTBEAT_INTERVAL`):
 ♥ Heartbeat: STANDBY | Checks: 600 | LOCAL delinq: 600 | Delinq seen: 0 | Takeovers: 0 | T2: 0 | T3: 0 | Window: [empty]
 ```
 
-T2/T3 should stay at 0 in normal operation (LOCAL-first = no external calls).
+T2/T3 should stay at 0 in normal operation (they count the tier confirmations of a delinquency or latency
+trigger only; the timed reads of *RPC cost model* are not counted).
 
 ---
 
@@ -939,6 +1092,16 @@ absence alert tells you *which* node's monitor went silent. Do **not** reuse a s
 ## Prerequisites
 
 - All nodes running agave-validator
+- Each monitor runs on its validator's host (systemd, as root), where `/proc/uptime` and
+  `/proc/sys/kernel/random/boot_id` belong to ONE kernel boot: the persisted safety stamps are
+  monotonic (uptime) values keyed by `boot_id`, and a same-boot self-fence stall / silence / lag stamp later
+  than now is treated as corrupted. Not inside a container that virtualizes `/proc/uptime` but not `boot_id` (lxcfs-style):
+  there a container restart resets the uptime clock under the same `boot_id`: the self-fence stall /
+  silence / lag stamps look "future" and restore ANCIENT (a future lockout or cooldown stamp restores
+  verbatim and simply holds until the uptime passes it), and — once the container's uptime at that
+  read is at least `SELF_FENCE_ISOLATION_SECS` — one first-read blip fences at once — measured by the v0.7
+  review panel: a validator still catching up for 10–25 s after such a restart, at `STARTUP_GRACE=0`,
+  was fenced at its first read, where the same restart on a normal host is never fenced.
 - Each node has its own UNIQUE unstaked keypair
 - Staked keypair present on ALL nodes (same file)
 - Vote account keypair at `/root/solana/vote-account-keypair.json` (for auto-detect)

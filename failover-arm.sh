@@ -1,13 +1,26 @@
 #!/bin/bash
 # failover-arm.sh (v0.7 Block 5.3) — the `failover arm` CEREMONY: the installer of the fence.
 #
-# SHIPPABLE, NOT EXECUTED HERE: this script is repo-tracked, in SHA256SUMS, shellcheck'd, and
-# parse-gated — but its EXECUTION happens only at the v0.7 rollout (upgrade-then-arm, per host,
-# release checklist). NOTHING in this repository runs it; its tests drive it with EVERY root
-# below pointed at mktemp and every actuator stubbed (tests/test_arm_ceremony.sh).
+# SHIPPABLE, RUN BY THE OPERATOR: this script is repo-tracked, in SHA256SUMS, shellcheck'd, and
+# parse-gated — and its EXECUTION on a host happens only when the operator runs it at the v0.7
+# rollout (upgrade-then-arm, per host; docs/DEPLOYMENT-MANUAL.md, "Arming the fence"). No shipped
+# script runs it; its tests drive it with EVERY root below pointed at mktemp and every actuator
+# stubbed (tests/test_arm_ceremony.sh).
 #
 # Structure (TASK-block53 / addendum §2.1-rev2.1, §2.3, §2.6):
 #   preconditions → probe → install → verify → token
+#   0. state directory (Block 6.3.1 D5): ARM_STATE_DIR — where the spare stores the pairing token
+#      and the holder its config-generation counter — must be its own resolved path (the spare
+#      daemon's R-SYM rule mirrored: a token whose directory is reached through a symlink never
+#      proves); REFUSE[STATE-dir-spelling] / REFUSE[STATE-dir-symlink] / REFUSE[STATE-dir-missing] before
+#      any file is written or anything installed. A refusal by SPELLING or by the nearest EXISTING ancestor
+#      creates nothing (6.3.1 fix round 1: the spelling first, then that ancestor, both before any mkdir); a
+#      symlink RACED onto an intermediate component between that check and the mkdir -p makes mkdir -p create
+#      the missing tail INSIDE the link's target, and the whole-path check after it then refuses — a local
+#      root's race, not defended (docs/SAFETY.md, the local-host threat model); a path whose own creation
+#      FAILS partway (a component too long, a full disk) is refused, and the part of it that mkdir created
+#      before failing may remain on disk — fix round 3 removed fix round 2's cleanup, which could rmdir
+#      through a symlink raced onto the path)
 #   1. self v0.7 check (patsub guard in the installed daemons — the rev3.2 release condition,
 #      self-enforced: the ceremony IS the upgrade-then-arm checkpoint)
 #   2. socat present (§2.6: the SOLE armed transport in v0.7 — refuse, never fall back)
@@ -18,6 +31,8 @@
 #      UNSTAKED identity — an invariant the fence cannot verify; the arm must)
 #   5. one-arm-state alignment (§2.3: arm-state IS which fence unit is installed; DRY_RUN in
 #      the env file decides WHICH unit this run installs, printed with the why)
+#   P6-ledger (AG-3.5, D0 F3): LEDGER_PATH in the env file is non-empty and a readable directory - REAL arm:
+#      REFUSE (the fence reads it from the env file ONLY and cannot detect it); page-only arm: WARN
 #   probe: the §2.1-rev2.1 condition-1 end-to-end PROBE — a transient Type=notify pair rendered
 #      into ARM_RUNTIME_DIR (tmpfs — ephemeral by construction), physically demonstrating
 #      stopped-petting → watchdog fires → `failed` → OnFailure dispatches ON THIS HOST before
@@ -28,8 +43,8 @@
 #      RETIRE the legacy monitor unit(s) — stop + disable + VERIFY solana-failover.service /
 #      solana-failover-standby.service, the units the legacy deploy wizards write and enable;
 #      supersession is an ACTION this ceremony performs, never a plan — then enable the
-#      monitor (the ONLY `systemctl enable` of a BLOCK-5 unit; no other script references the
-#      Block-5 unit names).
+#      monitor (the ONLY `systemctl enable` of a BLOCK-5 unit; no other script installs,
+#      enables or retires one). It does not START the monitor: the closing output names that step.
 #      The validator unit is NEVER started/restarted/stopped by this script.
 #   verify: a _fence_unit_state-equivalent re-read must agree with the DRY_RUN intent
 #      (render→verify, not render→hope).
@@ -87,11 +102,38 @@ _arm_refuse() {
 
 # ── validator process + unit discovery — BYTE-IDENTICAL to systemd/failover-fence.sh (asserted
 #    by test_arm_ceremony (13): reuse, not reinvention; FENCE_PROC_ROOT is the same test seam) ──
+# v0.7 (B7.1): _validator_pid never answers an ADMIN CLIENT (agave-validator --ledger L set-identity | authorized-voter | contact-info | monitor | exit | wait-for-restart-window: the
+# validator's process name, run by the monitor daemon and the operator beside this ceremony); its cgroup would name the MONITOR unit as the validator's. Every pgrep hit's argv is read
+# from ${FENCE_PROC_ROOT:-/proc}/<pid>/cmdline; the rules - whole words after argv[0], --ledger preferred, an unreadable cmdline proves nothing, only clients alive = empty, the bounded read (`timeout -k 1 2 tr`, v0.7 B7.1b) - are
+# documented in full at the fence script's copy, which this one repeats byte for byte.
 _validator_pid() {
-    local p; p=$(pgrep -x agave-validator 2>/dev/null | head -1)
-    [[ -z "$p" && "$VALIDATOR_TYPE" == "frankendancer" ]] && p=$(pgrep -x fdctl 2>/dev/null | head -1)
-    [[ -z "$p" ]] && p=$(pgrep -x solana-validator 2>/dev/null | head -1)
-    printf '%s' "$p"
+    local n c f w i sk sub led first pick _cl
+    for n in agave-validator fdctl solana-validator; do
+        [[ "$n" == "fdctl" && "$VALIDATOR_TYPE" != "frankendancer" ]] && continue
+        first=""; pick=""
+        for c in $(pgrep -x "$n" 2>/dev/null); do
+            f="${FENCE_PROC_ROOT:-/proc}/$c/cmdline"; sub=""; led=""; sk=""; i=0
+            if [[ -r "$f" ]]; then
+                _cl=$(timeout -k 1 2 tr '\0' '\n' < "$f" 2>/dev/null)
+                while IFS= read -r w; do
+                    i=$((i + 1))
+                    [[ $i -gt 1 ]] || continue
+                    [[ -z "$sk" ]] || { sk=""; continue; }
+                    case "$w" in
+                        --ledger) led=1; sk=1 ;;
+                        --ledger=*) led=1 ;;
+                        set-identity|authorized-voter|contact-info|monitor|exit|wait-for-restart-window) sub=1 ;;
+                    esac
+                done <<< "$_cl"
+            fi
+            [[ -z "$sub" ]] || continue
+            [[ -n "$first" ]] || first=$c
+            [[ -z "$led" ]] || { pick=$c; break; }
+        done
+        pick=${pick:-$first}
+        [[ -z "$pick" ]] || { printf '%s' "$pick"; return 0; }
+    done
+    return 0
 }
 
 _detect_validator_unit() {
@@ -151,6 +193,83 @@ _arm_detect_role_env() {
     # ambiguity fails toward inert, announced in precondition 5.
     if [[ "${DRY_RUN:-}" == "false" ]]; then ARM_INTENT="real"; else ARM_INTENT="page-only"; fi
     _arm_log "role: $ARM_ROLE (env: $ARM_ENV_FILE)"
+}
+
+# ── precondition 0: the state directory is its own resolved path (Block 6.3.1 D5) ───────────────
+# The spare daemon's R-SYM rule (6.3 fix round 5), MIRRORED at the arm: a pairing token whose
+# directory is reached through a symlink never proves on the spare — watchdog-elapsed keys the token
+# file's identity, and a DIRECTORY re-pointed away and back leaves that file untouched, so the daemon
+# refuses to count any silence under it (_elapsed_tok_ident / _elapsed_tok_symlink_why). The arm
+# therefore REFUSES to write into (spare: pairing-token; holder: arm-generation) a state directory
+# that does not canonicalize to itself — the daemon's exact test: `cd -P` + `pwd -P` of ARM_STATE_DIR
+# must equal ARM_STATE_DIR as configured (a symlink anywhere on the path, or any spelling that is not
+# the resolved path: a trailing '/', an internal '//', '.', '..', a relative path; a LEADING '//' is
+# kept by pwd -P as its own root and passes, as in the daemon). Every refusal by (a) or (b) comes BEFORE anything
+# is created (6.3.1 fix round 1, R7 — the panel's CC-7: the check used to mkdir -p first, so a refused
+# spelling or a path under a symlinked ancestor was left CREATED on disk; measured, 'rel/state' and a
+# trailing '/' both refused as "symlink" with dir_created=yes):
+#   (a) the SPELLING, lexically, with no filesystem access — absolute, no trailing '/', no '//' past a
+#       leading one, no '.' or '..' component → REFUSE[STATE-dir-spelling] (its own code: nothing on the
+#       filesystem is wrong, the value is);
+#   (b) the NEAREST EXISTING ancestor (the directory itself when it exists), canonicalized with the
+#       daemon's `cd -P` + `pwd -P`: a symlink on that existing prefix → REFUSE[STATE-dir-symlink]; an
+#       existing component that cannot be entered as a directory (a FILE, no permission) →
+#       REFUSE[STATE-dir-missing];
+#   (c) only then the missing tail is created (mkdir -p — what P3/P5/the token already did) and the WHOLE
+#       path is re-checked with the daemon's exact line (a race that swaps a symlink onto an intermediate
+#       component in between is still refused — AFTER mkdir -p has created the missing tail inside the
+#       link's target: a local root's race, not defended, named in docs/SAFETY.md's threat model; (16h) runs
+#       it; (16g) asserts the line is the daemon's, character for character). A mkdir that
+#       FAILS partway (the delta panel's CK-8: a 300-character component) is refused REFUSE[STATE-dir-missing]
+#       naming ARM_STATE_DIR, and what that mkdir created before failing may REMAIN on disk: nothing is
+#       removed (fix round 2 removed the created tail with rmdir; the delta panel 2's LB-3 showed that rmdir
+#       following a symlink raced onto an intermediate component — empty directories removed in the link's
+#       target, a pre-existing one included — and fix round 3 removed the cleanup, U3).
+# Runs before P3 (the first write into the directory). NOT closed (named in docs/SAFETY.md's threat
+# model): a local root that RENAME-swaps the directory's contents away and back between two daemon steps.
+_state_dir_spelling_ok() {   # $1 = a path; 0 iff it is spelled as `pwd -P` prints a directory with no symlink on its path
+    local _p="$1" _b
+    case "$_p" in /*) ;; *) return 1 ;; esac        # relative
+    [[ "$_p" == "/" || "$_p" == "//" ]] && return 0
+    _b="${_p#/}"; [[ "$_b" == /* ]] && _b="${_b#/}"  # one extra leading '/' — a leading '//' is its own root to pwd -P (Linux), as in the daemon
+    case "$_b" in /*|*/|*//*) return 1 ;; esac       # three or more leading '/', a trailing '/', an internal '//'
+    case "/$_b/" in */./*|*/../*) return 1 ;; esac   # a '.' or '..' component
+    return 0
+}
+_pre_state_dir_check() {
+    local _sd_p _anc="$ARM_STATE_DIR" _tail="" _anc_p _cand
+    # (a) the spelling — before any filesystem access
+    if ! _state_dir_spelling_ok "$ARM_STATE_DIR"; then
+        _arm_refuse "STATE-dir-spelling" "ARM_STATE_DIR=$ARM_STATE_DIR is not spelled as a resolved path (a relative path, a trailing '/', an internal '//', or a '.'/'..' component) — the spare daemon compares PROOF_STATE_DIR with its own \`pwd -P\` spelling, and a pairing token stored under any other spelling NEVER proves (the daemon's R-SYM rule); nothing was created" "spell ARM_STATE_DIR as the directory's absolute resolved path (e.g. ARM_STATE_DIR=/var/lib/solana-failover — no trailing '/', no '//', '.' or '..'), set the spare daemon's PROOF_STATE_DIR to the same value, then re-run 'failover arm'"
+    fi
+    # (b) the nearest existing ancestor (a dangling symlink counts as existing — it IS a symlink on the path)
+    while [[ ! -e "$_anc" && ! -L "$_anc" ]]; do
+        _tail="/${_anc##*/}$_tail"; _anc="${_anc%/*}"
+        [[ -z "$_anc" ]] && _anc="/"
+    done
+    # a leading '//' is its own root to pwd -P on Linux (the daemon keeps it) — a walk that reached the root keeps it too
+    [[ "$_anc" == "/" && "$ARM_STATE_DIR" == //* && "$ARM_STATE_DIR" != ///* ]] && _anc="//"
+    if [[ -L "$_anc" && ! -e "$_anc" ]]; then
+        _arm_refuse "STATE-dir-symlink" "ARM_STATE_DIR=$ARM_STATE_DIR is reached through a dangling symlink ($_anc) — a pairing token stored through a symlink NEVER proves on the spare (the daemon's R-SYM rule); nothing was created" "replace the symlink $_anc with a real directory (BY HAND) or point ARM_STATE_DIR at a real path, set the spare daemon's PROOF_STATE_DIR to the same value, then re-run 'failover arm'"
+    fi
+    _anc_p=$(CDPATH='' cd -P -- "$_anc" 2>/dev/null && pwd -P)
+    if [[ -z "$_anc_p" ]]; then
+        _arm_refuse "STATE-dir-missing" "ARM_STATE_DIR=$ARM_STATE_DIR cannot be created or entered as a directory ($_anc exists but cannot be entered as one) — the pairing token (spare) and the config-generation counter (holder) are stored there; nothing was created" "make $ARM_STATE_DIR a real, writable directory (remove whatever non-directory sits at that path BY HAND, then: mkdir -p $ARM_STATE_DIR), then re-run 'failover arm'"
+    fi
+    if [[ -z "$_tail" ]]; then _cand="$_anc_p"; else _cand="${_anc_p%/}$_tail"; fi
+    if [[ "$_cand" != "$ARM_STATE_DIR" ]]; then
+        _arm_refuse "STATE-dir-symlink" "ARM_STATE_DIR=$ARM_STATE_DIR is not its own resolved path (it resolves to $_cand: a symlink on the path) — a pairing token stored through it NEVER proves on the spare (the daemon's R-SYM rule: a directory re-pointed away and back is invisible to the token file's identity, so watchdog-elapsed counts no silence under it); nothing was created" "point ARM_STATE_DIR at the resolved path — ARM_STATE_DIR=$_cand — and set the spare daemon's PROOF_STATE_DIR to the same value (or replace the symlink with a real directory at $ARM_STATE_DIR), then re-run 'failover arm'"
+    fi
+    # (c) create the missing tail, then the daemon's exact check on the whole path
+    mkdir -p "$ARM_STATE_DIR" 2>/dev/null
+    _sd_p=$(CDPATH='' cd -P -- "$ARM_STATE_DIR" 2>/dev/null && pwd -P)
+    if [[ -z "$_sd_p" ]]; then
+        _arm_refuse "STATE-dir-missing" "ARM_STATE_DIR=$ARM_STATE_DIR cannot be created or entered as a directory — the pairing token (spare) and the config-generation counter (holder) are stored there; a mkdir that failed partway may have left part of that path on disk" "make $ARM_STATE_DIR a real, writable directory (remove whatever non-directory sits at that path BY HAND, then: mkdir -p $ARM_STATE_DIR), then re-run 'failover arm'"
+    fi
+    if [[ "$_sd_p" != "$ARM_STATE_DIR" ]]; then
+        _arm_refuse "STATE-dir-symlink" "ARM_STATE_DIR=$ARM_STATE_DIR is not its own resolved path (it resolves to $_sd_p: a symlink on the path, or a spelling that is not the resolved path — a trailing '/', '//', '.', '..', a relative path) — a pairing token stored through it NEVER proves on the spare (the daemon's R-SYM rule: a directory re-pointed away and back is invisible to the token file's identity, so watchdog-elapsed counts no silence under it)" "if you did not create that link, stop and investigate — the path's existing part resolved to itself at this arm's pre-check and the whole path no longer does, so it changed while the arm ran (mkdir -p may have created directories inside the link's target); otherwise point ARM_STATE_DIR at the resolved path — ARM_STATE_DIR=$_sd_p — and set the spare daemon's PROOF_STATE_DIR to the same value (or replace the symlink with a real directory at $ARM_STATE_DIR), then re-run 'failover arm'"
+    fi
+    _arm_log "precondition 0 OK: the state directory $ARM_STATE_DIR is its own resolved path (the daemon's R-SYM rule — a pairing token stored here can prove)"
 }
 
 # ── precondition 1: self v0.7 check (rev3.2 release condition, self-enforced at arm) ────────────
@@ -308,6 +427,37 @@ _pre_identity_check() {
     return 0
 }
 
+# ── precondition P6-ledger (AG-3.5; D0 F3): the fence's ledger path ─────────────────────────────
+# systemd/failover-fence.sh runs every agave-validator admin call it makes (contact-info, monitor,
+# authorized-voter remove-all, set-identity) with `--ledger "$LEDGER_PATH"`, and it reads LEDGER_PATH from the
+# env file ONLY: unlike the daemons it has no detection from the running validator or its unit. An empty or
+# wrong value makes every admin call fail to connect, and a real dispatch whose demote cannot connect ends in
+# the validator STOP path - a fence that stops a healthy-looking validator over a missing config line.
+# Census 11-02: the deploy wizards used to write `LEDGER_PATH=""` always (they now write what they detect).
+# REAL arm: LEDGER_PATH non-empty and a readable directory, else REFUSE[P6-ledger] (an arm refusal costs a
+# re-run, not a vote). PAGE-ONLY arm: WARN - nothing on the page-only path calls agave-validator.
+# (This is not the G2 vantage ceremony of the P6-batch / P6-vantage gates below; the id says which one, and its log lines
+# read 'ledger precondition (P6-ledger)' - never 'precondition P6', the prefix test_proof_gate counts the G2 section by.)
+_pre_ledger_check() {
+    local why=""
+    if [[ -z "${LEDGER_PATH:-}" ]]; then
+        why="LEDGER_PATH is empty or unset in $ARM_ENV_FILE"
+    elif [[ ! -d "$LEDGER_PATH" ]]; then
+        why="LEDGER_PATH='$LEDGER_PATH' in $ARM_ENV_FILE is not a directory"
+    elif [[ ! -r "$LEDGER_PATH" ]]; then
+        why="LEDGER_PATH='$LEDGER_PATH' in $ARM_ENV_FILE is a directory this user cannot read"
+    fi
+    if [[ -z "$why" ]]; then
+        _arm_log "ledger precondition (P6-ledger) OK: LEDGER_PATH=$LEDGER_PATH is a readable directory - the fence's agave-validator --ledger calls have a ledger to name"
+        return 0
+    fi
+    if [[ "$ARM_INTENT" == "real" ]]; then
+        _arm_refuse "P6-ledger" "$why - the fence reads LEDGER_PATH from the env file only and cannot detect it; an empty value turns every real fence dispatch into a validator stop" "set LEDGER_PATH=\"<the validator's --ledger directory>\" in $ARM_ENV_FILE (the deploy scripts write it when they detect it; look at the validator unit's ExecStart for --ledger), check that the directory exists, then re-run 'failover arm'"
+    fi
+    _arm_warn "ledger precondition (P6-ledger): $why - the PAGE-ONLY fence calls no agave-validator admin command, so this arm proceeds; the REAL arm (DRY_RUN=false) REFUSES until LEDGER_PATH names the validator's ledger directory (the fence does not detect it)."
+    return 0
+}
+
 # ── precondition 5: one-arm-state alignment announcement (§2.3 [rev3/№1]) ───────────────────────
 _announce_arm_state() {
     if [[ "$ARM_INTENT" == "real" ]]; then
@@ -374,7 +524,7 @@ _pre_pairing_intake() {
     fi
     if [[ -z "$tok" ]]; then
         _ARM_PAIR_SUMMARY="unpaired"
-        _arm_log "precondition P5: NO pairing token (ARM_PAIRING_TOKEN unset; nothing stored at $tokf) — the arm PROCEEDS; the ARMED daemon runs the §2.7 UNPAIRED posture (proof providers verified-demote ONLY; silence-based take disabled; CRITICAL page at every daemon start). See the end-of-summary warning."
+        _arm_log "precondition P5: NO pairing token (ARM_PAIRING_TOKEN unset; nothing stored at $tokf) — the arm PROCEEDS; the ARMED daemon runs the §2.7 UNPAIRED posture: holder not attested, a CRITICAL page at every daemon start. This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not — the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold; from the release that wires the gate, an unpaired spare's silence-based take is disabled. See the end-of-summary warning."
         _pre_zero_stake_verify
         return 0
     fi
@@ -478,7 +628,7 @@ _pre_pairing_intake() {
     fi
     if [[ "$fence" == "page-only" ]]; then
         _ARM_PAIR_SUMMARY="page-only gen=$gen watchdog=${w}s relinquish_bound=${b}s holder=$thost"
-        _arm_log "precondition P5: pairing token VERIFIED and stored (gen=$gen, watchdog=${w}s, relinquish_bound=${b}s, fence=page-only, holder=$thost; source: $src) — but fence=page-only RELINQUISHES NOTHING (it pages): elapsed (silence-based) attestation is REFUSED, and the ARMED daemon runs the §2.7 posture (verified-demote ONLY) until the holder is re-armed with the REAL fence and re-paired."
+        _arm_log "precondition P5: pairing token VERIFIED and stored (gen=$gen, watchdog=${w}s, relinquish_bound=${b}s, fence=page-only, holder=$thost; source: $src) — but fence=page-only RELINQUISHES NOTHING (it pages): elapsed (silence-based) attestation is REFUSED, and the ARMED daemon runs the §2.7 posture (holder not attested, a CRITICAL page at every start) until the holder is re-armed with the REAL fence and re-paired. This release has no relinquish-proof gate: the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold; from the release that wires the gate, its silence-based take is disabled."
     else
         _ARM_PAIR_SUMMARY="paired gen=$gen watchdog=${w}s relinquish_bound=${b}s holder=$thost"
         _arm_log "precondition P5: pairing token VERIFIED and stored (gen=$gen, watchdog=${w}s, relinquish_bound=${b}s, fence=real, holder=$thost; source: $src) — the ARMED daemon derives its watchdog-elapsed floor from these bounds at its ONE derivation site (W+B+MARGIN_ELAPSED). A re-armed holder prints a NEW token: re-pair this spare on every holder arm (ceremony, not advice)."
@@ -639,7 +789,7 @@ _pre_g2_vantage_probe() {
     _p6_va="${G2_VANTAGE_A:-${TIER2_RPC:-}}"
     _p6_vb="${G2_VANTAGE_B:-${TIER3_RPC:-}}"
     if [[ -z "$_p6_va" || -z "$_p6_vb" ]]; then
-        _arm_warn "precondition P6: fewer than two G2 vantages configured (A='${_p6_va:-}' B='${_p6_vb:-}') — the ARMED daemon's startup tripwire will DISABLE verified-demote for the whole run and page CRITICAL, so this spare arms with NO proof provider and only the un-armed timer path. Set G2_VANTAGE_A/G2_VANTAGE_B (or TIER2_RPC/TIER3_RPC) to two bank-bearing RPC providers in DISTINCT failure domains in $ARM_ENV_FILE and re-run 'failover arm'."
+        _arm_warn "precondition P6: fewer than two G2 vantages configured (A='${_p6_va:-}' B='${_p6_vb:-}') — the ARMED daemon's startup tripwire will DISABLE verified-demote for the whole run and page CRITICAL (G2 VANTAGES NOT DISTINCT) at every start, so this spare arms without verified-demote: PAIRED, watchdog-elapsed is its only proof provider; UNPAIRED, no provider can prove and only the un-armed timer path remains. Set G2_VANTAGE_A/G2_VANTAGE_B (or TIER2_RPC/TIER3_RPC) to two bank-bearing RPC providers in DISTINCT failure domains in $ARM_ENV_FILE and re-run 'failover arm'."
         return 0
     fi
     command -v curl >/dev/null 2>&1 || _arm_refuse "P6-batch" "cannot verify G2 vantage batch capability: curl is not installed (the probe is one bounded JSON-RPC read per vantage; cannot-verify at CEREMONY time fails toward refusing)" "install curl, then re-run 'failover arm'"
@@ -703,8 +853,10 @@ _pre_g2_vantage_probe() {
 # `for rpc in "$TIER2_RPC" "$TIER3_RPC"`. One protocol-aware intermediary in front of that single
 # endpoint supplies BOTH halves: it splices getSlot/getClusterNodes into a false verified-demote
 # proof, and it proxies the tip live while freezing the staked account's lastVote into a
-# false-frozen vote observation. A naive freeze is caught by the tip-guard; an active one is the
-# same "passive closed, active open" boundary G2 already draws honestly (SAFETY.md residual 2).
+# false-frozen vote observation. The tip-guard catches only a freeze AT OR BEFORE the pinned first
+# sample (it compares against that pinned tip and the frozen path never re-bases it) — a naive freeze
+# that begins after the pin passes it (6.3 panel F3); an active one is the same "passive closed,
+# active open" boundary G2 already draws honestly (SAFETY.md residual 2).
 # So: measure it, name it, print the way back — and arm anyway.
 # Every pair is compared strongest-first (normalized URL, then host, then resolved address set)
 # and the OUTPUT NAMES THE COMPARISON THAT MATCHED. The no-overlap line is printed too, with the
@@ -741,11 +893,11 @@ _pre_g2_tier_overlap() {
     fi
     if [[ -z "$_p6o_hits" ]]; then
         _ARM_G2_SHARED=""
-        _arm_log "precondition P6: G2 vantages are SEPARATE from the vote-liveness tiers — MEASURED (${_p6o_how}): no G2 vantage matched TIER2_RPC (host '${_p6o_h2}') or TIER3_RPC (host '${_p6o_h3}'). The proof gate's additivity HOLDS on this host: a double-sign needs a false G2 proof AND a false-frozen vote observation, and those two rest on different endpoints"
+        _arm_log "precondition P6: G2 vantages are SEPARATE from the vote-liveness tiers — MEASURED (${_p6o_how}): no G2 vantage matched TIER2_RPC (host '${_p6o_h2}') or TIER3_RPC (host '${_p6o_h3}'). The proof gate's additivity HOLDS on this host for verified-demote: a double-sign through G2 needs a false G2 proof AND a false-frozen vote observation, and those two rest on different endpoints. It does NOT extend to watchdog-elapsed, on any host: its silence and the vote-FROZEN observation are the same TIER2/TIER3 input — attested time, not a second witness (docs/SAFETY.md, 'Shared vantages')"
         return 0
     fi
     _ARM_G2_SHARED="$_p6o_hits"
-    _arm_warn "precondition P6 — DEGRADED, NOT REFUSED: G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host. MEASURED (${_p6o_how}): ${_p6o_hits}. The daemons' liveness readers iterate TIER2_RPC then TIER3_RPC, so the same protocol-aware intermediary can splice getSlot/getClusterNodes into the false proof AND proxy the tip live while freezing the staked account's lastVote into the false-frozen observation; docs/SAFETY.md residual 2 (an active, protocol-aware intermediary) is NOT bounded by that composition. Not refused, deliberately: most operators run exactly two RPCs and refusing would leave this spare un-armed. THE WAY BACK: point G2_VANTAGE_A and/or G2_VANTAGE_B in $ARM_ENV_FILE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN — a different operator, not another hostname or another API key for one you already use — then re-run 'failover arm'."
+    _arm_warn "precondition P6 — DEGRADED, NOT REFUSED: G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host. MEASURED (${_p6o_how}): ${_p6o_hits}. The daemons' liveness readers iterate TIER2_RPC then TIER3_RPC, so the same protocol-aware intermediary can splice getSlot/getClusterNodes into the false proof AND proxy the tip live while freezing the staked account's lastVote into the false-frozen observation; docs/SAFETY.md residual 2 (an active, protocol-aware intermediary) is NOT bounded by that composition. Not refused, deliberately: most operators run exactly two RPCs and refusing would leave this spare un-armed. THE WAY BACK: point G2_VANTAGE_A and/or G2_VANTAGE_B in $ARM_ENV_FILE at a THIRD endpoint in a SEPARATE FAILURE DOMAIN — a different operator, not another hostname or another API key for one you already use — then re-run 'failover arm'. That restores additivity for verified-demote ONLY: watchdog-elapsed's silence and the vote-FROZEN observation stay one TIER2/TIER3 input on every host (docs/SAFETY.md, 'Shared vantages')."
     return 0
 }
 
@@ -756,7 +908,7 @@ _pre_g2_tier_overlap() {
 # _ARM_G2_SHARED empty. Printed BEFORE the pairing posture, which stays last by §2.7 (c).
 _arm_g2_summary() {
     [[ -n "$_ARM_G2_SHARED" ]] || return 0
-    _arm_warn "G2 vantage summary — G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host. MEASURED: ${_ARM_G2_SHARED}. This spare is armed and the proof gate runs (docs/SAFETY.md, 'Verified-demote (G2)' residual 2). Fix by pointing G2_VANTAGE_A/G2_VANTAGE_B in $ARM_ENV_FILE at a third endpoint in a separate failure domain, then re-run 'failover arm'."
+    _arm_warn "G2 vantage summary — G2 and vote-liveness SHARE VANTAGES: one compromised vantage supplies BOTH halves of the double-sign condition — a false verified-demote proof AND a false-frozen vote observation — so the proof gate's additivity does NOT hold on this host. MEASURED: ${_ARM_G2_SHARED}. This spare is armed; the proof gate is not wired into any take path in this build (docs/SAFETY.md, 'Verified-demote (G2)' residual 2). Fix by pointing G2_VANTAGE_A/G2_VANTAGE_B in $ARM_ENV_FILE at a third endpoint in a separate failure domain, then re-run 'failover arm' — that restores additivity for verified-demote ONLY: watchdog-elapsed's silence and the vote-FROZEN observation stay one TIER2/TIER3 input on every host (docs/SAFETY.md, 'Shared vantages')."
     return 0
 }
 
@@ -770,12 +922,16 @@ _arm_pairing_summary() {
             _arm_log "pairing summary: PAIRED (${_ARM_PAIR_SUMMARY}) — re-pair on EVERY holder re-arm: a re-armed holder prints a NEW token and this spare's stored bounds go stale (the stale-bound residual, docs/SAFETY.md); the holder's arm refuses to complete without printing it."
         ;;
         page-only*)
-            _arm_warn "pairing summary: token stored but fence=page-only (${_ARM_PAIR_SUMMARY}) — page-only relinquishes NOTHING: elapsed (silence-based) attestation REFUSED; the ARMED daemon runs the §2.7 posture (proof providers verified-demote ONLY — holder not attested) and pages it at every start. Re-arm the holder with DRY_RUN=false (the REAL fence), then re-pair this spare with the new token."
+            _arm_warn "pairing summary: token stored but fence=page-only (${_ARM_PAIR_SUMMARY}) — page-only relinquishes NOTHING: elapsed (silence-based) attestation REFUSED; the ARMED daemon runs the §2.7 posture (holder not attested) and pages it at every start. This release has no relinquish-proof gate: no provider's verdict conditions any take — the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold; from the release that wires the gate, its silence-based take is disabled. Re-arm the holder with DRY_RUN=false (the REAL fence), then re-pair this spare with the new token."
         ;;
         *)
-            _arm_warn "pairing summary: UNPAIRED SPARE — no valid pairing token stored: the ARMED daemon runs proof providers verified-demote ONLY (holder not attested; silence-based take disabled) and pages CRITICAL at every start until paired. Pair: run 'failover arm' on the HOLDER first (upgrade order: holder first), copy the token line it prints, then re-run this arm with ARM_PAIRING_TOKEN='<that line>'."
+            _arm_warn "pairing summary: UNPAIRED SPARE — no valid pairing token stored: holder not attested, and the ARMED daemon pages CRITICAL at every start until paired. This release has no relinquish-proof gate: no provider's verdict conditions any take, armed or not — the spare takes on v0.6.x semantics, which the 6.3 re-check and the own-view veto can only hold; from the release that wires the gate, an unpaired spare's silence-based take is disabled. Pair: run 'failover arm' on the HOLDER first (upgrade order: holder first), copy the token line it prints, then re-run this arm with ARM_PAIRING_TOKEN='<that line>'."
         ;;
     esac
+    # v0.7 (AG-1.7): what the pairing above is FOR. Alpenglow mode: FO never takes the staked identity automatically, so the attestation (P5), the vantage
+    # preconditions (P6) and this summary condition only the RETAINED take path, which v0.7 never runs; what the arm installs and checks is the holder's fence
+    # and the spare's observation (the page of a take that every gate approves).
+    [[ -n "$_ARM_PAIR_SUMMARY" ]] && _arm_log "Alpenglow mode (v0.7): the pairing (P5), the vantage checks (P6) and this summary condition only the retained take path, which v0.7 never runs - FO never takes the staked identity automatically; a take every gate approves is WITHHELD and paged (docs/SAFETY.md, Alpenglow)."
     return 0
 }
 
@@ -900,10 +1056,15 @@ _arm_probe() {
 # file, both free to call set-identity; per-process H1.3/self-fence state over a shared disk
 # stamp → one demotes, the other re-takes inside the lockout — a dual actor created at exactly
 # the moment the ceremony exists to make safe. The retirement is a CEREMONY step run BEFORE the
-# new monitor is enabled (same class as the stale fence-sibling removal). A daemon-side
-# single-instance flock is the WRONG fix and is deliberately absent: a Type=notify monitor
-# losing that race never goes READY → start timeout → terminal `failed` → OnFailure → a REAL
-# fence on a HEALTHY validator (the reviewer traced this; do not add one).
+# new monitor is enabled (same class as the stale fence-sibling removal). The retirement is THE
+# mechanism against two monitors; the ceremony does not rely on the daemons' single-instance
+# lock (v0.7 Block 7, B7.2), which is a guard for a copy the OPERATOR starts by hand. A lock
+# alone would have been the WRONG fix: a Type=notify monitor that loses the race and exits
+# BEFORE READY=1 ends `failed` whatever its exit status → OnFailure → a REAL fence on a HEALTHY
+# validator (measured on systemd 255: systemd/README.md, "A refused second copy"). It is safe
+# under the armed unit only because the refused copy sends READY=1 after its page and exits 3,
+# and the monitor skeleton counts exit 3 as success (SuccessExitStatus=3): losing the race ends
+# the unit `inactive`, nothing is dispatched.
 LEGACY_MONITOR_UNITS="solana-failover.service solana-failover-standby.service"
 _retire_legacy_monitors() {
     local u present state
@@ -935,7 +1096,7 @@ _retire_legacy_monitors() {
 
 # ── install: fence bodies + monitor unit + exactly ONE fence unit + enable ──────────────────────
 _arm_install() {
-    local role_daemon="$ARM_INSTALL_DIR/solana-${ARM_ROLE}-failover.sh" s tmp
+    local role_daemon="$ARM_INSTALL_DIR/solana-${ARM_ROLE}-failover.sh" s tmp _es_line
     # fence BODIES: the release artifact ships them; the CEREMONY is the only thing that ever
     # places them on a host (systemd/README.md's boundary). Both bodies are placed — which UNIT
     # exists is the arm state (§2.3); a body with no unit is dispatched by nothing.
@@ -951,7 +1112,14 @@ _arm_install() {
     # monitor unit: fill <role> + the role env (the unit itself stays IMMUTABLE across arm
     # states — arm-state lives entirely in which fence unit exists, §2.3)
     _render_skel "$_SKEL_DIR/$MONITOR_UNIT_NAME.skel" "$ARM_SYSTEMD_DIR/$MONITOR_UNIT_NAME" "$role_daemon" "$ARM_INSTALL_DIR/$ARM_ENV_BASE"
-    _arm_log "install: monitor unit rendered → $ARM_SYSTEMD_DIR/$MONITOR_UNIT_NAME (role: $ARM_ROLE)"
+    # AG-3.5: the armed monitor MUST carry the skel's ExecStop (the TERM re-send, docs/SAFETY.md "Known bash behaviour"):
+    # render -> verify, byte-exact. A skel with no ExecStop, or a render that dropped it, arms a monitor whose lost TERM
+    # runs to the stop timeout - refused, never armed.
+    _es_line=$(grep -m1 '^ExecStop=' "$_SKEL_DIR/$MONITOR_UNIT_NAME.skel" 2>/dev/null)
+    if [[ -z "$_es_line" ]] || ! grep -qxF "$_es_line" "$ARM_SYSTEMD_DIR/$MONITOR_UNIT_NAME" 2>/dev/null; then
+        _arm_refuse "RENDER-verify" "the rendered monitor unit $ARM_SYSTEMD_DIR/$MONITOR_UNIT_NAME does not carry the skeleton's ExecStop= line (the skeleton has $([[ -z "$_es_line" ]] && echo none || echo one)) - an armed monitor without it keeps running when a TERM is lost (docs/SAFETY.md, Known bash behaviour)" "re-run 'failover arm' from an intact v0.7 release tree (systemd/solana-failover-monitor.service.skel must carry ExecStop=)"
+    fi
+    _arm_log "install: monitor unit rendered → $ARM_SYSTEMD_DIR/$MONITOR_UNIT_NAME (role: $ARM_ROLE; ExecStop= TERM re-send carried byte-exact)"
     # exactly ONE fence unit — page-only XOR real per DRY_RUN; the arm is the alignment mechanism
     local want_name drop_name
     if [[ "$ARM_INTENT" == "real" ]]; then
@@ -980,14 +1148,14 @@ _arm_install() {
     timeout -k 5 15 systemctl daemon-reload >/dev/null 2>&1 || _arm_refuse "INSTALL-reload" "systemctl daemon-reload failed after installing the units" "run systemctl daemon-reload by hand and read journalctl -xe, then re-run 'failover arm'"
     # Legacy-monitor retirement runs BEFORE the enable below — on any failure it REFUSES, the
     # new monitor is never enabled, and no token prints (see _retire_legacy_monitors' header
-    # for the N-is-all name-set derivation and why a daemon-side flock is the wrong fix).
+    # for the N-is-all name-set derivation, and for how the daemons' single-instance lock relates to it).
     _retire_legacy_monitors
     # The ONLY `systemctl enable` of a BLOCK-5 unit — the legacy deploy wizards enable the
     # pre-fence services (deploy-failover.sh:669/780 solana-failover.service,
     # deploy-failover-standby.sh:907/1042 solana-failover-standby.service), and THIS ceremony
     # has just RETIRED any of them it found (stop+disable+verify above): supersession is an
-    # ACTION the arm performs, not a rollout plan. No other script references the Block-5 unit
-    # names (the functional Block-5 boundary, held by grep). The validator unit is NEVER
+    # ACTION the arm performs, not a rollout plan. No other script installs or enables a Block-5
+    # unit (the functional Block-5 boundary: only this ceremony does). The validator unit is NEVER
     # started, restarted, or stopped by this script — arming must not touch a possibly-voting
     # process.
     timeout -k 5 15 systemctl enable "$MONITOR_UNIT_NAME" >/dev/null 2>&1 || _arm_refuse "INSTALL-enable" "systemctl enable $MONITOR_UNIT_NAME failed" "read journalctl -xe, enable by hand (systemctl enable $MONITOR_UNIT_NAME), then re-run 'failover arm' to verify + re-pair"
@@ -1077,10 +1245,12 @@ _arm_token() {
 main() {
     _arm_log "failover arm — the v0.7 Block 5.3 ceremony (preconditions → probe → install → verify → token)"
     _arm_detect_role_env
+    _pre_state_dir_check      # P0 (Block 6.3.1 D5): ARM_STATE_DIR must be its own resolved path (the daemon's R-SYM rule mirrored) — REFUSE[STATE-dir-*] before any write or install
     _pre_v07_check
     _pre_socat_check
     _pre_flock_check
     _pre_identity_check
+    _pre_ledger_check         # P6-ledger (AG-3.5, D0 F3): LEDGER_PATH non-empty + a readable directory - REAL arm REFUSE[P6-ledger], page-only WARN
     _announce_arm_state
     _pre_pairing_intake       # P5 (Block 6.1): pairing-token intake + zero-stake verification — spare (standby-role) arms only; REFUSE[P5-*] on crc/shape, bound-vs-delay, staked-"unstaked"/cannot-verify
     _pre_g2_vantage_probe     # P6 (Block 6.2 panel fix round): G2 vantage batch capability + resolved distinctness — spare arms with PRIMARY_UNSTAKED_PUBKEY only; REFUSE[P6-batch] / REFUSE[P6-vantage]
@@ -1089,6 +1259,7 @@ main() {
     _arm_verify
     _arm_token
     _arm_log "ARMED ($ARM_INTENT): ceremony complete — the pairing token above goes to EVERY spare (re-pair is ceremony, not advice)."
+    _arm_log "NEXT STEP: systemctl start $MONITOR_UNIT_NAME (systemctl restart on a host that already runs it) - this ceremony enables the monitor and stops the wizard's unit but does not start the monitor, so until you do, nothing monitors this host."
     _arm_g2_summary           # (Block 6.2 C1): the shared-vantage DEGRADATION, re-stated on the final screen (silent when the vantages are separate)
     _arm_pairing_summary      # (Block 6.1): §2.7 (c) — the pairing posture is the LAST thing on the operator's screen (spare arms only)
 }

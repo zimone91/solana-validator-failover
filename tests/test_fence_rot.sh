@@ -225,7 +225,6 @@ drive_rot() {
                     *) if [ "$1" = "-k" ]; then shift 3; else shift 1; fi; "$@" ;;
                 esac
             }
-            get_tower_path() { echo "$MOCK_DIR/tower"; }
             save_state() { :; }
             sleep() { :; }
             DEMOTES=""; DEMOTE_TEXT=""
@@ -606,8 +605,10 @@ else
 fi
 new_mock
 out=$(drive_rot "$STANDBY" 1900 scen_masked 1 file 0 "")
-if [[ "$(field "$out" demotes)" == "[1800]" && "$(field "$out" demotetext)" == *"verified-demote proof"* && "$(field "$out" demotetext)" == *"healthy side"* ]]; then
-    ok "(7c) demote at exactly t0+grace; the reason names the automatic-failover consequence (verified-demote proof / healthy side continues)"
+dtxt=$(field "$out" demotetext)
+if [[ "$(field "$out" demotes)" == "[1800]" && "$dtxt" == *"no spare takes it by itself"* && "$dtxt" == *"warm swap"* && "$dtxt" != *"verified-demote proof"* && "$dtxt" != *"healthy side"* ]]; then
+    # v0.7 AG-1.7: under Alpenglow mode no spare takes the identity by itself, so the reason no longer promises the healthy side's takeover (the v0.6 text did)
+    ok "(7c) demote at exactly t0+grace; the reason says what AG mode does with the identity (no spare takes it by itself; the operator moves it by the warm swap) and no longer promises a takeover"
 else
     bad "(7c) demote timing/reason wrong: $out"
 fi
@@ -788,8 +789,10 @@ echo ""; echo "─── (13) allowlist census: every systemctl line is a string
 # EXECUTES). Unbalanced quotes err toward KEEPING a line: the census fails CLOSED. The
 # remainder must equal the enumerated site list EXACTLY:
 #   1 in-block bounded read FUNNEL (timeout -k 2 5 systemctl "$@") — the ONE sweep read path;
-#   2 hard-stop ACTUATORS (`timeout -k 5 15 systemctl stop|mask --runtime`, the H2 path —
-#     mutations, not property reads; they do not belong in the sweep);
+#   hard-stop ACTUATORS (`timeout -k 5 15 systemctl stop ...` - mutations, not property reads; they do not
+#     belong in the sweep): the PRIMARY has 2 (the ladder's blocking stop and, since the v0.7 rc1 F18, the fast
+#     branch's `stop --no-block`), the STANDBY 1 (the blocking stop). The v0.6.9 H2 `mask --runtime` actuator is
+#     gone from both (measured inert for a unit under /etc/systemd/system: the F18 commit message);
 #   1 startup-path fallback READ, get_validator_args's
 #     `timeout -k 2 5 systemctl show ${VALIDATOR_SERVICE} -p ExecStart` — pre-existing, cached,
 #     reached only when /proc/<pid>/cmdline is unreadable; NOT absorbed into the sweep (it reads
@@ -818,10 +821,19 @@ for script in "$PRIMARY" "$STANDBY"; do
     hard=$(printf '%s\n' "$inv" | grep -cE 'systemctl (stop|mask) ')
     known_show=$(printf '%s\n' "$inv" | grep -c 'systemctl show "\${VALIDATOR_SERVICE')
     bounded_show=$(printf '%s\n' "$inv" | grep -c 'timeout -k 2 5 systemctl show "\${VALIDATOR_SERVICE')
-    if [[ "$n_inv" == "4" && "$funnel" == "1" && "$hard" == "2" && "$known_show" == "1" && "$bounded_show" == "1" ]]; then
-        ok "(13) $name: allowlist census EXACT — 4 systemctl-bearing invocation lines = the in-block funnel + 2 hard-stop actuators + 1 startup ExecStart read (BOUNDED since the 5.4 GO condition — the spelling is asserted, a bare revert goes red); every other systemctl line is a pure string mention"
+    # AG-3.8: the PRIMARY has two more bounded READ-ONLY `show`s, outside the sweep: _validator_pid's `-p MainPID --value` (the pid the hard stop
+    # must kill - the unit's own, pgrep after it) and _hung_unit_busy's `-p ActiveState --value` (a unit that is starting or stopping is not a hang).
+    # Both are `timeout 5 systemctl show -p <property> --value "${VALIDATOR_SERVICE...}"`. B7.1: the STANDBY carries the first of them too - its _validator_pid has the primary's body (the
+    # unit's MainPID first, for the same reason: its hard stop kills what the function returns) - and not the second (_hung_unit_busy is the holder's rung): 5 lines, 1 in the family.
+    pro_show=$(printf '%s\n' "$inv" | grep -cE 'timeout 5 systemctl show -p (MainPID|ActiveState) --value "\$\{VALIDATOR_SERVICE')
+    # rc1 F18: the v0.6.9 `mask --runtime` actuator is gone from both daemons; the primary's fast branch gained `systemctl stop --no-block` (a second actuator) and one more bounded read-only
+    # `timeout 5 systemctl show -p ActiveState --value` (the state of the unit after that request) - the same spelling as the hung rung's busy check.
+    want_n=4; want_pro=1; want_hard=1; hard_txt="1 hard-stop actuator (the ladder's blocking stop)"; pro_txt=" + the standby's 1 B7.1 read-only show (MainPID)"
+    [[ "$name" == "solana-primary-failover.sh" ]] && { want_n=7; want_pro=3; want_hard=2; hard_txt="2 hard-stop actuators (the blocking stop and the fast branch's --no-block stop request)"; pro_txt=" + the primary's 3 read-only shows (MainPID; ActiveState for the hung rung's busy check; ActiveState after the F18 stop request)"; }
+    if [[ "$n_inv" == "$want_n" && "$pro_show" == "$want_pro" && "$funnel" == "1" && "$hard" == "$want_hard" && "$known_show" == "1" && "$bounded_show" == "1" ]]; then
+        ok "(13) $name: allowlist census EXACT — $want_n systemctl-bearing invocation lines = the in-block funnel + $hard_txt + 1 startup ExecStart read (BOUNDED since the 5.4 GO condition — the spelling is asserted, a bare revert goes red)$pro_txt; no mask actuator (rc1 F18); every other systemctl line is a pure string mention"
     else
-        bad "(13) $name: systemctl census moved (total=$n_inv want=4 funnel=$funnel hard=$hard known_show=$known_show bounded_show=$bounded_show) — REVIEW: $(printf '%s\n' "$inv" | head -5 | tr '\n' ' ')"
+        bad "(13) $name: systemctl census moved (total=$n_inv want=$want_n pro_show=$pro_show want=$want_pro funnel=$funnel hard=$hard want=$want_hard known_show=$known_show bounded_show=$bounded_show) — REVIEW: $(printf '%s\n' "$inv" | head -5 | tr '\n' ' ')"
     fi
 done
 

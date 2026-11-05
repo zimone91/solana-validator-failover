@@ -3,7 +3,206 @@
 All notable changes are documented here. Versions follow the project's internal `v0.6.x` line;
 `v0.6.9` is the first public release.
 
-## Unreleased (v0.7 line)
+## v0.7.0-rc2 — 2026-11-05
+
+- **rc2 F21 — an UNSTAKED primary pages when nobody is voting the staked identity (`STAKED IDENTITY SILENT 🚨`).** Measured on the testnet pair (S18b, `2266130`): with the standby holder's daemon stopped and its validator killed, the healthy unstaked primary paged nothing - 420 s in `RECOVERY_MODE=manual` (one INFO line a minute) and 720 s in `rpc` (the recovery pass returned at its first gate, `Still delinquent (Tier 1) — not recovering`, every 3 s, and never reached the re-take's `WITHHELD` page). In Alpenglow mode the primary never takes the identity, so a page is all FO can give, and there was none. Pre-existing since v0.6.
+  - **What it does:** in the UNSTAKED branch of the main loop, before the `RECOVERY_MODE` dispatch and whatever the mode, the daemon reads the staked vote account's public `lastVote` and the cluster tip from one `getVoteAccounts` payload (`get_staked_liveness_sample`: `TIER2_RPC`, then `TIER3_RPC`; one read per `VOTE_LIVENESS_MIN_INTERVAL`) and pages `STAKED IDENTITY SILENT 🚨` once two reads of the same provider show the tip advanced and `lastVote` unchanged for `SILENT_STAKE_PAGE_SECS` seconds. The page reads `nobody is voting the staked identity: public lastVote <slot> frozen for <N>s (tip <slot>); this node is UNSTAKED and never takes in Alpenglow mode — check the holder (the spare's host) and start it, or move the identity by the warm swap (docs/SAFETY.md)`. The first page is immediate when the span is reached, repeats follow `ALERT_THROTTLE`, one INFO line (`[silent-stake] staked identity votes again …`) says when the votes resume, and the next freeze is a new episode.
+  - **Monitor-only.** It acts on nothing, in any `RECOVERY_MODE` and in `DRY_RUN` (the page is the same there), it keeps its own state apart from the recovery ladder and the take path, and it runs only from the UNSTAKED branch (the STAKED branch clears its episode). A manual identity change is a new episode. Doubt is no page: no usable answer from either provider (one WARN per `ALERT_THROTTLE`, the next read waits at least 30 s), a tip that did not advance, a `lastVote` that went backwards and a change of provider are not evidence of silence. Without `VOTE_PUBKEY` the page is off and the start banner says so.
+  - **New knob `SILENT_STAKE_PAGE_SECS`** (default 90, floor 30; primary only; validated at startup; in the primary template and the primary wizard; the start banner prints `Silent-stake page: 90s`). Pairing rule: at least the spare's `TAKEOVER_DELAY` + 30 (90 >= 60 + 30), so a failover that works ends before the span does (an armed spare's take comes 73 to 79 s after the holder's last vote at `MAX_DELINQUENT_SLOTS` 15, about 3 s later at the v0.7 wizard's 24); the facts job pins the shipped defaults and the arithmetic, and a value other than 90 is announced at start (`[config-drift]`; one line for a lower value, another for a higher one). The spare's template and its wizard's delay prompt carry the same rule from its side (its `TAKEOVER_DELAY` at most this value minus 30).
+  - Documents: `docs/NOTIFICATIONS.md` (the page, the log lines), `docs/SAFETY.md` (*The silent stake*: the evidence, the pairing, the residuals), `docs/DEPLOYMENT-MANUAL.md` (the rc2 knob table). New suite `tests/test_primary_silent_stake.sh`; claim rows and put-back controls in `tests/test_ag_texts.sh`.
+
+- **rc2 F22 — the Internet-lost demote no longer fires below the isolation floor (`CONNECTIVITY_RETRIES` 3 → 6).** Measured on the testnet pair (S21, `2266130`): a 20 s egress blip on the holder was counted by `check_internet` (`ping` to 8.8.8.8 / 1.1.1.1 / 9.9.9.9, one round per cycle) as `Internet FAILED` 1/3 at +6 s, 2/3 at +11 s, 3/3 at +17 s, and `switch_to_unstaked "Internet lost (3x)"` fired at +17 s - the isolation rung (`SELF_FENCE_ISOLATION_SECS`, 30 s) never got its turn. The egress was back at +20 s, but the stake was gone: the spare took at +69 s, about 70 s without a vote, a manual swap back. The same blip with `CONNECTIVITY_RETRIES=6` passed with no demote and no page. Pre-existing since v0.6; the daemon's comment said 13.5-16.5 s and the primary template said "3 × 3s = 9s" - neither was the measured 5.5 s a round.
+  - **What changed:** the default is **6** in the daemon, the primary template and the primary wizard, with the comment corrected (a round is `CHECK_INTERVAL` + a fixed 1.5 s wait for the pings + the 1 s curl fallback, `CONNECTIVITY_TIMEOUT` does not enter, 5.5 s measured, so 6 is about 33 s). The rule: `CONNECTIVITY_RETRIES` × (`CHECK_INTERVAL` + 2) ≥ `SELF_FENCE_ISOLATION_SECS`, the isolation rung being the intended floor.
+  - **The floor is announced, not enforced.** At startup a value below it logs ONE `[config-drift] CONNECTIVITY_RETRIES=<n> fires the Internet-lost demote at ≈ <s>s, below SELF_FENCE_ISOLATION_SECS=<f>s - …; set CONNECTIVITY_RETRIES >= <n> in <env> and restart` warning (an old env keeps working, loudly; nothing is refused; silent with `PRIMARY_SELF_FENCE=false`, which has no isolation rung), and the start banner prints the computed time: `Inet retries:      6 (≈ 30s to the Internet-lost demote; floor 30s)`. Primary only: the standby carries no Internet rule.
+  - **Recomputed:** the timing derived from the old 13.5-16.5 s figure now reads 24 to 34 s (six rounds; about 10.5 to 17 s for the three the default had) - `docs/SAFETY.md` (the margin's derivation: the bound stays 34 s, 170 + 8 = 178, rounded up to 200 - the Internet-lost rung moves from far below the bound to at it and is not what it rests on; the cross-node table's internet-lost row; a new paragraph, *The Internet-lost floor*), `docs/DEPLOYMENT-MANUAL.md` (the failure scenario, the binding-case note, the two timeline blocks, an rc2 knob row), the standby daemon's and its template's margin comments.
+  - Tests: new `tests/test_connectivity_floor.sh` (the default in the daemon and template, the warning at 3 rounds and not at 6, the demote after exactly the configured number of failed rounds through the real main loop, controls); claim rows and put-back controls in `tests/test_ag_texts.sh`.
+
+## v0.7.0-rc1 — release candidate (v0.7 line, unreleased)
+
+- **rc1 fix round 2 (F18) — the hard stop no longer masks the unit; a requested stop is what `Restart=` respects.** Since v0.6.9 (H2) the self-fence's hard stop - a demote or give-back that wedged, and the
+  primary's hung-holder rung - ran `systemctl mask --runtime <unit>` before the direct kill when `systemctl stop` had failed (the rung's fast branch, which skips the stop, always did), to keep
+  `Restart=always` from resurrecting the validator. Measured on systemd 255 (a real host and a replay): `mask --runtime` writes `/run/systemd/system/<unit>` -> `/dev/null`, but a unit file under
+  `/etc/systemd/system` takes precedence over `/run` (systemd.unit(5), the unit load path), so the unit stayed `loaded` with `Restart=always` and the validator was restarted 1.1 s after the SIGKILL. The H2 mask was
+  inert for a unit under `/etc/systemd/system`; what caught a resurrection was the re-verify (`HARD_STOP_REVERIFY_SECS`, default 15 - unchanged), which turns it into `HARD STOP FAILED` instead of a false ✅.
+  - **What protects a direct kill from `Restart=` is a requested stop** (systemd.service(5): a unit stopped by `systemctl stop` - `--no-block` included - is not restarted; the stop job is queued before the process dies,
+    so the death ends the job instead of starting a restart). The normal ladder is the same minus the mask: `systemctl stop` (blocking, bounded at 15 s + 5 s kill grace) is the request, then SIGTERM, 2 s, SIGKILL, verify, re-verify.
+  - **The fast branch** (the primary's ladder, for a validator process in state T or D, which cannot handle SIGTERM) still skips the blocking stop, but now sends `systemctl stop --no-block <unit>` (bounded) right before the
+    SIGKILL, records the unit's `ActiveState` (bounded read; logged - `deactivating`, `inactive` or `failed` expected, otherwise one WARN) and kills at once. A failed request is a WARN too and the kill goes on: the re-verify is
+    the catch for anything a stop request cannot promise. The `HOLDER HUNG` page names the branch: `fast: process state T, blocking systemctl stop skipped (stop requested with --no-block)`.
+  - **Pages:** the two `(unit masked)` success pages (`PRIMARY SELF-FENCE — HARD STOP ✅ (unit masked)`, `STANDBY SELF-FENCE — HARD STOP ✅ (unit masked)`) are one page each now, whichever way the stop went: the unit is
+    stopped by a requested stop (`Restart=` does not apply) and the page says to recover with `systemctl start <unit>` on the UNSTAKED identity. The page for a resurrected validator ends `INTERVENE NOW (systemctl stop <unit>)`
+    (it said `systemctl mask --runtime <unit>; then stop it`).
+  - **Recovery** after a hard stop is `systemctl start <unit>`: the validator comes up on its own UNSTAKED identity, as every start does; there is nothing to unmask. A mask that a v0.6.9 daemon left behind is `--runtime`:
+    a reboot clears it, and `systemctl unmask --runtime <unit>` removes it. The fence script's own stop ladder (`systemd/failover-fence.sh`) is not part of this change.
+- **rc1 fix round 2 (F19) — the hard stop waits for the killed validator to be gone.** After the SIGKILL the ladder read the process once, 1 s later, and called it "still running" (`HARD STOP FAILED`, and for the hung-holder rung a false `HOLDER HUNG — HARD STOP` verdict "did NOT confirm") whenever it was not gone yet: a validator with a large resident set takes seconds to be torn down (about 2.4 s measured for ~150 GB), so a stop that had worked was reported as a failure and the fence kept retrying.
+  - **New knob `HARD_STOP_EXIT_WAIT_SECS`** (default 15, floor 1, validated at startup in both daemons, in both env templates and both wizards): after the SIGKILL the ladder polls the validator once per second - `_watchdog_sleep 1`, a pet per second under the armed unit - for up to this many seconds. It calls the stop FAILED only when the process is still there at the bound (the page says `still running (pid N) Ns after SIGKILL`); a process that is gone logs `[self-fence] validator pid N gone Ks after SIGKILL`. The H2 re-verify (`HARD_STOP_REVERIFY_SECS`) then runs exactly as before. The same bound in the primary's fast branch, the primary's normal ladder and the standby's ladder. The rung's timing (the validator dead 48 to 51 s after the hang on the fast branch) is the moment of the SIGKILL and does not move.
+
+- **AG-3 (rc1) — the armed cold take under Alpenglow, opt-in; the holder's gap rule and hung-validator rung; unit and ceremony hygiene.** A standby with `AG_ARMED_TAKE=true`
+  (default `false`; only the literal `true` arms, anything else is not armed and says so once at start) takes the staked identity itself - cold - when every gate
+  of the page has said "take now" and a readiness margin also holds. The primary never takes, armed or not. Every figure and limit:
+  [docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1).
+  - **The stop is fail-closed:** `if ! _ag_take_allowed` - an undefined predicate withholds (the AG-1 form let it fall through). The `TAKEOVER WITHHELD` page names whether the
+    spare is not armed or armed but held by the margin; `DRY_RUN` on an armed spare evaluates the margin and pages `[DRY RUN] WOULD TAKE STAKED (Alpenglow cold take)`.
+  - **The readiness margin:** `AG_TAKE_MARGIN_SLOTS=200` (digits only and ≥ 150, or the daemon refuses to start; a leading-zero spelling is accepted and normalized at start, and the take itself accepts only the canonical form): the spare's finalized slot (its root under Alpenglow) minus the holder's
+    last observed `lastVote` must reach it; a failed read, a missing baseline or an unusable knob holds the take. One more bounded local read in the act-then-alert window: two bounded local
+    reads (the veto, then the margin).
+  - **The take is voter-first (G4):** `authorized-voter add` first, then `set-identity --do-not-require-vote-history` (agave and Jito-Solana 4.4.0). A failed or timed-out voter add stops the take
+    (`TAKEOVER BLOCKED — authorized-voter add failed`). Reason (A8): an identity before its voter opens a HotSpare / NonVoting window, measured on 2026-10-06 and on the testnet pair on 2026-11-02.
+  - **The holder's gap rule:** `HOLDER_GAP_DEMOTE_SECS=30` (floor 20): a staked holder whose monitor did not run for that long (a frozen or suspended host) demotes itself right after the cycle's
+    identity read. Pairing rule: the spare's `TAKEOVER_DELAY` ≥ that + 30; `TAKEOVER_DELAY` stays 60 (the standby's floor) = that sum - pinned by the `facts` job together with the other armed-take defaults. An armed spare whose `TAKEOVER_DELAY` is below 60 refuses to start (`DRY_RUN` is no exception); one that is not armed logs a warning.
+  - **The hung holder's rung (AG-3.8):** `HOLDER_UNREACHABLE_STOP_SECS=30` (floor 20): a validator last seen STAKED whose identity stays unreadable for that long is hard-stopped by its own daemon when it is
+    still the same process, LOCAL `getSlot` is silent and the vote account's `lastVote` is frozen while the cluster tip advances (`HOLDER HUNG — HARD STOP`); any doubt is a page, never a kill
+    (`HOLDER UNREACHABLE — not stopped`). A process in state T or D skips the blocking `systemctl stop` (the fast branch of the ladder; since rc1 F18 it asks for the stop with `--no-block` right before the SIGKILL - see the first entry of this section). Reason, measured on the pair (S11a): at 4c6bbc5 the daemon never fenced a SIGSTOPped
+    holder - it paged once, kept the identity and voted again on SIGCONT. The unit's `MainPID` is now the validator pid the ladder kills (pgrep stays the fallback). A validator that restarted since the last readable identity read (a crash and a restart on the unstaked identity: the identity unreadable, the local RPC silent, `lastVote` frozen while it loads) is never stopped: the rung compares the process's start time with the last readable read, logs one INFO line and stays quiet until the identity reads again; a start time it cannot read is a page (`cannot tell a hung validator from a restarted one`), never a kill.
+  - **Unit and ceremony:** the monitor unit carries an `ExecStop=` that re-sends a lost TERM; `failover arm` refuses a real arm without a readable `LEDGER_PATH` (precondition `P6-ledger`) and
+    verifies that the rendered monitor unit carries the `ExecStop=`; both deploy scripts now write the ledger directory they detect into `LEDGER_PATH`.
+
+- **Block 7, trimmed for rc1 — what the armed pair and the monitor-only phase still need.** One suite, `tests/test_block7_rc1.sh`, one section per item.
+  - **B7.1 — `_validator_pid` is the validator, never an admin client of the daemon (Block 7, rc1).** `pgrep -x agave-validator | head -1` could answer a bounded admin call of the daemon itself or of the operator
+    (`agave-validator --ledger L set-identity | authorized-voter | contact-info | monitor | exit | wait-for-restart-window` has the validator's process name and runs while the hard stop runs): the hard stop then
+    killed the client, called a hung STAKED holder "still running" (`HARD STOP FAILED`) and left it voting; in the fence script and the arm ceremony the pid names a systemd unit through its cgroup, so a client of the
+    monitor unit could be taken for the validator's unit. Now the unit's `MainPID` comes first in BOTH daemons (the standby's is new), and the `pgrep` fallback (the three process names as before, one `pgrep` per name, all hits)
+    reads each hit's `cmdline`: a hit with one of the six words as an argument after `argv[0]`, as a whole word (`--identity /keys/set-identity.json` is not one; the word after `--ledger` is its value), is passed over; a hit with
+    `--ledger` and no such word is preferred; a `cmdline` that cannot be read proves nothing (no readable `cmdline` at all = the first hit, as before); only clients alive = no validator, empty. The fence script and the arm
+    ceremony carry the same selection and never ask the unit. **The `cmdline` read is bounded (B7.1b):** `timeout -k 1 2 tr '\0' '\n' < cmdline` in all four copies - a validator wedged inside the kernel can hold the mm lock that file takes, and an unbounded read would block the pid lookup (the hard stop, the fence's stop path, the ceremony's check) with it; a read that times out is a `cmdline` that cannot be read, so that hit is not a client and is answered as the floor. Pinned by `tests/test_block7_rc1.sh` (B7.1), with mutants.
+  - **B7.2 — one monitor per role per node:** `startup_checks` takes `flock -n -E 77` on `$STATE_DIR/.primary.lock` / `.standby.lock` (descriptor 8, held for the life of the process, released by its exit however it ends;
+    a lock file left by a dead copy is simply unlocked) right after its three banner lines - only the lock file's own `mkdir` and open come before the `flock` - and before any identity read, fence-marker consumption or state-file access.
+    A second copy - an operator's manual start beside the unit is the case - pages `SECOND INSTANCE REFUSED` once, logs that one line and exits 3, before it can consume a fence marker,
+    read an identity or touch the state file; the first copy is unaffected. A guard, not a gate: no `flock` on the box, an unopenable lock file or a `flock` that fails for another reason is one warning and the daemon starts. The state
+    dir is created 0700 when missing and keeps its mode when it exists.
+    The units the deploy scripts write (`Restart=always`, `RestartSec=10`) carry `RestartPreventExitStatus=3`: a copy the lock refused is not restarted every 10 s into a page every 10 s (exit status 3 is
+    the refusal's alone). The armed monitor unit is `Restart=no`, and a `Type=notify` unit whose main process exits before `READY=1` ends `failed` whatever the exit status - `failed` dispatches `OnFailure=`, the real
+    fence, on a healthy validator (measured on systemd 255; `systemd/README.md`, "A refused second copy"). So under the armed unit (`NOTIFY_SOCKET` and `WATCHDOG_USEC` set) the refused copy sends `READY=1` after its page and
+    exits 3, and the monitor skeleton carries `SuccessExitStatus=3` once: the unit ends `inactive`, nothing is dispatched; outside the unit nothing is sent. Units installed by an older deploy keep their old text until they are re-deployed.
+  - **B7.3 — the state file is replaced atomically, and a file cut short is never read:** `save_state` writes `<state file>.tmp` beside the state file (mode 0600, same directory = same filesystem) and renames it
+    over with `mv -f`, so a crash mid-write leaves the previous whole save (the old `> state` truncated first - a crash then lost the 600-s re-take lockout and the takeover cooldown that the armed take leans on).
+    A state file that is empty or does not end with a newline (a number cut in half reads as a smaller, canonical one) is read by nothing: `load_state` logs one WARN and HOLDS the takeover cooldown and the re-take
+    lockout (the primary: the recovery cooldown) IN FULL from now instead of starting them at zero. A file cut exactly at a line boundary and a file from before v0.6.9 load as before.
+  - **B7.4 — fail-closed polarity at the two remaining Alpenglow stops:** the primary's re-take (`switch_to_staked`) asks `_ag_primary_retake_allowed` and the standby's pre-warm (`_prewarm_voter_add`) asks `_ag_prewarm_allowed`,
+    both `return 1` (never) in rc1 and both used as `if ! …`: an undefined predicate withholds, as the standby's take has done since AG-3.1 (the AG-1 form, `if _ag_mode`, let it fall through). `_ag_mode` itself is unchanged.
+  - **B7.5 (rc1) — the `DRY_RUN` monitor-only phase does not storm the operator.** A node on `DRY_RUN=true` runs the same decisions as a live one and only swaps the mutation for a
+    log line and a page; a decision that holds for many cycles used to page on every one of them (the offline node every ≈ 5 s, the self-fence's `getHealth` path every 3 s, its
+    frozen-slot path every ≈ 33 s).
+    - **The primary's dry demote** (`switch_to_unstaked`, the one function every demote goes through: internet lost, the four self-fence signals, the holder gap rule, the vote-latency
+      and delinquency escalations, the fence-rot demote) logs `[DRY RUN] Would switch to UNSTAKED — …` on every call and sends the `[DRY RUN] WOULD SWITCH TO UNSTAKED` page once per
+      `ALERT_THROTTLE` (600 s) per reason. The reason with its digits stripped is the key, so a changing count or slot number is the same reason; a different reason pages at once and
+      each reason has its own window (a partition that is both frozen and behind pages twice, not once per alternation). In memory, on the monotonic clock; the live demote is never
+      throttled and the dry branch still returns 0. The self-fence's own pages (`LOCAL RPC SILENT`, `VOTES NOT LANDING`) are untouched.
+    - **The standby's `Takeover cooldown: Ns remaining since last attempt`** (a WARN on every turbo cycle, 1 s, for the whole cooldown) and **`Re-take locked out after self-fence: Ns remaining`**
+      (already one WARN per 60 s; the cycles in between logged nothing) are WARN at most once per 60 s per line - the first call at once - and the same text at INFO in between.
+  - **B7.6 — one version string, the one the operator reads:** `FO_VERSION="0.7.0-rc1"` in each daemon and each deploy script. The start banner (`Solana PRIMARY/STANDBY Failover v…`), the two start pages
+    (`🚀 PRIMARY/STANDBY v… started [DRY_RUN]` / `[LIVE]`), the deploy banner, the generated unit's `Description=` and the deploy test messages said `v0.6.9` / `v0.6.10` on a v0.7 daemon; they now say the constant.
+    `solana-primary-failover.sh --version` / `solana-standby-failover.sh --version` print `<name> <FO_VERSION>` and exit 0 before anything else runs (only when the file is executed - a sourced copy never exits). The `facts` job pins the
+    four constants equal, equal to this heading's version, and carried by line 2 of both env templates, the title of `docs/DEPLOYMENT-MANUAL.md` and the two start-page entries of `docs/NOTIFICATIONS.md`; no printed label of
+    those scripts may carry a literal version. The tag name stays the release gate's business - the constant is the string the operator sees.
+
+- **AG-1 — Alpenglow mode: by default FO never takes the staked identity automatically** (the one opt-in, the armed cold take, is
+  AG-3 above). Always on, no knob turns the mode off; every figure and limit is in
+  [docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07).
+  - **The stop:** the standby's `take_staked_identity` and the primary's `switch_to_staked` (`RECOVERY_MODE=rpc`) return right after the
+    own-view veto, before the `DRY_RUN` branch and every admin-socket call - since AG-3 the standby goes on only when it is armed and the
+    readiness margin holds (the cold take, voter first: AG-3 above); the pre-warm (`PREWARM_VOTER_ADD`) is inert. One page per
+    episode, `TAKEOVER WITHHELD` / `RECOVERY WITHHELD — Alpenglow mode`, with the holder's silence, this node's finalized slot and
+    `getHealth` class, its version against `MIN_VALIDATOR_VERSION` (default 4.4.0), the VAT admission, the vote-history state and the
+    operator path; repeated at most once per `ALERT_THROTTLE`.
+  - **The tripwire** reads the right feature account (`A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS`, Feature account, base64) and only reports.
+  - **Vote history:** `vote_history-<staked pubkey>.bin` is classified and logged (sha256 after a confirmed demote), never touched; the
+    primary demote no longer deletes the tower (the knobs `TOWER_PATH` and friends are gone).
+  - **VAT admission:** `getVoteAccounts.epochVoteAccount` (with `keepUnstakedDelinquents`) is read on a schedule; a *vote-based* demote
+    is withheld, with a page, while the vote account is not in the epoch's vote set — a VAT lapse looks like a dead holder.
+  - **Readiness:** the running version from `getVersion` (`solana-core`), and the class of every local `getHealth` answer
+    (`ok` / `behind N` / `unknown` / `unreadable`; Alpenglow answers Unknown while votor has seen no finalized slot).
+  - **Slots and seconds:** every conversion on an Alpenglow path comes from the slot-params table's two ends (2.5 and 5 slots/s;
+    4.667 measured); the wizard's `MAX_DELINQUENT_SLOTS` preset is 24 (was 15).
+  - **Texts:** the startup `--identity` is this node's own unstaked keypair, never re-pointed (the `identity.json` symlink advice is gone);
+    the tower / `--require-tower` switch-back is the warm swap; every text that promised an automatic takeover says what Alpenglow mode
+    does or is marked *retained path*.
+  - **Tests:** the TERM-trap race of (12e) fails fast and by name instead of running to the suite cap
+    ([docs/SAFETY.md](docs/SAFETY.md), *Known bash behaviour*).
+  - **Review round:** the standby logs a `MAX_DELINQUENT_SLOTS` of 1–23 once at start (below the new preset; log only, no page — an existing env
+    file keeps its value); the page's decision point is documented as up to ≈ 27 s (five reads at 3 s each, plus the vote-history hash bounded at
+    12 s); three leftover promises of an automatic take are rewritten (README, the standby env template, the systemd README) and the README names
+    the version floor (`4.4.0`); `_vat_reason` no longer leaks a global when jq fails; the CI facts job gains a crude line grep for a deletion
+    under a vote-history, tower or ledger path (the suite census stays the real one).
+
+- **Block 6.3.1 — the spare's own view: detection on the slow reliable view (finalized), a veto on the fast one
+  (confirmed).** The spare's own node (`LOCAL_RPC`, the one input no `TIER2`/`TIER3` intermediary can splice)
+  now testifies at every take, and every piece is veto-only: it can turn a take into a hold, never the reverse.
+  Every residual and number lives in `docs/SAFETY.md`: [the spare's own view](docs/SAFETY.md#the-spares-own-view-v07-block-631) and,
+  every crossing of the holder's fence and the spare's earliest take, [the cross-node invariant](docs/SAFETY.md#the-cross-node-invariant).
+  - **Explicit commitments:** every `getVoteAccounts`/`getSlot` body in both daemons names its commitment
+    (detection reads `finalized`, agave's default — behavior-neutral); a census parses every body with jq.
+  - **The own bank restarts the countdown:** the own bank's holder-voting evidence (a not-delinquent own-bank read with
+    a positive basis, a `lastVote` advance, or a VOTING veto) is a fourth takeover-anchor input; watchdog-elapsed's
+    silence restarts with it (`[elapsed-own]`); reset at every episode close; the witness fast path never skips it.
+  - **One bounded local veto read before the switch**, on every take path (the standby's `take_staked_identity`, the
+    primary's `switch_to_staked`): one `LOCAL_RPC` batch (`curl -m 2`) after the fresh re-check and before the `DRY_RUN`
+    branch. A failed read vetoes, a voting holder re-anchors, and the spare's own confirmed head must have advanced past a
+    sample no older than `OWN_HEAD_H` = 16 s. The act-then-alert rule: **no network, no alerts; one bounded local veto read allowed.**
+  - **The spare's own head:** sampled before every external read of the take cycle (a structural census); watchdog-elapsed's
+    `[elapsed-rate]` layer abstains below an average of 2.5 slots/s; `N_HEAD` = (`MARGIN_ELAPSED` − 1) × 5/2 = 22 slots.
+    This narrows the slow-cluster residual; it does not retire it.
+  - **Small calls:** Tier 1 is the node's own health verdict (`LOCAL_HEALTH_MAX_BEHIND` enters no decision); a failed
+    latency reference is no longer holder-voting evidence; the holder's opt-in latency demote reads its payload first
+    (not part of the cross-node invariant); `failover arm` refuses a symlinked or non-canonical state directory before
+    creating anything, unless a symlink is raced onto the path mid-arm (a local root's race, named in SAFETY).
+  - **The fresh re-check is the 6.3 build's, unchanged** (two changes tried in review opened take-while-voting paths and
+    were reverted). Residuals, named in SAFETY: the mirror world (6), the 6.3 build's own; the starvation (7), introduced
+    by this block's own-view veto (Block 6.3 has none and takes these holders): a `TIER2` failing slowly (a timeout, an
+    error answered late) with a slow `TIER3` leaves the veto no fresh baseline — a dead holder is never taken over, loudly
+    (`⚠️ Take VETOED by this spare's own view (it could not testify): …`, then `⚠️ TAKEOVER STARVATION: …`); availability.
+  - **No relinquish-proof gate in this release** (6.4 wires it; the attestation pages say so): the take follows v0.6.x semantics, which
+    the re-check and the veto can only hold. CI: every page sent has an entry in `docs/NOTIFICATIONS.md` (a status — an `alert`'s, a
+    direct `send_webhook`'s title — as a whole code span, a heading as a whole span or the opening of one followed by "…" or a blank and "…").
+  - Tests: `test_own_view`, `test_d6_holder` (new). `PATH` clients: `run_all.sh`'s stage (4), every leg; inet sockets: `tests/strace-hermetic.sh`.
+    A check that cannot run here (a control whose earlier-release baseline this repository does not ship, a host without
+    `shellcheck` or `flock`) prints `⏭ SKIP`, never ✅. The two attestation pages open with the verdict and the fix.
+
+- **Block 6.3 — the watchdog-elapsed proof provider (attested time), the spare's observation surface
+  as a standing property, and the holder-side hardening of five review rounds.** Every residual and
+  every number lives in `docs/SAFETY.md`, linked here.
+  - **The provider** (the second behind the 6.1 proof gate; `[elapsed-provider]`, byte-identical in
+    both daemons; armed + spare + registered only — zero reads and zero events anywhere else): it
+    registers at startup only over a pairing token that classifies ok at the one derivation site, and
+    answers PROVEN only when the silence observed on the spare's monotonic clock (restarting at every
+    stamped blindness, counted from the adoption of the token in force) reaches `elapsed_floor` =
+    W + B + `MARGIN_ELAPSED`, one fresh same-vantage read still shows the episode baseline, and the
+    payload's cluster-max is within ±`N_HEAD` of this spare's own head read right after it. A verdict
+    is withdrawn — never extended — past `PROOF_MAX_AGE`, when the seam moves under it, or when the
+    stored token (keyed on its full line and file identity) no longer licenses it; a symlinked token or
+    token directory never proves. Unwired (6.4). Its numbers:
+    [slot time](docs/SAFETY.md#shared-vantages--the-spares-observation-surface-a-standing-property-v07)
+    and the head cross-check, its own cost and age, in the same section.
+  - **The spare's observation surface (D0)** — [Shared vantages](docs/SAFETY.md#shared-vantages--the-spares-observation-surface-a-standing-property-v07):
+    on every configuration watchdog-elapsed's silence and the vote-FROZEN observation are one
+    `TIER2`/`TIER3` input; the own bank's scope, the partitioned and lagging spare, forged G2 on shared
+    vantages — measured on the real loop (`test_elapsed_provider` §11), most of them flipped by 6.3.1.
+  - **The spare's take path:** span starts stamped after the read that establishes them; one
+    canonical-integer validator (`_canon_uint`) for every external integer; an aborted main loop exits
+    1; the Tier-1 and reference reads petted; the own-bank reference read first; `TIER2` re-reads the
+    holder's `lastVote` after its reference.
+  - **The holder's self-fence:** non-canonical input fails toward the fence; `load_state` decides per
+    value; the restore floor (`SELFFENCE_RESTORE_CONFIRM_SECS`); the differential bar and the seven
+    named residuals — [Holder self-fence](docs/SAFETY.md#holder-self-fence-the-differential-bar-and-its-named-residuals-v07-block-63).
+  - **The heredoc guard (27)** in `test_installer_guardrails`; the standby deploy script's env heredoc
+    ran `failover arm` as a command substitution (bare backticks in a comment) — escaped.
+
+- **Install-verification claims aligned to the mechanism (docs, comments and one runtime output
+  line; no logic change).** `install.sh`'s header, `SECURITY.md` ("Verifying what you install") and the README
+  install paragraph promised more than exists: a signed release tag verified with `git tag -v`
+  against a maintainer key at zim.one, and fail-closed `SHA256SUMS` verification with "no
+  continue-without-verification path". The facts, checked against the tags themselves: `v0.6.9`
+  and `v0.6.10` carry NO signature (annotated tags, zero signature blocks) and NO `SHA256SUMS`
+  (neither tag contains a manifest), so for both — including the installer's default version —
+  downloads are checked by SYNTAX ONLY, and the installer's own code already says so aloud
+  (`PRECHECKSUM_VERSIONS` warning); the script verifies no signature at all. The texts now say
+  exactly that: v0.6.x tags are unsigned and will stay so (published tags are never rewritten);
+  checksum verification is fail-closed from the first manifest-bearing release on; tag signing
+  starts with v0.7, after the maintainer key is published outside GitHub. The one line every
+  install prints was wrong too: "Newer releases are checksum-verified; consider installing the
+  latest version" — no release is checksum-verified today, and the latest IS v0.6.10, so the
+  advice led nowhere. It now reads "Checksum verification starts with the first release that
+  ships a SHA256SUMS manifest (v0.7)" — true now and after v0.7 (output text only, no logic).
 
 - **Ratification follow-ups (Block 6.2).** The shared-vantage STANDING CONDITION now reads
   word-identically at every site an operator can meet it — `failover arm` precondition P6, the
@@ -22,7 +221,7 @@ All notable changes are documented here. Versions follow the project's internal 
   `❌` lines if any, and the output tail (a suite killed mid-run by `set -e`, a syntax error or a
   crash prints no `❌` at all — its last lines carry the reason), and EVERY diagnostic line in
   both branches is tagged with the suite that produced it (`exit rc=1 [test_x.sh]`,
-  `tail [test_x.sh]: …`) — an untagged line in a log of 51 suites is unattached, and a grep by
+  `tail [test_x.sh]: …`) — an untagged line in a log of 61 suites is unattached, and a grep by
   suite name missed it and read as "the diagnostics did not fire".
 - **Block 6.2 — the G2 verified-demote proof provider (§2.4 + [rev3/№2]).** The first real
   provider behind the Block-6.1 proof gate, in a new `[g2-provider]` twin region (byte-identical
@@ -80,7 +279,7 @@ All notable changes are documented here. Versions follow the project's internal 
   requirement in front of the staked mutation, so a false PROVEN cannot by itself cause a take —
   it can only fail to BLOCK a take the pre-existing v0.6.x logic already authorized, and a
   double-sign needs BOTH a false G2 proof AND a false-frozen vote observation. New suite
-  `tests/test_g2_provider.sh` (51 suites): reds-first per detector, the ratified №2 control, the
+  `tests/test_g2_provider.sh` (51 suites at landing): reds-first per detector, the ratified №2 control, the
   multilayer rule over the enumerated layer set (each layer neutered alone → the attack falls
   through to a NAMED surviving layer; ALL neutered → the forged acceptance red restored),
   boundedness/pet censuses from live event order, inertness censuses, constants census extended
@@ -107,8 +306,9 @@ All notable changes are documented here. Versions follow the project's internal 
   spare's own staked tenure; and the clock-budget attribution is corrected — the ±budget compare
   bounds a vantage's CHAIN-HEAD lag, not the local system clock CRDS purge depends on, which is
   now a named residual in `docs/SAFETY.md`. The batch merged two reads into one, so the region's
-  per-op pet census moved 5 → 4 per daemon (totals 42/43 → 41/42) and its worst added per-cycle
-  gap fell 36 s → 24 s; the CI wall-clock pins were re-derived and are UNCHANGED at 21/22.
+  per-op pet census moved 5 → 4 per daemon (totals 42/43 → 41/42 at landing; `tests/test_monitor_fence_integration.sh`
+  (14b) pins 51/56 at this release, definition lines included) and its worst added per-cycle gap fell
+  36 s → 24 s; the CI wall-clock pins were re-derived and did not move (21/22 at landing, 22/23 at this release).
   **Reviewer conditions (second fix round, in this same entry).** (C1) The severity statement
   above — "a double-sign needs BOTH a false G2 proof AND a false-frozen vote observation" — is
   formally true but MEANINGLESS on the default config, where `G2_VANTAGE_A`/`G2_VANTAGE_B` derive
@@ -148,7 +348,8 @@ All notable changes are documented here. Versions follow the project's internal 
   outcome only under the exact-`true` `ALLOW_UNFENCED_TAKEOVER` lever (screams at every armed
   start AND per bypassed take). Floors are PER-PROVIDER, never global: `_derive_proof_floors`
   is the ONE derivation site — `elapsed_floor = W + B + MARGIN_ELAPSED` (=100 at the shipped
-  30/60) with `N_HEAD = slots(MARGIN_ELAPSED)` (=25) COUPLED mechanically (staleness tolerance
+  30/60) with `N_HEAD = slots(MARGIN_ELAPSED − 1)` (= 22 at the shipped `MARGIN_ELAPSED` = 10; this block built it
+  as `slots(MARGIN_ELAPSED)` = 25) COUPLED mechanically (staleness tolerance
   cannot be raised without visibly raising the floor); `PROOF_MAX_AGE=50` is derived from a
   full verdict→mutation read census (the recheck's sampler worst = 2×`curl -m 10` + 2 armed
   pets + glue = 36 s; healthy path 2–4 s — convergence proven with margin) and enforced at the
@@ -176,7 +377,7 @@ All notable changes are documented here. Versions follow the project's internal 
   names the stale-bound re-arm residual (a holder re-armed with larger bounds + a forgotten
   re-pair is a double-sign direction the spare cannot detect by construction; the holder's arm
   refusing to complete without printing the token is the operational protection). New suite
-  `tests/test_proof_gate.sh` (50 suites): reds-first, forged-token matrix, per-signal
+  `tests/test_proof_gate.sh` (50 suites at landing): reds-first, forged-token matrix, per-signal
   mutation controls (incl. the defense-in-depth pair: one neutered floor layer does NOT reopen
   the hole, both neutered restores the red), broadened constants census
   (`local`/`declare`/`export`/`readonly`/arithmetic spellings all bite).
@@ -204,7 +405,7 @@ All notable changes are documented here. Versions follow the project's internal 
   for any re-rot). During the grace the holder is voting and paging, so the spare's
   silence-based path cannot fire against it — the window adds no double-sign exposure (the
   reasoning lives as a comment at the grace check). New suite `tests/test_fence_rot.sh`
-  (49 suites): reds-first against the pre-5.4 daemons (armed+masked-fence → zero pages, zero
+  (49 suites at landing): reds-first against the pre-5.4 daemons (armed+masked-fence → zero pages, zero
   reads, no clock — logged), per-property red→green, measured episodic table
   (rot→heal→re-rot → demote at 240+grace, stale-anchor control at grace−history), never-instant
   and storm and first-immediate and gate controls (all `mutate()`-loud), both pet censuses
@@ -240,12 +441,12 @@ All notable changes are documented here. Versions follow the project's internal 
   (`$(timeout … systemctl` beside the funnel); (10a) now asserts the `[DRY RUN]` adapter title
   it always claimed; `_fence_rot_check`/`_rot_capture_intent` added to the HOLD baits; the
   pre-impl vacuity census corrected to the MEASURED sets (7 at land, 4 after this round —
-  recorded in the suite header). 50→67 checks; monitor skeleton R8 comment split per the
+  recorded in the suite header). 50→67 checks at landing; monitor skeleton R8 comment split per the
   container record (249: never runs; 255: re-dispatches per iteration — either way outside the
   one-hop contract).
 - **Block 5.3 — the `failover arm` ceremony** (`failover-arm.sh`, repo root: SHIPPABLE — in
-  SHA256SUMS, shellcheck, and the parse gate — but EXECUTED only at the v0.7 rollout,
-  upgrade-then-arm, per the release checklist; nothing in this repository runs it). Structure:
+  SHA256SUMS, shellcheck, and the parse gate — but EXECUTED only by the operator at the v0.7
+  rollout, upgrade-then-arm (docs/DEPLOYMENT-MANUAL.md, "Arming the fence"); nothing in this repository runs it). Structure:
   preconditions → probe → install → verify → token, every precondition refusing with the exact
   fix printed. Preconditions: self-v0.7 patsub-guard check on the installed daemons (the
   rev3.2 release condition self-enforced — the ceremony IS the upgrade-then-arm checkpoint);
@@ -267,15 +468,18 @@ All notable changes are documented here. Versions follow the project's internal 
   commands printed, the new monitor NOT enabled, no token; the unit file stays on disk for the
   operator to delete. Two Restart=always monitors on one host share the env + state file and
   race set-identity — one demotes, the other re-takes inside the lockout; the fix is this
-  ceremony step, deliberately NOT a daemon-side flock, which would turn the losing notify
-  monitor into a never-READY start timeout → OnFailure → REAL fence on a healthy validator),
+  ceremony step, not a daemon-side flock: a lock alone would turn the losing notify monitor
+  into an exit before READY → `failed` → OnFailure → REAL fence on a healthy validator. The
+  daemons' lock that Block 7 added (B7.2) is only a guard for a hand-started copy, and it is
+  safe under the armed unit because the refused copy sends READY=1 and exits 3, which the
+  monitor skeleton counts as success (`SuccessExitStatus=3`)),
   enables the monitor (the only `systemctl enable` of a Block-5 unit — supersession of the
   legacy deploy services is an ACTION the ceremony performs, not a plan), never touches
   the validator unit; post-install
   verify re-classifies and must agree (render→verify). The §2.1 pairing token
   (`v0.7|gen=N|watchdog=…|relinquish_bound=…|fence=…|host=…|crc`) bumps a persisted generation
   counter and the arm refuses to complete without printing it. New suite
-  `tests/test_arm_ceremony.sh` (48 suites): reds-first, every actuator stubbed, every root in
+  `tests/test_arm_ceremony.sh` (48 suites at landing): reds-first, every actuator stubbed, every root in
   mktemp (the hard boundary — no test touches /etc, /run/systemd, or a real systemd),
   refuse-gate mutation controls on every gate, arm↔fence byte-parity on the reused
   unit-discovery helpers.
@@ -300,7 +504,7 @@ All notable changes are documented here. Versions follow the project's internal 
   file holding the bumped value; the "only enable" claim is scoped to the Block-5 unit set
   everywhere it is printed or written; all five `systemd/*.skel` render sources joined
   SHA256SUMS (integrity artifacts for root-installed units); `tests/run_all.sh` dispatches via
-  `"${BASH:-bash}"` (interpreter-drift class closed). Suite 56 → 85 checks, mutation controls
+  `"${BASH:-bash}"` (interpreter-drift class closed). Suite 56 → 85 checks at landing, mutation controls
   M1–M10. (5-lens adversarial verification panel; folded into the Block
   5.2 commit — every fix red-first, every panel mutant re-killed, every attack scenario re-run).
   **5.3 fix round 2** (reviewer blockers, both reds observed on a tool-bearing machine —
@@ -319,7 +523,7 @@ All notable changes are documented here. Versions follow the project's internal 
   observed), and the `P1-capability` refusal now prints the failing daemon's MEASURED counts
   against the REQUIRED floors instead of static shipped-daemon figures (the old "carry 7 and
   35+" disagreed with the reviewer's count of the same daemons — illustrative numbers drift,
-  measurements do not). Suite 85 → 97 checks, controls M1–M11.
+  measurements do not). Suite 85 → 97 checks at landing, controls M1–M11.
   **FF-B1 (false-fence blocker):** the wedged-demote paths now pet their COMPLETED timed-out
   ops — a `timeout` rc 124/137 return IS a completed bounded op (the monitor is alive and
   remediating): the primary's `switch_to_unstaked` rc-124 branches pet BEFORE entering
@@ -348,10 +552,12 @@ All notable changes are documented here. Versions follow the project's internal 
   contradicted the daemons' own derivation) and pins `TimeoutStartSec=90s` (= the systemd
   default) so the part-D no-EXTEND-sent bound is stated where it binds; the honest pet
   call-site count is pinned structurally in the suite: 34 per-op/end-of-cycle call sites in
-  the primary, 35 in the standby (`grep -cE '^[[:space:]]*_watchdog_pet\b'` minus the
-  definition line — the earlier "36 per daemon" figure counted the definition + a comment).
-  **HOLD fixes:** `_consume_fence_markers` now runs FIRST in `startup_checks` — before EVERY
-  fatal gate (binary/keypair/one-arm/numeric/vote-liveness), so a fenced node parks in HOLD
+  the primary, 35 in the standby at landing (`grep -cE '^[[:space:]]*_watchdog_pet\b'` minus the
+  definition line — the earlier "36 per daemon" figure counted the definition + a comment); at this
+  release the same count is 50 and 55 (the grep reads 51 and 56).
+  **HOLD fixes:** `_consume_fence_markers` now runs ahead of EVERY fatal gate of `startup_checks`
+  (binary/keypair/one-arm/numeric/vote-liveness) — second only to the single-instance lock that
+  Block 7 added (B7.2) — so a fenced node parks in HOLD
   instead of looping a fatal exit-1 through OnFailure → fence-breaker → restart (suite-driven,
   both daemons; the HOLD loop sanitizes CHECK_INTERVAL locally since numeric validation now
   runs later); the fence script's HOLD comments and `systemd/README.md` now state the
@@ -367,14 +573,14 @@ All notable changes are documented here. Versions follow the project's internal 
   17+ monitoring/takeover entrypoints as bait and case (7) asserts ZERO fire in HOLD (M6a/M6b
   now red); a primary drive-cycle case covers the primary's first-clean-cycle fenced-demoted
   clear (M7-primary now red); end-of-cycle pet CALL-line counts (5/4) and TOTAL pet call-site
-  counts (35/36 incl. definitions) are pinned structurally — a call deleted or `:`-neutered
+  counts (35/36 incl. definitions at landing; 51/56 at this release) are pinned structurally — a call deleted or `:`-neutered
   under its kept comment trips the pin (the M1b class now red); a full non-delay cycle with
   the №8 lever ON asserts ZERO voter adds (M11x now red); the suite's inertness grep widened
   to socat|NOTIFY_SOCKET|WATCHDOG_USEC|READY=1|WATCHDOG=1|EXTEND_TIMEOUT_USEC in code outside
   the [watchdog] block; the red-log provenance note records that the archived red predates the
   final suite revision (identical per-case outcome set re-verified). The primary's dead-but-
   parity-kept `boolf` drift branch is annotated (twin discipline over dead-code purity).
-  Suite grows 44 → 60 checks; the panel's M1–M11x battery re-run post-fix: 15/15 mutants red.
+  Suite grows 44 → 60 checks at landing; the panel's M1–M11x battery re-run post-fix: 15/15 mutants red.
 - **Block 5.2 — monitor-side fence integration** (installed by nothing; structurally inert on
   every host today — every mechanism activates only under the Block-5 systemd unit, i.e. when
   PID 1 exports `NOTIFY_SOCKET`+`WATCHDOG_USEC`, or when a fence outcome marker exists; both
@@ -407,8 +613,8 @@ All notable changes are documented here. Versions follow the project's internal 
   the takeover delay window + `remove-all` hygiene on episode reset (never while holding
   staked); off/DRY_RUN = zero admin calls (asserted); drift-announced via the new `boolf`
   direction with the live-test-gate wording. New suite
-  `tests/test_monitor_fence_integration.sh` (44 checks; 60 after the fix round — mutation
-  controls, structural pins, twin parity); suite
+  `tests/test_monitor_fence_integration.sh` (44 checks at landing; 60 after the fix round — mutation
+  controls, structural pins, twin parity); at landing too: suite
   count 46 → 47; CI wall-clock pins 19→20/20→21 (the one new site per daemon is the
   `_marker_same_boot` twin — mtime/boot-epoch comparisons are inherently wall-clock, not a
   timer); `test_demote_killafter` census 8 → 9 (the bounded startup-evidence probe).
@@ -429,9 +635,11 @@ All notable changes are documented here. Versions follow the project's internal 
   `systemctl restart --no-block` — the monitor is `Type=notify` with READY gated on its first
   identity read (minutes away mid-replay), so a job-blocking 15 s restart deterministically
   produced a false CRITICAL "UNMONITORED; intervene" on a healthy node (a killed wait is not a
-  canceled job); rc now means ENQUEUE outcome only. Also: single-instance `flock -n` guard
-  (loser logs + exits 0; skipped where flock is absent — macOS harness only); marker precedence
-  enforced in `_write_marker` (never `fenced-demoted` while `fenced-stopped` exists; a stopped
+  canceled job); rc now means ENQUEUE outcome only. Also: single-instance guard, `flock -w "${FENCE_LOCK_WAIT:-30}"`
+  (not `-n`: a concurrent twin waits for the lock; when the wait runs out the script takes the holder to be stuck — it
+  pages, restarts the monitor, fences WITHOUT the lock and exits 1 even when the fence worked; skipped where flock is
+  absent — macOS harness only); marker precedence enforced in `_write_marker` (never `fenced-demoted` while a SAME-BOOT
+  `fenced-stopped` exists — a stale, pre-boot one is removed and the demote written; a stopped
   write supersedes the demoted sibling); per-rung-sized watchdog pets (the repoll rung's real
   ~104 s bound, stop-path pets) made REAL by the fence unit skeleton's new `NotifyAccess=all` +
   derived `TimeoutStartSec=300` (term-by-term arithmetic in the skel; pets = belt, budget =
@@ -440,7 +648,7 @@ All notable changes are documented here. Versions follow the project's internal 
   third-branch fence↔monitor loop named honestly in a comment (loud, nothing stopped; breaker
   is 5.2 monitor-side); frankendancer stop-only posture documented (header +
   `systemd/README.md` — v0.7 limitation, reviewer-packet item). **B3 (test honesty):**
-  `tests/test_fence_script.sh` grows 21 → 41 checks — B1 stale/fresh/unreadable-uptime cases,
+  `tests/test_fence_script.sh` grows 21 → 41 checks at landing — B1 stale/fresh/unreadable-uptime cases,
   B2 enqueue semantics (with a slow-READY systemctl model), and a killer for every panel
   mutation that had survived: unreadable-re-poll-with-live-process abort, stop-UNCONFIRMED
   loudest-page path, delayed re-verify vs a Restart=always resurrection (per-call `proc.seq`
@@ -477,7 +685,7 @@ All notable changes are documented here. Versions follow the project's internal 
   promotion, deliberate:** both scripts enter `SHA256SUMS`, the CI shellcheck list, and
   `run_all.sh`'s parse gate; the `.service.skel` units stay skeletons — **still nothing
   installs anything anywhere**; execution begins only at the v0.7 rollout (`failover arm`,
-  upgrade-then-arm). New suite `tests/test_fence_script.sh` (46 suites): drives the real
+  upgrade-then-arm). New suite `tests/test_fence_script.sh` (46 suites at landing): drives the real
   script as a subprocess behind a fully mocked PATH (scriptable `agave-validator`/`systemctl`/
   `pgrep`/`timeout` stubs, ordered event log; no real systemctl can run), covering the exact
   ladder order (with a swap-mutation control), the stale-write re-poll abort, all three
@@ -506,9 +714,9 @@ All notable changes are documented here. Versions follow the project's internal 
   classification is pure `test -e` on the two canonical unit paths (BOTH present = `real`, fail
   toward the refusal; no systemctl on the startup path), and `none` — no fence unit exists,
   every host today — keeps the check **structurally inert**. No new env knobs. New suite
-  `tests/test_one_arm_state.sh` (45 suites).
+  `tests/test_one_arm_state.sh` (45 suites at landing).
 
-- **Alpenglow feature-gate tripwire** (both daemons, pre-Block-4 №9): agave 4.2.1 ships the entire
+- **Alpenglow feature-gate tripwire, as first built** (both daemons, pre-Block-4 №9; AG-1, above, changed what it reads and what it says, and `docs/NOTIFICATIONS.md` lists the pages of this release): agave 4.2.1 ships the entire
   votor/BLS machinery dormant, runtime-gated on the on-chain `alpenglow` feature — on activation
   `set-identity` demands a vote-history file by default (a direct hit on the deliberate
   no-tower-transfer design) and the whole lastVote observation model needs re-derivation. The
@@ -517,8 +725,7 @@ All notable changes are documented here. Versions follow the project's internal 
   drift-announced; first check immediate) and **page the moment the gate shows pending/active** —
   `pending` at WARN (epoch-boundary slack), `active` on the CRITICAL channel (set-identity then
   fails by default without a vote-history file: the promote path may be inert — the
-  UNKNOWN-IDENTITY class and channel) — with the instruction to re-run the 4.2 audit (Blocks 5–6
-  constants freeze until it passes). The last known state persists in the state file; "unknown"
+  UNKNOWN-IDENTITY class and channel). The last known state persists in the state file; "unknown"
   (both externals unusable) never overwrites it, logs at WARN, retries on a **900 s floor**
   instead of waiting out the full cadence, and **pages after 4 consecutive failures** (repeating
   per `ALERT_THROTTLE`) — a tripwire whose failure mode is silence would be a dead gate that
@@ -549,8 +756,9 @@ All notable changes are documented here. Versions follow the project's internal 
   by the dead-man's switch. Immediately before `set-identity`, a **fresh-proof
   re-check** (one fresh sample compared against the episode's pinned baseline — sound because the
   frozen path never re-bases the pin, so the pair interval is pin→now) must re-confirm FROZEN:
-  VOTING or cannot-determine **aborts** the take, and **zero network calls** sit between the
-  re-check and `set-identity`. An abort is a withdrawn verdict, not a failed take: **no cooldown is
+  VOTING or cannot-determine **aborts** the take, and **zero network calls** sat between the
+  re-check and `set-identity` (amended by Block 6.3.1 — the rule now reads: no network, no alerts;
+  one bounded local veto read allowed — the own-view veto). An abort is a withdrawn verdict, not a failed take: **no cooldown is
   set**, no episode state is dropped — the re-check leaves exactly the state the normal fence paths
   would, and pacing comes from the normal re-anchor/re-pin (on the PRIMARY a VOTING abort is paced
   by the observed-span floor + recovery ladder — its recovery anchor never read the liveness

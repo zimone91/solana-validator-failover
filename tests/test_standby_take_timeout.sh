@@ -18,6 +18,7 @@
 
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+harness_ag_off   # AG-1.2: these worlds test the RETAINED take path - AG mode is shadowed off (tests/lib/harness.sh)
 V068="$HARNESS_DIR/../../0.6.8/failover-v0.6.8/solana-standby-failover.sh"
 
 # run one scenario in a fresh subshell against the given script copy; echo observables
@@ -28,7 +29,7 @@ scenario() {
     set +e
     SRC=$(mktemp); sed -n '1,/MAIN LOOP/p' "$script" > "$SRC"
     # shellcheck disable=SC1090
-    source "$SRC"; rm -f "$SRC"
+    source "$SRC"; rm -f "$SRC"; harness_ag_off
     STAKED_PUBKEY="S1"; UNSTAKED_PUBKEY="U1"; VOTE_PUBKEY="V1"
     SOLANA_PATH="/mock"; LEDGER_PATH="/mock/ledger"; VALIDATOR_TYPE="agave"; VALIDATOR_SERVICE="solana"
     SETIDENTITY_TIMEOUT=15; SELF_FENCE_HARD_STOP="$hardstop"; HARD_STOP_REVERIFY_SECS=0
@@ -53,6 +54,16 @@ scenario() {
     # reachable. No assertion weakened — T-b still requires lfv=9000 (the frozen re-check must not
     # re-base the pin).
     get_staked_liveness_sample(){ echo "9000 99999"; }
+    # v0.7 (Block 6.3.1): take_staked_identity now runs the own-view veto (ONE bounded LOCAL batch read)
+    # right after the fresh re-check. The veto is test_own_view's subject; this suite drives the take's
+    # set-identity mechanics BEHIND it, so the veto is shadowed to "no veto" (return 0) — labeled, not
+    # stubbed at the curl level. The veto is VETO-ONLY: the shadow can only let MORE takes through
+    # here, never fewer, so no assertion below is weakened by it.
+    _own_view_veto(){ return 0; }
+    # fix round 1 (R6 — the panel's T10): the PRE-TAKE own-head sample (take_staked_identity's head) is shadowed
+    # too — unshadowed it issued a REAL curl to the daemon default LOCAL_RPC (127.0.0.1:8899: a live validator's
+    # RPC on a host running one) on every take here; a sample only feeds the veto shadowed above
+    _own_head_sample(){ :; }
     _RC_SETID="$rc_setid"; _RC_ADD="$rc_add"; _RC_REMOVE="$rc_remove"; _APPLIED="$applied"
     timeout(){
         case "$*" in
@@ -158,7 +169,7 @@ if [[ -f "$V068" ]]; then
     [[ $v8 -eq 0 ]] && ok "(T-g) v0.6.8 take/give-back had 0 'timeout' bounds → H4 genuinely new" \
                     || bad "(T-g) v0.6.8 already bounded ($v8)"
 else
-    ok "(T-g) v0.6.8 baseline not present to compare (skipped)"
+    echo "  ⏭ SKIP: (T-g) v0.6.8 baseline not present to compare"
 fi
 
 results_banner

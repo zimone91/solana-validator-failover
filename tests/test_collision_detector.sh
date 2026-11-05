@@ -128,7 +128,7 @@ if [[ -f "$V068P" ]]; then
     [[ $v8 -eq 0 ]] && ok "(C-g1) v0.6.8 primary has 0 check_identity_collision refs → M5 genuinely new" \
                     || bad "(C-g1) v0.6.8 already had it ($v8)"
 else
-    ok "(C-g1) v0.6.8 baseline not present to compare (skipped)"
+    echo "  ⏭ SKIP: (C-g1) v0.6.8 baseline not present to compare"
 fi
 np=$(sed -n '/MAIN LOOP/,$p' "$PRIMARY" | grep -c 'check_identity_collision')
 ns=$(sed -n '/MAIN LOOP/,$p' "$STANDBY" | grep -c 'check_identity_collision')

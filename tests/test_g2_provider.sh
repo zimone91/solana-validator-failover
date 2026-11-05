@@ -132,8 +132,8 @@ drive_g2() {
         # endpoint does (design record verify-rpc-batch-and-churn.md, private tree): a 2-element
         # ARRAY echoing the ids the DAEMON chose — never ids the test invented.
         # SLOT_RATE_*: the vantage's confirmed head advances rate x elapsed sim seconds from its
-        # base. 2 is a little under mainnet's ~2.5 slots/s and comfortably over the floor; 0 is a
-        # FROZEN/replayed head (the slot-advance red).
+        # base. 2 is a little under the ASSUMED 2.5 slots/s (mainnet MEASURED ≈3.7 on 2026-09-26)
+        # and comfortably over the floor; 0 is a FROZEN/replayed head (the slot-advance red).
         SLOT_RATE_A=2; SLOT_RATE_B=2
         # RAW_*: verbatim batch-response override (the batch-shape / id-echo reds). @IDA@/@IDB@/
         # @SLOT@ are substituted with what the DAEMON actually sent/what the stub actually served.
@@ -283,8 +283,9 @@ if [[ "$(field "$r" warnct)" == "1" && "$(field "$r" lastwarn)" == *"SHARED VANT
    && [[ "$(field "$r" lastwarn)" == *"G2_VANTAGE_B == TIER3_RPC by identical normalized URL"* ]] \
    && [[ "$(field "$r" lastwarn)" == *"BOTH halves of the double-sign condition"* && "$(field "$r" lastwarn)" == *"does NOT hold on this host"* ]] \
    && [[ "$(field "$r" lastwarn)" == *"third endpoint in a SEPARATE failure domain"* && "$(field "$r" pages)" == "0" ]] \
+   && [[ "$(field "$r" lastwarn)" == *"that restores additivity for verified-demote ONLY: watchdog-elapsed's silence and the vote-FROZEN observation stay one TIER2/TIER3 input on every host"* ]] \
    && [[ "$(field "$r" reg)" == "1" && -z "$(field "$r" dis)" ]]; then
-    ok "(1h) DEFAULT (tier-derived) vantages → ONE startup log_warn naming the MEASURED overlap per pair ('G2_VANTAGE_A == TIER2_RPC by identical normalized URL', same for B/TIER3), the consequence (one compromised vantage supplies BOTH halves of the double-sign condition; additivity does NOT hold) and the fix (a third endpoint in a separate failure domain) — a WARN, not a page (pages=0), and the provider stays REGISTERED and enabled: degraded, never disabled"
+    ok "(1h) DEFAULT (tier-derived) vantages → ONE startup log_warn naming the MEASURED overlap per pair ('G2_VANTAGE_A == TIER2_RPC by identical normalized URL', same for B/TIER3), the consequence (one compromised vantage supplies BOTH halves of the double-sign condition; additivity does NOT hold) and the fix (a third endpoint in a separate failure domain) SCOPED to verified-demote (6.3 fix round, X2: watchdog-elapsed's silence stays one TIER2/TIER3 input on every host) — a WARN, not a page (pages=0), and the provider stays REGISTERED and enabled: degraded, never disabled"
 else
     bad "(1h) $r"
 fi
@@ -1177,8 +1178,11 @@ case_posture_none() {
     echo "info=$LASTINFO"
 }
 r=$(G2PK="" drive_g2 "$STANDBY" case_posture_none | tail -1)
-if [[ "$(field "$r" info)" == *"armed spare PAIRED"* && "$(field "$r" info)" == *"proof providers registered: NONE"* ]]; then
-    ok "(7f) PAIRED + unconfigured G2 → the posture line says 'proof providers registered: NONE' (measured, claim=check — never the old static text)"
+# Block 6.3 moved this pin, deliberately: the classification that prints PAIRED is the one that
+# registers watchdog-elapsed, so a PAIRED spare with G2 unconfigured now lists exactly that provider
+# (the 6.2-era 'NONE' is unreachable on a PAIRED line; the ':-NONE' fallback stays as the defense).
+if [[ "$(field "$r" info)" == *"armed spare PAIRED"* && "$(field "$r" info)" == *"proof providers registered: watchdog-elapsed;"* ]]; then
+    ok "(7f) PAIRED + unconfigured G2 → the posture line prints the MEASURED registry 'proof providers registered: watchdog-elapsed' — no verified-demote (unconfigured), the attested-time provider registered by the same classification that prints PAIRED (claim=check — never a static text)"
 else
     bad "(7f) $r"
 fi

@@ -4,7 +4,7 @@
 # with N6 SILENTLY OFF (egress-only hole open). startup_checks now REFUSES to start (fatal) when
 # PRIMARY_SELF_FENCE=true AND both N6 knobs > 0 AND VOTE_PUBKEY is empty — in ANY recovery mode.
 #
-# Drives the REAL startup_checks with its prerequisites mocked (validate_keypair_file, ledger/tower
+# Drives the REAL startup_checks with its prerequisites mocked (validate_keypair_file, ledger
 # detection, validator args) and a sentinel `validate_numeric_config -> exit 99` placed just past the N7
 # region (so we never reach the live RPC tier-test + the validator-wait loop). Asserts:
 #   empty VOTE_PUBKEY + N6 armed (32/20)      → refuses: exit 1 with the N6/VOTE_PUBKEY message
@@ -30,7 +30,7 @@ n7_run() {
   SELF_FENCE_ISOLATION_SECS=30; SELF_FENCE_MAX_BEHIND=0; SELF_FENCE_NOANSWER_SECS=30
   SELF_FENCE_VOTE_LAG_SLOTS="$1"; SELF_FENCE_VOTE_LAG_SECS="$2"; VOTE_PUBKEY="$3"
   # prerequisite mocks (so startup_checks flows to the N7 region without spurious earlier exits)
-  detect_ledger_path(){ LEDGER_PATH=/tmp/led; }; detect_tower_base(){ :; }
+  detect_ledger_path(){ LEDGER_PATH=/tmp/led; }
   get_validator_args(){ echo ""; }                     # no --identity → startup-identity check skipped
   validate_keypair_file(){ [[ "$1" == "$STAKED_KEYPAIR" ]] && echo "STAKEDPK" || echo "UNSTAKEDPK"; }   # distinct pubkeys (by path; runs in $())
   log(){ :;}; log_info(){ :;}; log_warn(){ :;}; alert(){ :;}; send_telegram(){ return 0;}; send_webhook(){ :;}

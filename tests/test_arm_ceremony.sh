@@ -70,6 +70,18 @@
 #        failure / verify disagreement → REFUSE[INSTALL-legacy] + manual commands, no enable,
 #        no token; absent → zero legacy stop/disable events (both names still PROBED);
 #        the unit FILE stays on disk (operator cleanup, said aloud)
+#   (16) P0 state directory (Block 6.3.1 D5 — the daemon's R-SYM rule mirrored): a symlinked
+#        ARM_STATE_DIR, a symlinked ancestor, every non-resolved spelling (trailing '/', '//', '/./',
+#        '/../', relative) and a FILE at the path → REFUSE[STATE-dir-*] before any write or install;
+#        a missing directory is created and passes; placement; arm ↔ daemon agreement on 7 spellings
+#   (17) P6-ledger (AG-3.5, D0 F3): the fence reads LEDGER_PATH from the env file ONLY - a REAL arm with it empty / unset /
+#        a file / a missing path → REFUSE[P6-ledger] (the D0-F3 sentence verbatim, the fix, BEFORE the probe: nothing installed);
+#        a valid directory passes; the PAGE-ONLY arm WARNS and proceeds; the standby env is the one checked on ARM_ROLE=standby
+#   (18) ExecStop= (AG-3.5, "(12e) option 1"): the skeleton's line is carried byte-exact into the rendered monitor unit and
+#        re-verified by the arm; its shape is what systemd parses (one quoted word, $$ escapes, no %, no backslash); the line is
+#        RUN against a bash that drops TERMs - 2 TERMs for a process that obeys the second, 3 and exit 0 for one that never obeys,
+#        none for a pid that is gone or unknown; 5 mutants of the line each red; a skeleton without it and a renderer that drops
+#        it → REFUSE[RENDER-verify]
 #   (13) reuse parity: _validator_pid + _detect_validator_unit BYTE-IDENTICAL arm ↔ fence
 #   (14) bash -n + shellcheck (if installed)
 #   (B)  boundary grep-proof: canonical /etc + /run/systemd paths untouched by the whole run;
@@ -79,7 +91,9 @@
 #   (M)  mutation controls (each refuse-gate neutered → its case would go RED): M1 patsub, M2
 #        socat, M3 identity, M4 probe-marker, M5 verify, M6 pre-probe stale clean (panel M-A),
 #        M7 capability, M8 unverifiable-identity, M9 sibling, M10 render-verify tripwire,
-#        M11 legacy-retire (neutered → the dual-monitor arm completes, observed).
+#        M11 legacy-retire (neutered → the dual-monitor arm completes, observed), M12 P0
+#        state-dir symlink (neutered → the gen counter lands through the link, observed).
+#        M13-M16 P6-ledger (refusal neutered; page-only made a refusal; empty accepted; a non-directory accepted).
 #        Survivors named at the end.
 
 set +e
@@ -206,20 +220,47 @@ cp "$STUB_DIR"/* "$STUB_NOFLOCK/"; rm -f "$STUB_NOFLOCK/flock"
 # and tr (solana-keygen stub). Everything else the arm executes is a bash builtin (printf,
 # command, exec, shopt, cd, pwd, [[ ]]), an absolute path ($BASH, $SOLANA_PATH/<keygen>), or an
 # actuator that lives ONLY in the stub dirs (systemctl, timeout, sleep, pgrep, socat, flock).
+# The REMOVAL tools (6.3.1 fix round 4 — the delta panel 3's TS3-16H-RMDIR): rm, rmdir and unlink are provisioned as
+# LOGGING WRAPPERS with the host's real binary behind each (every call appended to $MOCK_DIR/rm.calls, then exec'd), not
+# as bare symlinks — the arm uses only rm today; any removal it runs through PATH is REAL here as on a host (a re-added
+# rmdir cleanup succeeds here too, instead of failing as "command not found"), and (16h) asserts that none ran during a
+# P0 refusal. The other tools a removal or a rewrite could use are REAL here too (6.3.1 fix round 6 — the delta panel 5's
+# TS5-16H-DYN-TOOLS: a `find -delete` or an interpreter's unlink failed as "command not found" in the test and ran on a
+# host): find and ln join cp and mv (the arm uses none of find / ln), and python3 / perl are provisioned wherever the host
+# has them (ARM_OPT_TOOLS — named in (16h)'s PASS line).
 TOOLDIR="$STUB_PARENT/tools"
 mkdir -p "$TOOLDIR"
-ARM_REAL_TOOLS="awk basename cat chmod cksum cp cut date dirname grep head hostname mkdir mv readlink rm sed tail touch tr"
+ARM_REAL_TOOLS="awk basename cat chmod cksum cp cut date dirname find grep head hostname ln mkdir mv readlink rm rmdir sed tail touch tr unlink"
+ARM_OPT_TOOLS="python3 perl"
 for _t in $ARM_REAL_TOOLS; do
     _tp=$(command -v "$_t" 2>/dev/null)
     if [[ -z "$_tp" || ! -x "$_tp" ]]; then
         echo "  ❌ FAIL: TOOLDIR provisioning: no real '$_t' on the host PATH — the suite cannot build its scenario PATH"
         exit 1
     fi
-    ln -s "$_tp" "$TOOLDIR/$_t"
+    case " rm rmdir unlink " in
+        *" $_t "*)
+            cat > "$TOOLDIR/$_t" <<EOS
+#!/bin/sh
+printf '%s %s\n' '$_t' "\$*" >> "\${MOCK_DIR:-/nonexistent}/rm.calls" 2>/dev/null
+exec '$_tp' "\$@"
+EOS
+            chmod +x "$TOOLDIR/$_t" ;;
+        *) ln -s "$_tp" "$TOOLDIR/$_t" ;;
+    esac
+done
+arm_opt_have=""
+for _t in $ARM_OPT_TOOLS; do
+    _tp=$(command -v "$_t" 2>/dev/null)
+    [[ -n "$_tp" && -x "$_tp" ]] && { ln -s "$_tp" "$TOOLDIR/$_t"; arm_opt_have="$arm_opt_have $_t"; }
 done
 
 # ── scenario plumbing ───────────────────────────────────────────────────────────────────────────
 MOCK_PARENT=$(mktemp -d "${TMPDIR:-/tmp}/arm-mocks.XXXXXX")
+# v0.7 (Block 6.3.1 D5): the arm now REFUSES a state directory that is not its own resolved path
+# (P0, the daemon's R-SYM rule mirrored) — so every mock root is spelled RESOLVED: macOS's TMPDIR sits
+# under the /var -> /private/var symlink and ends in '/' (a '//' in the joined path)
+MOCK_PARENT=$(CDPATH='' cd -P -- "$MOCK_PARENT" && pwd -P)
 # a v0.7-SHAPED daemon fixture: patsub guard + the WATCHDOG CAPABILITY markers P1 requires
 # (Block 5.3 fix round — the panel armed a v0.6.10 daemon: guard present, ZERO petting lines;
 # P1 now requires _watchdog_active() + ≥1 READY=1 emission + ≥10 _watchdog_pet sites, all
@@ -238,7 +279,7 @@ write_daemon() {
 new_mock() {
     MOCK_DIR=$(mktemp -d "$MOCK_PARENT/m.XXXXXX")
     mkdir -p "$MOCK_DIR/etc-systemd" "$MOCK_DIR/run-systemd" "$MOCK_DIR/opt" \
-             "$MOCK_DIR/markers" "$MOCK_DIR/state"
+             "$MOCK_DIR/markers" "$MOCK_DIR/state" "$MOCK_DIR/ledger"
     EVENTS="$MOCK_DIR/events"; : > "$EVENTS"
     echo 0 > "$MOCK_DIR/proc"
     touch "$MOCK_DIR/probe.fires"          # default: the wiring works (probe marker appears)
@@ -259,6 +300,7 @@ write_env() {
         echo "UNSTAKED_KEYPAIR=\"$MOCK_DIR/opt/unstaked.json\""
         echo 'UNSTAKED_PUBKEY="UNSTAKEDPUBKEY42"'
         echo "SOLANA_PATH=\"$STUB_DIR\""
+        echo "LEDGER_PATH=\"$MOCK_DIR/ledger\""    # AG-3.5 P6-ledger: a REAL arm needs the ledger directory in the env file (the fence cannot detect it)
         echo 'VALIDATOR_UNIT="sol-test.service"'
         echo 'EXPECTED_PRIMARY_SELF_FENCE_SECS=30'
         echo 'SELF_FENCE_MARGIN_SECS=30'
@@ -817,6 +859,7 @@ printf 'UNSTAKEDPUBKEY42' > "$WEIRD/unstaked.json"
     echo "UNSTAKED_KEYPAIR=\"$WEIRD/unstaked.json\""
     echo 'UNSTAKED_PUBKEY="UNSTAKEDPUBKEY42"'
     echo "SOLANA_PATH=\"$STUB_DIR\""
+    echo "LEDGER_PATH=\"$MOCK_DIR/ledger\""
     echo 'VALIDATOR_UNIT="sol-test.service"'
 } > "$WEIRD/failover.env"
 {
@@ -898,11 +941,22 @@ else
     bad "(11c) token line=$t_line ARMED line=$a_line"
 fi
 T11_TOKEN="$tok"
+# (11d) the gen write fails → the arm REFUSES to complete. Root-proof sabotage of exactly ONE move: an
+# `mv` wrapper (fronting the real one on this run's PATH) fails the move onto the gen counter and runs
+# every other mv for real. (Until Block 6.3.1 the sabotage was a FILE at ARM_STATE_DIR; P0 now refuses
+# that before anything is installed — (16e) — so the TOKEN-persist write branch gets its own sabotage.)
+STUB_MVFAIL="$STUB_PARENT/mvfail"; mkdir -p "$STUB_MVFAIL"; cp "$STUB_DIR"/* "$STUB_MVFAIL/"
+cat > "$STUB_MVFAIL/mv" <<STUB
+#!/bin/sh
+for a in "\$@"; do last="\$a"; done
+case "\$last" in */arm-generation) echo "mv-sabotaged \$*" >> "\$EVENTS"; exit 1 ;; esac
+exec "$TOOLDIR/mv" "\$@"
+STUB
+chmod +x "$STUB_MVFAIL/mv"
 new_mock
-rm -rf "$MOCK_DIR/state"; : > "$MOCK_DIR/state"      # ARM_STATE_DIR is a FILE → gen write must fail (root-proof sabotage)
-run_arm
-if [[ "$RC" == "1" ]] && grep -q 'REFUSE\[TOKEN-persist\]' "$MOCK_DIR/out" && [[ -z "$(token_line)" ]] && ! grep -q 'ceremony complete' "$MOCK_DIR/out"; then
-    ok "(11d) token cannot persist → arm REFUSES to complete (exit 1, no token, no ARMED line; re-pair is ceremony)"
+ARM_PATH="$STUB_MVFAIL" run_arm
+if [[ "$RC" == "1" ]] && grep -q 'REFUSE\[TOKEN-persist\]' "$MOCK_DIR/out" && grep -q 'could not persist the bumped config-generation counter' "$MOCK_DIR/out" && grep -q '^mv-sabotaged ' "$EVENTS" && [[ -z "$(token_line)" ]] && ! grep -q 'ceremony complete' "$MOCK_DIR/out"; then
+    ok "(11d) token cannot persist (the gen move fails) → arm REFUSES to complete (exit 1, no token, no ARMED line; re-pair is ceremony)"
 else
     bad "(11d) rc=$RC token=$(token_line) out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
 fi
@@ -945,8 +999,10 @@ fi
 # ACTIVE + ENABLED → the ceremony completed a full REAL arm (token printed, new monitor enabled)
 # with ZERO legacy stop/disable events — two Restart=always monitor daemons on one host, same
 # env + state file, racing set-identity (scratchpad/red-block53-round2.log). The fix is a
-# ceremony step, NOT a daemon-side flock (a notify monitor losing that race never goes READY →
-# start timeout → OnFailure → a REAL fence on a healthy validator — the reviewer's trace).
+# ceremony step, NOT a daemon-side flock (a notify monitor losing that race and exiting before READY=1 ends
+# `failed` → OnFailure → a REAL fence on a healthy validator — the reviewer's trace). Block 7 (B7.2) later added the
+# daemons' lock as a guard for a hand-started copy; it is safe under the armed unit because a refused copy sends
+# READY=1 before its exit 3 and the monitor skeleton counts exit 3 as success (SuccessExitStatus=3).
 echo ""; echo "─── (15) legacy monitor: stop+disable+VERIFY before the new enable; refuse on failure; absent → untouched ───"
 new_mock
 printf '[Service]\nExecStart=/opt/solana-failover/solana-primary-failover.sh\nRestart=always\n' > "$MOCK_DIR/etc-systemd/solana-failover.service"
@@ -1019,6 +1075,466 @@ else
     bad "(15h) probes: $(grep 'is-active' "$EVENTS" 2>/dev/null | tr '\n' ' ')"
 fi
 
+# ── (16) P0: the state directory must be its own resolved path (Block 6.3.1 D5) ──────────────────
+# The spare daemon's R-SYM rule (6.3 fix round 5) mirrored at the arm: a pairing token whose directory
+# is reached through a symlink never proves (watchdog-elapsed keys the token FILE's identity; a
+# directory re-pointed away and back leaves it untouched). The arm refuses to write (spare:
+# pairing-token; holder: arm-generation) into a state directory that does not canonicalize to itself,
+# BEFORE anything is written or installed. Pre-fix red (the 6.3 build): every case below ARMED —
+# the symlinked directory got the gen counter (the token, on a spare) written THROUGH the link.
+echo ""; echo "─── (16) P0: symlinked / non-canonical / non-directory ARM_STATE_DIR → REFUSE before any write or install ───"
+p0_refused() {   # $1 = gate id; the refusal happened before ANY install step and printed no token
+    [[ "$RC" == "1" ]] && grep -q "REFUSE\[$1\]" "$MOCK_DIR/out" && [[ -z "$(token_line)" ]] \
+        && ! grep -q '^systemctl daemon-reload' "$EVENTS" && [[ -z "$(ls "$MOCK_DIR/etc-systemd" 2>/dev/null)" ]] \
+        && ! grep -q 'precondition 1 OK' "$MOCK_DIR/out"
+}
+# Every P0 refusal below (16a)–(16e), (16g)'s refusals and (16h)'s own) also asserts that it CHANGED NOTHING the scenario
+# made (6.3.1 fix round 5 — the delta panel 4's T4-16H-CLOSURE; fix round 6 — the delta panel 5's TS5-16H-DYN-TOOLS: a
+# truncation kept the type and passed; fix round 7 — the delta panel 6's CEN6-16H-CHANGED: a chmod through the link, or a
+# new file behind it, passed): p0_snap lists every path under the scenario's directory right before the run (find, not
+# following links) with its type — a link with its target, a file with its size and content (cksum), a directory — and
+# its mode, uid and gid (`ls -ldn`: the mode string, the numeric owner and group — BSD, GNU and busybox print them alike);
+# p0_lost names every path missing, NEW (the run's own output file excepted, and P0_NEW_OK's: the two (16h) cases that leave
+# a path by design — the partial mkdir's newdir, and the race's link with the tail mkdir -p created inside its target), of
+# another type, re-pointed, with other
+# content, or with another mode or owner afterwards (the harness's own logs, events and rm.calls, by type, mode and owner
+# only: the stubs write them). NOT compared: mtime and atime — a `touch` of an existing path is not seen. p0_rmcalls names
+# any rm / rmdir / unlink the arm ran through PATH (TOOLDIR's logging wrappers). The fixture files carry content, so a
+# truncation shows.
+p0_state() {   # p0_state <out> — "PATH<TAB>L <target>|D|F <crc> <size><TAB><mode> <uid>:<gid>" for every path under MOCK_DIR, sorted (a sentinel first)
+    { printf '0 0 #\n'; find "$MOCK_DIR" -type f ! -path "$MOCK_DIR/events" ! -path "$MOCK_DIR/rm.calls" -exec cksum {} + 2>/dev/null; } > "$1.sums"
+    find "$MOCK_DIR" -exec ls -ldn {} + > "$1.modes" 2>/dev/null
+    { printf '#\t#\n'; find "$MOCK_DIR" -print 2>/dev/null | while IFS= read -r _p; do
+        if [[ -L "$_p" ]]; then printf '%s\tL %s\n' "$_p" "$(readlink "$_p")"; elif [[ -d "$_p" ]]; then printf '%s\tD\n' "$_p"; else printf '%s\tF\n' "$_p"; fi
+      done; } | awk -F'\t' -v m="$MOCK_DIR" 'FNR == 1 { fi++ }
+                          fi == 1 { c = $0; sub(/ .*/, "", c); r = $0; sub(/^[^ ]* /, "", r); z = r; sub(/ .*/, "", z); q = r; sub(/^[^ ]* /, "", q); S[q] = c " " z; next }
+                          fi == 2 { i = index($0, m); if (!i) next; p = substr($0, i); sub(/ -> .*/, "", p); split($0, f, " "); M[p] = substr(f[1], 1, 10) " " f[3] ":" f[4]; next }
+                          $1 == "#" { print; next }
+                          { md = ($1 in M) ? M[$1] : "?" }
+                          $2 == "F" { print $1 "\tF " (($1 in S) ? S[$1] : "-") "\t" md; next } { print $0 "\t" md }' "$1.sums" "$1.modes" - | sort > "$1"
+}
+p0_snap() { : > "$MOCK_DIR/rm.calls"; p0_state "$MOCK_PARENT/p0.snap"; }
+p0_lost() {   # every path of the snapshot missing, of another type, re-pointed, with other content or another mode / owner; every path new
+    p0_state "$MOCK_PARENT/p0.now"
+    awk -F'\t' -v m="$MOCK_DIR/" -v nok=" ${P0_NEW_OK:-} " 'FNR == 1 { fi++ }
+        fi == 1 { N[$1] = $2; T[$1] = $3; next } $1 == "#" { next }
+        { W[$1] = 1 }
+        !($1 in N) { o = o " " substr($1, length(m) + 1); next }
+        N[$1] != $2 { o = o " " substr($1, length(m) + 1) (substr(N[$1], 1, 1) == substr($2, 1, 1) ? (substr($2, 1, 1) == "L" ? "(re-pointed)" : "(content)") : "(type)"); next }
+        T[$1] != $3 { o = o " " substr($1, length(m) + 1) "(mode/owner " $3 " -> " T[$1] ")" }
+        END { for (p in N) if (p != "#" && !(p in W) && p != m "out" && !index(nok, " " substr(p, length(m) + 1) " ")) o = o " " substr(p, length(m) + 1) "(new)"; printf "%s", o }' "$MOCK_PARENT/p0.now" "$MOCK_PARENT/p0.snap"
+}
+p0_rmcalls() { [[ -s "$MOCK_DIR/rm.calls" ]] && { printf ' [removal ran: %s]' "$(tr '\n' ';' < "$MOCK_DIR/rm.calls" | cut -c1-160)"; return 0; }; return 1; }
+p0_kept() { [[ -z "$(p0_lost)" ]] && ! p0_rmcalls >/dev/null; }   # nothing the scenario made is gone, no removal ran
+p0_why() { printf 'lost=[%s]%s' "$(p0_lost)" "$(p0_rmcalls)"; }
+# (16a) the state directory itself is a symlink to a real directory
+new_mock
+mkdir -p "$MOCK_DIR/real-state"; rm -rf "$MOCK_DIR/state"; ln -s "$MOCK_DIR/real-state" "$MOCK_DIR/state"
+p0_snap; run_arm
+if p0_refused STATE-dir-symlink && grep -q "resolves to $MOCK_DIR/real-state" "$MOCK_DIR/out" && grep -q "FIX: point ARM_STATE_DIR at the resolved path — ARM_STATE_DIR=$MOCK_DIR/real-state" "$MOCK_DIR/out" \
+      && [[ ! -e "$MOCK_DIR/real-state/arm-generation" ]] && p0_kept; then
+    ok "(16a) ARM_STATE_DIR is a symlink → REFUSE[STATE-dir-symlink] naming the resolved path and the exact fix (ARM_STATE_DIR=<resolved> + the spare's PROOF_STATE_DIR), exit 1 before ANY install step; no arm-generation written through the link, and every path under the scenario's directory — the link, its target, what is behind it — is still there, none is new, each with its type, link target, size, content, mode, uid and gid (not compared: mtime, atime), and no rm / rmdir / unlink ran"
+else
+    bad "(16a) rc=$RC gen=$(ls "$MOCK_DIR/real-state" 2>/dev/null | tr '\n' ' ') $(p0_why) out: $(grep -E 'REFUSE|FIX' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-400)"
+fi
+# (16b) a symlinked ANCESTOR (the directory itself is real)
+new_mock
+mkdir -p "$MOCK_DIR/real-anc/state"; ln -s "$MOCK_DIR/real-anc" "$MOCK_DIR/anc"
+p0_snap; run_arm ARM_STATE_DIR="$MOCK_DIR/anc/state"
+if p0_refused STATE-dir-symlink && grep -q "resolves to $MOCK_DIR/real-anc/state" "$MOCK_DIR/out" && p0_kept; then
+    ok "(16b) a symlinked ANCESTOR (ARM_STATE_DIR=…/anc/state, anc → real-anc) → REFUSE[STATE-dir-symlink] — the whole path must resolve to itself, as in the daemon; no path under the scenario's directory missing, new, or changed in type, target, size, content, mode or owner"
+else
+    bad "(16b) rc=$RC $(p0_why) out: $(grep -E 'REFUSE|precondition 0' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-300)"
+fi
+# (16c) spellings that are not the resolved path — each refused (the daemon's list) with their OWN code,
+# STATE-dir-spelling (6.3.1 fix round 1, R7 — the panel's CC-7: they were refused as "symlink" though
+# none involves one); a LEADING '//' is kept by pwd -P as its own root on Linux (and dropped on macOS) —
+# asserted only as "agrees with the daemon" in (16g)
+sp_ct=0; sp_red=0; sp_miss=""
+for sp in "$MOCK_DIR/state/" "$MOCK_DIR//state" "$MOCK_DIR/./state" "$MOCK_DIR/state/../state"; do
+    sp_ct=$((sp_ct + 1)); new_mock
+    p0_snap; run_arm ARM_STATE_DIR="$sp"
+    if p0_refused STATE-dir-spelling && p0_kept; then sp_red=$((sp_red + 1)); else sp_miss="$sp_miss [$sp rc=$RC $(grep -o 'REFUSE\[[^]]*\]' "$MOCK_DIR/out" | head -1) $(p0_why)]"; fi
+done
+new_mock; p0_snap
+( cd "$MOCK_DIR" && env -i PATH="$STUB_DIR:$TOOLDIR" EVENTS="$EVENTS" MOCK_DIR="$MOCK_DIR" ARM_SYSTEMD_DIR="$MOCK_DIR/etc-systemd" ARM_RUNTIME_DIR="$MOCK_DIR/run-systemd" ARM_INSTALL_DIR="$MOCK_DIR/opt" FENCE_MARKER_DIR="$MOCK_DIR/markers" ARM_STATE_DIR="state" "$BASH_BIN" "$ARM" > "$MOCK_DIR/out" 2>&1 ); RC=$?
+sp_ct=$((sp_ct + 1)); if p0_refused STATE-dir-spelling && p0_kept; then sp_red=$((sp_red + 1)); else sp_miss="$sp_miss [relative rc=$RC $(grep -o 'REFUSE\[[^]]*\]' "$MOCK_DIR/out" | head -1) $(p0_why)]"; fi
+if [[ "$sp_red" == "$sp_ct" ]]; then
+    ok "(16c) every non-resolved spelling REFUSED[STATE-dir-spelling] ($sp_ct/$sp_ct: trailing '/', internal '//', '/./', '/../', a relative path) — the daemon's exact rule, its own code (nothing on the filesystem is wrong, the value is), before any install; no path under the scenario's directory missing, new, or changed in type, target, size, content, mode or owner"
+else
+    bad "(16c) $((sp_ct - sp_red))/$sp_ct spellings not refused as STATE-dir-spelling:$sp_miss"
+fi
+# (16h) NOTHING IS CREATED by a refusal by spelling or by the existing ancestor (6.3.1 fix round 1, R7 — the panel's
+# CC-7: P0 ran mkdir -p BEFORE canonicalizing, so every refused path below was left on disk — MEASURED red on the 6.3.1
+# build: new1/sub, rel/state, s2, s3, s4 created under their refused spellings, and real/newsub and realanc/newsub
+# created THROUGH the links). Each case: the refusal code, the refused directory (or its resolved target) absent
+# afterwards, and NO removal command run (below).
+# P0 CHANGES NOTHING it compares — three halves, each able to go red (red first: the delta panel 3's TS3-16H-RMDIR mutants
+# H1–H4, H6, H6b, the delta panel 4's T4-16H-CLOSURE mutants A1–A3, the delta panel 5's TS5-16H-DYN-TOOLS F1, F2, T1, T4,
+# and the delta panel 6's CEN6-16H-CHANGED AR1 (chmod 700 through the link), AR7 (chmod 600 of the operator's file at
+# ARM_STATE_DIR) and AR9 (a new file written behind the link)):
+#   - DYNAMIC: every P0 refusal ((16a)–(16e), (16g)'s refusals, each case here) leaves every path its scenario made as it
+#     was and adds none (p0_snap / p0_lost — each path's existence and type, a link's target, a file's size and content,
+#     every path's mode, uid and gid: the link, the dangling link, the file at ARM_STATE_DIR, the victim tree; the harness's
+#     two logs by type, mode and owner only; a path that appears under the scenario's directory, the run's output file
+#     excepted) and ran no rm / rmdir / unlink through PATH (logging wrappers, the real binary behind each). What the arm
+#     can run to change them is REAL on its scenario PATH: rm / rmdir / unlink (logged), mv, cp, ln, find, chmod, touch,
+#     python3 and perl where the host has them, any absolute-path tool, and the shell's own redirections — a removal, a
+#     move, a re-pointed link, a truncation, a mode change or a new file through any of those, on the exercised paths, is
+#     red; an mtime or atime change alone (a `touch` of an existing path) is not compared;
+#   - STATIC: reads bash's own parse of the arm (bp_parse — a `function`-keyword or one-line helper printed like any other)
+#     and checks that P0 and every function it calls, transitively (_arm_cleanup_probe excepted — reached only through
+#     _arm_refuse, and its first statement returns unless the probe was rendered, which happens after P0), with quotes and
+#     backslashes deleted, hold no rm / rmdir / unlink word, in code or text; and that bash sourcing the arm (all but its
+#     `main "$@"`) defines exactly the functions the parse lists;
+#   - the RACE (the delta panel 3's RM-3): a symlink raced onto an intermediate component between the ancestor check and
+#     mkdir -p makes mkdir -p create the tail INSIDE the link's target, and the post-mkdir check refuses
+#     REFUSE[STATE-dir-symlink] — nothing under the link's target may be removed (the created tail included: it stays,
+#     named in docs/SAFETY.md's local-host threat model), and the FIX line says to stop and investigate a link the operator
+#     did not create before adopting its target.
+# LIMIT, named: the static half reads the three words only (a removal through another tool — find -delete, mv away, an
+# interpreter's unlink — or through a command word assembled at run time is the dynamic half's, on the exercised paths); a
+# change through a tool the scenario PATH does not provision (truncate, dd, shred, rsync, python3 / perl on a host without
+# them, …) fails there as "command not found" and is not seen; a change on a P0 path no case here takes, spelled past the
+# three words, is not seen; an mtime or atime change alone is not compared (a `touch` of an existing path, or a file rewritten
+# with the same bytes, mode and owner, is not seen).
+cr_ct=0; cr_ok=0; cr_miss=""
+p0_nothing_created() {   # $1 = code, $2.. = paths that must NOT exist afterwards
+    local _code="$1" _x; shift
+    cr_ct=$((cr_ct + 1))
+    if p0_refused "$_code"; then
+        for _x in "$@"; do [[ -e "$_x" || -L "$_x" ]] && { cr_miss="$cr_miss [$_code: $_x CREATED]"; return 0; }; done
+        p0_kept || { cr_miss="$cr_miss [$_code: $(p0_why)]"; return 0; }
+        cr_ok=$((cr_ok + 1))
+    else
+        cr_miss="$cr_miss [$_code: rc=$RC $(grep -o 'REFUSE\[[^]]*\]' "$MOCK_DIR/out" | head -1)]"
+    fi
+}
+new_mock; p0_snap; run_arm ARM_STATE_DIR="$MOCK_DIR/new1/sub/"; p0_nothing_created STATE-dir-spelling "$MOCK_DIR/new1"
+new_mock; p0_snap; run_arm ARM_STATE_DIR="$MOCK_DIR/s2//x"; p0_nothing_created STATE-dir-spelling "$MOCK_DIR/s2"
+new_mock; p0_snap; run_arm ARM_STATE_DIR="$MOCK_DIR/s3/./x"; p0_nothing_created STATE-dir-spelling "$MOCK_DIR/s3"
+new_mock; p0_snap; run_arm ARM_STATE_DIR="$MOCK_DIR/s4/y/../x"; p0_nothing_created STATE-dir-spelling "$MOCK_DIR/s4"
+new_mock; p0_snap
+( cd "$MOCK_DIR" && env -i PATH="$STUB_DIR:$TOOLDIR" EVENTS="$EVENTS" MOCK_DIR="$MOCK_DIR" ARM_SYSTEMD_DIR="$MOCK_DIR/etc-systemd" ARM_RUNTIME_DIR="$MOCK_DIR/run-systemd" ARM_INSTALL_DIR="$MOCK_DIR/opt" FENCE_MARKER_DIR="$MOCK_DIR/markers" ARM_STATE_DIR="rel/state" "$BASH_BIN" "$ARM" > "$MOCK_DIR/out" 2>&1 ); RC=$?
+p0_nothing_created STATE-dir-spelling "$MOCK_DIR/rel"
+new_mock; mkdir -p "$MOCK_DIR/real"; ln -s "$MOCK_DIR/real" "$MOCK_DIR/lnk"
+p0_snap; run_arm ARM_STATE_DIR="$MOCK_DIR/lnk/newsub"; p0_nothing_created STATE-dir-symlink "$MOCK_DIR/real/newsub"
+new_mock; mkdir -p "$MOCK_DIR/realanc"; ln -s "$MOCK_DIR/realanc" "$MOCK_DIR/anc2"
+p0_snap; run_arm ARM_STATE_DIR="$MOCK_DIR/anc2/newsub/deeper"; p0_nothing_created STATE-dir-symlink "$MOCK_DIR/realanc/newsub"
+new_mock; ln -s "$MOCK_DIR/nowhere" "$MOCK_DIR/dangling"
+p0_snap; run_arm ARM_STATE_DIR="$MOCK_DIR/dangling/state"; p0_nothing_created STATE-dir-symlink "$MOCK_DIR/nowhere"
+# fix round 3 (U3 — the delta panel 2's LB-3): a mkdir -p that fails PARTWAY — a 300-character component (ENAMETOOLONG)
+# under a missing parent — is refused STATE-dir-missing, the REFUSE line names the path and says that part of it may
+# remain, and NOTHING is removed: fix round 2's cleanup (rmdir of the created tail) followed a symlink raced onto an
+# intermediate component and removed empty directories in its target (a pre-existing one included), where SAFETY
+# said nothing is removed through a symlink — removed; what the failed mkdir created stays (newdir), as in fix round 1
+new_mock; _lp="$MOCK_DIR/newdir/$(printf 'x%.0s' {1..300})"; p0_snap; run_arm ARM_STATE_DIR="$_lp"
+p0_partial_ok=0; P0_NEW_OK="newdir"
+p0_refused STATE-dir-missing && [[ -d "$MOCK_DIR/newdir" ]] && grep -qF "ARM_STATE_DIR=$_lp cannot be created" "$MOCK_DIR/out" && grep -q 'may have left part of that path on disk' "$MOCK_DIR/out" && p0_kept && p0_partial_ok=1
+p0_partial_why="rc=$RC newdir=$([[ -d "$MOCK_DIR/newdir" ]] && echo kept || echo REMOVED) $(p0_why)"; P0_NEW_OK=""
+# the RACE: a symlink appears on an intermediate component (anc/a → victim) just before P0's mkdir -p runs — a racing
+# mkdir fronting the real one (the (11d) wrapper idiom); victim/b, victim/keep and victim/file exist beforehand
+STUB_RACE="$STUB_PARENT/race"; mkdir -p "$STUB_RACE"; cp "$STUB_DIR"/* "$STUB_RACE/"
+_real_ln=$(command -v ln)
+cat > "$STUB_RACE/mkdir" <<STUB
+#!/bin/sh
+if [ "\$1" = "-p" ] && [ -n "\${RACE_LINK:-}" ] && [ ! -e "\$RACE_LINK" ] && [ ! -L "\$RACE_LINK" ]; then '$_real_ln' -s "\$RACE_TARGET" "\$RACE_LINK"; fi
+exec "$TOOLDIR/mkdir" "\$@"
+STUB
+chmod +x "$STUB_RACE/mkdir"
+new_mock; mkdir -p "$MOCK_DIR/anc" "$MOCK_DIR/victim/b" "$MOCK_DIR/victim/keep"; printf 'a file in the link target\n' > "$MOCK_DIR/victim/file"; p0_snap
+ARM_PATH="$STUB_RACE" run_arm ARM_STATE_DIR="$MOCK_DIR/anc/a/b/state" RACE_LINK="$MOCK_DIR/anc/a" RACE_TARGET="$MOCK_DIR/victim"
+p0_race_ok=0; P0_NEW_OK="anc/a victim/b/state"
+p0_refused STATE-dir-symlink && [[ -L "$MOCK_DIR/anc/a" ]] && grep -q "resolves to $MOCK_DIR/victim/b/state" "$MOCK_DIR/out" \
+  && grep -q "FIX: if you did not create that link, stop and investigate" "$MOCK_DIR/out" \
+  && [[ -d "$MOCK_DIR/victim/b/state" && -d "$MOCK_DIR/victim/b" && -d "$MOCK_DIR/victim/keep" && -f "$MOCK_DIR/victim/file" ]] \
+  && p0_kept && p0_race_ok=1
+p0_race_why="rc=$RC link=$([[ -L "$MOCK_DIR/anc/a" ]] && echo yes || echo no) created-tail=$([[ -d "$MOCK_DIR/victim/b/state" ]] && echo kept || echo REMOVED) b=$([[ -d "$MOCK_DIR/victim/b" ]] && echo kept || echo REMOVED) keep=$([[ -d "$MOCK_DIR/victim/keep" ]] && echo kept || echo REMOVED) $(p0_why) :: $(grep -E 'REFUSE|FIX' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-300)"; P0_NEW_OK=""
+# the STATIC half, on bash's own parse of the arm: P0 and every function it calls, transitively — a call = a word of a body's
+# code view naming a function the parse defines (a nested one too) — except _arm_cleanup_probe (see the header)
+P0_BP="$MOCK_PARENT/bp-arm"; bp_parse "$ARM" "$P0_BP" || : > "$P0_BP/FAIL"
+p0_all=$(awk -F'\t' '$1 == "D" && $3 >= 1 { print $2 }' "$P0_BP/lex" | sort -u)
+p0_fns=" _pre_state_dir_check "; p0_todo="_pre_state_dir_check"
+while [[ -n "$p0_todo" ]]; do
+    _f="${p0_todo%% *}"; p0_todo="${p0_todo#"$_f"}"; p0_todo="${p0_todo# }"
+    for _w in $(awk -F'\t' -v f="$_f" '$1 == "L" && $2 == f { print $5 }' "$P0_BP/lex" | tr -c 'A-Za-z0-9_\n' ' '); do
+        [[ "$_w" == "$_f" || "$_w" == "_arm_cleanup_probe" || " $p0_fns " == *" $_w "* ]] && continue
+        printf '%s\n' "$p0_all" | grep -qx "$_w" || continue
+        p0_fns="$p0_fns$_w "; p0_todo="${p0_todo:+$p0_todo }$_w"
+    done
+done
+p0_norm=$(awk -F'\t' -v fs="$p0_fns" 'BEGIN { n = split(fs, a, " "); for (i = 1; i <= n; i++) F[a[i]] } $1 == "L" && ($2 in F) { print $6 } $1 == "H" && ($2 in F) { print $5 }' "$P0_BP/lex" | tr -d "\\\\\"'" | grep -cE '(^|[^A-Za-z0-9_])(rm|rmdir|unlink)([^A-Za-z0-9_]|$)')
+p0_xc=$([[ -f "$P0_BP/FAIL" ]] && echo PARSE-FAIL; bp_xcheck "$ARM" "$P0_BP" | tr '\n' ';')
+if [[ "$cr_ok" == "$cr_ct" && $p0_partial_ok -eq 1 && $p0_race_ok -eq 1 && "$p0_norm" == "0" && " $p0_fns " == *" _arm_refuse "* && -z "$p0_xc" ]]; then
+    ok "(16h) a refusal by spelling or by the existing ancestor creates NOTHING ($cr_ok/$cr_ct: trailing '/', '//', '/./', '/../' and a relative path under missing parents → STATE-dir-spelling; a symlinked ancestor with a missing leaf (one and two levels) and a DANGLING symlink ancestor → STATE-dir-symlink) — the nearest existing ancestor is checked before any mkdir; a mkdir failing PARTWAY (a 300-character component under a missing parent) → STATE-dir-missing naming the path and saying part of it may remain — what it created stays (newdir); a symlink RACED onto an intermediate component before P0's mkdir -p (anc/a → victim) → mkdir -p creates the tail inside the link's target, the post-mkdir check refuses STATE-dir-symlink naming the resolved path, the FIX line says to stop and investigate a link the operator did not create, and nothing under the target is removed. P0 CHANGES NOTHING it compares: in every one of these refusals every path the scenario made is still there with its type, its link target, its size and content, its mode, uid and gid, no new path appeared (not compared: mtime, atime), and no rm / rmdir / unlink ran — through the tools the scenario PATH provisions (rm / rmdir / unlink logged, mv, cp, ln, find,$arm_opt_have), an absolute path or a redirection; on bash's own parse, P0 and the functions it calls ($(printf '%s' "$p0_fns" | wc -w | tr -d ' '): P0,$(printf ' %s' $p0_fns | sed 's/ _pre_state_dir_check//')) hold no rm / rmdir / unlink word (quotes and backslashes deleted, any path prefix), and bash sourcing the arm defines exactly the parse's $(grep -c . "$P0_BP/names") functions"
+else
+    bad "(16h) $((cr_ct - cr_ok))/$cr_ct:$cr_miss :: partial-mkdir refused+named+kept=$p0_partial_ok [$p0_partial_why] :: race=$p0_race_ok [$p0_race_why] :: P0 remove words=$p0_norm over [$p0_fns] :: parse-vs-exec [$p0_xc]"
+fi
+# (16d) a missing directory under a resolved parent is CREATED, then passes (the arm's mkdir -p, as before)
+new_mock
+rm -rf "$MOCK_DIR/state"
+run_arm
+if [[ "$RC" == "0" && -d "$MOCK_DIR/state" && -f "$MOCK_DIR/state/arm-generation" ]] && grep -q "precondition 0 OK: the state directory $MOCK_DIR/state is its own resolved path" "$MOCK_DIR/out" && [[ -n "$(token_line)" ]]; then
+    ok "(16d) a MISSING state directory under a resolved parent → created, P0 OK line, arm completes with the token (no availability cost for the fresh-host case)"
+else
+    bad "(16d) rc=$RC out: $(tail -2 "$MOCK_DIR/out" | tr '\n' ' ')"
+fi
+# (16e) a FILE at ARM_STATE_DIR → REFUSE[STATE-dir-missing] before anything is installed (it used to
+# install the units and refuse only at the token — (11d)'s old sabotage)
+new_mock
+rm -rf "$MOCK_DIR/state"; printf 'the operator file at ARM_STATE_DIR\n' > "$MOCK_DIR/state"
+p0_snap; run_arm
+if p0_refused STATE-dir-missing && grep -q "remove whatever non-directory sits at that path BY HAND" "$MOCK_DIR/out" && p0_kept; then
+    ok "(16e) a FILE at ARM_STATE_DIR → REFUSE[STATE-dir-missing] with the by-hand fix, BEFORE any unit is rendered (was: units installed, then REFUSE[TOKEN-persist]); the file stays with its type, size, content, mode, uid and gid, and no path under the scenario's directory is missing, new or changed in those (not compared: mtime, atime)"
+else
+    bad "(16e) rc=$RC $(p0_why) out: $(grep -E 'REFUSE|FIX' "$MOCK_DIR/out" | tr '\n' ' ' | cut -c1-300)"
+fi
+# (16f) ORDER: P0 runs after the role/env detection (whose sourced env cannot re-point the roots) and
+# before P1 and the first write into the directory (P3's flock probe)
+p0_ln=$(grep -n '^[[:space:]]*_pre_state_dir_check[[:space:]]*#' "$ARM" | cut -d: -f1)
+role_ln=$(grep -n '^[[:space:]]*_arm_detect_role_env$' "$ARM" | cut -d: -f1)
+p1_ln=$(grep -n '^[[:space:]]*_pre_v07_check$' "$ARM" | cut -d: -f1)
+p3_ln=$(grep -n '^[[:space:]]*_pre_flock_check$' "$ARM" | cut -d: -f1)
+if [[ -n "$p0_ln" && -n "$role_ln" && -n "$p1_ln" && -n "$p3_ln" && $p0_ln -eq $((role_ln + 1)) && $p0_ln -lt $p1_ln && $p0_ln -lt $p3_ln ]]; then
+    ok "(16f) main(): _pre_state_dir_check runs right after the role/env detection (l$role_ln → l$p0_ln), before P1 (l$p1_ln) and P3's first write (l$p3_ln)"
+else
+    bad "(16f) placement: role=$role_ln p0=$p0_ln p1=$p1_ln p3=$p3_ln"
+fi
+# (16g) MIRRORED, not re-invented: the arm's canonicalization is the daemon's, character for character
+# (modulo the variable), and on every spelling above the daemon's own reason-printer agrees
+arm_can=$(grep -o "CDPATH='' cd -P -- \"\$ARM_STATE_DIR\" 2>/dev/null && pwd -P" "$ARM" | head -1)
+dmn_can=$(grep -o "CDPATH='' cd -P -- \"\$PROOF_STATE_DIR\" 2>/dev/null && pwd -P" "$HARNESS_DIR/solana-standby-failover.sh" | head -1)
+why_def=$(awk '/^_elapsed_tok_symlink_why\(\) \{/,/^\}/' "$HARNESS_DIR/solana-standby-failover.sh")
+agree=1; disagree=""
+if [[ -n "$arm_can" && -n "$dmn_can" && "${arm_can//ARM_STATE_DIR/X}" == "${dmn_can//PROOF_STATE_DIR/X}" && -n "$why_def" ]]; then
+    new_mock
+    mkdir -p "$MOCK_DIR/real-state"; ln -s "$MOCK_DIR/real-state" "$MOCK_DIR/lnk"
+    for sp in "$MOCK_DIR/state" "$MOCK_DIR/lnk" "$MOCK_DIR/state/" "$MOCK_DIR//state" "$MOCK_DIR/./state" "$MOCK_DIR/state/../state" "//$MOCK_DIR/state"; do
+        d_says=$( eval "$why_def"; PROOF_STATE_DIR="$sp"; if _elapsed_tok_symlink_why >/dev/null; then echo refuse; else echo ok; fi )
+        p0_snap; run_arm ARM_STATE_DIR="$sp"
+        if grep -q 'REFUSE\[STATE-dir-' "$MOCK_DIR/out"; then a_says=refuse; else a_says=ok; fi
+        [[ "$a_says" == "$d_says" ]] || { agree=0; disagree="$disagree [$sp arm=$a_says daemon=$d_says]"; }
+        [[ "$a_says" != "refuse" ]] || p0_kept || { agree=0; disagree="$disagree [$sp refused but removed: $(p0_why)]"; }
+        new_mock; mkdir -p "$MOCK_DIR/real-state"; ln -s "$MOCK_DIR/real-state" "$MOCK_DIR/lnk"
+    done
+else
+    agree=0; disagree="the canonicalization lines differ or the daemon's reason-printer was not found (arm='$arm_can' daemon='$dmn_can')"
+fi
+if [[ $agree -eq 1 ]]; then
+    ok "(16g) the arm's test IS the daemon's R-SYM test (same cd -P/pwd -P line) and they AGREE on all 7 spellings (resolved, symlink, trailing '/', '//', '/./', '/../', leading '//'); every refusal among them left every path of its scenario in place, added none, and changed none in type, target, size, content, mode or owner"
+else
+    bad "(16g) arm and daemon disagree:$disagree"
+fi
+
+# ── (17) P6-ledger (AG-3.5, D0 F3): LEDGER_PATH non-empty + a readable directory ─────────────────────────────
+echo ""; echo "─── (17) P6-ledger: the fence reads LEDGER_PATH from the env file only — a REAL arm REFUSES without a ledger directory, a page-only arm WARNS ───"
+P6L_PHRASE='the fence reads LEDGER_PATH from the env file only and cannot detect it; an empty value turns every real fence dispatch into a validator stop'
+p6l_untouched() {   # refused BEFORE the probe: no unit rendered, no probe start, no enable, no token
+    [[ -z "$(ls "$MOCK_DIR/etc-systemd" 2>/dev/null)" && -z "$(token_line)" && "$(trace)" != *start-probe* && "$(trace)" != *enable* ]]
+}
+p6l_refused() {   # p6l_refused <the reason fragment> → 0 iff the run refused with REFUSE[P6-ledger], the D0-F3 sentence verbatim, the fix, and touched nothing
+    [[ "$RC" == "1" ]] && grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out" && grep -qF "$P6L_PHRASE" "$MOCK_DIR/out" && grep -qF "$1" "$MOCK_DIR/out" \
+        && grep -q 'FIX: set LEDGER_PATH=' "$MOCK_DIR/out" && grep -q 'NOT ARMED' "$MOCK_DIR/out" && p6l_untouched
+}
+new_mock
+write_env 'LEDGER_PATH=""'
+run_arm
+p6l_refused 'LEDGER_PATH is empty or unset' \
+    && ok "(17a) REAL arm, LEDGER_PATH=\"\" → REFUSE[P6-ledger] with the D0-F3 sentence verbatim and the fix; refused BEFORE the probe: no unit rendered, no probe start, no enable, no token" \
+    || bad "(17a) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+new_mock
+grep -v '^LEDGER_PATH=' "$MOCK_DIR/opt/failover.env" > "$MOCK_DIR/opt/failover.env.t" && mv "$MOCK_DIR/opt/failover.env.t" "$MOCK_DIR/opt/failover.env"
+run_arm
+p6l_refused 'LEDGER_PATH is empty or unset' \
+    && ok "(17b) REAL arm, no LEDGER_PATH line at all (an env file from before the deploy wrote one) → the same refusal" \
+    || bad "(17b) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+new_mock
+: > "$MOCK_DIR/ledger-is-a-file"
+write_env "LEDGER_PATH=\"$MOCK_DIR/ledger-is-a-file\""
+run_arm
+p6l_refused 'is not a directory' \
+    && ok "(17c) REAL arm, LEDGER_PATH names a FILE → REFUSE[P6-ledger] 'is not a directory'" \
+    || bad "(17c) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+new_mock
+write_env "LEDGER_PATH=\"$MOCK_DIR/no-such-ledger\""
+run_arm
+p6l_refused 'is not a directory' \
+    && ok "(17d) REAL arm, LEDGER_PATH names a path that does not exist → REFUSE[P6-ledger] 'is not a directory'" \
+    || bad "(17d) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+new_mock
+run_arm
+if [[ "$RC" == "0" && -n "$(token_line)" ]] && grep -q "ledger precondition (P6-ledger) OK: LEDGER_PATH=$MOCK_DIR/ledger is a readable directory" "$MOCK_DIR/out" && ! grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out"; then
+    ok "(17e) REAL arm, LEDGER_PATH a readable directory → P6-ledger OK, the ceremony completes (token printed)"
+else
+    bad "(17e) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+fi
+new_mock
+write_env 'DRY_RUN=true' 'LEDGER_PATH=""'
+run_arm
+if [[ "$RC" == "0" && -n "$(token_line)" && -f "$MOCK_DIR/etc-systemd/solana-failover-fence-page-only.service" ]] && grep -q 'WARN: ledger precondition (P6-ledger): LEDGER_PATH is empty or unset' "$MOCK_DIR/out" \
+   && grep -q 'PAGE-ONLY fence calls no agave-validator admin command' "$MOCK_DIR/out" && ! grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out"; then
+    ok "(17f) PAGE-ONLY arm (DRY_RUN=true), LEDGER_PATH=\"\" → WARN naming why it proceeds and that the REAL arm refuses; the page-only unit is installed, the token printed (WARN, not refuse)"
+else
+    bad "(17f) rc=$RC out: $(tail -4 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+fi
+new_mock
+write_env 'DRY_RUN=true'
+run_arm
+if [[ "$RC" == "0" ]] && grep -q 'ledger precondition (P6-ledger) OK' "$MOCK_DIR/out" && ! grep -q 'ledger precondition (P6-ledger):' "$MOCK_DIR/out"; then
+    ok "(17g) PAGE-ONLY arm with a valid ledger directory → the OK line, no WARN"
+else
+    bad "(17g) rc=$RC out: $(grep -i 'P6-ledger' "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+fi
+new_mock
+write_daemon "$MOCK_DIR/opt/solana-standby-failover.sh"
+cp "$MOCK_DIR/opt/failover.env" "$MOCK_DIR/opt/failover-standby.env"
+echo 'LEDGER_PATH=""' >> "$MOCK_DIR/opt/failover-standby.env"
+run_arm ARM_ROLE=standby
+p6l_refused 'in '"$MOCK_DIR"'/opt/failover-standby.env' \
+    && ok "(17h) ARM_ROLE=standby: the standby env file is the one checked (the same fence, the same refusal)" \
+    || bad "(17h) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+
+# ── (18) ExecStop= (AG-3.5; docs/SAFETY.md "Known bash behaviour": a TERM can be dropped — "(12e) option 1") ──
+echo ""; echo "─── (18) the monitor unit's ExecStop= re-sends TERM while the main PID lives: carried byte-exact by the render, run for real against a bash that drops TERMs ───"
+SKEL_MON="$SKEL_DIR/solana-failover-monitor.service.skel"
+new_mock
+run_arm
+MON="$MOCK_DIR/etc-systemd/solana-failover-monitor.service"
+es_skel=$(grep -m1 '^ExecStop=' "$SKEL_MON" 2>/dev/null)
+es_unit=$(grep -m1 '^ExecStop=' "$MON" 2>/dev/null)
+es_n=$(grep -c '^ExecStop=' "$MON" 2>/dev/null)
+if [[ "$RC" == "0" && -n "$es_skel" && "$es_unit" == "$es_skel" && "$es_n" == "1" ]] && grep -q 'ExecStop= TERM re-send carried byte-exact' "$MOCK_DIR/out"; then
+    ok "(18a) the skeleton has ONE ExecStop= and the RENDERED monitor unit carries it byte-exact (the arm re-verifies it after the render and says so)"
+else
+    bad "(18a) rc=$RC skel=[$es_skel] unit=[$es_unit] n=$es_n"
+fi
+# the shape systemd parses: ONE single-quoted word after /bin/sh -c; `$$` is systemd's escape for a literal `$`, ${MAINPID} is its own substitution;
+# no `%` (a specifier), no backslash (a C-style escape), no single quote inside the word
+es_pre="/bin/sh -c '"
+es_body=${es_unit#ExecStop=}
+es_script=""
+case "$es_body" in "$es_pre"*"'") es_script=${es_body#"$es_pre"}; es_script=${es_script%"'"} ;; esac
+es_resid=$(printf '%s' "$es_script" | sed -e 's/\$\$//g' -e 's/\${MAINPID}//g')
+es_shape=""
+[[ -n "$es_script" ]] || es_shape="$es_shape [not /bin/sh -c '<one single-quoted word>']"
+case "$es_resid" in *'$'*) es_shape="$es_shape [a bare dollar outside two-dollars and the MAINPID substitution]" ;; esac
+case "$es_resid" in *'%'*) es_shape="$es_shape [a percent sign: a systemd specifier]" ;; esac
+case "$es_resid" in *\\*) es_shape="$es_shape [a backslash: a systemd C-style escape]" ;; esac
+case "$es_script" in *"'"*) es_shape="$es_shape [a single quote inside the quoted word]" ;; esac
+case "$es_script" in *'${MAINPID}'*) : ;; *) es_shape="$es_shape [no MAINPID substitution]" ;; esac
+[[ -z "$es_shape" ]] \
+    && ok "(18b) the line is written for systemd's parser: one single-quoted word after /bin/sh -c, every shell dollar doubled, \${MAINPID} the only substitution, no percent sign, no backslash, no inner quote" \
+    || bad "(18b) shape:$es_shape :: $es_unit"
+es_run() {   # es_run <unit file> <dies2|deaf|gone|nopid> → rc=…|terms=…|alive=…|secs=… : the unit's ExecStop line run the way systemd runs it
+    local unit="$1" mode="$2" d line body script mp="" die_at=0 tpid="" epid wpid rc t0 t1 terms alive w
+    d=$(mktemp -d "$MOCK_PARENT/es.XXXXXX")
+    line=$(grep -m1 '^ExecStop=' "$unit" 2>/dev/null)
+    body=${line#ExecStop=}
+    case "$body" in "$es_pre"*"'") ;; *) printf 'rc=NOLINE|terms=0|alive=no|secs=0'; return 0 ;; esac
+    script=${body#"$es_pre"}; script=${script%"'"}
+    cat > "$d/target.sh" <<'EOT'
+#!/bin/bash
+# a monitor that DROPS TERMs: counts each in $1 and keeps running; ends on the $2-th (0 = never)
+n=0
+trap 'n=$((n + 1)); echo "term $n" >> "$1"; if [ "$2" -gt 0 ] && [ "$n" -ge "$2" ]; then exit 0; fi' TERM
+: > "$1.ready"
+while :; do sleep 1 & wait $!; done
+EOT
+    : > "$d/terms"
+    case "$mode" in dies2) die_at=2 ;; esac
+    if [[ "$mode" == "gone" ]]; then
+        ( exit 0 ) & tpid=$!; wait "$tpid" 2>/dev/null; mp="$tpid"        # a pid that existed and was reaped
+        tpid=""
+    else
+        "$BASH_BIN" "$d/target.sh" "$d/terms" "$die_at" >/dev/null 2>&1 & tpid=$!   # the suite's own interpreter: the bash:5.2 image has NO /bin/bash
+        w=0; while [[ ! -e "$d/terms.ready" && $w -lt 50 ]]; do sleep 0.2; w=$((w + 1)); done
+        [[ "$mode" == "nopid" ]] || mp="$tpid"
+    fi
+    # systemd's own parsing of the line: `$$` -> `$`, ${MAINPID} -> the main pid (empty when it is unknown)
+    script=$(printf '%s' "$script" | sed -e 's/\$\$/$/g' -e "s/\${MAINPID}/$mp/g")
+    t0=$(date +%s)
+    MAINPID="$mp" /bin/sh -c "$script" >/dev/null 2>&1 &
+    epid=$!
+    ( trap 'kill "$sp" 2>/dev/null; exit 0' TERM; sleep 9 & sp=$!; wait "$sp"; kill -9 "$epid" 2>/dev/null ) >/dev/null 2>&1 &
+    wpid=$!
+    wait "$epid" 2>/dev/null; rc=$?
+    kill "$wpid" 2>/dev/null; { wait "$wpid"; } 2>/dev/null   # the watchdog's TERM trap kills its own sleep: nothing outlives the scenario (run_all names a leftover LEFT RUNNING)
+    t1=$(date +%s)
+    terms=$(grep -c '^term ' "$d/terms" 2>/dev/null)
+    alive=no
+    if [[ -n "$tpid" ]] && kill -0 "$tpid" 2>/dev/null; then alive=yes; fi
+    if [[ -n "$tpid" ]]; then kill -9 "$tpid" 2>/dev/null; { wait "$tpid"; } 2>/dev/null; fi
+    printf 'rc=%s|terms=%s|alive=%s|secs=%s' "$rc" "$terms" "$alive" "$((t1 - t0))"
+}
+es_in() { local v; v=$(field "$1" "$2"); [[ "$v" -ge "$3" && "$v" -le "$4" ]]; }   # es_in <result> <field> <min> <max>
+r_dies2=$(es_run "$MON" dies2)
+if [[ "$(field "$r_dies2" rc)" == "0" && "$(field "$r_dies2" terms)" == "2" && "$(field "$r_dies2" alive)" == "no" ]] && es_in "$r_dies2" secs 1 4; then
+    ok "(18c) a monitor that DROPS the first TERM: the line sends a second one and stops once the pid is gone — exactly 2 TERMs, the process ends, exit 0 ($r_dies2)"
+else
+    bad "(18c) dies-on-the-second-TERM: $r_dies2"
+fi
+r_deaf=$(es_run "$MON" deaf)
+if [[ "$(field "$r_deaf" rc)" == "0" && "$(field "$r_deaf" terms)" == "3" && "$(field "$r_deaf" alive)" == "yes" ]] && es_in "$r_deaf" secs 2 5; then
+    ok "(18d) a monitor that never obeys: exactly 3 TERMs, 1 s apart, then exit 0 with the process still alive — systemd's own TERM and TimeoutStopSec take over ($r_deaf)"
+else
+    bad "(18d) deaf target: $r_deaf"
+fi
+r_gone=$(es_run "$MON" gone); r_nopid=$(es_run "$MON" nopid)
+if [[ "$(field "$r_gone" rc)" == "0" && "$(field "$r_gone" terms)" == "0" ]] && es_in "$r_gone" secs 0 1 \
+   && [[ "$(field "$r_nopid" rc)" == "0" && "$(field "$r_nopid" terms)" == "0" && "$(field "$r_nopid" alive)" == "yes" ]] && es_in "$r_nopid" secs 0 1; then
+    ok "(18e) a main pid that is already gone, or unknown (MAINPID empty): exit 0 at once and NOT ONE TERM sent — the line never signals a pid it cannot confirm ($r_gone / $r_nopid)"
+else
+    bad "(18e) gone: $r_gone  unknown: $r_nopid"
+fi
+# CONTROLS: each drift of the line must turn its scenario red. A mutant is applied to a copy of the RENDERED unit (mutate() asserts it changed it).
+es_mut() {   # es_mut <label> <sed expr> <scenario> <expectation: "rc=1" … checked by es_ok_for>
+    local lab="$1" expr="$2" mode="$3" mu="$_HARNESS_TMP/es-mut-$1.service" r bit
+    if ! mutate "$MON" "$expr" "$mu"; then es_ctl_ok=0; es_ctl_rows="$es_ctl_rows $lab:NOT-APPLIED"; return 0; fi
+    r=$(es_run "$mu" "$mode")
+    case "$lab" in
+        no-line)    [[ "$(field "$r" rc)" == "NOLINE" ]] && bit=red ;;
+        no-sleep)   ! es_in "$r" secs 2 5 && bit=red ;;
+        exit-one)   [[ "$(field "$r" rc)" != "0" ]] && bit=red ;;
+        wider-bound) [[ "$(field "$r" terms)" != "3" ]] && bit=red ;;
+        no-alive-check) ! es_in "$r" secs 0 1 && bit=red ;;
+    esac
+    if [[ "$bit" == "red" ]]; then es_ctl_rows="$es_ctl_rows $lab:red"; else es_ctl_ok=0; es_ctl_rows="$es_ctl_rows $lab:GREEN($r)"; fi
+}
+es_ctl_ok=1; es_ctl_rows=""
+es_mut no-line '/^ExecStop=/d' dies2
+es_mut no-sleep 's/ sleep 1;//' deaf
+es_mut exit-one "s/exit 0'\$/exit 1'/" dies2
+es_mut wider-bound 's/-lt 3 /-lt 5 /' deaf
+es_mut no-alive-check 's/ && kill -0 ${MAINPID} 2>\/dev\/null//' gone
+[[ $es_ctl_ok -eq 1 ]] \
+    && ok "(18f) CONTROLS: the line deleted, the sleeps removed, exit 1, a wider bound (5), the alive-check removed — each drift turns its scenario red:$es_ctl_rows" \
+    || bad "(18f) a control did not turn red:$es_ctl_rows"
+# the arm refuses to arm a monitor without it: a skeleton that lost the line, and a renderer that drops it
+RT="$_HARNESS_TMP/rt-noes"; rm -rf "$RT"; mkdir -p "$RT"; cp "$ARM" "$RT/failover-arm.sh"; cp -R "$SKEL_DIR" "$RT/systemd"
+grep -v '^ExecStop=' "$SKEL_MON" > "$RT/systemd/solana-failover-monitor.service.skel"
+new_mock
+ARM_OVERRIDE="$RT/failover-arm.sh" run_arm
+if [[ "$RC" == "1" ]] && grep -q 'REFUSE\[RENDER-verify\]' "$MOCK_DIR/out" && grep -q 'does not carry the skeleton.s ExecStop= line (the skeleton has none)' "$MOCK_DIR/out" && [[ -z "$(token_line)" && "$(trace)" != *enable* ]]; then
+    ok "(18g) a skeleton WITHOUT ExecStop= → REFUSE[RENDER-verify] (the skeleton has none): nothing enabled, no token"
+else
+    bad "(18g) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+fi
+cat > "$_HARNESS_TMP/drop-es.awk" <<'EOA'
+# the renderer's pass-through line rewritten to RENAME ExecStop= lines (a renderer that drops the line)
+$0 == "                printf '%s\\n' \"$line\"" { print "                printf '%s\\n' \"${line//ExecStop=/ExecStop-dropped=}\""; next }
+{ print }
+EOA
+if mutate_filter "$ARM" "$RT/failover-arm.sh" awk -f "$_HARNESS_TMP/drop-es.awk"; then
+    cp "$SKEL_MON" "$RT/systemd/solana-failover-monitor.service.skel"
+    new_mock
+    ARM_OVERRIDE="$RT/failover-arm.sh" run_arm
+    if [[ "$RC" == "1" ]] && grep -q 'REFUSE\[RENDER-verify\]' "$MOCK_DIR/out" && grep -q 'the skeleton has one' "$MOCK_DIR/out" && [[ -z "$(token_line)" && "$(trace)" != *enable* ]]; then
+        ok "(18h) a renderer that DROPS the line (a mutant copy) → REFUSE[RENDER-verify] (the skeleton has one): render → verify catches it, nothing enabled"
+    else
+        bad "(18h) rc=$RC out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+    fi
+fi
+
 # ── (13) reuse parity: the unit-discovery helpers are BYTE-IDENTICAL arm ↔ fence ────────────────
 echo ""; echo "─── (13) _validator_pid + _detect_validator_unit byte-parity (reuse, not reinvention) ───"
 A_VP=$(extract_region "$ARM"   '^_validator_pid() {' '^}$')
@@ -1050,7 +1566,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         bad "(14b) shellcheck -S error found issues"
     fi
 else
-    ok "(14b) shellcheck not installed here — CI's shellcheck job covers it (skipped)"
+    echo "  ⏭ SKIP: (14b) shellcheck not installed here — the shellcheck job of .github/workflows/ci.yml covers it"
 fi
 
 # ── (B) boundary grep-proof (the HARD BOUNDARY, doubled for this slice) ─────────────────────────
@@ -1257,6 +1773,63 @@ if [[ -f "$ARM" ]]; then
             ok "(M11) retire step neutered → the dual-monitor arm completes (token printed, new monitor enabled, legacy STILL active+enabled): case (15) observes a load-bearing step"
         else
             bad "(M11) control vacuous: rc=$RC token=$(token_line) legacy-active=$([[ -f "$MOCK_DIR/active.solana-failover.service" ]] && echo yes || echo no)"
+        fi
+    fi
+    # M12 (Block 6.3.1 D5): the P0 symlinked-state-directory refusal — neutered, a symlinked
+    # ARM_STATE_DIR ARMS and the gen counter lands THROUGH the link (the pre-6.3.1 behavior)
+    if mutate "$ARM" 's/^\( *\)_arm_refuse "STATE-dir-symlink"/\1: "STATE-dir-symlink"/' "$MUT"; then
+        new_mock
+        mkdir -p "$MOCK_DIR/real-state"; rm -rf "$MOCK_DIR/state"; ln -s "$MOCK_DIR/real-state" "$MOCK_DIR/state"
+        ARM_OVERRIDE="$MUT" run_arm
+        if ! grep -q 'REFUSE\[STATE-dir-symlink\]' "$MOCK_DIR/out" && [[ -n "$(token_line)" && -f "$MOCK_DIR/real-state/arm-generation" ]]; then
+            ok "(M12) P0 symlink refusal neutered → a symlinked state directory ARMS and the gen counter is written THROUGH the link (case 16a observes a load-bearing gate)"
+        else
+            bad "(M12) control vacuous: rc=$RC out: $(tail -2 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+    # M13 (AG-3.5): the P6-ledger gate - neutered, a REAL arm with LEDGER_PATH="" ARMS (the fence would run every admin call against no ledger)
+    if mutate "$ARM" 's/^\( *\)_arm_refuse "P6-ledger"/\1: "P6-ledger"/' "$MUT"; then
+        new_mock
+        write_env 'LEDGER_PATH=""'
+        ARM_OVERRIDE="$MUT" run_arm
+        if ! grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out" && [[ -n "$(token_line)" ]]; then
+            ok "(M13) P6-ledger refusal neutered → a REAL arm with LEDGER_PATH=\"\" ARMS (case 17a observes a load-bearing gate)"
+        else
+            bad "(M13) control vacuous: rc=$RC out: $(tail -2 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+    # M14: the page-only arm made a REFUSE - (17f) observes that the page-only side is WARN, not refuse
+    if mutate "$ARM" '/^_pre_ledger_check() {/,/^}/ s/\[\[ "\$ARM_INTENT" == "real" \]\]/true/' "$MUT"; then
+        new_mock
+        write_env 'DRY_RUN=true' 'LEDGER_PATH=""'
+        ARM_OVERRIDE="$MUT" run_arm
+        if [[ "$RC" == "1" ]] && grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out" && [[ -z "$(token_line)" ]]; then
+            ok "(M14) the page-only branch turned into a refusal → the PAGE-ONLY arm with LEDGER_PATH=\"\" is REFUSED (case 17f observes WARN-not-refuse)"
+        else
+            bad "(M14) control vacuous: rc=$RC out: $(tail -2 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+    # M15: an EMPTY value accepted
+    if mutate "$ARM" '/^_pre_ledger_check() {/,/^}/ s/^        why="LEDGER_PATH is empty or unset in \$ARM_ENV_FILE"$/        return 0/' "$MUT"; then
+        new_mock
+        write_env 'LEDGER_PATH=""'
+        ARM_OVERRIDE="$MUT" run_arm
+        if ! grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out" && [[ -n "$(token_line)" ]]; then
+            ok "(M15) the empty-value test removed → LEDGER_PATH=\"\" is ACCEPTED and the REAL arm completes (cases 17a/17b observe it)"
+        else
+            bad "(M15) control vacuous: rc=$RC out: $(tail -2 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+    # M16: a path that is not a directory accepted
+    if mutate "$ARM" '/^_pre_ledger_check() {/,/^}/ s/^    elif \[\[ ! -d "\$LEDGER_PATH" \]\]; then$/    elif false; then/' "$MUT"; then
+        new_mock
+        : > "$MOCK_DIR/ledger-is-a-file"
+        write_env "LEDGER_PATH=\"$MOCK_DIR/ledger-is-a-file\""
+        ARM_OVERRIDE="$MUT" run_arm
+        if ! grep -q 'REFUSE\[P6-ledger\]' "$MOCK_DIR/out" && [[ -n "$(token_line)" ]]; then
+            ok "(M16) the is-a-directory test removed → a FILE as LEDGER_PATH is ACCEPTED and the REAL arm completes (cases 17c/17d observe it)"
+        else
+            bad "(M16) control vacuous: rc=$RC out: $(tail -2 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
         fi
     fi
     echo "  survivors (named, per HARNESS.md discipline): P3 flock and the P4 page-only/frankendancer/"

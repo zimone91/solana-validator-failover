@@ -444,7 +444,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         bad "(11b) shellcheck -S error found issues"
     fi
 else
-    ok "(11b) shellcheck not installed here — CI's shellcheck job covers it (skipped)"
+    echo "  ⏭ SKIP: (11b) shellcheck not installed here — the shellcheck job of .github/workflows/ci.yml covers it"
 fi
 
 # ── (12) B1: STALE fenced-stopped (pre-boot mtime) → breaker ignored, fences normally ──────────
@@ -667,7 +667,7 @@ if command -v flock >/dev/null 2>&1; then
     #       fence + exit 1 even though the demote SUCCEEDED (visibility over tidiness).
     new_mock
     printf 'S1\nU1\nU1\nU1\nU1\nU1\nU1\n' > "$MOCK_DIR/identity.seq"
-    ( exec 8>"$MOCK_DIR/markers/.fence.lock"; flock -n 8; sleep 60 ) &
+    ( exec 8>"$MOCK_DIR/markers/.fence.lock"; flock -n 8; exec sleep 60 ) &   # exec: bash < 5.2 forks a plain last command, so the kill below would end the subshell and leave the sleep
     _holder=$!
     sleep 0.2
     run_script "$FENCE" VALIDATOR_UNIT=sol-test.service FENCE_LOCK_WAIT=1 FENCE_REPOLL_SECS=3
@@ -679,7 +679,7 @@ if command -v flock >/dev/null 2>&1; then
         bad "(23b) rc=$RC trace=$t out: $(tail -3 "$MOCK_DIR/out" 2>/dev/null | tr '\n' ' ')"
     fi
 else
-    ok "(23) flock not installed here (macOS harness) — skipped; the Linux CI leg runs it (every Linux deploy host has flock)"
+    echo "  ⏭ SKIP: (23) flock not installed here (macOS harness) — the Linux jobs of .github/workflows/ci.yml run it (every Linux deploy host has flock)"
 fi
 
 # ── (31) structural: the stopped-marker/breaker liveness COUPLING is named at the WRITE site ───

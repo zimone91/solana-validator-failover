@@ -6,8 +6,10 @@
 # This codebase is written against bash-3.2 substitution semantics; restore them everywhere.
 # (No-op error on bash < 5.2, hence the || true.)
 shopt -u patsub_replacement 2>/dev/null || true
+# v0.7 (Block 7, B7.6): the version the operator reads - the banner, the generated unit's Description and the test messages below. The facts job pins it equal to the daemons' FO_VERSION and the CHANGELOG head.
+FO_VERSION="0.7.0-rc2"
 # ============================================================================
-# Solana PRIMARY Failover v0.6.9 — Interactive Deploy
+# Solana PRIMARY Failover — Interactive Deploy
 # Run on PRIMARY node as root.
 # ============================================================================
 
@@ -152,12 +154,12 @@ done
 
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
-echo -e "  ${BOLD}${CYAN}Solana Failover  ·  PRIMARY  ·  v0.6.10${NC}"
-echo -e "  Automatic staked-identity hot-swap for Solana validators"
+echo -e "  ${BOLD}${CYAN}Solana Failover  ·  PRIMARY  ·  v${FO_VERSION}${NC}"
+echo -e "  Staked-identity failover monitor for Solana validators — Alpenglow mode: it detects and pages, the swap is yours"
 echo ""
 echo -e "  ${DIM}Author:${NC}     zim.one  ·  https://zim.one"
 echo -e "  ${DIM}Validator:${NC}  ${CYAN}2zykwzzo1pd3H2oSj5j5SRLTvmpa9Nr2S2Bh8tTVd5Tq${NC}"
-echo -e "  ${DIM}Tested on:${NC}  agave & Jito-Solana  4.2.x (earlier: 3.1.x / 4.0.x / 4.1.x)"
+echo -e "  ${DIM}Tested on:${NC}  agave & Jito-Solana  4.4.0 (v0.7 gate: testnet pair; earlier: 3.1.x / 4.0.x / 4.1.x / 4.2.x)"
 echo -e "  ${DIM}Networks:${NC}   testnet · mainnet"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
 sleep 2
@@ -182,7 +184,16 @@ fi
 if [[ -z "$LEDGER" ]]; then
     LEDGER=$(systemctl show solana -p ExecStart --value 2>/dev/null | sed -nE 's/.*--ledger[[:space:]=]+([^[:space:]]+).*/\1/p' | head -1)
 fi
-[[ -n "$LEDGER" ]] && ok "Ledger: $LEDGER" || warn "Ledger not auto-detected (set LEDGER_PATH in env if needed)"
+[[ -n "$LEDGER" ]] && ok "Ledger: $LEDGER" || warn "Ledger not auto-detected (set LEDGER_PATH in env if needed - the fence does not auto-detect it: fill it before 'failover arm')"
+# AG-3.5: systemd/failover-fence.sh reads LEDGER_PATH from the env file ONLY (no detection), and 'failover arm' refuses a real arm without it
+# (P6-ledger): the env file below gets what was detected here, written through _envq like every other value. Only a path that is a directory
+# on this host is written (a truncated or unexpanded --ledger word would also stop the daemons' own start-up detection); anything else stays EMPTY.
+CFG_LEDGER=""
+if [[ -n "$LEDGER" && -d "$LEDGER" ]]; then
+    CFG_LEDGER="$LEDGER"
+elif [[ -n "$LEDGER" ]]; then
+    warn "Ledger '$LEDGER' is not a directory on this host - LEDGER_PATH is left EMPTY: fill it before 'failover arm'"
+fi
 
 # Check for existing config
 EXISTING_ENV=""
@@ -270,9 +281,9 @@ if [[ -n "$STARTUP_IDENTITY" && -f "$STARTUP_IDENTITY" ]]; then
     STARTUP_IDENTITY_PUB=$("$SOLANA_PATH/solana-keygen" pubkey "$STARTUP_IDENTITY" 2>/dev/null) || true
     if [[ "${STARTUP_IDENTITY_PUB:-}" == "$STAKED_PUB" ]]; then
         if [[ "$ALLOW_STAKED_STARTUP_IDENTITY" == "true" ]]; then
-            warn "⚠️ Validator startup --identity is STAKED — proceeding ONLY because --allow-staked-startup-identity was given. A solana.service restart boots this node VOTING (double-sign-on-restart). Repoint the startup --identity to the UNSTAKED key (Anza identity.json symlink) ASAP."
+            warn "⚠️ Validator startup --identity is STAKED — proceeding ONLY because --allow-staked-startup-identity was given. A solana.service restart boots this node VOTING (double-sign-on-restart). Fix it ASAP: the validator's startup --identity is this node's own UNSTAKED keypair, never re-pointed: every restart comes up unstaked."
         else
-            fail "Validator startup --identity is the STAKED key: a solana.service restart would boot this node VOTING (double-sign-on-restart). Set the startup --identity to the UNSTAKED keypair (Anza identity.json symlink recommended), or re-run with --allow-staked-startup-identity to override."
+            fail "Validator startup --identity is the STAKED key: a solana.service restart would boot this node VOTING (double-sign-on-restart). Fix it: the validator's startup --identity is this node's own UNSTAKED keypair, never re-pointed: every restart comes up unstaked. (Or re-run with --allow-staked-startup-identity to override.)"
         fi
     elif [[ -n "${STARTUP_IDENTITY_PUB:-}" ]]; then
         ok "Startup --identity is not the staked key — fail-safe"
@@ -339,7 +350,8 @@ CFG_CHECK_INTERVAL="$REPLY"
 ask_numeric "Check interval — turbo (seconds, when delinquency detected)" "${TURBO_INTERVAL:-1}" 1
 CFG_TURBO_INTERVAL="$REPLY"
 
-ask_numeric "Internet retries before switch (connectivity confirms)" "${CONNECTIVITY_RETRIES:-3}" 1
+echo -e "  ${DIM}Failed ping rounds before the Internet-lost demote (a round is about 5.5 s: the default 6 is about 33 s). Keep rounds x (check interval + 2 s) at 30 s or more, the self-fence isolation floor: a shorter rule demotes the holder on a WAN hiccup.${NC}"
+ask_numeric "Internet retries before switch (connectivity confirms)" "${CONNECTIVITY_RETRIES:-6}" 1
 CFG_CONN_RETRIES="$REPLY"
 
 ask_numeric "Delinquency retries (Tier 1 confirm count)" "${DELINQUENCY_RETRIES:-5}" 1
@@ -452,7 +464,7 @@ if [[ "$CFG_NTFY_ENABLED" == "true" ]]; then
     echo -e "  Sending test notification..."
     # shellcheck disable=SC2034  # output captured for potential debug; only the exit code is checked
     NTFY_TEST=$(curl -s -m 10 -X POST "$CFG_WEBHOOK_URL" \
-        -H "Title: [${CFG_NODE_NAME}] Failover v0.6.9 — deploy test" \
+        -H "Title: [${CFG_NODE_NAME}] Failover v${FO_VERSION} — deploy test" \
         -H "Priority: urgent" \
         -H "Tags: white_check_mark" \
         -d "If you see this, ntfy.sh is working. Subscribe to this channel in the ntfy app." 2>&1)
@@ -527,7 +539,7 @@ VALIDATOR_TYPE=$(_envq "${CFG_VALIDATOR_TYPE}")
 STAKED_KEYPAIR=$(_envq "${CFG_STAKED}")
 UNSTAKED_KEYPAIR=$(_envq "${CFG_UNSTAKED}")
 SOLANA_PATH="\$HOME/.local/share/solana/install/active_release/bin"
-LEDGER_PATH=""
+LEDGER_PATH=$(_envq "${CFG_LEDGER}")
 
 # --- Three-Tier RPC ---
 LOCAL_RPC=$(_envq "${CFG_LOCAL_RPC}")
@@ -587,8 +599,9 @@ SELF_FENCE_NOANSWER_SECS=30
 # Catches an egress-only partition (we still RECEIVE blocks — slot advances, getHealth fine — but our
 # votes don't land), which the frozen-slot/no-answer checks above are blind to. LOCAL signal only; safe
 # direction only. REQUIRES VOTE_PUBKEY (set above) — the daemon refuses to start with it blank while N6
-# is armed. Sizing is cross-node margin: lag grows ~2–2.5 slots/s, so demote ≈ SLOTS/rate + SECS ≈ 33s at
-# 32 slots — before a worst-case fast spare (~68s). Keep in 24–48 (healthy soak calibrates); too high
+# is armed. Sizing is cross-node margin: lag grows at the slot rate, so demote ≈ SLOTS/rate + SECS ≈ 33s at
+# 32 slots at the ASSUMED 2.5 slots/s (mainnet MEASURED ≈3.7 slots/s on 2026-09-26: ≈29s — sooner, the
+# safe side) — before a worst-case fast spare (~68s). Keep in 24–48 (healthy soak calibrates); too high
 # re-opens the egress-only race. Either knob = 0 disables this sub-check.
 SELF_FENCE_VOTE_LAG_SLOTS=32
 SELF_FENCE_VOTE_LAG_SECS=20
@@ -607,11 +620,16 @@ SETIDENTITY_TIMEOUT=15
 # double-sign). false = alert only, do NOT stop (NOT recommended — re-opens the gap). Never in DRY_RUN or
 # on the recovery/promote path.
 SELF_FENCE_HARD_STOP=true
-# v0.6.9 (H2): when systemctl stop did not cleanly succeed, the unit is masked (--runtime; a reboot
-# clears it) before the direct kill, and the down-state is RE-verified after this many seconds (>= the
-# unit's RestartSec) so Restart=always cannot silently resurrect a staked-voting validator. Recovery:
-# systemctl unmask --runtime solana (the ✅ page names it).
+# v0.6.9 (H2): the down-state of a hard-stop is RE-verified after this many seconds (>= the unit's
+# RestartSec) so Restart=always cannot silently resurrect a staked-voting validator. The unit is NOT
+# masked (a runtime mask is shadowed by a unit file under /etc/systemd/system): the stop is a requested
+# systemctl stop, which Restart= does not undo. Recovery: systemctl start solana, on the UNSTAKED identity.
 HARD_STOP_REVERIFY_SECS=15
+# v0.7 (rc1 F19): after the SIGKILL, poll once per second for up to this many seconds until the killed validator is gone (a large process needs seconds to be torn down).
+HARD_STOP_EXIT_WAIT_SECS=15
+# v0.7 (rc2 F21): while this node is UNSTAKED it pages STAKED IDENTITY SILENT when nobody votes the staked identity for this many seconds (the spare's host or validator is
+# down). Monitor-only. Keep it >= the spare's TAKEOVER_DELAY + 30 (60 + 30); floor 30; needs VOTE_PUBKEY (set above).
+SILENT_STAKE_PAGE_SECS=90
 
 # --- Collision detector (v0.6.9 M5) ---
 # While STAKED: compare external gossip's endpoint for the staked pubkey vs our own; 2 consecutive
@@ -668,7 +686,7 @@ step "Creating systemd service"
 
 cat > /etc/systemd/system/solana-failover.service << 'SERVICEEOF'
 [Unit]
-Description=Solana PRIMARY Node Failover Protection v0.6.10
+Description=Solana PRIMARY Node Failover Protection v@FO_VERSION@
 After=solana.service
 Wants=solana.service
 
@@ -678,6 +696,7 @@ User=root
 ExecStart=/opt/solana-failover/solana-primary-failover.sh
 Restart=always
 RestartSec=10
+RestartPreventExitStatus=3
 LimitNOFILE=1000000
 TimeoutStopSec=15
 KillSignal=SIGTERM
@@ -688,6 +707,7 @@ SyslogIdentifier=solana-failover
 [Install]
 WantedBy=multi-user.target
 SERVICEEOF
+sed -i "s/@FO_VERSION@/${FO_VERSION}/" /etc/systemd/system/solana-failover.service   # v0.7 (B7.6): the quoted heredoc above expands nothing
 
 systemctl daemon-reload
 ok "Systemd service created"
@@ -726,7 +746,7 @@ T3=$(curl -s -m 10 "$CFG_TIER3_RPC" -X POST -H "Content-Type: application/json" 
 if [[ "$CFG_TG_ENABLED" == "true" && -n "$CFG_TG_TOKEN" && -n "$CFG_TG_CHAT" ]]; then
     TG_RESULT=$(curl -s -m 10 -X POST "https://api.telegram.org/bot${CFG_TG_TOKEN}/sendMessage" \
         -d chat_id="$CFG_TG_CHAT" \
-        -d text="[${CFG_NODE_NAME}] 🔧 Deploy complete — failover v0.6.9 ready" \
+        -d text="[${CFG_NODE_NAME}] 🔧 Deploy complete — failover v${FO_VERSION} ready" \
         -d parse_mode="HTML" 2>/dev/null) || true
     echo "$TG_RESULT" | jq -e '.ok' &>/dev/null && ok "Telegram: test message sent" || warn "Telegram: send failed"
 fi
