@@ -7,7 +7,7 @@
 # (No-op error on bash < 5.2, hence the || true.)
 shopt -u patsub_replacement 2>/dev/null || true
 # v0.7 (Block 7, B7.6): the version the operator reads - the banner, the generated unit's Description and the test messages below. The facts job pins it equal to the daemons' FO_VERSION and the CHANGELOG head.
-FO_VERSION="0.7.0-rc1"
+FO_VERSION="0.7.0-rc2"
 # ============================================================================
 # Solana STANDBY Failover — Interactive Deploy
 # Run on STANDBY node as root.

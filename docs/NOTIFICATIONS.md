@@ -66,7 +66,7 @@ Also: `🛑` shutdown → Telegram only; `♥` heartbeat status → **log file o
 - The final re-check's `⚠️ Take ABORTED at the final re-check: …` pages *(the `RECOVERY_MODE=rpc` re-take — see "Both daemons" below)*
 
 ### ℹ️ Info (`alert_info` → Telegram only)
-- `🚀 PRIMARY v0.7.0-rc1 started [DRY_RUN]` / `🚀 PRIMARY v0.7.0-rc1 started [LIVE]` (the daemon's own version, `FO_VERSION`)
+- `🚀 PRIMARY v0.7.0-rc2 started [DRY_RUN]` / `🚀 PRIMARY v0.7.0-rc2 started [LIVE]` (the daemon's own version, `FO_VERSION`)
 - `🔍 3-tier: …` decision traces (switching / reset), `🔍 False positive …` and `🔍 Latency: LOCAL …`
 - `✅ PRIMARY back on STAKED (manual): …` / `ℹ️ Manual identity change detected: …`
 - `✅ PRIMARY internet recovered after N fail(s)`
@@ -126,7 +126,7 @@ pages: its role adapter is not a spare.
   - `⚠️ G2 vantages A and B served BYTE-IDENTICAL getClusterNodes payloads — they are likely one provider/cache behind two names (no independent corroboration); verified-demote holds cannot-determine. Use two genuinely distinct providers.`
 
 ### ℹ️ Info (`alert_info` → Telegram only)
-- `🚀 STANDBY v0.7.0-rc1 started [DRY_RUN]` / `🚀 STANDBY v0.7.0-rc1 started [LIVE]` (the daemon's own version, `FO_VERSION`)
+- `🚀 STANDBY v0.7.0-rc2 started [DRY_RUN]` / `🚀 STANDBY v0.7.0-rc2 started [LIVE]` (the daemon's own version, `FO_VERSION`)
 - `✅ STANDBY delinquency cleared (window mostly clear)`
 - `✅ Takeover starvation over — episode closed (…)`
 
