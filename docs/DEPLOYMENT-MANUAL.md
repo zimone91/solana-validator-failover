@@ -169,9 +169,9 @@ armed spare with `PRIMARY_UNSTAKED_PUBKEY` set and two distinct G2 vantages, the
 
 ### Failure scenario (3-server)
 
-1. PRIMARY: Internet lost → parallel pings fail 3x → switch to unstaked (13.5–16.5 s: 3 × the 3 s
-   `CHECK_INTERVAL` plus three failed ping rounds of 1.5 to 2.5 s — the code's bounds added up, not pinned
-   by a test; 17 s measured on the testnet pair). OR isolated from the
+1. PRIMARY: Internet lost → parallel pings fail 6x (`CONNECTIVITY_RETRIES`, rc2 F22 — it was 3) → switch to unstaked (24 to 34 s: five sleeps of the 3 s
+   `CHECK_INTERVAL` plus six failed ping checks of 1.5 to 2.5 s — not pinned
+   by a test; 5.5 s a round measured on the testnet pair). OR isolated from the
    supermajority (LOCAL confirmed slot frozen / LOCAL JSON-RPC silent) → **self-fence** to unstaked at
    ~30s (`SELF_FENCE_ISOLATION_SECS`/`SELF_FENCE_NOANSWER_SECS`) — it relinquishes BEFORE any spare takes.
 2. STANDBY: LOCAL RPC sees delinquent → sliding window 7/10 → external confirm → **fence (vote-liveness authoritative; gossip advisory)** → in Alpenglow mode **pages** that the staked identity is free to be moved (unarmed, the default) or, armed (`AG_ARMED_TAKE=true`), takes it cold, voter first, once the readiness margin also holds (the retained path took it, ~70s: `TAKEOVER_DELAY=60` after the PRIMARY has relinquished at ~30s, with a 30s cross-node margin)
@@ -475,11 +475,12 @@ fails ends the unit `failed`, which dispatches the real fence; `DRY_RUN=false` b
 
 ## v0.7.0-rc2 candidates — primary knobs (`failover.env`)
 
-Added after the rc1 candidate. A knob here is read by the PRIMARY daemon only; an env file without it runs on the daemon's default.
+Added or changed after the rc1 candidate. A knob here is read by the PRIMARY daemon only; an env file without it runs on the daemon's default.
 
 | Knob | Default | Meaning |
 |---|---|---|
 | `SILENT_STAKE_PAGE_SECS` | `90` | F21: while this node is UNSTAKED it reads the staked vote account's public `lastVote` (`TIER2_RPC`, then `TIER3_RPC`, one read per `VOTE_LIVENESS_MIN_INTERVAL`) and pages `STAKED IDENTITY SILENT 🚨` when it has not moved for this many seconds while the cluster tip did: nobody is voting the staked identity (the spare's host is dead, or its validator is down). **Monitor-only** - no action in any `RECOVERY_MODE`, none in `DRY_RUN`. Floor 30; needs `VOTE_PUBKEY` (off without it, and the start banner says so). **Pairing rule:** keep it at least the spare's `TAKEOVER_DELAY` + 30 (the shipped pair: 90 >= 60 + 30), or an armed spare's ordinary take pages; a value other than 90 is announced at start (`[config-drift]`). The spare's template and wizard carry the same rule from its side (its `TAKEOVER_DELAY` <= this - 30). The first page comes when the span is reached, repeats follow `ALERT_THROTTLE`, and the log says when the votes resume. See `docs/SAFETY.md`, *The silent stake*. |
+| `CONNECTIVITY_RETRIES` | `6` | F22: failed Internet rounds (`ping` to 8.8.8.8 / 1.1.1.1 / 9.9.9.9, one round per cycle) before the PRIMARY demotes itself with `Internet lost (<n>x)`. A round is `CHECK_INTERVAL` + a fixed 1.5 s wait for the pings + the 1 s curl fallback (`CONNECTIVITY_TIMEOUT` does not change it; 5.5 s measured at the defaults), so 6 is about 33 s. **The floor:** `CONNECTIVITY_RETRIES` × (`CHECK_INTERVAL` + 2) must stay ≥ `SELF_FENCE_ISOLATION_SECS` (30): the isolation rung is the intended floor, and a shorter Internet rule demotes the holder on a WAN hiccup (3 rounds demoted a holder at +17 s on a 20 s egress blip - docs/SAFETY.md, *The Internet-lost floor*). With the self-fence on, a value below the floor starts, with one `[config-drift] CONNECTIVITY_RETRIES=…` warning that names the computed seconds and the smallest value that meets the floor (nothing is refused); the banner prints `Inet retries: 6 (≈ 30s to the Internet-lost demote; floor 30s)`. The wizard offers 6. Older envs that carry `CONNECTIVITY_RETRIES=3` keep 3 - loudly while the self-fence is on: set 6. The standby has no such knob. |
 
 ---
 
@@ -793,9 +794,9 @@ timeline is identical to v0.6.6 (~70s).
 
 > **Read the cross-node invariant first (v0.6.6 N1).** The spare's `TAKEOVER_DELAY` must be **≥
 > `EXPECTED_PRIMARY_SELF_FENCE_SECS + SELF_FENCE_MARGIN_SECS` (= 60 by default)** so the PRIMARY
-> *always relinquishes first*. The binding case is **not** the fast internet-loss path (PRIMARY
-> unstaked at 13.5–16.5 s, the code's bounds added up) — it is an **isolated-but-still-voting** PRIMARY, which holds the staked identity until
-> its self-fence demotes it at ~30s. A spare must take only **after** that, with margin.
+> *always relinquishes first*. The binding case is an **isolated-but-still-voting** PRIMARY, which holds the staked identity until
+> its self-fence demotes it at ~30s — not the internet-loss path (since rc2 F22 its six failed rounds land at 24 to 34 s,
+> beside the isolation rung and no longer far ahead of it; it never sets the bound). A spare must take only **after** that, with margin.
 > **Pre-N1 fast presets (`TAKEOVER_DELAY=10`/`20`) are UNSAFE and must not be used** — they would let
 > the spare take before the PRIMARY self-fences (double-sign on heal). The examples below use the
 > v0.6.6 presets (`TAKEOVER_DELAY=60`, `MAX_DELINQUENT_SLOTS=15`). The v0.7 wizard writes 24 for
@@ -807,8 +808,8 @@ timeline is identical to v0.6.6 (~70s).
 
 ```
 # PRIMARY relinquishes FIRST (whichever trigger applies):
-PRIMARY t=13.5-16.5s: internet-loss path → SWITCHED TO UNSTAKED
-#   (the code's bounds added up, not pinned by a test; 17 s measured on the testnet pair)
+PRIMARY t=24-34s:     internet-loss path (CONNECTIVITY_RETRIES=6, rc2 F22) → SWITCHED TO UNSTAKED
+#   (the code's bounds added up, not pinned by a test; 5.5 s a failed round measured on the testnet pair)
    …or (the BINDING cross-node case)…
 PRIMARY t=~30s:   isolated-but-voting → SELF-FENCE → SWITCHED TO UNSTAKED (demote before alert, N2)
 # STANDBY (fast-detect 15, delay 60):
@@ -830,7 +831,7 @@ BACKUP t=~132s:   TAKEOVER_DELAY (120s) elapsed + liveness frozen (crashed STAND
 ### Without fast-detect (MAX_DELINQUENT_SLOTS=0, TAKEOVER_DELAY=60)
 
 ```
-PRIMARY t=13.5-30s: SWITCHED TO UNSTAKED (internet-loss or self-fence, as above)
+PRIMARY t=24-34s:   SWITCHED TO UNSTAKED (internet-loss or self-fence, as above)
 STANDBY t=~60s:     RPC delinquent list (~128 slots) → first-delinquent → window starts
 STANDBY t=~120s:    TAKEOVER_DELAY (60s) elapsed + Window 7/10 → TOOK STAKED
 # ⇒ slower detection (no fast-detect) only LENGTHENS the spare's takeover — the cross-node margin is preserved.

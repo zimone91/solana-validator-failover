@@ -34,6 +34,9 @@
 #   (7+) rc2 F21 (the silent stake): the page text and status in the primary daemon, its knob comment (the pairing rule with the spare's TAKEOVER_DELAY, the figures of the take), both drift reasons and the start banner;
 #        the primary template and wizard (the pairing, the monitor-only statement, the armed spare's figure), docs/NOTIFICATIONS.md (the page row), docs/SAFETY.md (The silent stake: S18b, the doubt rules, the pairing rule and its figure)
 #        and the manual's rc2 knob row. P rows only (the page is new: nothing old to retire); each has a put-back control in (9). The behaviour is tests/test_primary_silent_stake.sh's.
+#   (7++) rc2 F22 (the Internet-lost floor): the primary daemon's knob comment, the warning's wording and advice, the self-fence-off statement and the banner; the primary template's comment block and knob line, the
+#        standby template's and daemon's derivation (24 to 34 s); the primary wizard's text and default; docs/SAFETY.md (The Internet-lost floor, the margin's derivation, the internet-lost row); the manual's
+#        rc2 knob row, failure scenario and timeline. P rows only; each has a put-back control in (9). The behaviour is tests/test_connectivity_floor.sh's.
 # RED ON THE BASE (the AG-1.5 / AG-1.4 tree): no constant, preset 15, the wizard says ~150 slots (~60s), no text names its bound; AG-1.7: every old phrase is
 # still there and no new one is.
 #
@@ -457,7 +460,30 @@ safety|P|1|takes only after the STANDBY failed too, later than the span, so the 
 manual|P|1|a value other than 90 is announced at start
 manual|P|1|`SILENT_STAKE_PAGE_SECS` | `90` | F21: while this node is UNSTAKED
 manual|P|1|**Pairing rule:** keep it at least the spare
-readme|P|1|pages `STAKED IDENTITY SILENT`** when nobody has voted the staked identity for `SILENT_STAKE_PAGE_SECS` (90 s)'
+readme|P|1|pages `STAKED IDENTITY SILENT`** when nobody has voted the staked identity for `SILENT_STAKE_PAGE_SECS` (90 s)
+primary|P|1|must stay >= SELF_FENCE_ISOLATION_SECS (the isolation rung is the intended floor; a shorter Internet rule demotes the holder on a WAN hiccup
+primary|P|1|one round = CHECK_INTERVAL + the fixed 1.5 s wait for the pings + the 1 s curl fallback (CONNECTIVITY_TIMEOUT does not enter)
+primary|P|1|a WAN hiccup shorter than the isolation floor ${_ic_floor}s demotes the holder before the isolation rung can answer it
+primary|P|1|set CONNECTIVITY_RETRIES >= $(( (_ic_floor + _ic_round - 1) / _ic_round )) in ${CONFIG_FILE} and restart
+primary|P|1|PRIMARY_SELF_FENCE=false there is no isolation rung, the Internet rule is then the only one of the pair
+primary|P|1|to the Internet-lost demote; $([[ "$PRIMARY_SELF_FENCE" == "true" ]]
+templates|P|1|v0.7 (rc2 F22): failed Internet rounds before the Internet-lost demote
+templates|P|1|keep CONNECTIVITY_RETRIES x (CHECK_INTERVAL + 2) >= SELF_FENCE_ISOLATION_SECS (30)
+templates|P|1|3 rounds: a 20 s egress blip demoted it at +17 s, the spare took at +69 s
+templates|P|1|# failed rounds before the Internet-lost demote: 6 x 5.5 s = about 33 s (must stay >= SELF_FENCE_ISOLATION_SECS)
+templates|P|1|Internet-lost 24-34s since rc2 F22 (6 failed rounds
+standby|P|1|Internet-lost at 24 to 34 s since rc2 F22 (6 failed rounds
+deploy_p|P|1|Failed ping rounds before the Internet-lost demote (a round is about 5.5 s: the default 6 is about 33 s)
+deploy_p|P|1|"${CONNECTIVITY_RETRIES:-6}" 1
+safety|P|1|**The Internet-lost floor (rc2 F22).**
+safety|P|1|the counter reached 3/3 at +17 s and the holder demoted
+safety|P|1|`CONNECTIVITY_RETRIES` × (`CHECK_INTERVAL` + 2) ≥ `SELF_FENCE_ISOLATION_SECS`
+safety|P|1|the Internet-lost trigger at about 24 to 34 s since rc2 F22
+safety|P|1|since rc2 F22 that is 6 rounds, about 24 to 34 s at `CHECK_INTERVAL` 3
+safety|P|1|What it gives up: a holder whose pings fail for a while but whose validator keeps voting is no longer demoted before the floor
+manual|P|1|`CONNECTIVITY_RETRIES` | `6` | F22: failed Internet rounds
+manual|P|1|parallel pings fail 6x (`CONNECTIVITY_RETRIES`, rc2 F22 — it was 3)
+manual|P|1|PRIMARY t=24-34s:     internet-loss path (CONNECTIVITY_RETRIES=6, rc2 F22)'
 claims_for() {   # claims_for <key> <file…> -> the claims that do not hold, empty = all hold
     local key="$1" k kind min ph n c f why=""; shift
     while IFS='|' read -r k kind min ph; do
@@ -662,6 +688,29 @@ ctl9 f21-manual-announced "$MANUAL" 's/a value other than 90 is announced at sta
 ctl9 f21-manual-row "$MANUAL" 's/^| `SILENT_STAKE_PAGE_SECS` | `90` | F21/| `SILENT_STAKE_PAGE_SECS` | `60` | F21/' cm
 ctl9 f21-readme-bullet "$README" 's/\*\*pages `STAKED IDENTITY SILENT`\*\* when nobody has voted the staked identity for `SILENT_STAKE_PAGE_SECS` (90 s)/is quiet/' cr
 ctl9 f21-manual-pairing "$MANUAL" 's/\*\*Pairing rule:\*\* keep it at least the spare/**Pairing rule:** none for the spare/' cm
+ctl9 f22-primary-knob-comment "$PRIMARY" 's/the isolation rung is the intended floor; a shorter Internet rule demotes the holder on a WAN hiccup/any value is fine; a shorter Internet rule is harmless/' cp_
+ctl9 f22-primary-round "$PRIMARY" 's/the fixed 1\.5 s wait for the pings + the 1 s curl fallback (CONNECTIVITY_TIMEOUT does not enter)/the ping timeout/' cp_
+ctl9 f22-primary-warn "$PRIMARY" 's/before the isolation rung can answer it/eventually/' cp_
+ctl9 f22-primary-advice "$PRIMARY" 's/_ic_round )) in \${CONFIG_FILE}/_ic_round )) in the env file/' cp_
+ctl9 f22-primary-fence-off "$PRIMARY" 's/the Internet rule is then the only one of the pair/nothing changes/' cp_
+ctl9 f22-primary-banner "$PRIMARY" 's/to the Internet-lost demote; \$(\[\[/to the demote; $([[/' cp_
+ctl9 f22-template-head "$ENV_P" 's/v0\.7 (rc2 F22): failed Internet rounds/v0.7: internet failures/' cpt
+ctl9 f22-template-rule "$ENV_P" 's/+ 2) >= SELF_FENCE_ISOLATION_SECS (30)/+ 2) >= 1/' cpt
+ctl9 f22-template-blip "$ENV_P" 's/demoted it at +17 s/demoted it at +9 s/' cpt
+ctl9 f22-template-knob "$ENV_P" 's/6 x 5\.5 s = about 33 s/3 x 3s = 9s/' cpt
+ctl9 f22-standby-template-figure "$ENVS" 's/24-34s since rc2 F22/13.5-16.5s since rc2 F22/' ct
+ctl9 f22-standby-figure "$STANDBY" 's/24 to 34 s since rc2 F22/13.5-16.5 s since rc2 F22/' cs
+ctl9 f22-wizard-text "$DEPLOY_P" 's/the default 6 is about 33 s/the default is 3/' cdp
+ctl9 f22-wizard-default "$DEPLOY_P" 's/CONNECTIVITY_RETRIES:-6}/CONNECTIVITY_RETRIES:-3}/' cdp
+ctl9 f22-safety-section "$SAFETY" 's/\*\*The Internet-lost floor (rc2 F22)\.\*\*/**A note.**/' cq
+ctl9 f22-safety-blip "$SAFETY" 's/the counter reached 3\/3 at +17 s/the counter reached 2\/3 at +9 s/' cq
+ctl9 f22-safety-rule "$SAFETY" 's/+ 2) ≥ /+ 2) ≤ /' cq
+ctl9 f22-safety-derivation "$SAFETY" 's/24 to 34 s since rc2 F22 (an outage/13.5-16.5 s since rc2 F22 (an outage/' cq
+ctl9 f22-safety-row "$SAFETY" 's/about 24 to 34 s at/about 13.5–16.5 s at/' cq
+ctl9 f22-safety-gives-up "$SAFETY" 's/is no longer demoted before the floor/is still demoted early/' cq
+ctl9 f22-manual-row "$MANUAL" 's/| `6` | F22: failed Internet rounds/| `3` | F22: failed Internet rounds/' cm
+ctl9 f22-manual-step "$MANUAL" 's/parallel pings fail 6x (/parallel pings fail 3x (/' cm
+ctl9 f22-manual-timeline "$MANUAL" 's/t=24-34s:     internet-loss path/t=13.5-16.5s: internet-loss path/' cm
 [[ $c9_ok -eq 1 ]] && ok "(9) every put-back turns its case red:$c9_rows" || bad "(9) a control did not turn its case red"
 
 results_banner

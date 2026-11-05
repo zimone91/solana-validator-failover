@@ -468,7 +468,7 @@ row a4 "egress-only at 2.5 slots/s (N6: SELF_FENCE_VOTE_LAG_SLOTS / rate to cros
 row a5 "egress-only at 3.7 slots/s (N6)" "29 / 30-32 / 29-33" "$(g e37)" 33
 row a6 "garbage answers (a non-canonical slot)" "30 / 28-30 / 26-30" "$(g gb)" 30
 if [[ "$(g hb)" == "$(g fz)" ]]; then
-    ok "(a7) F9 — getHealth reporting behind (a minority-gossip partition: the blockstore still sees the cluster) fences exactly as the frozen clock ($(g hb) s): its own path (SELF_FENCE_MAX_BEHIND, 150 slots past agave's 128) needs ~60 s at 2.5 slots/s, so it is never the later one — not a crossing; the internet-lost demote (CONNECTIVITY_RETRIES failed rounds) likewise fires no later than these rows (by reading: the harness stubs check_internet)"
+    ok "(a7) F9 — getHealth reporting behind (a minority-gossip partition: the blockstore still sees the cluster) fences exactly as the frozen clock ($(g hb) s): its own path (SELF_FENCE_MAX_BEHIND, 150 slots past agave's 128) needs ~60 s at 2.5 slots/s, so it is never the later one — not a crossing; the internet-lost demote (CONNECTIVITY_RETRIES failed rounds: 6 since rc2 F22, about 24 to 34 s at CHECK_INTERVAL 3) has no world here (by reading: the harness stubs check_internet) and is not what these rows rest on - a holder cut off from the cluster is also on the frozen / no-answer / vote-lag rows"
 else
     bad "(a7) getHealth-behind $(g hb) ≠ frozen $(g fz)"
 fi
