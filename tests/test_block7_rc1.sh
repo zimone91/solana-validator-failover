@@ -279,7 +279,11 @@ b71_p_unit() {   # (13) _detect_validator_unit names the VALIDATOR's unit, not t
     r=$(b71_root); b71_adm "$r" 4001 set-identity; b71_val "$r" 4002
     printf '0::/system.slice/solana-failover-monitor.service\n' > "$r/4001/cgroup"; printf '0::/system.slice/sol.service\n' > "$r/4002/cgroup"
     src=$(b71_fnsrc "$script")
-    out=$( ( source "$src" 2>/dev/null; pgrep() { printf '4001\n4002\n'; }; FENCE_PROC_ROOT="$r"; VALIDATOR_TYPE=agave; unset VALIDATOR_UNIT; _detect_validator_unit ) )
+    out=$( ( source "$src" 2>/dev/null; pgrep() { printf '4001\n4002\n'; }; FENCE_PROC_ROOT="$r"; VALIDATOR_TYPE=agave; unset VALIDATOR_UNIT
+             if ! command -v timeout >/dev/null 2>&1; then   # no timeout(1) on this host (the macOS 26 runner of the workflow): without it no cmdline is read and the first hit, the monitor's own client, is answered. This case is about WHICH pid names the unit, not about the bound (that is (17)): the same mock as b71_run's
+                 timeout() { if [[ "$1" == "-k" ]]; then shift 3; else shift 1; fi; "$@"; }
+             fi
+             _detect_validator_unit ) )
     b71_why="unit='$out'"; [[ "$out" == "sol.service" ]]
 }
 b71_p_bounded() {   # (17) the cmdline READ is bounded: a hit whose /proc/<pid>/cmdline blocks (a validator wedged under the mm lock; here a FIFO whose writer never writes) costs the 2-s bound, not the wedge
@@ -356,7 +360,11 @@ b71_chk "(B7.1-09) fdctl (Frankendancer only) and solana-validator go through th
 b71_chk "(B7.1-10) the pid prints with no newline and rc 0, found and not found - P S F A" b71_p_shape "P S F A"
 b71_chk "(B7.1-11) the fence and the arm never ask the unit: no systemctl call even with a live MainPID-shaped answer on offer (the fence does not know VALIDATOR_SERVICE) - F A" b71_p_nounit "F A"
 b71_chk "(B7.1-12) the REAL hard stop with no unit and the daemon's own set-identity client listed first kills the VALIDATOR (never the client), and confirms DOWN - P S" b71_p_hardstop "P S"
-b71_chk "(B7.1-17) the cmdline READ is bounded (timeout -k 1 2 tr): a hit whose cmdline blocks - a FIFO with a silent writer, the shape of a validator wedged under the mm lock - costs the 2-s bound, not the wedge: answered inside 4 s, the readable validator listed after it wins, and a blocked hit that is the ONLY one is still answered (a timed-out read proves nothing: it is not a client) - P S F A" b71_p_bounded "P S F A"
+if command -v timeout >/dev/null 2>&1; then   # the subject of (17) is the REAL timeout(1): without it (the macOS 26 runner of the workflow) the case cannot be run, and a mock would test the mock
+    b71_chk "(B7.1-17) the cmdline READ is bounded (timeout -k 1 2 tr): a hit whose cmdline blocks - a FIFO with a silent writer, the shape of a validator wedged under the mm lock - costs the 2-s bound, not the wedge: answered inside 4 s, the readable validator listed after it wins, and a blocked hit that is the ONLY one is still answered (a timed-out read proves nothing: it is not a client) - P S F A" b71_p_bounded "P S F A"
+else
+    echo "  ⏭ SKIP: (B7.1-17) not run on this host: no timeout(1) - the bounded read is exercised on the Linux legs (the three bounded-read controls of (B7.1-16) are skipped with it)"
+fi
 b71_chk "(B7.1-13) _detect_validator_unit answers the VALIDATOR's unit when a client in the monitor unit's cgroup is listed first - F A" b71_p_unit "F A"
 if b71_p_same "$PRIMARY" "$STANDBY"; then ok "(B7.1-14a) the primary and the standby carry ONE _validator_pid body ($(b71_body "$PRIMARY" | wc -l | tr -d ' ') lines)"; else bad "(B7.1-14a) P and S _validator_pid bodies differ ($b71_why)"; fi
 if b71_p_same "$B71_FENCE" "$B71_ARM"; then ok "(B7.1-14b) the fence script and the arm ceremony carry byte-identical _validator_pid bodies"; else bad "(B7.1-14b) F and A _validator_pid bodies differ ($b71_why)"; fi
@@ -402,11 +410,15 @@ for b71_t in P S F A; do
     b71_ctl newline-printed "$b71_t" "$B71R"'s/printf .%s. "\$pick"/echo "$pick"/' b71_p_shape
     b71_ctl rc-nonzero-when-none "$b71_t" "$B71R"'s/^    return 0$/    return 1/' b71_p_shape
 done
-for b71_t in P F; do   # the bounded read: the bound removed (the read hangs), a hung read taken for a client (the sole blocked hit vanishes), and the bound too long
-    b71_ctl bound-removed "$b71_t" "$B71R"'s/_cl=\$(timeout -k 1 2 tr /_cl=$(tr /' b71_p_bounded
-    b71_ctl hung-read-is-client "$b71_t" "$B71R"'s/^\( *_cl=\$(timeout -k 1 2 tr .*\)$/\1 || sub=1/' b71_p_bounded
-done
-b71_ctl bound-too-long P "$B71R"'s/timeout -k 1 2 tr /timeout -k 1 60 tr /' b71_p_bounded
+if command -v timeout >/dev/null 2>&1; then   # the three controls of (17): they mutate the bound and need (17) to run, which needs the REAL timeout(1); without it they are skipped, named in the row, and b71_ok is untouched
+    for b71_t in P F; do   # the bounded read: the bound removed (the read hangs), a hung read taken for a client (the sole blocked hit vanishes), and the bound too long
+        b71_ctl bound-removed "$b71_t" "$B71R"'s/_cl=\$(timeout -k 1 2 tr /_cl=$(tr /' b71_p_bounded
+        b71_ctl hung-read-is-client "$b71_t" "$B71R"'s/^\( *_cl=\$(timeout -k 1 2 tr .*\)$/\1 || sub=1/' b71_p_bounded
+    done
+    b71_ctl bound-too-long P "$B71R"'s/timeout -k 1 2 tr /timeout -k 1 60 tr /' b71_p_bounded
+else
+    b71_rows="$b71_rows bounded-read-controls:SKIPPED(no-timeout)"
+fi
 for b71_t in P S; do
     b71_ctl mainpid-not-preferred "$b71_t" "$B71R"'{ /kill -0/d; }' b71_p_mainpid
     b71_ctl mainpid-alive-check-removed "$b71_t" "$B71R"'s/ \&\& kill -0 "\$p" 2>\/dev\/null//' b71_p_mainpid_unusable
