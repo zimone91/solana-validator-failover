@@ -572,7 +572,7 @@ fl_def=$(grep -c '^_AG_COLD_FLAG="--'"$FLAG"'"' "$STANDBY")
 # PREWARM_VOTER_ADD nowhere); names a take function but reaches nothing => NOT_REACHED. A suite that is on no list may not name a take function at all.
 SHADOWED="test_act_then_alert.sh test_elapsed_provider.sh test_monitor_fence_integration.sh test_own_view.sh test_primary_demote_timeout.sh test_standby_take_reset.sh test_standby_take_timeout.sh"
 PREWARM_ONLY="test_blindness_is_life.sh test_crossnode_timing.sh test_fastpath.sh test_fastpath_stagger.sh test_monotonic_timers.sh test_n3_takeover_anchor.sh test_provider_pinning.sh test_takeover_starvation.sh"
-NOT_REACHED="test_backup_fence.sh test_primary_recovery_liveness.sh test_required_fence.sh test_standby_fence.sh test_standby_selffence.sh test_unknown_identity_alert.sh test_v061_regressions.sh"
+NOT_REACHED="test_backup_fence.sh test_connectivity_floor.sh test_primary_recovery_liveness.sh test_primary_silent_stake.sh test_required_fence.sh test_standby_fence.sh test_standby_selffence.sh test_unknown_identity_alert.sh test_v061_regressions.sh"
 sh_ok=1; sh_why=""; sh_rows=""; sh_n=0
 for f in "$HARNESS_DIR"/tests/test_*.sh; do
     b=$(basename "$f")
