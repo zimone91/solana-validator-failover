@@ -126,7 +126,8 @@ $region
         sleep() { :; }
         ev "CYCLE 0"
         _running=true; run_loop
-        ev "STATE ${_liveness_first_vote} ${_liveness_first_tip} ${_liveness_first_ts} ${_liveness_first_provider} ${_last_blind_end} ${_liveness_obs_since} ${_ep_blind_cycles} ${_ep_provider_flips} ${_ep_floor_holds}"
+        fresh_dump=$(dump_freshness)   # the freshness triple is read ONLY through the harness's dump_freshness (run_all gate (3)); the substitution reads this world's own globals
+        ev "STATE $(field "$fresh_dump" pair_vote) $(field "$fresh_dump" pair_tip) $(field "$fresh_dump" pair_ts) $(field "$fresh_dump" vantage) $(field "$fresh_dump" blind_until) $(field "$fresh_dump" observed_since) ${_ep_blind_cycles} ${_ep_provider_flips} ${_ep_floor_holds}"
         cat "$EV"
     ) 2>/dev/null
 }
