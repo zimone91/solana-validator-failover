@@ -135,6 +135,9 @@ $region
         if [[ "${REAL_DEMOTE:-0}" != "1" ]]; then
             switch_to_unstaked() { _dcalls=$((_dcalls + 1)); ev "DEMOTE $1"; [[ $_dcalls -le $DEMOTE_FAILS ]] && return 1; return 0; }
         fi
+        if ! command -v timeout >/dev/null 2>&1; then   # (5b) the REAL demote bounds its two admin calls with `timeout -k 5 N`; with no timeout(1) on this host (the macOS 26 runner of the workflow) neither would run. The bound is not the subject here: this runs the command as `timeout [-k K] T cmd...` would, without the bound
+            timeout() { [[ "$1" == "-k" ]] && shift 2; shift; "$@"; }
+        fi
         _watchdog_sleep() {
             if [[ "$1" == "$STARTUP_GRACE" && "$1" != "$CHECK_INTERVAL" && "$1" != "$_current_interval" ]]; then
                 ev "GRACE $1"; _SIM_NOW=$(( _SIM_NOW + $1 )); return 0   # the manual-change grace: a wait INSIDE a cycle, the cycle goes on
