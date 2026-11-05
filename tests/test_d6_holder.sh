@@ -107,7 +107,7 @@ $region
     log() { :; }; log_info() { :; }; log_error() { case "$*" in *"[self-fence]"*|*HARD*) echo "sfe t=$(_t) ${*:0:170}" >> "$EV" ;; esac; }
     log_warn() { case "$*" in *">>> SWITCHING TO UNSTAKED"*|*"[self-fence]"*) echo "sfw t=$(_t) ${*:0:170}" >> "$EV" ;; esac; }
     alert() { :; }; alert_info() { :; }; alert_warn() { :; }; send_telegram() { :; }; send_webhook() { :; }
-    rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _vat_cycle() { :; }; _fence_rot_check() { :; }
+    rotate_log() { :; }; heartbeat_ping() { :; }; _alpenglow_gate_check() { :; }; _version_startup_check() { :; }; _vat_cycle() { :; }; _fence_rot_check() { :; }; _silent_stake_cycle() { :; }   # rc2 F21: the unstaked node's page (VOTE_PUBKEY is set here) is its own suite's (test_primary_silent_stake); the rows time the wedge, not an unstaked cycle's read
     flush_pending_alerts() { :; }; _sd_notify() { :; }
     display_status() { echo "cycle t=$(_t) status=$1" >> "$EV"; }
     check_internet() { return 0; }

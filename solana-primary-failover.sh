@@ -285,6 +285,18 @@ HOLDER_GAP_DEMOTE_SECS=30
 # the last vote at 3.7 slots/s and 79 s at 2.5 (104 / 125 s at 0), the readiness margin aside (it can only hold a take later); not
 # re-derived for the Alpenglow rate. Raise the one, raise the other.
 HOLDER_UNREACHABLE_STOP_SECS=30
+# v0.7 (rc2 F21): the SILENT STAKE. An UNSTAKED node (a demoted holder, or any restart: every node starts unstaked) watches the staked vote account from outside -
+# TIER2_RPC, then TIER3_RPC, one getVoteAccounts read per VOTE_LIVENESS_MIN_INTERVAL - and PAGES `STAKED IDENTITY SILENT` when its public lastVote has not moved for
+# this many seconds while the cluster tip did: nobody is voting the staked identity (the spare's host is dead, or its validator is down). It acts on nothing - in no
+# RECOVERY_MODE, in DRY_RUN or not - and this node never takes the staked identity in Alpenglow mode, so the page is all FO can give. The first page is immediate when
+# the span is reached, repeats follow ALERT_THROTTLE while the silence lasts, one INFO line says when the votes resume. No answer from either provider, a view whose tip
+# does not advance past the previous good read, a lastVote that goes backwards and a change of provider are not evidence of silence: no page, and a change of provider restarts an
+# open span (a blind, stale or backwards read neither extends nor restarts it). Needs VOTE_PUBKEY (without it the page is off, and the start banner says so). Floor 30.
+# PAIRING RULE: an ordinary failover - the armed spare's take lands TAKEOVER_DELAY (60) from its anchor plus its gates, 73 to 79 s after the holder's last vote at MAX_DELINQUENT_SLOTS 15
+# (about 3 s later at the v0.7 wizard's 24) - must end before this span does, so keep it >= the spare's TAKEOVER_DELAY + 30 (60 + 30 = 90); the primary cannot read the spare's env (another host),
+# so the facts job pins the shipped defaults and the arithmetic (ci.yml). A lower value pages during failovers that work, a higher one delays the page about a silent stake by the
+# same amount; both are announced at start (config-drift).
+SILENT_STAKE_PAGE_SECS=90
 # v0.6.8 (B1): bound the demote/promote admin-socket calls. set-identity / authorized-voter run on the
 # SAME admin RPC socket that get_local_identity wraps in `timeout 8` ("can hang indefinitely under heavy
 # load or compacting ledger") — but the demote itself was UN-timeout'd, so a wedged socket could freeze
@@ -392,6 +404,9 @@ _pending_alert=""
 _unknown_identity_since=0                 # unknown-identity episode start (0 = classified)
 _last_unknown_alert=0                     # re-page throttle inside an unknown-identity episode
 _last_recovery_log=0
+# v0.7 (rc2 F21): the silent-stake episode (SILENT_STAKE_PAGE_SECS) - the baseline read (lastVote, cluster tip, answering tier), the mono time of the first frozen pair (0 = none yet),
+# the mono time of the last page (0 = none), the earliest next read and the last blind WARN. _silent_stake_reset clears all of it.
+_ss_lv=""; _ss_tip=""; _ss_tier=""; _ss_since=0; _ss_page_ts=0; _ss_next_ts=0; _ss_blind_ts=0; _ss_first=0
 _recovery_confirm_count=0
 _running=true
 _last_heartbeat=0
@@ -6294,6 +6309,7 @@ validate_numeric_config() {
         exit 1
     fi
     _validate_numeric HOLDER_UNREACHABLE_STOP_SECS 20          # v0.7 (AG-3.8): the hung-holder rung (floor 20: a stall shorter than that is not a hang; drift-announced)
+    _validate_numeric SILENT_STAKE_PAGE_SECS 30                # v0.7 (rc2 F21): the unstaked node's silent-stake page (floor 30: a shorter frozen span is two or three reads of a healthy failover; drift-announced when it is not 90)
     _validate_numeric FENCE_ROT_CHECK_SECS 10                  # v0.7 (Block 5.4): armed fence-rot sweep cadence (floor 10; drift-announced)
     _validate_numeric FENCE_ROT_GRACE 0                         # v0.7 (Block 5.4): numeric shape first; the REAL floor is dynamic, just below
     # v0.7 (Block 5.4): FENCE_ROT_GRACE floor = max(600, ALERT_THROTTLE) — two reasons, both
@@ -6405,6 +6421,8 @@ announce_config_drift() {
     _drift_check RECOVERY_DELAY 300 high "rpc-mode recovery re-takes the staked identity sooner after going unstaked — less settle time before an automatic re-take"
     _drift_check HOLDER_GAP_DEMOTE_SECS 30 low "a frozen holder that wakes after a spare took the identity keeps voting longer before the gap demote — pair it with the spare's TAKEOVER_DELAY >= HOLDER_GAP_DEMOTE_SECS + 30"
     _drift_check HOLDER_UNREACHABLE_STOP_SECS 30 low "a hung staked holder stays up longer before its own daemon stops it — the spare's TAKEOVER_DELAY (shipped 60) must stay above this value plus one unreachable cycle, the reads and the stop ladder"
+    _drift_check SILENT_STAKE_PAGE_SECS 90 high "a shorter frozen span pages during a failover that works — an armed spare's take lands 73 to 79 s after the holder's last vote (MAX_DELINQUENT_SLOTS 15; about 3 s later at the v0.7 wizard's 24), so keep it at least the spare's TAKEOVER_DELAY (shipped 60) + 30"
+    _drift_check SILENT_STAKE_PAGE_SECS 90 low "a longer frozen span delays the page about a staked identity nobody is voting by the same amount — the stake earns nothing meanwhile"
 }
 
 # ========================= STARTUP ============================================
@@ -6686,6 +6704,7 @@ startup_checks() {
     echo "  Vote latency:      $([ "$MAX_VOTE_LATENCY" -gt 0 ] && echo "${MAX_VOTE_LATENCY} slots" || echo "off")"
     echo "  Inet retries:      $CONNECTIVITY_RETRIES"
     echo "  Recovery:          $RECOVERY_MODE"
+    echo "  Silent-stake page: $([ -n "$VOTE_PUBKEY" ] && echo "${SILENT_STAKE_PAGE_SECS}s" || echo "off (VOTE_PUBKEY not set)")"   # v0.7 (rc2 F21): an UNSTAKED node pages when nobody votes the staked identity this long
     echo "  Mode:              ALPENGLOW — this node NEVER re-takes the staked identity itself (a re-take every gate approves is WITHHELD and paged); it still fences itself to unstaked (docs/SAFETY.md, Alpenglow)"
     if [[ "$PRIMARY_SELF_FENCE" == "true" ]]; then
         # v0.6.9 (H1): banner also shows the N6 vote-lag arming + the hard-stop state, mirrored on the standby.
@@ -6912,6 +6931,77 @@ _hung_check() {
     return 0
 }
 
+# v0.7 (rc2 F21): the SILENT STAKE (SILENT_STAKE_PAGE_SECS above) - also outside every shared twin block: only this daemon has an UNSTAKED-primary branch.
+# An UNSTAKED primary whose spare's host is dead leaves the stake dark, and in Alpenglow mode this node never takes it back (_ag_primary_retake_allowed). Before F21 the only page on that
+# path was the re-take's own WITHHELD page - RECOVERY_MODE=rpc, and only when every gate passed, which a delinquent staked vote account never lets it reach (attempt_safe_recovery returns
+# at its first gate, "Still delinquent (Tier 1)", every cycle) - and RECOVERY_MODE=manual logged one line a minute. Measured on the pair (S18b, 2266130): the standby holder's daemon stopped and
+# its validator killed -> 420 s (manual) and 720 s (rpc) without one page.
+# MONITOR-ONLY, and apart from every other state: it reads the vote account and pages, it takes no action, and it keeps its own baseline (_ss_*) - it never touches the recovery ladder's or the
+# take path's liveness state (_liveness_*, _last_blind_end, _ep_*).
+# THE EVIDENCE is the hung-holder rung's: the staked vote account's public lastVote and the cluster tip from the SAME payload (get_staked_liveness_sample: TIER2_RPC, then TIER3_RPC), one read per
+# VOTE_LIVENESS_MIN_INTERVAL. Two reads of ONE provider with the tip advanced and lastVote EQUAL mean nobody voted in between (lastVote only ever rises on chain); the FIRST such pair starts the
+# span (_ss_since = the mono time of the answer that completed it, so the span is a lower bound). A lastVote that rises ends the episode: one INFO line, the page state cleared.
+# NOT evidence, so no page and no new span: no usable answer from either provider (blind: the episode is kept, one WARN per ALERT_THROTTLE, the next read waits 30 s at least), a tip that did not advance
+# past the PREVIOUS good read (a cached or lagging view - the baseline tip moves with every good read, so a view that froze after the span started is not evidence either), a lastVote that went
+# backwards (an inconsistent view). The reads of two providers are not compared either: on a change of provider the baseline moves to the new one and an open
+# span restarts (a lagging fallback can fake a freeze). FAILURE DIRECTION: doubt is no page - a missed page is the loss, a false one a nuisance, and the rules are those of the rung that stops a validator on them.
+# The stake is dark during an ordinary failover too: an armed spare's take comes 73 to 79 s after the holder's last vote at MAX_DELINQUENT_SLOTS 15 (about 3 s later at the v0.7 wizard's 24), and SILENT_STAKE_PAGE_SECS (90 = TAKEOVER_DELAY + 30) is longer than the dark
+# span that remains after the first frozen pair. An unarmed spare never takes: the page is then the signal that the warm swap is waiting.
+_silent_stake_reset() { _ss_lv=""; _ss_tip=""; _ss_tier=""; _ss_since=0; _ss_page_ts=0; _ss_next_ts=0; _ss_blind_ts=0; _ss_first=0; }
+_silent_stake_cycle() {
+    local _now _smp _rest _lv _tip _tier _gap _span
+    [[ -n "${VOTE_PUBKEY:-}" ]] || return 0
+    _now=$(mono_now)
+    [[ $_now -ge ${_ss_next_ts:-0} ]] || return 0
+    _gap="${VOTE_LIVENESS_MIN_INTERVAL:-10}"; [[ "$_gap" =~ ^[0-9]+$ ]] || _gap=10; _gap=$((10#$_gap))
+    _smp=$(get_staked_liveness_sample) || _smp=""
+    _now=$(mono_now)   # the span starts when the answer ARRIVED, never before it: a stamp taken before the read dates the answer early by the read's latency
+    _lv="${_smp%% *}"; _rest="${_smp#* }"; _tip="${_rest%% *}"; _tier=""; [[ "$_rest" == *" "* ]] && _tier="${_rest##* }"
+    if [[ -z "$_smp" ]] || ! _canon_uint "$_lv" || ! _canon_uint "$_tip"; then
+        _ss_next_ts=$(( _now + (_gap > 30 ? _gap : 30) ))
+        if [[ ${_ss_blind_ts:-0} -eq 0 || $(( _now - _ss_blind_ts )) -ge ${ALERT_THROTTLE:-600} ]]; then
+            _ss_blind_ts=$_now
+            log_warn "[silent-stake] the staked vote account ${VOTE_PUBKEY} could not be read (no provider answered with a usable lastVote): cannot tell whether it votes - no page"
+        fi
+        return 0
+    fi
+    _ss_next_ts=$(( _now + _gap ))
+    if [[ -z "$_ss_lv" ]]; then
+        _ss_lv=$_lv; _ss_tip=$_tip; _ss_tier=$_tier
+        return 0
+    fi
+    if [[ "$_tier" != "$_ss_tier" ]]; then
+        if [[ $_ss_since -gt 0 ]]; then
+            log_info "[silent-stake] the answering provider changed (${_ss_tier:-unknown} to ${_tier:-unknown}): reads of two providers are not compared - the frozen span restarts on the new one"
+        fi
+        _ss_lv=$_lv; _ss_tip=$_tip; _ss_tier=$_tier; _ss_since=0
+        return 0
+    fi
+    [[ $_tip -gt $_ss_tip ]] || return 0   # the view did not advance past the PREVIOUS good read (cached or lagging): no verdict
+    [[ $_lv -ge $_ss_lv ]] || return 0     # lastVote went backwards: an inconsistent view, no verdict
+    _ss_tip=$_tip                          # the next read must advance past THIS one: a view that froze after the span started (a cache) is not evidence either
+    if [[ $_lv -gt $_ss_lv ]]; then        # votes landed: the episode is over
+        if [[ ${_ss_first:-0} -gt 0 ]]; then   # the silence counts from the first frozen pair of the EPISODE, whatever restarted the span since (a change of provider)
+            log_info "[silent-stake] staked identity votes again (lastVote ${_lv}) after $(( _now - _ss_first ))s"
+        fi
+        _ss_lv=$_lv; _ss_tip=$_tip; _ss_since=0; _ss_page_ts=0; _ss_first=0
+        return 0
+    fi
+    if [[ $_ss_since -eq 0 ]]; then
+        _ss_since=$_now
+        [[ ${_ss_first:-0} -gt 0 ]] || _ss_first=$_now
+        log_info "[silent-stake] lastVote ${_lv} of the staked vote account did not move while the cluster tip did (${_ss_tip} to ${_tip}, provider ${_tier:-unknown}): nobody is voting it - the page follows if that holds ${SILENT_STAKE_PAGE_SECS:-90}s"
+    fi
+    _span=$(( _now - _ss_since ))
+    if [[ $_span -ge ${SILENT_STAKE_PAGE_SECS:-90} ]]; then
+        if [[ ${_ss_page_ts:-0} -eq 0 || $(( _now - _ss_page_ts )) -ge ${ALERT_THROTTLE:-600} ]]; then
+            _ss_page_ts=$_now
+            alert "nobody is voting the staked identity: public lastVote ${_lv} frozen for ${_span}s (tip ${_tip}); this node is UNSTAKED and never takes in Alpenglow mode — check the holder (the spare's host) and start it, or move the identity by the warm swap (docs/SAFETY.md)" "$STAKED_PUBKEY" "STAKED IDENTITY SILENT 🚨"
+        fi
+    fi
+    return 0
+}
+
 display_status() {
     [[ ! -t 1 ]] && return
     local l; [[ "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]] && l="STAKED" || l="UNSTAKED"
@@ -7000,6 +7090,7 @@ while $_running; do
             fi
             window_reset
             reset_recovery_liveness; _selffence_reset   # v0.6.3 (Block 2/3): re-arm trackers after a manual change
+            _silent_stake_reset   # v0.7 (rc2 F21): a manual change is a new episode for the silent-stake page too - and the grace below is not counted toward its span (the span starts at the first frozen pair after it)
             _last_blind_end=0   # v0.7 (B3 s4): manual change = new episode — drop the blind anchor
             _liveness_obs_since=0; _ep_blind_cycles=0; _ep_provider_flips=0; _ep_floor_holds=0   # v0.7 (B3 s4 rework): observed span + episode diagnostics reset with the episode
             _own_view_reset   # v0.7 (Block 6.3.1, D2/D4): manual change = new episode — the own-view state too
@@ -7040,6 +7131,7 @@ while $_running; do
 
     if [[ "$CURRENT_IDENTITY" == "$STAKED_PUBKEY" ]]; then
         # ======== STAKED: Tier 1 local monitoring ========
+        _silent_stake_reset   # v0.7 (rc2 F21): this node votes the stake - no silent-stake episode lives across a STAKED cycle (the page is the UNSTAKED branch's, never this one's)
 
         # v0.6.3 (Block 3): PRIMARY self-fence — isolation from the supermajority (LOCAL confirmed
         # slot frozen) drops us to unstaked BEFORE a partition heal can double-sign. LOCAL signals
@@ -7125,6 +7217,7 @@ while $_running; do
     elif [[ "$CURRENT_IDENTITY" == "$UNSTAKED_PUBKEY" ]]; then
         # ======== UNSTAKED: recovery ========
         latency_str="UNSTK"
+        _silent_stake_cycle   # v0.7 (rc2 F21): monitor-only - pages `STAKED IDENTITY SILENT` when nobody votes the staked identity; BEFORE the RECOVERY_MODE dispatch and independent of it (no action, no take-path state)
         if [[ "$RECOVERY_MODE" == "manual" ]]; then
             if [[ $(( $(date +%s) - _last_recovery_log )) -ge 60 ]]; then
                 log_info "UNSTAKED. manual mode — waiting"; _last_recovery_log=$(date +%s)

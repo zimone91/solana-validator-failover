@@ -45,6 +45,8 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
 - Detects the failure modes that matter: dead local RPC, frozen slot, **egress-only partition** (own
   votes not landing while the node still looks healthy), and on-chain delinquency. A **hung** staked validator (stopped or deadlocked: its admin socket and RPC mute, its `lastVote` frozen) is
   hard-stopped by its own daemon after `HOLDER_UNREACHABLE_STOP_SECS` (30 s of unreadable identity, plus the reads); any doubt is a page, never a kill.
+- An **unstaked** primary (a demoted holder, or any restart) **pages `STAKED IDENTITY SILENT`** when nobody has voted the staked identity for `SILENT_STAKE_PAGE_SECS` (90 s): the spare's host
+  is dead, and in Alpenglow mode this node never takes the identity back, so a page is all FO can give. Monitor-only; it needs `VOTE_PUBKEY`.
 - **Fails safe by design:** ambiguity resolves toward *unstaked / stop / page the operator*, not toward
   taking the identity. (Design intent — see the residual risks below and in `docs/SAFETY.md`.)
 
@@ -217,7 +219,7 @@ See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 ```bash
 cd tests && bash run_all.sh
 ```
-61 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
+62 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
 mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Seven older controls compare
 against an earlier release's file, which this repository does not ship; they print `⏭ SKIP` instead of passing (Block 6.4
 moves them onto the harness's `mutate()`). Network clients reached

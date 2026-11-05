@@ -458,6 +458,7 @@ CFG_DELINQ_RETRIES="$REPLY"
 
 # v0.6.7: calm one-line "why" + a RED nudge if the operator goes below the cross-node-safe floor.
 echo -e "  ${CYAN}Recommended ${REC_TAKEOVER_DELAY}s — it gives the PRIMARY its worst-case self-fence time plus a cross-node margin to step down BEFORE this spare may take.${NC}"
+echo -e "  ${DIM}The PRIMARY pages STAKED IDENTITY SILENT after its SILENT_STAKE_PAGE_SECS (90 s shipped) of silence: keep this delay at most that minus 30, or the page comes during a failover that works.${NC}"
 ask_numeric "Takeover delay (seconds of sustained delinquency)" "${TAKEOVER_DELAY:-$ROLE_TAKEOVER_DELAY}" 1
 CFG_TAKEOVER_DELAY="$REPLY"
 warn_if_below_rec_takeover_delay "$CFG_TAKEOVER_DELAY" "$REC_TAKEOVER_DELAY" || true   # nudge only (N1 clamp below enforces the floor)

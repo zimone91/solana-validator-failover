@@ -626,6 +626,9 @@ SELF_FENCE_HARD_STOP=true
 HARD_STOP_REVERIFY_SECS=15
 # v0.7 (rc1 F19): after the SIGKILL, poll once per second for up to this many seconds until the killed validator is gone (a large process needs seconds to be torn down).
 HARD_STOP_EXIT_WAIT_SECS=15
+# v0.7 (rc2 F21): while this node is UNSTAKED it pages STAKED IDENTITY SILENT when nobody votes the staked identity for this many seconds (the spare's host or validator is
+# down). Monitor-only. Keep it >= the spare's TAKEOVER_DELAY + 30 (60 + 30); floor 30; needs VOTE_PUBKEY (set above).
+SILENT_STAKE_PAGE_SECS=90
 
 # --- Collision detector (v0.6.9 M5) ---
 # While STAKED: compare external gossip's endpoint for the staked pubkey vs our own; 2 consecutive
