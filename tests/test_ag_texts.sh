@@ -31,6 +31,9 @@
 #        and the documents say a REQUESTED STOP is what Restart= respects. The rows are A (old claim GONE) and P (new wording THERE) rows of the (7) table, over the daemons,
 #        the wizard, both templates, the manual, NOTIFICATIONS, SPLIT-BRAIN-RESIDUAL and SAFETY; each has a put-back control in (9). The FENCE units' own mask texts (fence rot,
 #        `unmask+start` after the Block-5 fence) are about a different unit and are not touched.
+#   (7+) rc2 F21 (the silent stake): the page text and status in the primary daemon, its knob comment (the pairing rule with the spare's TAKEOVER_DELAY, the figures of the take), both drift reasons and the start banner;
+#        the primary template and wizard (the pairing, the monitor-only statement, the armed spare's figure), docs/NOTIFICATIONS.md (the page row), docs/SAFETY.md (The silent stake: S18b, the doubt rules, the pairing rule and its figure)
+#        and the manual's rc2 knob row. P rows only (the page is new: nothing old to retire); each has a put-back control in (9). The behaviour is tests/test_primary_silent_stake.sh's.
 # RED ON THE BASE (the AG-1.5 / AG-1.4 tree): no constant, preset 15, the wizard says ~150 slots (~60s), no text names its bound; AG-1.7: every old phrase is
 # still there and no new one is.
 #
@@ -420,7 +423,41 @@ safety|A|0|until an operator unmasks the unit
 safety|P|1|asks systemd for the stop without waiting (`systemctl stop --no-block`
 safety|P|1|**Holds at prompt RPC I/O**
 safety|P|1|until an operator starts the unit
-sysd|P|1|unless it is armed (`AG_ARMED_TAKE=true`'
+sysd|P|1|unless it is armed (`AG_ARMED_TAKE=true`
+primary|P|1|nobody is voting the staked identity: public lastVote ${_lv} frozen for ${_span}s (tip ${_tip}); this node is UNSTAKED and never takes in Alpenglow mode
+primary|P|1|and start it, or move the identity by the warm swap (docs/SAFETY.md)" "$STAKED_PUBKEY" "STAKED IDENTITY SILENT 🚨"
+primary|P|1|PAIRING RULE: an ordinary failover - the armed spare
+primary|P|1|TAKEOVER_DELAY + 30 (60 + 30 = 90); the primary cannot read
+primary|P|1|It acts on nothing - in no
+primary|P|1|a shorter frozen span pages during a failover that works
+primary|P|1|a longer frozen span delays the page about a staked identity nobody is voting
+primary|P|1|Silent-stake page: $([ -n "$VOTE_PUBKEY" ]
+templates|P|1|env: keep it >= the spare
+templates|P|1|(the shipped pair: 90 >= 60 + 30)
+templates|P|1|so the page is all FO can give
+templates|P|1|ordinary take (73 to 79 s after the holder
+deploy_p|P|1|SILENT_STAKE_PAGE_SECS=90
+deploy_p|P|1|Monitor-only. Keep it >= the spare
+notifications|P|1|`STAKED IDENTITY SILENT 🚨` | v0.7 (rc2 F21): this node is **UNSTAKED** and nobody is voting the staked identity
+notifications|P|1|**Monitor-only:** no action in any `RECOVERY_MODE`, none in `DRY_RUN`
+notifications|P|1|An ordinary failover (an armed spare
+safety|P|1|**The silent stake (rc2 F21).**
+safety|P|1|420 s in `RECOVERY_MODE=manual` (one INFO line a minute) and 720 s in `rpc`
+safety|P|1|**Doubt is no page:**
+safety|P|1|**The pairing rule:** an ordinary failover must end before the span does
+safety|P|1|comes 73 to 79 s after the holder
+safety|P|1|the span is about 70 s or less when the votes resume
+primary|P|1|does not advance past the previous good read
+templates|P|1|TAKEOVER_DELAY <= that - 30 (shipped 60 <= 90 - 30; the primary cannot read this file)
+wizard|P|1|keep this delay at most that minus 30
+notifications|P|1|N counts from the first frozen pair of the episode, whatever restarted the span since
+safety|P|1|a tip that did not advance past the previous good read (so a view that froze after the span started is not evidence either)
+safety|P|1|a holder that votes now and then starts a new episode at every vote
+safety|P|1|takes only after the STANDBY failed too, later than the span, so the page comes first
+manual|P|1|a value other than 90 is announced at start
+manual|P|1|`SILENT_STAKE_PAGE_SECS` | `90` | F21: while this node is UNSTAKED
+manual|P|1|**Pairing rule:** keep it at least the spare
+readme|P|1|pages `STAKED IDENTITY SILENT`** when nobody has voted the staked identity for `SILENT_STAKE_PAGE_SECS` (90 s)'
 claims_for() {   # claims_for <key> <file…> -> the claims that do not hold, empty = all hold
     local key="$1" k kind min ph n c f why=""; shift
     while IFS='|' read -r k kind min ph; do
@@ -591,6 +628,40 @@ ctl9 f18-splitbrain "$SPLIT" 's/(`systemctl stop` → SIGTERM → SIGKILL; the$/
 ctl9 f18-safety-unmask "$SAFETY" 's/a downtime that lasts until an operator starts the unit/a downtime that lasts until an operator unmasks the unit/' cq
 ctl9 f18-safety-ladder "$SAFETY" 's/^ladder skips it, asks systemd for the stop without waiting (`systemctl stop --no-block`: a requested stop, so `Restart=` does not bring the unit back after the kill), notes the unit.s `ActiveState` in the log and goes SIGKILL/ladder skips it and goes `mask --runtime` → SIGKILL/' cq
 ctl9 f18-safety-normal "$SAFETY" 's/before the kill: 50 to 53 s/before the mask and the kill: 50 to 53 s/' cq
+ctl9 f21-primary-text "$PRIMARY" 's/frozen for \${_span}s (tip \${_tip}); this node is UNSTAKED and never takes in Alpenglow mode/frozen (tip ${_tip}); this node is UNSTAKED/' cp_
+ctl9 f21-primary-tail "$PRIMARY" 's/and start it, or move the identity by the warm swap (docs\/SAFETY.md)" "\$STAKED_PUBKEY" "STAKED IDENTITY SILENT 🚨"/and start it" "$STAKED_PUBKEY" "STAKED IDENTITY SILENT"/' cp_
+ctl9 f21-primary-pairing "$PRIMARY" 's/PAIRING RULE: an ordinary failover - the armed spare/PAIRING RULE: a failover - the spare/' cp_
+ctl9 f21-primary-ci-note "$PRIMARY" 's/TAKEOVER_DELAY + 30 (60 + 30 = 90); the primary cannot read/TAKEOVER_DELAY + 30; the primary cannot read/' cp_
+ctl9 f21-primary-monitor-only "$PRIMARY" 's/It acts on nothing - in no/It acts in no/' cp_
+ctl9 f21-primary-drift-low "$PRIMARY" 's/a shorter frozen span pages during a failover that works/a shorter frozen span is fine/' cp_
+ctl9 f21-primary-drift-high "$PRIMARY" 's/a longer frozen span delays the page about a staked identity nobody is voting/a longer frozen span is fine/' cp_
+ctl9 f21-primary-banner "$PRIMARY" 's/Silent-stake page: \$(\[ -n "\$VOTE_PUBKEY" \]/Silent-stake: $([ -n "$VOTE_PUBKEY" ]/' cp_
+ctl9 f21-template-pairing "$ENV_P" 's/env: keep it >= the spare/env: keep it near the spare/' cpt
+ctl9 f21-template-pair "$ENV_P" 's/(the shipped pair: 90 >= 60 + 30)/(the shipped pair: 90)/' cpt
+ctl9 f21-template-pageonly "$ENV_P" 's/so the page is all FO can give/so the page is one of the things FO gives/' cpt
+ctl9 f21-template-armed "$ENV_P" 's/ordinary take (73 to 79 s after the holder/ordinary take (60 s after the holder/' cpt
+ctl9 f21-wizard-default "$DEPLOY_P" 's/^SILENT_STAKE_PAGE_SECS=90$/SILENT_STAKE_PAGE_SECS=60/' cdp
+ctl9 f21-wizard-pairing "$DEPLOY_P" 's/Monitor-only\. Keep it >= the spare/Monitor-only. Keep it near the spare/' cdp
+ctl9 f21-notif-status "$NOTIF" 's/^| `STAKED IDENTITY SILENT 🚨` | v0.7 (rc2 F21)/| `STAKED IDENTITY SILENT` | v0.7 (rc2 F21)/' cn
+ctl9 f21-notif-monitor-only "$NOTIF" 's/\*\*Monitor-only:\*\* no action in any `RECOVERY_MODE`, none in `DRY_RUN`/**Monitor-only:** no action/' cn
+ctl9 f21-notif-failover "$NOTIF" 's/An ordinary failover (an armed spare/An armed spare/' cn
+ctl9 f21-safety-section "$SAFETY" 's/\*\*The silent stake (rc2 F21)\.\*\*/**A note.**/' cq
+ctl9 f21-safety-measured "$SAFETY" 's/420 s in `RECOVERY_MODE=manual` (one INFO line a minute) and 720 s in `rpc`/a long time/' cq
+ctl9 f21-safety-doubt "$SAFETY" 's/\*\*Doubt is no page:\*\*/**Doubt:**/' cq
+ctl9 f21-safety-pairing "$SAFETY" 's/\*\*The pairing rule:\*\* an ordinary failover must end before the span does/**The pairing rule:** none/' cq
+ctl9 f21-safety-figure "$SAFETY" 's/comes 73 to 79 s after the holder/comes 60 s after the holder/' cq
+ctl9 f21-safety-margin "$SAFETY" 's/the span is about 70 s or less when the votes resume/the span is short/' cq
+ctl9 f21-primary-tip-rule "$PRIMARY" 's/does not advance past the previous good read/does not advance/' cp_
+ctl9 f21-standby-template-pairing "$ENVS" 's/TAKEOVER_DELAY <= that - 30 (shipped/TAKEOVER_DELAY <= that (shipped/' ct
+ctl9 f21-standby-wizard-pairing "$WIZ" 's/keep this delay at most that minus 30/keep this delay about that/' cw
+ctl9 f21-notif-episode-start "$NOTIF" 's/N counts from the first frozen pair of the episode, whatever restarted the span since/N counts from the page/' cn
+ctl9 f21-safety-tip-rule "$SAFETY" 's/(so a view that froze after the span started is not evidence either)/(a view that froze later pages)/' cq
+ctl9 f21-safety-flapping-holder "$SAFETY" 's/starts a new episode at every vote/is one episode/' cq
+ctl9 f21-safety-backup "$SAFETY" 's/later than the span, so the page comes first/before the span/' cq
+ctl9 f21-manual-announced "$MANUAL" 's/a value other than 90 is announced at start/a lower value is announced at start/' cm
+ctl9 f21-manual-row "$MANUAL" 's/^| `SILENT_STAKE_PAGE_SECS` | `90` | F21/| `SILENT_STAKE_PAGE_SECS` | `60` | F21/' cm
+ctl9 f21-readme-bullet "$README" 's/\*\*pages `STAKED IDENTITY SILENT`\*\* when nobody has voted the staked identity for `SILENT_STAKE_PAGE_SECS` (90 s)/is quiet/' cr
+ctl9 f21-manual-pairing "$MANUAL" 's/\*\*Pairing rule:\*\* keep it at least the spare/**Pairing rule:** none for the spare/' cm
 [[ $c9_ok -eq 1 ]] && ok "(9) every put-back turns its case red:$c9_rows" || bad "(9) a control did not turn its case red"
 
 results_banner

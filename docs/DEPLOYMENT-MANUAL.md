@@ -473,6 +473,16 @@ fails ends the unit `failed`, which dispatches the real fence; `DRY_RUN=false` b
 
 ---
 
+## v0.7.0-rc2 candidates — primary knobs (`failover.env`)
+
+Added after the rc1 candidate. A knob here is read by the PRIMARY daemon only; an env file without it runs on the daemon's default.
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `SILENT_STAKE_PAGE_SECS` | `90` | F21: while this node is UNSTAKED it reads the staked vote account's public `lastVote` (`TIER2_RPC`, then `TIER3_RPC`, one read per `VOTE_LIVENESS_MIN_INTERVAL`) and pages `STAKED IDENTITY SILENT 🚨` when it has not moved for this many seconds while the cluster tip did: nobody is voting the staked identity (the spare's host is dead, or its validator is down). **Monitor-only** - no action in any `RECOVERY_MODE`, none in `DRY_RUN`. Floor 30; needs `VOTE_PUBKEY` (off without it, and the start banner says so). **Pairing rule:** keep it at least the spare's `TAKEOVER_DELAY` + 30 (the shipped pair: 90 >= 60 + 30), or an armed spare's ordinary take pages; a value other than 90 is announced at start (`[config-drift]`). The spare's template and wizard carry the same rule from its side (its `TAKEOVER_DELAY` <= this - 30). The first page comes when the span is reached, repeats follow `ALERT_THROTTLE`, and the log says when the votes resume. See `docs/SAFETY.md`, *The silent stake*. |
+
+---
+
 ## v0.6.9 — post-failover symmetry knobs
 
 All safe-by-default; the installers write them automatically (no new prompts beyond M7's start

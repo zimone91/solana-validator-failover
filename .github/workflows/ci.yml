@@ -372,6 +372,8 @@ jobs:
         # the primary and its template; and the PAIRING RULE holds on those defaults: the spare's TAKEOVER_DELAY >= the holder's
         # HOLDER_GAP_DEMOTE_SECS + 30 (60 >= 30 + 30). The primary cannot read the spare's env (it is another host), so this arithmetic is the only
         # place the rule is checked. A legitimate change moves the pair together and updates this step and docs/SAFETY.md (Armed cold take) in the same diff.
+        # The same holds for the silent-stake page (v0.7 rc2 F21): SILENT_STAKE_PAGE_SECS is 90 in the primary and its template and is >= the spare's TAKEOVER_DELAY + 30 (90 >= 60 + 30),
+        # so a failover that works (an armed spare's take, 73 to 79 s after the holder's last vote at MAX_DELINQUENT_SLOTS 15, about 3 s later at the v0.7 wizard's 24) ends before the unstaked primary's page; docs/SAFETY.md (The silent stake) states the margin.
         run: |
           bad=0
           one() { n=$(grep -c -E -e "$2" "$1" || true); [ "$n" = 1 ] || { echo "$1: $n line(s) match $2 - want exactly 1"; bad=1; }; }
@@ -385,13 +387,19 @@ jobs:
           one failover.env.example '^HOLDER_GAP_DEMOTE_SECS=30( |$)'
           one solana-primary-failover.sh '^HOLDER_UNREACHABLE_STOP_SECS=30( |$)'
           one failover.env.example '^HOLDER_UNREACHABLE_STOP_SECS=30( |$)'
+          one solana-primary-failover.sh '^SILENT_STAKE_PAGE_SECS=90( |$)'
+          one failover.env.example '^SILENT_STAKE_PAGE_SECS=90( |$)'
           delay=$(sed -n 's/^TAKEOVER_DELAY=\([0-9][0-9]*\).*$/\1/p' solana-standby-failover.sh | head -1)
           gap=$(sed -n 's/^HOLDER_GAP_DEMOTE_SECS=\([0-9][0-9]*\).*$/\1/p' solana-primary-failover.sh | head -1)
           case "$delay$gap" in *[!0-9]*|'') echo "cannot read TAKEOVER_DELAY ('$delay') or HOLDER_GAP_DEMOTE_SECS ('$gap')"; bad=1 ;; *)
             [ "$delay" -ge $((gap + 30)) ] || { echo "pairing rule broken: TAKEOVER_DELAY $delay < HOLDER_GAP_DEMOTE_SECS $gap + 30"; bad=1; } ;;
           esac
+          silent=$(sed -n 's/^SILENT_STAKE_PAGE_SECS=\([0-9][0-9]*\).*$/\1/p' solana-primary-failover.sh | head -1)
+          case "$delay$silent" in *[!0-9]*|'') echo "cannot read TAKEOVER_DELAY ('$delay') or SILENT_STAKE_PAGE_SECS ('$silent')"; bad=1 ;; *)
+            [ "$silent" -ge $((delay + 30)) ] || { echo "pairing rule broken: SILENT_STAKE_PAGE_SECS $silent < TAKEOVER_DELAY $delay + 30"; bad=1; } ;;
+          esac
           [ "$bad" = 0 ] || { echo "RED: an armed-take default moved in one place (rule: this step's comment)"; exit 1; }
-          echo "AG_ARMED_TAKE=false, AG_TAKE_MARGIN_SLOTS=200, TAKEOVER_DELAY=60, HOLDER_GAP_DEMOTE_SECS=30 and HOLDER_UNREACHABLE_STOP_SECS=30 in the daemons and their templates; $delay >= $gap + 30"
+          echo "AG_ARMED_TAKE=false, AG_TAKE_MARGIN_SLOTS=200, TAKEOVER_DELAY=60, HOLDER_GAP_DEMOTE_SECS=30, HOLDER_UNREACHABLE_STOP_SECS=30 and SILENT_STAKE_PAGE_SECS=90 in the daemons and their templates; $delay >= $gap + 30, $silent >= $delay + 30"
       - name: the agave flag that switches the vote-history requirement off is named once in the standby and in no other shipped file (v0.7 AG-3.3)
         # RULE: the flag that lets a validator set-identity without its vote-history file has ONE place in the shipped code: the standby's
         # armed cold take (AG-3.3 - `_AG_COLD_FLAG`, the single definition the one armed set-identity and the banner use). It is named
