@@ -350,7 +350,8 @@ CFG_CHECK_INTERVAL="$REPLY"
 ask_numeric "Check interval — turbo (seconds, when delinquency detected)" "${TURBO_INTERVAL:-1}" 1
 CFG_TURBO_INTERVAL="$REPLY"
 
-ask_numeric "Internet retries before switch (connectivity confirms)" "${CONNECTIVITY_RETRIES:-3}" 1
+echo -e "  ${DIM}Failed ping rounds before the Internet-lost demote (a round is about 5.5 s: the default 6 is about 33 s). Keep rounds x (check interval + 2 s) at 30 s or more, the self-fence isolation floor: a shorter rule demotes the holder on a WAN hiccup.${NC}"
+ask_numeric "Internet retries before switch (connectivity confirms)" "${CONNECTIVITY_RETRIES:-6}" 1
 CFG_CONN_RETRIES="$REPLY"
 
 ask_numeric "Delinquency retries (Tier 1 confirm count)" "${DELINQUENCY_RETRIES:-5}" 1

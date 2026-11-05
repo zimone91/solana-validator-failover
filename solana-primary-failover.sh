@@ -138,7 +138,7 @@ CHECK_INTERVAL=3                          # seconds between Tier 1 checks (norma
 TURBO_INTERVAL=1                          # seconds between checks (turbo: when delinquency detected)
 CONNECTIVITY_TARGETS=("8.8.8.8" "1.1.1.1" "9.9.9.9")
 CONNECTIVITY_TIMEOUT=1                    # seconds per ping
-CONNECTIVITY_RETRIES=3                    # failed rounds before switch: 3 x CHECK_INTERVAL 3 s + 3 failed rounds of 1.5-2.5 s = 13.5-16.5 s (the code's bounds added up, not pinned by a test; 17 s measured on the pair)
+CONNECTIVITY_RETRIES=6                    # failed rounds before the Internet-lost demote; one round = CHECK_INTERVAL + the fixed 1.5 s wait for the pings + the 1 s curl fallback (CONNECTIVITY_TIMEOUT does not enter) ≈ 5.5 s measured on the pair, so 6 ≈ 33 s (the floor check and the banner count CHECK_INTERVAL + 2 = 5 s a round: 6 x 5 = 30) - must stay >= SELF_FENCE_ISOLATION_SECS (the isolation rung is the intended floor; a shorter Internet rule demotes the holder on a WAN hiccup: rc2 F22, 3 rounds demoted a holder at +17 s on a 20 s egress blip); startup warns [config-drift] below the floor
 MAX_VOTE_LATENCY=0                        # 0 = only delinquency, >0 = trigger on N slots behind
 DELINQUENCY_RETRIES=5                     # Tier 1 confirmations before escalating to Tier 2
 RECOVERY_COOLDOWN=120                     # seconds after switch before allowing switch-back
@@ -6423,6 +6423,18 @@ announce_config_drift() {
     _drift_check HOLDER_UNREACHABLE_STOP_SECS 30 low "a hung staked holder stays up longer before its own daemon stops it — the spare's TAKEOVER_DELAY (shipped 60) must stay above this value plus one unreachable cycle, the reads and the stop ladder"
     _drift_check SILENT_STAKE_PAGE_SECS 90 high "a shorter frozen span pages during a failover that works — an armed spare's take lands 73 to 79 s after the holder's last vote (MAX_DELINQUENT_SLOTS 15; about 3 s later at the v0.7 wizard's 24), so keep it at least the spare's TAKEOVER_DELAY (shipped 60) + 30"
     _drift_check SILENT_STAKE_PAGE_SECS 90 low "a longer frozen span delays the page about a staked identity nobody is voting by the same amount — the stake earns nothing meanwhile"
+    # v0.7 (rc2 F22): the Internet-lost demote must not fire BELOW the isolation floor. It counts failed ping rounds, not slots: one round is CHECK_INTERVAL + about 2 s (check_internet waits a
+    # FIXED 1.5 s for the pings - not CONNECTIVITY_TIMEOUT, so that knob does not enter - and then runs a 1 s curl fallback; 5.5 s a round measured on the pair at the defaults), so RETRIES
+    # rounds land at about RETRIES x that (the earliest possible demote is a few seconds sooner: the sixth failed check demotes before its own sleep). Under SELF_FENCE_ISOLATION_SECS a WAN hiccup
+    # shorter than the isolation rung demotes the holder (3 rounds: a 20 s egress blip demoted it at +17 s, the spare took at +69 s). ONE warning, never a refusal - an old env keeps working,
+    # loudly. Only with the self-fence on: with PRIMARY_SELF_FENCE=false there is no isolation rung, the Internet rule is then the only one of the pair, and advising a longer one would point
+    # the wrong way. The advice is a value to set, not "delete the line": the default itself is below the floor at a short CHECK_INTERVAL. The same arithmetic prints in the banner.
+    if [[ "$PRIMARY_SELF_FENCE" == "true" && "$CONNECTIVITY_RETRIES" =~ ^[0-9]+$ && "$CHECK_INTERVAL" =~ ^[0-9]+$ && "$SELF_FENCE_ISOLATION_SECS" =~ ^[0-9]+$ ]]; then
+        local _ic_round=$(( 10#$CHECK_INTERVAL + 2 )) _ic_floor=$((10#$SELF_FENCE_ISOLATION_SECS))
+        if [[ $(( 10#$CONNECTIVITY_RETRIES * _ic_round )) -lt $_ic_floor ]]; then
+            log_warn "[config-drift] CONNECTIVITY_RETRIES=$((10#$CONNECTIVITY_RETRIES)) fires the Internet-lost demote at ≈ $(( 10#$CONNECTIVITY_RETRIES * _ic_round ))s, below SELF_FENCE_ISOLATION_SECS=${_ic_floor}s — a WAN hiccup shorter than the isolation floor ${_ic_floor}s demotes the holder before the isolation rung can answer it (docs/SAFETY.md, The Internet-lost floor); set CONNECTIVITY_RETRIES >= $(( (_ic_floor + _ic_round - 1) / _ic_round )) in ${CONFIG_FILE} and restart"
+        fi
+    fi
 }
 
 # ========================= STARTUP ============================================
@@ -6702,7 +6714,7 @@ startup_checks() {
     echo "  ─── Thresholds ───"
     echo "  Delinq window:     ${DELINQUENCY_WINDOW_THRESHOLD}/${DELINQUENCY_WINDOW_SIZE} (trigger/window)"
     echo "  Vote latency:      $([ "$MAX_VOTE_LATENCY" -gt 0 ] && echo "${MAX_VOTE_LATENCY} slots" || echo "off")"
-    echo "  Inet retries:      $CONNECTIVITY_RETRIES"
+    echo "  Inet retries:      $CONNECTIVITY_RETRIES (≈ $(( CONNECTIVITY_RETRIES * (CHECK_INTERVAL + 2) ))s to the Internet-lost demote; $([[ "$PRIMARY_SELF_FENCE" == "true" ]] && echo "floor ${SELF_FENCE_ISOLATION_SECS}s" || echo "no isolation floor: self-fence off"))"   # v0.7 (rc2 F22): the same arithmetic as the [config-drift] warning in announce_config_drift
     echo "  Recovery:          $RECOVERY_MODE"
     echo "  Silent-stake page: $([ -n "$VOTE_PUBKEY" ] && echo "${SILENT_STAKE_PAGE_SECS}s" || echo "off (VOTE_PUBKEY not set)")"   # v0.7 (rc2 F21): an UNSTAKED node pages when nobody votes the staked identity this long
     echo "  Mode:              ALPENGLOW — this node NEVER re-takes the staked identity itself (a re-take every gate approves is WITHHELD and paged); it still fences itself to unstaked (docs/SAFETY.md, Alpenglow)"

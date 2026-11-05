@@ -166,8 +166,8 @@ TAKEOVER_DELAY=60                         # seconds of confirmed delinquency bef
 # The residual (accepted for this slice): a holder whose WHOLE HOST was frozen and thaws after the take votes for at most one monitor cycle before its gap rule demotes it.
 AG_ARMED_TAKE=false
 # v0.7 (AG-3.2): the readiness margin, in slots: the spare takes only if its own finalized slot (= its root under Alpenglow) is at least this far above the holder's last observed lastVote.
-# Derivation: a partitioned holder keeps casting votes nobody sees until its own self-fence fires - Internet-lost at 13.5-16.5 s (the code's bounds added up, not pinned by a test; 17 s measured on the pair), frozen-slot and no-answer at 30 s -
-# plus one cycle (3 s) and the demote (1 s): <= 34 s; at the conservative 5 slots/s that is 170 slots; the on-chain lastVote understates the real last vote by <= ~8 slots (DESIGN-AG 1.2):
+# Derivation: a partitioned holder keeps casting votes nobody sees until its own self-fence fires - Internet-lost at 24 to 34 s since rc2 F22 (6 failed rounds: five sleeps of 3 s and six failed checks of 1.5 to 2.5 s, 5.5 s a round measured; not pinned by a test), frozen-slot and no-answer at 30 s -
+# plus one cycle (3 s) and the demote (1 s): <= 34 s (the Internet-lost rung is level with that at its latest and is not what the bound rests on: a holder cut off from the cluster is also on the frozen-slot, no-answer and vote-lag rungs); at the conservative 5 slots/s that is 170 slots; the on-chain lastVote understates the real last vote by <= ~8 slots (DESIGN-AG 1.2):
 # 170 + 8 = 178, rounded up to 200. A canonical integer >= 150 (below 150 the daemon refuses to start, like the delay floor).
 AG_TAKE_MARGIN_SLOTS=200
 # v0.7 (Block 3, slice 4): page when a delinquency episode has been held >= this many seconds with
