@@ -46,10 +46,15 @@ ic_world() {   # ic_world <script> <plan> [VAR=val ...] -> events, one per line:
         set +e
         # shellcheck disable=SC1090
         source "$cs" 2>/dev/null
+        trap - TERM INT HUP   # a world is not the daemon: its cleanup trap is of no use to the subshells this world forks
         eval "run_loop() {
 $region
 }"
-        EV=$(mktemp); export EV; trap 'rm -f "$EV"' EXIT
+        # NO EXIT trap in this subshell, and the event file lives under $WORK (the suite's own EXIT trap removes it, and the last command below removes it earlier): the REAL check_internet forks one
+        # `( ping ... ) &` per target and kills them at once (sleep is a no-op here), and a subshell killed right after its fork can run the EXIT trap it inherited from this shell - `rm -f "$EV"` then
+        # deleted the events logged so far (the first GitHub CI run: counts [(9/6) (10/6)] for ten cycles). Measured on bash 5.2.21: 2,360-2,603 of 10,000 fork-and-kill rounds run the parent's EXIT
+        # trap in a child, about 70 on 5.1.16, none on 3.2.57; this suite was red in 105 of 120 runs under load and green when quiet. (0b) pins that this function sets no trap.
+        EV=$(mktemp "$WORK/ev.XXXXXX"); export EV
         T_BASE=1700000000; _SIM_NOW=$T_BASE
         ev() { printf 'C=%s %s\n' "$IDX" "$*" >> "$EV"; }
         PLAN=(); IDX=0
@@ -96,12 +101,13 @@ $region
         }
         sleep() { :; }
         _running=true; run_loop
-        cat "$EV"
+        cat "$EV"; rm -f "$EV"
     ) 2>/dev/null
 }
 demote_cycles() { printf '%s\n' "$1" | sed -n 's/^C=\([0-9]*\) DEMOTE .*$/\1/p' | tr '\n' ' ' | sed 's/ $//'; }
 failed_seq()    { printf '%s\n' "$1" | sed -n 's/^C=[0-9]* FAILED \(.*\)$/\1/p' | tr '\n' ' ' | sed 's/ $//'; }
 n_of()          { printf '%s\n' "$1" | grep -c -F -e "$2"; }
+raw_ev()        { printf '%s' "$1" | tr '\n' ';' | cut -c1-420; }   # the raw event lines on one line - a red names what the world logged, not only the aggregate
 count_drift()   { printf '%s\n' "$1" | grep -c '\[config-drift\] CONNECTIVITY_RETRIES'; }
 drift_knob() {  # drift_knob <script> VAR=val... -> "rc=<announce_config_drift's status> retries=<the knob after it>" (the announcer must change nothing and refuse nothing)
     local script="$1"; shift
@@ -123,6 +129,15 @@ if [[ "$(n_of "$ev0" 'COLLISION')" == "4" && "$(failed_seq "$ev0")" == "(1/6) (2
     ok "(0) three good staked cycles, two cycles with every ping failing ('Internet FAILED (1/6)', '(2/6)'), one good cycle: the staked branch ran 4 times (the collision check), the failures were counted by the real check_internet, 'PRIMARY internet recovered after 2 fail(s)' came once, no demote"
 else
     bad "(0) the world does not run: $(printf '%s' "$ev0" | tr '\n' ';' | cut -c1-300)"
+fi
+# (0b) the world sets no trap (the note in ic_world): a trap set in a subshell that forks can be run by a child killed right after its fork - the first CI run lost ten cycles' events to it. It resets the daemon's TERM/INT/HUP trap
+_icw_body=$(sed -n '/^ic_world() {/,/^demote_cycles() {/p' "${BASH_SOURCE[0]}" | grep -v '^[[:space:]]*#')
+_icw_set=$(printf '%s\n' "$_icw_body" | grep -c -E '(^|[;({]|&&|\|\|)[[:space:]]*trap[[:space:]]+[^-[:space:]]')   # a trap SET at a command position ("trap - ..." resets, and the word in a trailing comment is not a command)
+_icw_reset=$(printf '%s\n' "$_icw_body" | grep -c -E '^[[:space:]]*trap - TERM INT HUP')
+if [[ "$_icw_set" == "0" && "$_icw_reset" == "1" ]]; then
+    ok "(0b) the world sets no trap in the subshell that runs the real check_internet (its ping subshells are killed at once; one killed in its first microseconds can run a trap it inherited - bash 5.2.21: 2,360-2,603 of 10,000 fork-and-kill rounds) and resets the daemon's TERM/INT/HUP trap right after sourcing it; its event file lives under the suite's own temp dir"
+else
+    bad "(0b) ic_world sets $_icw_set trap(s) and resets the daemon's signal trap $_icw_reset time(s) (want 0 and 1): a killed ping subshell can run an inherited trap and delete the event file in the middle of a run"
 fi
 
 # ── (a) the defaults ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -204,22 +219,22 @@ p_unstaked_never() { [[ "$(demote_cycles "$1")" == "" && "$(failed_seq "$1")" ==
 if p_exact_six "$ev_c1"; then
     ok "(c1) six cycles with every ping failing: 'Internet FAILED (1/6)' ... '(6/6)', ONE demote, at the sixth failing cycle (C=5) and not before - reason '$REASON6'"
 else
-    bad "(c1) six failing cycles: demotes at [$(demote_cycles "$ev_c1")] (want 5), counts [$(failed_seq "$ev_c1")]"
+    bad "(c1) six failing cycles: demotes at [$(demote_cycles "$ev_c1")] (want 5), counts [$(failed_seq "$ev_c1")], raw [$(raw_ev "$ev_c1")]"
 fi
 if [[ "$(demote_cycles "$ev_c2")" == "2" && "$(n_of "$ev_c2" 'C=2 DEMOTE Internet lost (3x)')" == "1" && "$(demote_cycles "$ev_c5")" == "0" && "$(n_of "$ev_c5" 'C=0 DEMOTE Internet lost (1x)')" == "1" ]]; then
     ok "(c2) the same switch at the other settings: CONNECTIVITY_RETRIES=3 demotes at the third failing cycle (C=2, 'Internet lost (3x)'), =1 at the first (C=0) - the knob is read, not a constant"
 else
-    bad "(c2) retries 3: demotes [$(demote_cycles "$ev_c2")] (want 2); retries 1: [$(demote_cycles "$ev_c5")] (want 0)"
+    bad "(c2) retries 3: demotes [$(demote_cycles "$ev_c2")] (want 2); retries 1: [$(demote_cycles "$ev_c5")] (want 0); raw [$(raw_ev "$ev_c2")] [$(raw_ev "$ev_c5")]"
 fi
 if p_reset_between "$ev_c3"; then
     ok "(c3) five failing cycles, one good one, five failing again: the count starts again at 1/6 after the good round ('PRIMARY internet recovered' twice) - no demote: the rounds must be IN A ROW"
 else
-    bad "(c3) interrupted run: demotes [$(demote_cycles "$ev_c3")] (want none), counts [$(failed_seq "$ev_c3")], recovered $(n_of "$ev_c3" 'RECOVERED')"
+    bad "(c3) interrupted run: demotes [$(demote_cycles "$ev_c3")] (want none), counts [$(failed_seq "$ev_c3")], recovered $(n_of "$ev_c3" 'RECOVERED'), raw [$(raw_ev "$ev_c3")]"
 fi
 if p_unstaked_never "$ev_c4"; then
     ok "(c4) an UNSTAKED node with no Internet for ten cycles counts to '(10/6)' and never demotes through this path (nothing to demote)"
 else
-    bad "(c4) unstaked: demotes [$(demote_cycles "$ev_c4")] (want none), counts [$(failed_seq "$ev_c4")]"
+    bad "(c4) unstaked: demotes [$(demote_cycles "$ev_c4")] (want none), counts [$(failed_seq "$ev_c4")], raw [$(raw_ev "$ev_c4")]"
 fi
 
 # ── (d) the banner ────────────────────────────────────────────────────────────────────────────────────────────────────────────
