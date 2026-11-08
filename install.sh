@@ -1,7 +1,7 @@
 #!/bin/sh
 # Solana Validator Failover — bootstrap installer.
 #
-#   sh -c "$(curl -sSfL https://zim.one/failover/v0.6.10)"   # pinned (recommended)
+#   sh -c "$(curl -sSfL https://zim.one/failover/v0.7.0)"   # pinned (recommended)
 #   sh -c "$(curl -sSfL https://zim.one/failover)"          # latest
 #
 # Downloads the deploy wizard + its daemon for the requested version, verifies them (by SYNTAX only

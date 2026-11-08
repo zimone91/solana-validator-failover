@@ -145,18 +145,18 @@ Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 ## Install (one command)
 
 ```bash
-sh -c "$(curl -sSfL https://zim.one/failover/v0.6.10)"
+sh -c "$(curl -sSfL https://zim.one/failover/v0.7.0)"
 ```
 Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, verifies them (against the version's `SHA256SUMS` manifest, fail-closed, from the first manifest-bearing release on — `v0.6.9`/`v0.6.10` predate the manifest and are syntax-checked only, which the installer says aloud; no v0.6.x tag is signed), and runs the installer (interactive; starts in DRY_RUN). This tool watches a hot-swap pair and, on its retained path, hot-swaps your staked identity (v0.7 withholds that and pages) — read `install.sh` before running it. The paranoid path (recommended for a root-level tool):
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.6.10/install.sh
+curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.7.0/install.sh
 ```
 read it, then run `sh install.sh`. **What checksums honestly buy you:** detection of a corrupted or truncated download (or a partially applied tag) — not of anyone on the delivery path who rewrites the files and the manifest together: a compromised mirror/CDN, this repository, or zim.one (the manifest travels through the same channel). Details, scope, and disclosure: [SECURITY.md](SECURITY.md).
 
 Or from source:
 ```bash
-git clone --branch v0.6.10 https://github.com/zimone91/solana-validator-failover
+git clone --branch v0.7.0 https://github.com/zimone91/solana-validator-failover
 cd solana-validator-failover
 sudo bash deploy-failover.sh          # deploy-failover-standby.sh on the spare
 ```

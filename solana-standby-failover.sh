@@ -11,7 +11,7 @@ shopt -u patsub_replacement 2>/dev/null || true
 # daemon). The facts job pins it equal in both daemons and both deploy scripts, equal to the version of the CHANGELOG's first release heading, and carried by the env templates' line 2, the
 # manual's title and the notification entries. `--version` answers only when this file is EXECUTED (a sourced copy - the test seam, an operator's `source` - never exits here), before anything else
 # runs: no environment, no file, no network.
-FO_VERSION="0.7.0-rc2"
+FO_VERSION="0.7.0"
 if [[ "${BASH_SOURCE[0]}" == "$0" && "${1:-}" == "--version" ]]; then
     _fo_name=${0##*/}; _fo_name=${_fo_name%.sh}
     printf '%s %s\n' "$_fo_name" "$FO_VERSION"; exit 0

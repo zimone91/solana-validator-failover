@@ -3,7 +3,9 @@
 All notable changes are documented here. Versions follow the project's internal `v0.6.x` line;
 `v0.6.9` is the first public release.
 
-## v0.7.0-rc2 — 2026-11-05
+## v0.7.0 — 2026-11-08
+
+### v0.7.0-rc2 — 2026-11-05
 
 - **rc2 F21 — an UNSTAKED primary pages when nobody is voting the staked identity (`STAKED IDENTITY SILENT 🚨`).** Measured on the testnet pair (S18b, `2266130`): with the standby holder's daemon stopped and its validator killed, the healthy unstaked primary paged nothing - 420 s in `RECOVERY_MODE=manual` (one INFO line a minute) and 720 s in `rpc` (the recovery pass returned at its first gate, `Still delinquent (Tier 1) — not recovering`, every 3 s, and never reached the re-take's `WITHHELD` page). In Alpenglow mode the primary never takes the identity, so a page is all FO can give, and there was none. Pre-existing since v0.6.
   - **What it does:** in the UNSTAKED branch of the main loop, before the `RECOVERY_MODE` dispatch and whatever the mode, the daemon reads the staked vote account's public `lastVote` and the cluster tip from one `getVoteAccounts` payload (`get_staked_liveness_sample`: `TIER2_RPC`, then `TIER3_RPC`; one read per `VOTE_LIVENESS_MIN_INTERVAL`) and pages `STAKED IDENTITY SILENT 🚨` once two reads of the same provider show the tip advanced and `lastVote` unchanged for `SILENT_STAKE_PAGE_SECS` seconds. The page reads `nobody is voting the staked identity: public lastVote <slot> frozen for <N>s (tip <slot>); this node is UNSTAKED and never takes in Alpenglow mode — check the holder (the spare's host) and start it, or move the identity by the warm swap (docs/SAFETY.md)`. The first page is immediate when the span is reached, repeats follow `ALERT_THROTTLE`, one INFO line (`[silent-stake] staked identity votes again …`) says when the votes resume, and the next freeze is a new episode.
@@ -17,7 +19,7 @@ All notable changes are documented here. Versions follow the project's internal 
   - **Recomputed:** the timing derived from the old 13.5-16.5 s figure now reads 24 to 34 s (six rounds; about 10.5 to 17 s for the three the default had) - `docs/SAFETY.md` (the margin's derivation: the bound stays 34 s, 170 + 8 = 178, rounded up to 200 - the Internet-lost rung moves from far below the bound to at it and is not what it rests on; the cross-node table's internet-lost row; a new paragraph, *The Internet-lost floor*), `docs/DEPLOYMENT-MANUAL.md` (the failure scenario, the binding-case note, the two timeline blocks, an rc2 knob row), the standby daemon's and its template's margin comments.
   - Tests: new `tests/test_connectivity_floor.sh` (the default in the daemon and template, the warning at 3 rounds and not at 6, the demote after exactly the configured number of failed rounds through the real main loop, controls); claim rows and put-back controls in `tests/test_ag_texts.sh`.
 
-## v0.7.0-rc1 — release candidate (v0.7 line, unreleased)
+### v0.7.0-rc1 — release candidate (v0.7 line, unreleased)
 
 - **rc1 fix round 2 (F18) — the hard stop no longer masks the unit; a requested stop is what `Restart=` respects.** Since v0.6.9 (H2) the self-fence's hard stop - a demote or give-back that wedged, and the
   primary's hung-holder rung - ran `systemctl mask --runtime <unit>` before the direct kill when `systemctl stop` had failed (the rung's fast branch, which skips the stop, always did), to keep
