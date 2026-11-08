@@ -2,17 +2,19 @@
 # v0.7.0 (F25): NO REAL IDENTITY IN THE PUBLIC TREE. The repository's rule is that no real identifier of a node or of a person - the validator, vote-account or fee-payer address - sits in a public file.
 # Until v0.7.0 one suite (tests/test_unknown_identity_alert.sh) carried the real identity of a mainnet node as its fixture, in two lines: on-chain it is public, but the fixture tied the author's
 # infrastructure to that address and nothing would have stopped the next one. Now: the suites take a SYNTHETIC identity from tests/lib/fixtures.sh (FX_IDENTITY_A), and THIS suite fails on any
-# base58 literal of 43 or 44 characters - the length of a Solana address - under tests/, docs/ or in README.md, SECURITY.md, CHANGELOG.md and the two *.example templates that is not a row of
+# base58 literal of 43 or 44 characters - the length of a Solana address - under tests/, docs/, in README.md, SECURITY.md, CHANGELOG.md, the two *.example templates or the shipped scripts (the top-level *.sh, install.sh among them, and everything under systemd/) that is not a row of
 # tests/fixtures-allowlist.txt (program ids, feature ids, genesis hashes, synthetic fixtures - each row with a one-word reason). A literal is a MAXIMAL run of base58 characters (no 0, O, I, l): a
-# 45-character run, or a literal glued to more letters, is not an address. The shipped scripts are outside the rule: the two wizards print the author's published validator in their banner, by design.
+# 45-character run, or a literal glued to more letters, is not an address. The shipped scripts are inside the rule since v0.7.0: the two wizards' banner used to print the author's validator key and now names the author (zim.one) only.
 # The suite never prints a literal it flags: file, line, the first four characters and the length - the job logs of a public repository are public.
 #   (0)  the allowlist: every row is "<literal> <reason>", a 43/44-character base58 literal, one of four reasons, no duplicates
-#   (1)  the REAL tree: every literal the rule finds is a row (and the scan is not vacuous: it reads the files of both directories and the top-level pages)
+#   (1)  the REAL tree: every literal the rule finds is a row (and the scan is not vacuous: it reads the files of both directories, the top-level pages and the shipped scripts)
 #   (2)  the fixture: FX_IDENTITY_A is a 43/44-character base58 string, is a "synthetic" row, and the suite that used to carry the real identity uses it
 #   (3)  CONTROLS (planted trees): a literal in a test file, in a doc, in README.md, SECURITY.md, CHANGELOG.md and a template is found, with its line; 43 and 44 are found, 42 and 45 are not; a literal
 #        glued to more base58 characters is not an address, one next to _ or 0 is; a row passes it; the allowlist file is not scanned against itself; bad rows are named; the output never holds the
-#        literal; the real suite with its fixture swapped back for a literal is found twice
+#        literal; the real suite with its fixture swapped back for a literal is found twice; a literal in a top-level *.sh, in install.sh and under systemd/ is found; the real wizard with a banner line
+#        carrying a literal restored is found
 # RED ON THE BASE (rc2 c92450e + this suite + its allowlist): (1) finds 2 unlisted literals, both in tests/test_unknown_identity_alert.sh, and (2) finds no fixtures library.
+# RED ON THE RELEASE CANDIDATE d9e000f + this suite change (the scan extended to the shipped scripts): (1b) finds 2 unlisted literals, the Validator line of each wizard's banner.
 #
 # harness: tests/lib/harness.sh - ok/bad+banners, paths, mutate().
 set +e
@@ -27,12 +29,12 @@ REASONS="synthetic program-id feature-id genesis-hash"
 B58='[1-9A-HJ-NP-Za-km-z]'
 
 # ── the rule ────────────────────────────────────────────────────────────────────────────────────────────────
-# scan_files <root> -> the files the rule covers, one per line: everything under tests/ and docs/ (the allowlist itself excluded), the top-level pages and the *.example templates.
+# scan_files <root> -> the files the rule covers, one per line: everything under tests/, docs/ and systemd/ (the allowlist itself excluded), the top-level pages, the *.example templates and the top-level *.sh.
 scan_files() {
     local root="$1" f
     {
-        find "$root/tests" "$root/docs" -type f 2>/dev/null
-        for f in "$root/README.md" "$root/SECURITY.md" "$root/CHANGELOG.md" "$root"/*.example; do [[ -f "$f" ]] && echo "$f"; done
+        find "$root/tests" "$root/docs" "$root/systemd" -type f 2>/dev/null
+        for f in "$root/README.md" "$root/SECURITY.md" "$root/CHANGELOG.md" "$root"/*.example "$root"/*.sh; do [[ -f "$f" ]] && echo "$f"; done
     } | grep -v '/tests/fixtures-allowlist\.txt$' | LC_ALL=C sort
 }
 # literals <file> -> "<file>:<line>:<literal>" for every MAXIMAL run of base58 characters that is exactly 43 or 44 long (LC_ALL=C: a range like A-H must not take lower-case letters in a locale's collation).
@@ -80,12 +82,13 @@ expect "(0b) malformed or duplicate rows" "$(bad_rows "$ALLOW" 2>/dev/null | tr 
 echo ""; echo "─── (1) the real tree ───"
 nfiles=$(scan_files "$HARNESS_DIR" | wc -l | tr -d ' ')
 nt=$(scan_files "$HARNESS_DIR" | grep -c '/tests/'); nd=$(scan_files "$HARNESS_DIR" | grep -c '/docs/')
+nsh=$(scan_files "$HARNESS_DIR" | grep -c -E '/(deploy-failover|deploy-failover-standby|solana-primary-failover|solana-standby-failover|install|failover-arm)\.sh$'); nsd=$(scan_files "$HARNESS_DIR" | grep -c '/systemd/')
 nlit=$(scan_files "$HARNESS_DIR" | while IFS= read -r f; do literals "$f"; done | cut -d: -f3 | LC_ALL=C sort -u | wc -l | tr -d ' ')
-if [[ "$nt" -ge 40 && "$nd" -ge 5 ]] && scan_files "$HARNESS_DIR" | grep -q '/README.md$' && scan_files "$HARNESS_DIR" | grep -q '/SECURITY.md$' \
+if [[ "$nt" -ge 40 && "$nd" -ge 5 && "$nsh" == 6 && "$nsd" -ge 5 ]] && scan_files "$HARNESS_DIR" | grep -q '/README.md$' && scan_files "$HARNESS_DIR" | grep -q '/SECURITY.md$' \
    && scan_files "$HARNESS_DIR" | grep -q '/CHANGELOG.md$' && [[ "$(scan_files "$HARNESS_DIR" | grep -c '\.example$')" == "2" ]]; then
-    ok "(1a) the scan is not vacuous: $nfiles files ($nt under tests/, $nd under docs/, README.md, SECURITY.md, CHANGELOG.md, 2 templates), $nlit distinct 43/44-character literals"
+    ok "(1a) the scan is not vacuous: $nfiles files ($nt under tests/, $nd under docs/, $nsh shipped scripts, $nsd under systemd/, README.md, SECURITY.md, CHANGELOG.md, 2 templates), $nlit distinct 43/44-character literals"
 else
-    bad "(1a) the scan reads too little: $nfiles files ($nt under tests/, $nd under docs/)"
+    bad "(1a) the scan reads too little: $nfiles files ($nt under tests/, $nd under docs/, $nsh of 6 shipped scripts, $nsd under systemd/)"
 fi
 un=$(unlisted "$HARNESS_DIR" "$ALLOW")
 expect "(1b) literals that are not rows of the allowlist" "$(printf '%s' "$un" | grep -c .)" "0"
@@ -135,5 +138,11 @@ expect "(3i) bad rows are named: an unknown reason, a duplicate, a third field, 
 w=$(mkworld c8); cp "$HARNESS_DIR/tests/test_unknown_identity_alert.sh" "$w/tests/test_unknown_identity_alert.sh"
 mutate "$w/tests/test_unknown_identity_alert.sh" "s/CURRENT_IDENTITY=\"\\\$FX_IDENTITY_A\"/CURRENT_IDENTITY=\"$L44\"/" "$w/tests/mut.sh" && cp "$w/tests/mut.sh" "$w/tests/test_unknown_identity_alert.sh" && rm "$w/tests/mut.sh"
 expect "(3j) the suite with its fixture swapped back for a literal: 2 literals found" "$(unlisted "$w" "$ALLOW" | grep -c 'test_unknown_identity_alert.sh')" "2"
+# a literal in a shipped script is found: a top-level *.sh, install.sh and a script under systemd/
+w=$(mkworld c9); mkdir -p "$w/systemd"; printf '#!/bin/bash\necho "%s"\n' "$L44" > "$w/deploy-x.sh"; printf '#!/bin/sh\nX="%s"\n' "$L44" > "$w/install.sh"; printf '#!/bin/bash\n# %s\n' "$L44" > "$w/systemd/fence.sh"
+expect "(3k) a literal in a top-level *.sh, in install.sh and in a systemd/ script is found (3 files)" "$(unlisted "$w" /dev/null | cut -d: -f1 | sed "s|$w/||" | tr '\n' ' ')" "deploy-x.sh install.sh systemd/fence.sh "
+# the real wizard with a banner line carrying a literal restored (a synthetic one): found, once
+w=$(mkworld c10); cp "$HARNESS_DIR/deploy-failover.sh" "$w/deploy-failover.sh"; printf 'echo -e "  Validator:  %s"\n' "$L44" >> "$w/deploy-failover.sh"
+expect "(3l) the real deploy-failover.sh with a banner line carrying a literal restored: that literal is found, once" "$(unlisted "$w" "$ALLOW" | grep -c 'deploy-failover.sh')" "1"
 
 results_banner

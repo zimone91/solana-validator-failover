@@ -233,8 +233,8 @@ still running? does `SigCgt` hold TERM with nothing pending?), then decide.
 
 No real identity - the validator, vote-account or fee-payer address of a node or of a person - appears in this repository's tree. A suite that needs "some other identity" sources
 `tests/lib/fixtures.sh` (`FX_IDENTITY_A`, generated for the purpose; the private half was never kept). `tests/test_no_real_identities.sh` enforces it: every base58 literal of 43 or 44 characters
-(a *maximal* run of base58 characters, so a 45-character run or a literal glued to more letters is not one) under `tests/`, `docs/` and in `README.md`, `SECURITY.md`, `CHANGELOG.md` and the two
-`*.example` templates must be a row of `tests/fixtures-allowlist.txt` - `<literal> <reason>`, the reason one of `synthetic`, `program-id`, `feature-id`, `genesis-hash`. The suite prints a flagged
-literal as its file, line, first four characters and length, never in full (the job logs of a public repository are public). The shipped scripts are outside the rule; the wizards' banner prints the
-author's published validator by design. A new suite needs no registration for this rule; it only has to take its identities from the fixtures library (the count is registered in `run_all.sh` and
+(a *maximal* run of base58 characters, so a 45-character run or a literal glued to more letters is not one) under `tests/`, `docs/`, in `README.md`, `SECURITY.md`, `CHANGELOG.md`, the two
+`*.example` templates and the shipped scripts (the top-level `*.sh`, `install.sh` among them, and `systemd/`) must be a row of `tests/fixtures-allowlist.txt` - `<literal> <reason>`, the reason one of `synthetic`, `program-id`, `feature-id`, `genesis-hash`. The suite prints a flagged
+literal as its file, line, first four characters and length, never in full (the job logs of a public repository are public). The shipped scripts are inside the rule: the wizards' banner names the author (zim.one), not a
+validator key. A new suite needs no registration for this rule; it only has to take its identities from the fixtures library (the count is registered in `run_all.sh` and
 the README, as for every suite).

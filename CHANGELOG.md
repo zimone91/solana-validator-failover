@@ -22,8 +22,8 @@ The second candidate added the silent-stake page (F21) and the Internet-lost flo
 - **F24 — the primary wizard no longer prints an outage command.** Its NEXT STEPS offered `iptables -I OUTPUT 1 ! -o lo -j DROP; sleep 40; ...` as a "simulated outage (DRY RUN)": the rule cuts the
   validator's traffic, not only the daemon's, and `DRY_RUN` gates only the daemon. Item 2 now reads "Rehearse on a SPARE, never on the holder". New section `docs/SAFETY.md` → "Rehearsing the
   self-fence"; the manual's testing phases 2 and 4 name their target (a spare, or a TEST pair). Same suite.
-- **F25 — no real identity in the public tree, enforced.** One test carried a real node identity as its fixture; the suites now take a synthetic one (`tests/lib/fixtures.sh`), and the new suite
-  `tests/test_no_real_identities.sh` fails on any base58 literal of 43 or 44 characters under `tests/`, `docs/`, in README.md, SECURITY.md, CHANGELOG.md and the templates that is not a row of
+- **F25 — no real identity in the public tree, enforced.** One test carried a real node identity as its fixture, and the wizards' banner printed the author's validator key; the suites now take a synthetic identity (`tests/lib/fixtures.sh`), the banner names the author (zim.one) only, and the new suite
+  `tests/test_no_real_identities.sh` fails on any base58 literal of 43 or 44 characters under `tests/`, `docs/`, in README.md, SECURITY.md, CHANGELOG.md, the templates and the shipped scripts that is not a row of
   `tests/fixtures-allowlist.txt` (program ids, feature ids, synthetic fixtures).
 - **Release tags are signed from this release on** (an SSH signature; the public key is at https://zim.one/failover.pub, and `SECURITY.md` has the verification command). `install.sh` verifies no
   signature: it checks the tag's `SHA256SUMS`, fail-closed.

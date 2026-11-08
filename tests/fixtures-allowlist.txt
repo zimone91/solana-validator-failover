@@ -1,4 +1,4 @@
-# tests/fixtures-allowlist.txt - the ONLY base58 literals of 43 or 44 characters that may appear under tests/, docs/, in README.md, SECURITY.md, CHANGELOG.md and the two *.example templates (v0.7.0 F25).
+# tests/fixtures-allowlist.txt - the ONLY base58 literals of 43 or 44 characters that may appear under tests/, docs/, in README.md, SECURITY.md, CHANGELOG.md, the two *.example templates and the shipped scripts (the top-level *.sh and everything under systemd/) (v0.7.0 F25).
 # One row per literal: <literal> <reason>. The reason is one word: synthetic (made up or generated for a fixture; a private half, if there ever was one, was not kept), program-id (the address of a
 # Solana program), feature-id (the address of a feature gate, also of an older agave), genesis-hash.
 # A real identity - the validator, vote-account or fee-payer address of a node or of a person - is NEVER a row here: a test takes FX_IDENTITY_A from tests/lib/fixtures.sh. tests/test_no_real_identities.sh
@@ -11,3 +11,4 @@ UnstakedPubkey11111111111111111111111111111 synthetic
 Vote111111111111111111111111111111111111111 program-id
 a1penGLz8Vm2QHYB3JPefBiU4BY3Z6JkW2k3Scw5GWP feature-id
 3tkCv6M4JwEDPYKcum4paeDamuYU6sdE822qx5C1n6ur synthetic
+FLHoAWBDjNh6zwmJ5i1NKK4KyD8otAiv7XxvmnFnVnKH feature-id
