@@ -407,6 +407,23 @@ the whole run.
 **Known limit:** these are function-level — they do not prove cross-process ordering between two live
 systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
 
+### Rehearsing the self-fence
+
+**Never on the node that holds the staked identity.** The self-fence answers a lost network, and the usual way to rehearse one - dropping the host's egress with `iptables -I OUTPUT 1 ! -o lo -j DROP` - cuts
+the *validator's* traffic along with the daemon's. On a holder that is a stretch without votes for as long as the rule stays in place (40 s in the drill this section replaces), plus the validator's recovery, and
+with `DRY_RUN=false` the daemon demotes the holder on top of it while the spare sees a delinquent holder. `DRY_RUN=true` does not make it safe: it gates only what the daemon does, not what the rule does to
+the validator.
+
+**What a spare can rehearse.** A node that is not voting the staked identity has nothing to demote, so a network cut there does not exercise the demote ladder; it shows the detection and the recovery page. Before
+the cut, check that the node's identity (`getIdentity` on its local RPC) is its UNSTAKED pubkey and that the staked vote account's last vote is advancing under the other node. Then, from a root shell and as ONE
+line, so that the rule cannot outlive the shell: `iptables -I OUTPUT 1 ! -o lo -j DROP; sleep 40; iptables -D OUTPUT ! -o lo -j DROP` (40 s is longer than the six rounds of the default
+`CONNECTIVITY_RETRIES`, about 33 s - *The Internet-lost floor* above). On a PRIMARY daemon expect, in `/var/log/solana-failover.log`, one `Internet FAILED (n/N)` line per cycle while the cut lasts and, once the
+network is back, `✅ PRIMARY internet recovered after N fail(s)` (a critical page that the cut kept from being sent is retried then); no demote line, because the node holds nothing to demote. A STANDBY daemon has no
+Internet-lost check of its own: the cut shows there as failed external reads in its log. The holder is not touched and keeps voting.
+
+**The demote ladder itself** - the rungs of the holder self-fence, the Internet-lost demote among them - is rehearsed only on a test pair, with an observer on the vote account, as the scenarios under *What has
+been tested* were. It is never rehearsed on a mainnet holder.
+
 ## Residual risks (be honest with yourself)
 
 ### The big one: liveness is evidence, not a fence

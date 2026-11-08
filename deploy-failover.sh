@@ -812,8 +812,10 @@ echo -e "     ${DIM}systemctl start solana-failover${NC}"
 echo -e "     ${DIM}tail -f /var/log/solana-failover.log${NC}"
 echo ""
 sleep 1
-echo -e "  ${BOLD}2.${NC} Test with a simulated outage (DRY RUN):"
-echo -e "     ${DIM}iptables -I OUTPUT 1 ! -o lo -j DROP; sleep 40; iptables -D OUTPUT ! -o lo -j DROP${NC}"
+# v0.7.0 (F24): no outage command here. Such a rule cuts the VALIDATOR's traffic, not only the daemon's: on the node that holds the staked identity it is a stretch without votes, and DRY_RUN
+# gates only the daemon's action. The rehearsal that is safe, and its limits, are in docs/SAFETY.md.
+echo -e "  ${BOLD}2.${NC} Rehearse on a SPARE, never on the holder:"
+echo -e "     ${DIM}docs/SAFETY.md → \"Rehearsing the self-fence\"${NC}"
 echo ""
 sleep 1
 echo -e "  ${BOLD}3.${NC} When ready for production:"

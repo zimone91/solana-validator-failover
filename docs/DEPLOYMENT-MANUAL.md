@@ -854,11 +854,15 @@ Verify: startup alert received, heartbeat every 10 min, no errors.
 
 ### Phase 2 — Simulated failure (DRY RUN)
 
+**Run it on a SPARE (a node that is not voting the staked identity) or on the holder of a TEST pair — never on the node that holds the staked identity of a live validator.** The rule cuts the validator's traffic,
+not only the daemon's, so the node stops voting for as long as it stays in place, and `DRY_RUN` gates only what the daemon does ([SAFETY.md — Rehearsing the self-fence](SAFETY.md#rehearsing-the-self-fence)).
+
 ```bash
 iptables -I OUTPUT 1 ! -o lo -j DROP; sleep 40; iptables -D OUTPUT ! -o lo -j DROP
 ```
 
-Expected: `[DRY RUN] Would switch to UNSTAKED`, then `✅ PRIMARY internet recovered after N fail(s)`.
+Expected on a spare (nothing to demote): one `Internet FAILED (n/N)` line per cycle, then `✅ PRIMARY internet recovered after N fail(s)`. Expected on the holder of a test pair: `[DRY RUN] Would switch to UNSTAKED`,
+then the same recovery line.
 
 ### Phase 3 — Real switch (PRIMARY only)
 
@@ -871,6 +875,9 @@ agave-validator --ledger /root/solana/ledger set-identity /root/solana/mainnet-v
 ```
 
 ### Phase 4 — Full integration (PRIMARY + STANDBY)
+
+**A TEST pair only — never the pair of a live validator.** The rule below goes on the node that holds the staked identity: it cuts the validator's traffic, not only the daemon's, so the node stops voting, and with
+`DRY_RUN=false` the demote is real ([SAFETY.md — Rehearsing the self-fence](SAFETY.md#rehearsing-the-self-fence)).
 
 Both `DRY_RUN=false`. On PRIMARY:
 

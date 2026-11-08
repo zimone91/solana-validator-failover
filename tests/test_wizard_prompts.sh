@@ -1,5 +1,5 @@
 #!/bin/bash
-# v0.7.0 (F23): THE WIZARDS' YES/NO PROMPTS. Measured on a live standby install (2026-11-05): a wrong-layout (Cyrillic) letter, a Backspace and an "n" left the two bytes d1 6e in the read; the old test
+# v0.7.0 (F23, F24): THE WIZARDS' YES/NO PROMPTS AND THEIR NEXT STEPS. F23: Measured on a live standby install (2026-11-05): a wrong-layout (Cyrillic) letter, a Backspace and an "n" left the two bytes d1 6e in the read; the old test
 # `[[ "$yn" != "n" && "$yn" != "N" ]]` took every other answer as YES, the wizard printed "Loaded existing config", and the old env turned the DRY RUN default into false on a LIVE node. The same
 # test sat in the primary wizard and in offer_start_service (any other byte started the service, any other byte enabled it at boot). Now ONE helper in each wizard, ask_yn "<prompt>" <y|n>:
 # exactly y / Y / yes = yes, n / N / no = no, an empty line = the default (so is a Ctrl-D on the first ask), anything else is asked again ("answer y or n"), and the third unrecognised answer in a
@@ -10,15 +10,20 @@
 #   (b)  the REAL interactive branch of offer_start_service (its tty guard cut out of a COPY, systemctl stubbed): defaults start and enable; n n starts nothing; d1 6e does NOT start;
 #        three stray answers do NOT start; a stray start answer then a Ctrl-D does not start; three stray answers to the enable question do not enable
 #   (c)  the REAL ask_path: "Continue anyway?" continues on y and on yes, asks again on a stray answer, re-asks the path on n
-#   (d)  CONTROLS (mutate()): every mutant of the helper and of its callers turns its case red
+#   (d)  F24: the NEXT STEPS block of both wizards, RENDERED (the real echo lines, sleep stubbed): no `iptables` anywhere, the numbering 1-3 intact, the primary's item 2 says "Rehearse on a SPARE,
+#        never on the holder" and points to docs/SAFETY.md "Rehearsing the self-fence", and that heading exists. The primary used to print `iptables -I OUTPUT 1 ! -o lo -j DROP; sleep 40; ...` as a
+#        "simulated outage (DRY RUN)" after every install (seen on the mainnet holder 2026-11-06): the rule cuts the VALIDATOR's traffic, not the daemon's - on the node that holds the staked
+#        identity that is a stretch without votes, and DRY_RUN gates only the daemon's action.
+#   (e)  CONTROLS (mutate()): every mutant of the helper, of its callers and of the NEXT STEPS text turns its case red
 # RED ON THE BASE (rc2, c92450e + this suite): ask_yn is not defined (0a), four bare `read -r yn` per wizard (0b), no prompt goes through it (0c); in (a) d1 6e, the empty line, no, three stray answers, a Ctrl-D (the wizard dies under
-# set -e) and YES all LOAD; in (b) d1 6e and three stray answers START the service and a stray enable answer enables it; in (c) a stray answer and yes are not answers.
+# set -e) and YES all LOAD; in (b) d1 6e and three stray answers START the service and a stray enable answer enables it; in (c) a stray answer and yes are not answers; in (d) the primary's NEXT
+# STEPS prints the iptables line (one hit), prints no pointer, and docs/SAFETY.md has no such heading.
 #
 # harness: tests/lib/harness.sh - ok/bad+banners, paths, mutate().
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
 
-title_banner "Wizard yes/no prompts: an old env is loaded, a service started, only on an explicit yes (v0.7.0 F23)"
+title_banner "Wizard yes/no prompts and next steps: only an explicit yes loads, starts, enables; no outage command (v0.7.0 F23, F24)"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/wzp.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -92,6 +97,17 @@ path_world() {
     printf '%s' "$(printf '%s\n' "$out" | sed -n 's/^.*REPLY=\(.*\)$/\1/p' | tail -1 | sed "s|$WORK|W|")"
 }
 
+# next_steps <script> -> the rendered text of the wizard's NEXT STEPS block: the real lines from the heading to the offer_start_service call, sleep stubbed, no colours.
+next_steps() {
+    local script="$1" blk
+    blk=$(awk '/NEXT STEPS/ { on = 1 } /^offer_start_service "/ { on = 0 } on' "$script")
+    [[ -n "$blk" ]] || { echo "NO-BLOCK"; return 0; }
+    ( BOLD=""; NC=""; DIM=""; CYAN=""; YELLOW=""; GREEN=""; RED=""; sleep() { :; }; eval "$blk" 2>&1 )
+}
+ns_iptables() { next_steps "$1" | grep -c 'iptables'; }
+ns_numbers()  { next_steps "$1" | grep -c '^  [123]\. '; }
+ns_pointer()  { next_steps "$1" | grep -c 'Rehearsing the self-fence'; }
+
 expect() {   # expect <label> <got> <want>
     [[ "$2" == "$3" ]] && ok "$1 -> $2" || bad "$1: got [$2], want [$3]"
 }
@@ -152,8 +168,21 @@ for pair in "primary:$DEPLOY_P" "standby:$DEPLOY_S"; do
     expect "(c4-$name) a missing file, d1 6e, y -> asked again, then kept"                             "$(path_world "$f" '/nonexistent/k\n\0321n\ny\n')"             "/nonexistent/k"
 done
 
-# ── (d) controls ───────────────────────────────────────────────────────────────────────────────────────────────
-echo ""; echo "─── (d) CONTROLS: a mutant of the helper or of a caller turns its case red ───"
+# ── (d) the NEXT STEPS block (F24) ─────────────────────────────────────────────────────────────────────────────
+echo ""; echo "─── (d) NEXT STEPS: no outage command, a pointer to the rehearsal that is safe ───"
+for pair in "primary:$DEPLOY_P" "standby:$DEPLOY_S"; do
+    name=${pair%%:*}; f=${pair#*:}
+    n=$(next_steps "$f" | wc -l | tr -d ' ')
+    [[ "$n" -ge 8 ]] && ok "(d1-$name) the block renders ($n lines)" || bad "(d1-$name) the NEXT STEPS block did not render ($n lines)"
+    expect "(d2-$name) the numbering 1. 2. 3. is intact (lines that start a numbered item)" "$(ns_numbers "$f")" "3"
+    expect "(d3-$name) lines of the rendered block that name iptables"                      "$(ns_iptables "$f")" "0"
+done
+expect "(d4) the primary's item 2 is 'Rehearse on a SPARE, never on the holder'" "$(next_steps "$DEPLOY_P" | grep -c '2\. Rehearse on a SPARE, never on the holder')" "1"
+expect "(d5) ... and it points to docs/SAFETY.md, Rehearsing the self-fence"    "$(ns_pointer "$DEPLOY_P")" "1"
+expect "(d6) that heading exists in docs/SAFETY.md (the pointer resolves)"      "$(grep -c '^### Rehearsing the self-fence$' "$HARNESS_DIR/docs/SAFETY.md")" "1"
+
+# ── (e) controls ───────────────────────────────────────────────────────────────────────────────────────────────
+echo ""; echo "─── (e) CONTROLS: a mutant of the helper, of a caller or of the NEXT STEPS text turns its case red ───"
 ctl_ok=1; ctl_rows=""
 ctl() {   # ctl <name> <script> <sed-expr> <world> <input> <what a CORRECT script prints>  (the mutant must print something else)
     local name="$1" script="$2" expr="$3" world="$4" input="$5" want="$6" m="$WORK/mut.$RANDOM.sh" got
@@ -171,6 +200,10 @@ for pair in "primary:$DEPLOY_P" "standby:$DEPLOY_S"; do
     ctl "$name-result-ignored"   "$f" 's/if ask_yn "Load existing values as defaults? (y\/N)" n; then/if true; then/'                                                   frag_world 'n\n' "loaded=no asks=1 says=0 died=0"
     ctl "$name-start-bare-read"  "$f" 's/if ask_yn "Start ${unit} now? (Y\/n)" y; then/read -r yn || yn=""; if [[ "$yn" != "n" \&\& "$yn" != "N" ]]; then/'             start_world '\0321n\nn\nn\n' "start=0 enable=0"
 done
-[[ $ctl_ok -eq 1 ]] && ok "(d) every mutant turns its case red:$ctl_rows" || bad "(d) a control did not turn its case red:$ctl_rows"
+ctl "primary-iptables-back"   "$DEPLOY_P" 's/Rehearse on a SPARE, never on the holder:/Test with iptables -I OUTPUT 1 ! -o lo -j DROP:/'      ns_iptables 'x' "0"
+ctl "primary-numbering"       "$DEPLOY_P" 's/\${BOLD}2\.\${NC} Rehearse/${BOLD}4.${NC} Rehearse/'                                               ns_numbers  'x' "3"
+ctl "primary-pointer-lost"    "$DEPLOY_P" 's/Rehearsing the self-fence/Rehearsing/'                                                                ns_pointer  'x' "1"
+ctl "standby-iptables-added"  "$DEPLOY_S" 's/Verify monitoring is working:/Test with iptables -I OUTPUT 1 ! -o lo -j DROP:/'                      ns_iptables 'x' "0"
+[[ $ctl_ok -eq 1 ]] && ok "(e) every mutant turns its case red:$ctl_rows" || bad "(e) a control did not turn its case red:$ctl_rows"
 
 results_banner
