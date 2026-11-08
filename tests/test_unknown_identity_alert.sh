@@ -16,6 +16,7 @@
 # suite's comment-anchor seams migrate LAST or never; its title banner and the seam extractions stay untouched).
 set +e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/harness.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/fixtures.sh"   # v0.7.0 (F25): FX_IDENTITY_A - a synthetic identity; this suite used to carry a real node identity here
 
 echo "============================================="
 echo "  Unknown-identity critical paging"
@@ -44,7 +45,7 @@ INFOS=0; alert_info() { INFOS=$((INFOS+1)); }
 WARNS=0; log_warn() { WARNS=$((WARNS+1)); }
 display_status() { :; }
 ALERT_THROTTLE=600
-CURRENT_IDENTITY="2MXepp63arq2AZmCv2dKSmB4ytZTJPyrKgt8HSKRUDES"
+CURRENT_IDENTITY="$FX_IDENTITY_A"
 UNSTAKED_PUBKEY="UnstakedPubkey11111111111111111111111111111"
 STAKED_PUBKEY="StakedPubkey1111111111111111111111111111111"
 _unknown_identity_since=0; _last_unknown_alert=0
@@ -119,7 +120,7 @@ ALERTS=0; WARNS=0; INFOS=0; LAST_ALERT_STATUS=""
 date() { [[ "$1" == "+%s" ]] && { echo "$_SIM_NOW"; return 0; }; command date "$@"; }
 mono_now() { date +%s; }   # v0.7 (Block 3): thread the fake clock into the mono helper
 _unknown_identity_since=0; _last_unknown_alert=0
-CURRENT_IDENTITY="2MXepp63arq2AZmCv2dKSmB4ytZTJPyrKgt8HSKRUDES"
+CURRENT_IDENTITY="$FX_IDENTITY_A"
 # shellcheck disable=SC1090
 source "$P_UNK"
 [[ $ALERTS -eq 1 && "$LAST_ALERT_STATUS" == *"PROTECTION OFFLINE"* ]] \
