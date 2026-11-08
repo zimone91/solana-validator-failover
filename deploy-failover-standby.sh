@@ -61,6 +61,38 @@ ask_choice() {
     done
 }
 
+# v0.7.0 (F23): a yes/no question that cannot be answered by accident. ask_yn "<prompt, with its (Y/n) or (y/N) hint>" <y|n>  ->  rc 0 = yes, rc 1 = no.
+# Exactly y / Y / yes mean yes and n / N / no mean no; an empty line means the DEFAULT (a Ctrl-D on the first ask is an empty line); ANYTHING else - a stray key, a wrong-layout letter, the half of
+# a two-byte character left by a Backspace (measured on a live install: the bytes d1 6e were read as "load the old env") - is asked again ("answer y or n"), and the third unrecognised answer in a
+# row takes NO, as does a Ctrl-D after one. NO is the safe branch of every caller: do not load the old env, do not start the service, do not go on past a missing file. Callers ask it as
+# `if ask_yn ...; then`, so the rc 1 never ends a run under set -e.
+ask_yn() {
+    local prompt="$1" default="$2" yn="" shown="N" tries=0 eof
+    [[ "$default" == "y" ]] && shown="Y"
+    while true; do
+        echo -ne "${BOLD}  $prompt${NC} [${shown}]: "
+        eof=0
+        read -r yn || { yn=""; eof=1; }   # EOF-safe under set -e: a Ctrl-D must not fail the finished deploy
+        case "$yn" in
+            y|Y|yes) return 0 ;;
+            n|N|no)  return 1 ;;
+            "")
+                if [[ $eof -eq 1 && $tries -gt 0 ]]; then
+                    warn "no answer after an unrecognised one - taking NO"
+                    return 1
+                fi
+                if [[ "$default" == "y" ]]; then return 0; fi
+                return 1 ;;
+        esac
+        tries=$((tries + 1))
+        if [[ $tries -ge 3 ]]; then
+            warn "no valid answer in 3 tries - taking NO"
+            return 1
+        fi
+        warn "answer y or n"
+    done
+}
+
 ask_path() {
     local prompt="$1" default="$2" required="$3"
     while true; do
@@ -71,9 +103,9 @@ ask_path() {
         fi
         if [[ -n "$REPLY" && ! -f "$REPLY" ]]; then
             warn "File not found: $REPLY"
-            echo -ne "  Continue anyway? (y/N): "
-            read -r yn
-            [[ "$yn" == "y" || "$yn" == "Y" ]] && break
+            if ask_yn "Continue anyway? (y/N)" n; then
+                break
+            fi
             continue
         fi
         break
@@ -128,7 +160,7 @@ warn_if_below_rec_takeover_delay() {
 # human). A function so it is unit-testable (tests/test_installer_guardrails.sh sources it).
 # $1=unit, $2=non-empty if the unit was active before this deploy stopped it.
 offer_start_service() {
-    local unit="$1" was_active="$2" yn
+    local unit="$1" was_active="$2"
     if [[ ! -t 0 ]]; then
         echo "  (non-interactive shell: start it yourself with: systemctl start ${unit})"
         return 0
@@ -137,9 +169,7 @@ offer_start_service() {
     if [[ -n "$was_active" ]]; then
         echo -e "  ${YELLOW}${unit} was RUNNING before this deploy and was stopped for the upgrade — the node is currently UNPROTECTED.${NC}"
     fi
-    echo -ne "${BOLD}  Start ${unit} now? (Y/n)${NC} [Y]: "
-    read -r yn || yn=""   # EOF-safe under set -e (a Ctrl-D must not fail the finished deploy)
-    if [[ "$yn" != "n" && "$yn" != "N" ]]; then
+    if ask_yn "Start ${unit} now? (Y/n)" y; then
         if systemctl start "$unit"; then
             if systemctl is-active --quiet "$unit"; then
                 ok "${unit} — running"
@@ -153,9 +183,7 @@ offer_start_service() {
         warn "${unit} NOT started — the node is unprotected until you run: systemctl start ${unit}"
     fi
     if ! systemctl is-enabled "$unit" &>/dev/null; then
-        echo -ne "${BOLD}  Enable ${unit} at boot? (Y/n)${NC} [Y]: "
-        read -r yn || yn=""   # EOF-safe under set -e
-        if [[ "$yn" != "n" && "$yn" != "N" ]]; then
+        if ask_yn "Enable ${unit} at boot? (Y/n)" y; then
             systemctl enable "$unit" &>/dev/null && ok "${unit} enabled at boot" || warn "systemctl enable ${unit} failed"
         fi
     fi
@@ -222,9 +250,8 @@ EXISTING_ENV=""
 if [[ -n "$EXISTING_ENV" ]]; then
     echo ""
     warn "Existing config found at $EXISTING_ENV"
-    echo -ne "  Load existing values as defaults? (Y/n): "
-    read -r yn
-    if [[ "$yn" != "n" && "$yn" != "N" ]]; then
+    # v0.7.0 (F23): the old values load only on an explicit yes, and the default is NO: an install over an old env opts IN to it (2026-11-05: one stray byte loaded DRY_RUN=false on a live node).
+    if ask_yn "Load existing values as defaults? (y/N)" n; then
         # shellcheck disable=SC1090
         source "$EXISTING_ENV"
         ok "Loaded existing config"
