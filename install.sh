@@ -14,7 +14,7 @@
 # WHAT VERIFICATION THIS SCRIPT DOES — AND DOES NOT — GIVE YOU (honestly, per version):
 #   v0.6.9 and v0.6.10 PREDATE the SHA256SUMS manifest (no manifest exists at those tags): for them
 #   this script checks SYNTAX ONLY (bash -n) and prints a warning saying so. There is no checksum
-#   verification for them, and none can be added — published tags are not rewritten.
+#   verification for them, and none can be added: a manifest would have to change the files they hold.
 #   From the first manifest-bearing release on, downloads are checked against that tag's
 #   SHA256SUMS, fail-closed: a mismatch, a missing entry, or a missing manifest ABORTS the install.
 #   Checksums catch a corrupted or truncated download and a partially applied tag. They do NOT
@@ -22,8 +22,15 @@
 #   compromised mirror/CDN, the repository itself, or zim.one: the manifest travels through the same
 #   channel as the files.
 #   There is NO anchor outside that channel for v0.6.x: the v0.6.9 and v0.6.10 tags are NOT signed
-#   and never will be, and this script verifies no signature. Tag signing starts with v0.7, after
-#   the maintainer key is published outside GitHub (see SECURITY.md).
+#   and never will be. From v0.7.0 on the release tags are signed with the maintainer's SSH key, whose
+#   public half is published outside GitHub: https://zim.one/failover.pub, with the allowed_signers
+#   file git reads at https://zim.one/failover.allowed_signers (the same key is also a Signing Key on
+#   the maintainer's GitHub profile). Check the signature yourself, with git, in a clone of the
+#   repository, before you run this script:
+#     curl -sSfLO https://zim.one/failover.allowed_signers && git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=failover.allowed_signers tag -v v0.7.0
+#   Compare the FINGERPRINT it prints with the one in SECURITY.md: the name git prints is only a label.
+#   THIS SCRIPT VERIFIES NO SIGNATURE: it checks the files it fetches against the tag's SHA256SUMS,
+#   fail-closed, and nothing else.
 #
 # This tool hot-swaps your validator's STAKED identity between machines. Read it before you run it:
 #   https://github.com/zimone91/solana-validator-failover

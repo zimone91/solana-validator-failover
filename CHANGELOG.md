@@ -3,7 +3,36 @@
 All notable changes are documented here. Versions follow the project's internal `v0.6.x` line;
 `v0.6.9` is the first public release.
 
-## v0.7.0 — 2026-11-08
+## v0.7.0 — 2026-11-09
+
+The v0.7 line, final. The details are in the two release-candidate entries below, in `docs/SAFETY.md` and in the manual; in short:
+
+- **Alpenglow mode is always on** (FO detects and pages, the operator makes the swap; the one opt-in is the armed cold take, `AG_ARMED_TAKE=true`).
+- **The holder protects itself** (its own daemon demotes it when it is blind, silent or no longer voting, and every node starts on its unstaked identity).
+- **The pair is armed by a ceremony** (`failover arm` and the fence units it installs), and an armed spare's gates read proofs (the verified-demote and watchdog-elapsed providers) and its own view.
+
+The second candidate added the silent-stake page (F21) and the Internet-lost floor (F22). What this final adds follows.
+
+### fixed in the final
+
+- **F23 — the wizards load an old env, start the service and enable it only on an explicit yes.** Measured on a live standby install (2026-11-05): a wrong-layout letter, a Backspace and an `n` left two
+  bytes in the read; the old test took every answer but `n`/`N` as yes, printed "Loaded existing config" and carried the old env's `DRY_RUN` into the new install. One helper in each wizard, `ask_yn`:
+  `y`/`Y`/`yes` = yes, `n`/`N`/`no` = no, an empty line = the default, anything else is asked again and the third unrecognised answer takes NO. It replaces all four yes/no prompts of each wizard,
+  and "Load existing values as defaults?" now defaults to NO. New suite `tests/test_wizard_prompts.sh`.
+- **F24 — the primary wizard no longer prints an outage command.** Its NEXT STEPS offered `iptables -I OUTPUT 1 ! -o lo -j DROP; sleep 40; ...` as a "simulated outage (DRY RUN)": the rule cuts the
+  validator's traffic, not only the daemon's, and `DRY_RUN` gates only the daemon. Item 2 now reads "Rehearse on a SPARE, never on the holder". New section `docs/SAFETY.md` → "Rehearsing the
+  self-fence"; the manual's testing phases 2 and 4 name their target (a spare, or a TEST pair). Same suite.
+- **F25 — no real identity in the public tree, enforced.** One test carried a real node identity as its fixture; the suites now take a synthetic one (`tests/lib/fixtures.sh`), and the new suite
+  `tests/test_no_real_identities.sh` fails on any base58 literal of 43 or 44 characters under `tests/`, `docs/`, in README.md, SECURITY.md, CHANGELOG.md and the templates that is not a row of
+  `tests/fixtures-allowlist.txt` (program ids, feature ids, synthetic fixtures).
+- **Release tags are signed from this release on** (an SSH signature; the public key is at https://zim.one/failover.pub, and `SECURITY.md` has the verification command). `install.sh` verifies no
+  signature: it checks the tag's `SHA256SUMS`, fail-closed.
+- **Version 0.7.0:** `FO_VERSION`, the env templates, the manual, the notification pages and the README's pinned install lines. The two daemons differ from v0.7.0-rc2 by that one line.
+
+### Repository history
+
+The metadata of the v0.6.10 fix commit was corrected (author name, a stray trailer); no tree changed; the `v0.6.10` and `v0.7.0-rc2` tag refs were moved to the corrected commits — identical file
+bytes, the same `SHA256SUMS`. Every commit above the fix commit has a new id only because its parent's id changed; the old-to-new map is `docs/evidence/v0.7/history-rewrite-map.txt`.
 
 ### v0.7.0-rc2 — 2026-11-05
 
