@@ -78,7 +78,7 @@ before you run it. And prefer the paranoid path regardless:
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/<TAG>/install.sh
 # read it — it is about 120 lines — then:
-sh install.sh
+FAILOVER_VERSION=<TAG> sh install.sh   # pin it: at a tag the file's own default is the release before it
 ```
 
 Everything shipped is plain text (bash scripts, the POSIX `sh` installer `install.sh`, two env

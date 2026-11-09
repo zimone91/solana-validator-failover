@@ -152,7 +152,7 @@ Asks whether this node is PRIMARY or STANDBY, downloads that role's files for th
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.7.0/install.sh
 ```
-read it, then run `sh install.sh`. **What checksums honestly buy you:** detection of a corrupted or truncated download (or a partially applied tag) — not of anyone on the delivery path who rewrites the files and the manifest together: a compromised mirror/CDN, this repository, or zim.one (the manifest travels through the same channel). Details, scope, and disclosure: [SECURITY.md](SECURITY.md).
+read it, then run `FAILOVER_VERSION=v0.7.0 sh install.sh` (at a tag, `install.sh`'s own default is the release before it — pin the version you downloaded). **What checksums honestly buy you:** detection of a corrupted or truncated download (or a partially applied tag) — not of anyone on the delivery path who rewrites the files and the manifest together: a compromised mirror/CDN, this repository, or zim.one (the manifest travels through the same channel). Details, scope, and disclosure: [SECURITY.md](SECURITY.md).
 
 **Cross-check the two channels:** the route (`curl -sSfL https://zim.one/failover/v0.7.0 | tail -n +2 | sha256sum` — it adds one first line, which `tail` drops) and the raw file at the tag (`curl -sSfL https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.7.0/install.sh | sha256sum`) must print the same sha256 for `install.sh`, and it is the digest in the [release notes](https://github.com/zimone91/solana-validator-failover/releases/tag/v0.7.0).
 
