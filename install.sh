@@ -37,7 +37,7 @@
 set -eu
 
 REPO="https://raw.githubusercontent.com/zimone91/solana-validator-failover"
-VERSION="${FAILOVER_VERSION:-v0.6.10}"   # the Cloudflare route injects the version from the URL path
+VERSION="${FAILOVER_VERSION:-v0.7.0}"   # the Cloudflare route injects the version from the URL path
 ROLE="${FAILOVER_ROLE:-}"
 # Versions published before the SHA256SUMS manifest existed (no manifest at their tags):
 PRECHECKSUM_VERSIONS="v0.6.9 v0.6.10"
