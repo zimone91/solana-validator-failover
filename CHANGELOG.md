@@ -15,10 +15,11 @@ The second candidate added the silent-stake page (F21) and the Internet-lost flo
 
 ### fixed in the final
 
-- **F23 — the wizards load an old env, start the service and enable it only on an explicit yes.** Measured on a live standby install (2026-11-05): a wrong-layout letter, a Backspace and an `n` left two
+- **F23 — the wizards never take a stray key for a yes, and an old env loads only on an explicit yes.** Measured on a live standby install (2026-11-05): a wrong-layout letter, a Backspace and an `n` left two
   bytes in the read; the old test took every answer but `n`/`N` as yes, printed "Loaded existing config" and carried the old env's `DRY_RUN` into the new install. One helper in each wizard, `ask_yn`:
   `y`/`Y`/`yes` = yes, `n`/`N`/`no` = no, an empty line = the default, anything else is asked again and the third unrecognised answer takes NO. It replaces all four yes/no prompts of each wizard,
-  and "Load existing values as defaults?" now defaults to NO. New suite `tests/test_wizard_prompts.sh`.
+  and "Load existing values as defaults?" now defaults to NO. New suite `tests/test_wizard_prompts.sh`. The headline was reworded on `main` after the tag: at the tag it says start and enable happen
+  "only on an explicit yes" too, which is wider than the rule above — both keep their yes default on an empty line.
 - **F24 — the primary wizard no longer prints an outage command.** Its NEXT STEPS offered `iptables -I OUTPUT 1 ! -o lo -j DROP; sleep 40; ...` as a "simulated outage (DRY RUN)": the rule cuts the
   validator's traffic, not only the daemon's, and `DRY_RUN` gates only the daemon. Item 2 now reads "Rehearse on a SPARE, never on the holder". New section `docs/SAFETY.md` → "Rehearsing the
   self-fence"; the manual's testing phases 2 and 4 name their target (a spare, or a TEST pair). Same suite.
