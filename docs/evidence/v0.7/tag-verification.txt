@@ -1,0 +1,45 @@
+# v0.7.0 tag verification (release gate 3(c)) - 2026-11-09T09:49:00Z
+# a fresh clone of the public repository in a temporary directory; the key is fetched from https://zim.one, not taken from the repository; every line starting with $ is a command, the lines under it are its output
+# announced fingerprint: SHA256:KiZjkE1/ETQXqSbAK9Oiwoy744XrS6r+nSOnTkmLixo
+
+$ curl -sSfL https://zim.one/failover.pub
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDMU/5EWdzz2h/Tt+HpRsJJ+mXNMjm7nQPqHKXRvWGcz solana-validator-failover release signing
+ok:   failover.pub is one ssh-ed25519 line
+$ curl -sSfL https://zim.one/failover.pub | ssh-keygen -lf -
+256 SHA256:KiZjkE1/ETQXqSbAK9Oiwoy744XrS6r+nSOnTkmLixo solana-validator-failover release signing (ED25519)
+ok:   its fingerprint is the announced one
+$ curl -sSf https://api.github.com/users/zimone91/ssh_signing_keys | jq -r '.[].key' | ssh-keygen -lf - | grep -F -- 'SHA256:KiZjkE1/ETQXqSbAK9Oiwoy744XrS6r+nSOnTkmLixo'
+256 SHA256:KiZjkE1/ETQXqSbAK9Oiwoy744XrS6r+nSOnTkmLixo no comment (ED25519)
+ok:   one of the profile's signing keys has the announced fingerprint
+
+$ git clone -q https://github.com/zimone91/solana-validator-failover repo
+$ git cat-file -t v0.7.0
+tag
+ok:   v0.7.0 is an annotated tag object
+$ git cat-file -p v0.7.0 | grep -c 'BEGIN SSH SIGNATURE'
+1
+ok:   the tag object carries an SSH signature
+
+$ curl -sSfLO https://zim.one/failover.allowed_signers && git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=failover.allowed_signers tag -v v0.7.0
+Good "git" signature for zimone91@gmail.com with ED25519 key SHA256:KiZjkE1/ETQXqSbAK9Oiwoy744XrS6r+nSOnTkmLixo
+object 248b4c5a09ae4400dfe0f6cea07d2ce565ba61ab
+type commit
+tag v0.7.0
+tagger zim.one <zimone91@gmail.com> 1794217231 +0200
+
+v0.7.0 — the v0.7 line, final
+
+- **Alpenglow mode is always on** (FO detects and pages, the operator makes the swap; the one opt-in is the armed cold take, `AG_ARMED_TAKE=true`).
+- **The holder protects itself** (its own daemon demotes it when it is blind, silent or no longer voting, and every node starts on its unstaked identity).
+- **The pair is armed by a ceremony** (`failover arm` and the fence units it installs), and an armed spare's gates read proofs (the verified-demote and watchdog-elapsed providers) and its own view.
+- **F23 — the wizards load an old env, start the service and enable it only on an explicit yes.**
+- **Release tags are signed from this release on** (an SSH signature; the public key is at https://zim.one/failover.pub, and `SECURITY.md` has the verification command).
+
+Full notes: CHANGELOG.md (v0.7.0).
+exit status: 0
+ok:   tag -v: Good "git" signature for <name> with the announced key, exit 0
+$ git rev-parse v0.7.0^{commit}
+248b4c5a09ae4400dfe0f6cea07d2ce565ba61ab
+ok:   the tag points at the release commit 248b4c5a09ae4400dfe0f6cea07d2ce565ba61ab
+
+ALL OK
