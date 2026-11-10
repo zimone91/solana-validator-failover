@@ -16,7 +16,7 @@
 [![roles](https://img.shields.io/badge/roles-PRIMARY%20%C2%B7%20STANDBY%20%C2%B7%20BACKUP-lightgrey)](docs/FAILOVER-OVERVIEW.md#add-a-third-server)
 [![alerts](https://img.shields.io/badge/alerts-Telegram%20%C2%B7%20ntfy%2Fwebhook%20%C2%B7%20dead--man-lightgrey)](docs/NOTIFICATIONS.md)
 [![deps](https://img.shields.io/badge/deps-bash%20%C2%B7%20systemd%20%C2%B7%20jq%20%C2%B7%20curl-lightgrey)](#requirements)
-[![status](https://img.shields.io/badge/status-pre--1.0-orange)](#roadmap)
+[![status](https://img.shields.io/badge/status-pre--1.0-orange)](docs/REFERENCE.md#roadmap)
 [![license](https://img.shields.io/github/license/zimone91/solana-validator-failover)](LICENSE)
 
 Staked-identity failover **monitor** for Solana validators. **Alpenglow mode (always on in v0.7): FO never takes the
@@ -24,11 +24,7 @@ staked identity by itself unless you arm the spare** (`AG_ARMED_TAKE=true`, off 
 identity within ~30s when it can) and the spare — after the same gates as ever: the delay, the external confirmation, the
 vote-liveness fence, its own node's view — **pages you** (`TAKEOVER WITHHELD — Alpenglow mode`) with what you need to do the
 *warm swap* yourself: demote the old holder, move the vote-history file, then `authorized-voter add` and `set-identity` on the new
-one ([docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07)). The automatic take of the TowerBFT era (`set-identity` on the spare, ~60s) is the *retained path*: kept
-in the code as the base for a later release, unreachable in v0.7, and marked as such wherever this README describes it. What an **armed** spare runs instead is the *cold take*: `authorized-voter add` first,
-then `set-identity` with the vote-history requirement switched off, once a readiness margin also holds ([docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1)). When the
-external RPCs are not observable the gates hold for as long as the blindness lasts (by design: unobservable time counts as life)
-and the operator is paged (`TAKEOVER_STARVATION_ALERT_SECS`, default 300s).
+one ([docs/SAFETY.md — Alpenglow](docs/SAFETY.md#alpenglow-mode-v07)).
 
 Built safety-first: the failing node **steps down first**, then the spare only **pages you** — the move of the stake is yours
 (an unarmed spare, the default; the retained path made it, and an armed spare takes it cold) — and every ambiguous state resolves toward *nobody holds the stake* rather than
@@ -38,21 +34,6 @@ two nodes holding it.
 
 **v0.7 needs agave / Jito-Solana `4.4.0` or newer** (`MIN_VALIDATOR_VERSION`: on an older validator the spare pages `VALIDATOR VERSION NOT READY`).
 The `4.2.1` production run above is v0.6.x's, on a validator below that floor; v0.7 itself is being exercised on the testnet pair (the Block 10 end-to-end run).
-
-#### How safe is it — honestly
-
-The failing node fences **itself** (dead RPC, frozen slot, or its own votes not landing) and drops to an
-unstaked identity within ~30s. Only then, after a 60s floor plus an on-chain check that the vote account
-really stopped, does the spare page you that the identity is free to be moved (v0.7: an unarmed spare never moves it itself, an armed one takes it cold; the take it used to make
-is the retained path). Live-tested end to end on testnet (the retained path): [test evidence](docs/SAFETY.md#what-has-been-tested).
-
-The honest limit: a node that has gone **completely silent** cannot be proven incapable of voting — it
-might be wedged, or partitioned and still signing where you can't see it. Detecting that from the
-outside is impossible in principle; it has to be *made* true by fencing the old host. That fence lands
-in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
-[docs/SAFETY.md](docs/SAFETY.md) before pointing this at a mainnet identity you care about.
-
----
 
 ## How failover works
 
@@ -79,6 +60,50 @@ The holder can self-fence on local signals. The spare checks local RPC, preferre
 - **Fails safe by design:** ambiguity resolves toward *unstaked / stop / page the operator*, not toward
   taking the identity. (Design intent — see the residual risks below and in `docs/SAFETY.md`.)
 
+## Install (one command)
+
+```bash
+sh -c "$(curl -sSfL https://zim.one/failover/v0.7.0)"
+```
+[![Install — what runs and what is checked](docs/img/fo-v07-install.svg)](docs/img/fo-v07-install.svg)
+
+Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, verifies them (against the version's `SHA256SUMS` manifest, fail-closed, from the first manifest-bearing release on — `v0.6.9`/`v0.6.10` predate the manifest and are syntax-checked only, which the installer says aloud; no v0.6.x tag is signed), and runs the installer (interactive; starts in DRY_RUN). This tool watches a hot-swap pair and, on its retained path, hot-swaps your staked identity (v0.7 withholds that and pages) — read `install.sh` before running it. The paranoid path (recommended for a root-level tool):
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.7.0/install.sh
+```
+read it, then run `FAILOVER_VERSION=v0.7.0 sh install.sh` (at a tag, `install.sh`'s own default is the release before it — pin the version you downloaded). **What checksums honestly buy you:** detection of a corrupted or truncated download (or a partially applied tag) — not of anyone on the delivery path who rewrites the files and the manifest together: a compromised mirror/CDN, this repository, or zim.one (the manifest travels through the same channel). Details, scope, and disclosure: [SECURITY.md](SECURITY.md).
+
+**Cross-check the two channels:** the route (`curl -sSfL https://zim.one/failover/v0.7.0 | tail -n +2 | sha256sum` — it adds one first line, which `tail` drops) and the raw file at the tag (`curl -sSfL https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.7.0/install.sh | sha256sum`) must print the same sha256 for `install.sh`, and it is the digest in the [release notes](https://github.com/zimone91/solana-validator-failover/releases/tag/v0.7.0).
+
+Or from source:
+```bash
+git clone --branch v0.7.0 https://github.com/zimone91/solana-validator-failover
+cd solana-validator-failover
+sudo bash deploy-failover.sh          # deploy-failover-standby.sh on the spare
+```
+
+## Go live and arm
+
+The interactive installer (on the STANDBY it asks for **Simple** or **Advanced** mode; on the PRIMARY it has no mode prompt) writes `/opt/solana-failover/*.env`, installs
+a `systemd` unit, and starts in **DRY_RUN** — it logs what it *would* do and changes nothing. Verify the
+logs, then arm (PRIMARY first, then STANDBY). On the **PRIMARY**:
+```bash
+sed -i 's/DRY_RUN=true/DRY_RUN=false/' /opt/solana-failover/failover.env
+systemctl restart solana-failover
+```
+On the **STANDBY**:
+```bash
+sed -i 's/DRY_RUN=true/DRY_RUN=false/' /opt/solana-failover/failover-standby.env
+systemctl restart solana-failover-standby
+```
+On a host that has been armed with `failover arm`, `DRY_RUN` is part of the arm state: change it by editing the env file and re-running `failover arm`, not by a `sed` and a restart alone
+(see the deployment manual, *Update existing*).
+
+`failover arm` (the fence ceremony) refuses a real arm until `LEDGER_PATH` in the env file names the validator's ledger directory - the fence has no detection of its own - and the monitor unit it installs carries an
+`ExecStop=` that re-sends a lost TERM. The standby's take switch is separate: `AG_ARMED_TAKE=false` (the default) only pages; `true` arms the cold take, with `AG_TAKE_MARGIN_SLOTS` (default 200) as its readiness margin and the
+pairing rule `TAKEOVER_DELAY` ≥ the holder's `HOLDER_GAP_DEMOTE_SECS` + 30 (shipped 60 ≥ 30 + 30) - [docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1).
+
 ## Safety model
 
 > **Prime directive: never let two nodes hold and vote the same staked identity (double-sign).**
@@ -92,7 +117,35 @@ The holder can self-fence on local signals. The spare checks local RPC, preferre
 - The PRIMARY **relinquishes first** (self-fences to unstaked) before any spare can take.
 - The STANDBY takes only after `TAKEOVER_DELAY` (default **60s** = the PRIMARY's ~30s self-fence + a 30s
   cross-node margin, which is also the sum that pairs with the holder's gap rule: `TAKEOVER_DELAY` ≥ `HOLDER_GAP_DEMOTE_SECS` 30 + 30) **and** a vote-liveness check that the previous holder's vote account has stopped
-  advancing. A hand-edited delay below the safe floor **refuses to start**. The last read before the
+  advancing. A hand-edited delay below the safe floor **refuses to start**.
+- The automatic take of the TowerBFT era (`set-identity` on the spare, ~60s) is the *retained path*: kept in the code as the base for a later release, unreachable in v0.7, and marked as such wherever this README describes it. What an **armed** spare runs instead is the *cold take*: `authorized-voter add` first, then `set-identity` with the vote-history requirement switched off, once a readiness margin also holds ([docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1)).
+- When the external RPCs are not observable the gates hold for as long as the blindness lasts (by design: unobservable time counts as life) and the operator is paged (`TAKEOVER_STARVATION_ALERT_SECS`, default 300s).
+- A promoted STANDBY (an unarmed spare never promotes itself; an armed one does, by the cold take) that later isolates self-fences too, with a 600s re-take lockout.
+
+#### How safe is it — honestly
+
+The failing node fences **itself** (dead RPC, frozen slot, or its own votes not landing) and drops to an
+unstaked identity within ~30s. Only then, after a 60s floor plus an on-chain check that the vote account
+really stopped, does the spare page you that the identity is free to be moved (v0.7: an unarmed spare never moves it itself, an armed one takes it cold; the take it used to make
+is the retained path). Live-tested end to end on testnet (the retained path): [test evidence](docs/SAFETY.md#what-has-been-tested).
+
+The honest limit: a node that has gone **completely silent** cannot be proven incapable of voting — it
+might be wedged, or partitioned and still signing where you can't see it. Detecting that from the
+outside is impossible in principle; it has to be *made* true by fencing the old host. That fence is v0.7's
+`failover arm` ceremony, holder-side and opt-in; the spare's relinquish-proof gate that would condition a take on it is not wired in this release
+(see *This release has no relinquish-proof gate* in the long form below). Run a `DRY_RUN` soak on your own stack first, and read
+[docs/SAFETY.md](docs/SAFETY.md) before pointing this at a mainnet identity you care about.
+
+**Where the strength comes from.** The protection is strongest where the failing node can detect its
+own trouble and step down — which covers dead RPC, a stalled slot, and an egress-only partition where
+its votes stop landing. For a node that has gone *completely* silent, "stopped voting" is evidence
+rather than proof; v0.7 adds a watchdog so a node that can no longer confirm it owns the identity
+stops itself. Detail: [docs/SAFETY.md](docs/SAFETY.md) · [docs/SPLIT-BRAIN-RESIDUAL.md](docs/SPLIT-BRAIN-RESIDUAL.md).
+
+<details>
+<summary><b>The long form:</b> the cross-node ordering and its measured timing, two named residuals, and the relinquish-proof gate this release does not have</summary>
+
+- The last read before the
   take is the spare's **own** node (v0.7): one bounded read (`curl -m 2` + a watchdog pet) that
   withdraws the take if its own node shows the holder voting, cannot answer, or is not advancing; the
   spare also samples its own head through the episode and before each external read of the take cycle
@@ -144,13 +197,6 @@ The holder can self-fence on local signals. The spare checks local RPC, preferre
   recommends a third endpoint in a separate failure domain. What each layer does and does **not**
   catch — including an active protocol-aware intermediary, which it does not — is enumerated in
   [`docs/SAFETY.md`](docs/SAFETY.md). Un-armed hosts see none of this.
-- A promoted STANDBY (an unarmed spare never promotes itself; an armed one does, by the cold take) that later isolates self-fences too, with a 600s re-take lockout.
-
-**Where the strength comes from.** The protection is strongest where the failing node can detect its
-own trouble and step down — which covers dead RPC, a stalled slot, and an egress-only partition where
-its votes stop landing. For a node that has gone *completely* silent, "stopped voting" is evidence
-rather than proof; v0.7 adds a watchdog so a node that can no longer confirm it owns the identity
-stops itself. Detail: [docs/SAFETY.md](docs/SAFETY.md) · [docs/SPLIT-BRAIN-RESIDUAL.md](docs/SPLIT-BRAIN-RESIDUAL.md).
 
 ```
 PRIMARY ──self-fence ~30s──►  STANDBY ──pages at 60s──►  BACKUP
@@ -166,106 +212,17 @@ shown. Once every gate has said take, the page itself reads the node's own RPC f
 (bounded at 12 s): up to about 27 s at the decision point, milliseconds on a healthy node.
 Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 
+</details>
+
 ## Requirements
 
 - `agave-validator` (or Jito-Solana), `jq`, `curl`, `systemd`, run as root.
 - Two nodes sharing the same **staked** keypair, each with its own **unique unstaked** keypair.
 
-## Install (one command)
-
-```bash
-sh -c "$(curl -sSfL https://zim.one/failover/v0.7.0)"
-```
-[![Install — what runs and what is checked](docs/img/fo-v07-install.svg)](docs/img/fo-v07-install.svg)
-
-Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, verifies them (against the version's `SHA256SUMS` manifest, fail-closed, from the first manifest-bearing release on — `v0.6.9`/`v0.6.10` predate the manifest and are syntax-checked only, which the installer says aloud; no v0.6.x tag is signed), and runs the installer (interactive; starts in DRY_RUN). This tool watches a hot-swap pair and, on its retained path, hot-swaps your staked identity (v0.7 withholds that and pages) — read `install.sh` before running it. The paranoid path (recommended for a root-level tool):
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.7.0/install.sh
-```
-read it, then run `FAILOVER_VERSION=v0.7.0 sh install.sh` (at a tag, `install.sh`'s own default is the release before it — pin the version you downloaded). **What checksums honestly buy you:** detection of a corrupted or truncated download (or a partially applied tag) — not of anyone on the delivery path who rewrites the files and the manifest together: a compromised mirror/CDN, this repository, or zim.one (the manifest travels through the same channel). Details, scope, and disclosure: [SECURITY.md](SECURITY.md).
-
-**Cross-check the two channels:** the route (`curl -sSfL https://zim.one/failover/v0.7.0 | tail -n +2 | sha256sum` — it adds one first line, which `tail` drops) and the raw file at the tag (`curl -sSfL https://raw.githubusercontent.com/zimone91/solana-validator-failover/v0.7.0/install.sh | sha256sum`) must print the same sha256 for `install.sh`, and it is the digest in the [release notes](https://github.com/zimone91/solana-validator-failover/releases/tag/v0.7.0).
-
-Or from source:
-```bash
-git clone --branch v0.7.0 https://github.com/zimone91/solana-validator-failover
-cd solana-validator-failover
-sudo bash deploy-failover.sh          # deploy-failover-standby.sh on the spare
-```
-
-## Quickstart
-
-On the **PRIMARY**:
-```bash
-bash deploy-failover.sh
-```
-On the **STANDBY**:
-```bash
-bash deploy-failover-standby.sh
-```
-
-The interactive installer (on the STANDBY it asks for **Simple** or **Advanced** mode; on the PRIMARY it has no mode prompt) writes `/opt/solana-failover/*.env`, installs
-a `systemd` unit, and starts in **DRY_RUN** — it logs what it *would* do and changes nothing. Verify the
-logs, then arm (PRIMARY first, then STANDBY). On the **PRIMARY**:
-```bash
-sed -i 's/DRY_RUN=true/DRY_RUN=false/' /opt/solana-failover/failover.env
-systemctl restart solana-failover
-```
-On the **STANDBY**:
-```bash
-sed -i 's/DRY_RUN=true/DRY_RUN=false/' /opt/solana-failover/failover-standby.env
-systemctl restart solana-failover-standby
-```
-On a host that has been armed with `failover arm`, `DRY_RUN` is part of the arm state: change it by editing the env file and re-running `failover arm`, not by a `sed` and a restart alone
-(see the deployment manual, *Update existing*).
-
-## Configuration
-
-The installer generates the env, or copy `failover.env.example` / `failover-standby.env.example`.
-Key knobs: `STAKED_KEYPAIR`, `UNSTAKED_KEYPAIR`, `VOTE_PUBKEY`, `TAKEOVER_DELAY`, the three RPC tiers
-(local → paid → public), and notifications. Full reference: [docs/DEPLOYMENT-MANUAL.md](docs/DEPLOYMENT-MANUAL.md).
-`failover arm` (the fence ceremony) refuses a real arm until `LEDGER_PATH` in the env file names the validator's ledger directory - the fence has no detection of its own - and the monitor unit it installs carries an
-`ExecStop=` that re-sends a lost TERM. The standby's take switch is separate: `AG_ARMED_TAKE=false` (the default) only pages; `true` arms the cold take, with `AG_TAKE_MARGIN_SLOTS` (default 200) as its readiness margin and the
-pairing rule `TAKEOVER_DELAY` ≥ the holder's `HOLDER_GAP_DEMOTE_SECS` + 30 (shipped 60 ≥ 30 + 30) - [docs/SAFETY.md — Armed cold take](docs/SAFETY.md#armed-cold-take-opt-in-rc1).
-
-On a host armed with the v0.7 fence, the daemon also re-verifies its own effective fence
-properties every `FENCE_ROT_CHECK_SECS` (default 60 s): drift that verifiably kills the fence
-(unit gone/masked/unloadable, a drop-in re-adding `Restart=`, `OnFailure` no longer naming the
-fence) pages CRITICAL immediately with the exact fix command, and only if it persists for
-`FENCE_ROT_GRACE` (default 1800 s, floor max(600, `ALERT_THROTTLE`)) while the node still
-verifiably holds the staked identity does the holder gracefully demote itself to unstaked — the
-spare then sees a silent holder and pages (v0.7: an unarmed spare never takes, an armed one takes cold; the retained path took over on its timer path, the v0.6.x semantics, with or without G2; once Block 6.4 wires
-the relinquish-proof gate, via the verified-demote proof). Never instant, never on a guess: a failing
-`systemctl` is treated as cannot-verify (page after a blind streak, no demote clock), and both
-knobs are daemon defaults with validation — no env entry needed. Un-armed hosts (everything
-before the v0.7 rollout) see zero behavior change.
-
-## Notifications
-
-Telegram + [ntfy.sh](https://ntfy.sh) push + an external "dead-man's switch" watchdog
-(healthchecks.io / Uptime Kuma / cronitor) that pages you if the monitor process itself dies.
-See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
-
-## Tests
-
-```bash
-cd tests && bash run_all.sh
-```
-65 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
-mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. Seven older controls compare
-against an earlier release's file, which this repository does not ship; they print `⏭ SKIP` instead of passing (Block 6.4
-moves them onto the harness's `mutate()`). Network clients reached
-through `PATH` are caught by `run_all.sh`'s stage (4) on every leg; at the syscall level, `tests/strace-hermetic.sh`
-(CI's strace job, ubuntu-24.04) fails on any inet socket in the whole run. A suite still running at `run_all.sh`'s
-per-suite cap (`RUN_ALL_SUITE_CAP`: an hour by default; CI sizes it per job) is killed, with whatever it left in its
-process group, and fails the run, named. Note the limit: these are function-level tests — they do
-**not** prove cross-process ordering between two live systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
-
 ## ⚠️ Before you point this at a mainnet identity
 
-- **Not for unattended mainnet yet** — see “How safe is it — honestly” above. Until the v0.7 fence
-  lands, run `DRY_RUN`, testnet, or keep a human in the loop to fence the old node before promotion.
+- **Not for unattended mainnet yet** — see “How safe is it — honestly” above: the fence is opt-in (`failover arm`) and the relinquish-proof
+  gate is not wired in this release. Run `DRY_RUN`, testnet, or keep a human in the loop to fence the old node before promotion.
 - **Test on testnet first** — DRY_RUN soak, then a live failover on a testnet stack.
 - In v0.7 this tool never moves your staked identity between machines **by itself** unless you arm a spare (`AG_ARMED_TAKE=true`, Alpenglow mode); its retained path did, and a later
   release may. Never aim `STAKED_KEYPAIR` at an identity you can't afford to have hot-swapped.
@@ -275,15 +232,22 @@ process group, and fails the run, named. Note the limit: these are function-leve
 - Roll out **one node at a time**; leave the advanced gossip fast-path (Option A) **off** until you've
   watched the timer path in production for a while.
 
-## Roadmap
+## Tests
 
-- **v0.7** — the fence: a node that can no longer confirm it owns the identity is stopped by a
-  watchdog, and the spare pages (an unarmed spare never takes, in Alpenglow mode) on the same gates; the retained take path needs positive proof the old holder was stopped or stepped
-  down — never inference alone. Ships alongside evidence fixes (vote account ↔ identity binding,
-  atomic state, escalation on an unverified demote), a simpler installer, a status dashboard, and a
-  chaos/E2E gate on real nodes.
-- **v0.8** — optional external fence providers (cloud API / IPMI / PDU) on the same interface, for
-  operators who want a second, out-of-band guarantee.
+```bash
+cd tests && bash run_all.sh
+```
+65 suites, parse-clean on bash 3.2+ (CI runs them on both bash 3.2 and 5.2). They drive the real self-fence / takeover / timing functions with
+mocked I/O, and each safety fix ships with a control that fails when the fix is reverted. At the syscall level, `tests/strace-hermetic.sh`
+(CI's strace job, ubuntu-24.04) fails on any inet socket in the whole run. These are function-level tests — they do **not** prove cross-process
+ordering between two live systemd services; the live runs on the test pair are in [docs/FAILOVER-OVERVIEW.md](docs/FAILOVER-OVERVIEW.md#live-fault-tests),
+and the harness in detail is in [docs/REFERENCE.md](docs/REFERENCE.md#tests).
+
+## Notifications
+
+Telegram + [ntfy.sh](https://ntfy.sh) push + an external "dead-man's switch" watchdog
+(healthchecks.io / Uptime Kuma / cronitor) that pages you if the monitor process itself dies.
+See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 
 ## Verify the claims, not the adjectives
 
@@ -291,6 +255,12 @@ process group, and fails the run, named. Note the limit: these are function-leve
 - [docs/audits/](docs/audits/) — every audit round, including the one that made us retract a public overclaim and the NO-GO verdict. Each finding shipped with a control test that fails if the fix is reverted.
 - [docs/evidence/](docs/evidence/) — armed-production evidence: a real unplanned mainnet failover (2026-08-10, every gate logged) *and* the incident from the same fleet, because evidence cuts both ways.
 - [CI](.github/workflows/ci.yml) runs the full suite on bash 3.2 **and** 5.2 on pushes to `main` and on pull requests — the 5.2 job exists because a real interpreter bug shipped and was invisible to a single-interpreter suite.
+
+## Full reference
+
+- [docs/REFERENCE.md](docs/REFERENCE.md) — the Quickstart in full, the configuration knobs and the fence self-check, the test harness in detail, the roadmap (moved off this page on 2026-11-10, text as at v0.7.0).
+- [docs/FAILOVER-OVERVIEW.md](docs/FAILOVER-OVERVIEW.md) — the operator overview: live fault tests, modes and failure responses, the optional third server, the manual return.
+- [docs/DEPLOYMENT-MANUAL.md](docs/DEPLOYMENT-MANUAL.md) · [docs/SAFETY.md](docs/SAFETY.md) · [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) · [SECURITY.md](SECURITY.md) · [CHANGELOG.md](CHANGELOG.md)
 
 ## License
 
