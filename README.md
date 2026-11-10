@@ -37,6 +37,18 @@ in **v0.7**. Until then, run a `DRY_RUN` soak on your own stack first, and read
 
 ---
 
+## How failover works
+
+The holder can self-fence on local signals. The spare checks local RPC, preferred external RPC and a public fallback when needed. Its own final check can veto the handoff.
+
+[![v0.7.0 failover flow from local detection through three RPC tiers, operator alert or armed take, confirmed standby voting and manual return.](docs/img/fo-v07-flow.svg)](docs/img/fo-v07-flow.svg)
+
+**Alpenglow default:** the spare alerts and the operator performs a warm swap. An armed spare in live mode can take cold when its readiness check passes. Returning to PRIMARY is manual.
+
+**What pages you.** Four channels: **Telegram** (every event, including info), **ntfy or any webhook** (critical and warning pages — they pierce Do-Not-Disturb; Slack/Discord via a JSON template), an **external dead-man’s switch** (healthchecks.io / Uptime Kuma / cronitor — it pages when the monitor itself dies), and the **log** (everything, with the decision traces). A critical page the standby could not deliver to Telegram is re-sent. The named pages: `TAKEOVER WITHHELD — Alpenglow mode`, `STAKED IDENTITY SILENT`, `PRIMARY UNREACHABLE WHILE STAKED`, `HOLDER HUNG — HARD STOP`, `GAVE BACK — unstaked`, `SWITCHED TO UNSTAKED`, `TOOK STAKED`, `[DRY RUN] WOULD TAKE STAKED`, `VALIDATOR VERSION NOT READY`, `TAKEOVER STARVATION`. [Notification matrix](docs/NOTIFICATIONS.md)
+
+[Modes and failure scenarios](docs/FAILOVER-OVERVIEW.md#modes-and-failure-scenarios) · [Live fault tests](docs/FAILOVER-OVERVIEW.md#live-fault-tests) · [Optional third server](docs/FAILOVER-OVERVIEW.md#add-a-third-server) · [Manual return commands](docs/FAILOVER-OVERVIEW.md#manual-return-to-primary)
+
 ## What it does
 
 - Watches the local validator. If the PRIMARY goes delinquent or isolated, it **self-fences** to its
@@ -147,6 +159,8 @@ Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 ```bash
 sh -c "$(curl -sSfL https://zim.one/failover/v0.7.0)"
 ```
+[![Install — what runs and what is checked](docs/img/fo-v07-install.svg)](docs/img/fo-v07-install.svg)
+
 Asks whether this node is PRIMARY or STANDBY, downloads that role's files for the pinned version, verifies them (against the version's `SHA256SUMS` manifest, fail-closed, from the first manifest-bearing release on — `v0.6.9`/`v0.6.10` predate the manifest and are syntax-checked only, which the installer says aloud; no v0.6.x tag is signed), and runs the installer (interactive; starts in DRY_RUN). This tool watches a hot-swap pair and, on its retained path, hot-swaps your staked identity (v0.7 withholds that and pages) — read `install.sh` before running it. The paranoid path (recommended for a root-level tool):
 
 ```bash
