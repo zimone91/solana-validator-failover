@@ -211,6 +211,50 @@ jobs:
           echo "actual=$actual manifest=$manifest"
           [ "$actual" = "$manifest" ] || { echo "run_all.sh EXPECTED_SUITES=$manifest but $actual test files exist"; exit 1; }
           grep -q "${actual} suites" README.md || { echo "README does not state the actual suite count (${actual})"; exit 1; }
+      - name: README badges state what the code states (suite count, version floor, bash floor, strace, shellcheck, signed tags, manifest, roles, alerts, mode, evidence, status, claims, networks, deps)
+        # RULE: every static badge value in README.md is derived from or pinned by a source in this tree; a badge that
+        # says something the code does not is red. Dynamic badges (release, license, ci) are GitHub's own.
+        run: |
+          actual=$(ls tests/test_*.sh | wc -l | tr -d ' ')
+          minver=$(sed -n 's/^MIN_VALIDATOR_VERSION="\([0-9.]*\)".*$/\1/p' solana-primary-failover.sh)
+          bad=0
+          chk() { grep -qF -- "$1" "$2" || { echo "badge/source mismatch: '$1' not in $2"; bad=1; }; }
+          # The five pins against THIS file use bracketed regex needles ([.] [:] [e]rror): a literal needle would match the
+          # pin's own line and could never go red. Each needle was shown red on a copy with its source line renamed.
+          chkre() { grep -qE -- "$1" "$2" || { echo "badge/source mismatch: '$1' not in $2"; bad=1; }; }
+          chk "img.shields.io/badge/tests-${actual}%20suites-" README.md
+          chk "img.shields.io/badge/requires-agave%20%2F%20Jito--Solana%20${minver}%2B-" README.md
+          chk "img.shields.io/badge/bash-3.2%20%C2%B7%205.2-" README.md
+          chkre "^    name: tests .* /bin/bash 3[.]2" .github/workflows/ci.yml
+          chkre "^    name: tests .* bash 5[.]2 " .github/workflows/ci.yml
+          chk "img.shields.io/badge/strace-no%20network-" README.md
+          chkre "strace-hermetic[:]" .github/workflows/ci.yml
+          chk "img.shields.io/badge/shellcheck-clean-" README.md
+          chkre "^          shellcheck -S [e]rror " .github/workflows/ci.yml
+          chk "img.shields.io/badge/tags-SSH--signed-" README.md
+          chk "gpg.format=ssh" SECURITY.md
+          chk "img.shields.io/badge/install-SHA256SUMS%20fail--closed-" README.md
+          chk "SHA256SUMS" install.sh
+          chk "img.shields.io/badge/roles-PRIMARY%20%C2%B7%20STANDBY%20%C2%B7%20BACKUP-" README.md
+          chk "ROLE_TAKEOVER_DELAY=120" deploy-failover-standby.sh
+          chk "img.shields.io/badge/alerts-Telegram%20%C2%B7%20ntfy%2Fwebhook%20%C2%B7%20dead--man-" README.md
+          chk "TG_BOT_TOKEN" solana-primary-failover.sh
+          chk "WEBHOOK_URL" solana-primary-failover.sh
+          chk "HEARTBEAT_URL" solana-primary-failover.sh
+          chk "img.shields.io/badge/mode-pages%20by%20default%20%C2%B7%20armed%20take%20opt--in-" README.md
+          chk "AG_ARMED_TAKE=false" solana-standby-failover.sh
+          chk "img.shields.io/badge/live-real%20mainnet%20failover%202026--08-" README.md
+          chk "2026-08-10" docs/evidence/2026-08-production.md
+          chk "img.shields.io/badge/status-pre--1.0-" README.md
+          chk "img.shields.io/badge/claims-checked%20by%20CI-" README.md
+          chkre "claims match [r]eality" .github/workflows/ci.yml
+          chk "img.shields.io/badge/tested%20on-testnet%20%C2%B7%20mainnet-" README.md
+          chk "Networks:** testnet · mainnet" README.md
+          chk "img.shields.io/badge/deps-bash%20%C2%B7%20systemd%20%C2%B7%20jq%20%C2%B7%20curl-" README.md
+          chk "\`jq\`, \`curl\`, \`systemd\`" README.md
+          grep -qE '^FO_VERSION="?0\.' solana-primary-failover.sh || { echo "status badge says pre-1.0 but FO_VERSION is not 0.x"; bad=1; }
+          [ "$bad" = 0 ] || exit 1
+          echo "README badges: ${actual} suites, version floor ${minver}, bash 3.2/5.2, strace, shellcheck, signed tags, manifest, roles, alerts, mode, evidence, status, claims job, networks, deps — all pinned to sources"
       - name: wall-clock / patsub counters — pinned per daemon (v0.7 pre-Block-4, №10 / addendum §3b.4)
         # Pinned the same way as the suite count: measured != pinned = red. Growth = a NEW
         # `date +%s` (wall-clock) or `${var//…}` (patsub) site — both are review-stops (the

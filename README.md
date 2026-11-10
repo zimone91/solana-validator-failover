@@ -1,6 +1,23 @@
 # Solana Validator Failover
 
 [![ci](https://github.com/zimone91/solana-validator-failover/actions/workflows/ci.yml/badge.svg)](https://github.com/zimone91/solana-validator-failover/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-65%20suites-brightgreen)](tests/run_all.sh)
+[![bash](https://img.shields.io/badge/bash-3.2%20%C2%B7%205.2-brightgreen)](.github/workflows/ci.yml)
+[![shellcheck](https://img.shields.io/badge/shellcheck-clean-brightgreen)](.github/workflows/ci.yml)
+[![strace](https://img.shields.io/badge/strace-no%20network-brightgreen)](tests/strace-hermetic.sh)
+[![claims](https://img.shields.io/badge/claims-checked%20by%20CI-brightgreen)](.github/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/zimone91/solana-validator-failover?label=release)](https://github.com/zimone91/solana-validator-failover/releases/latest)
+[![tags](https://img.shields.io/badge/tags-SSH--signed-blue)](SECURITY.md)
+[![install](https://img.shields.io/badge/install-SHA256SUMS%20fail--closed-blue)](install.sh)
+[![requires](https://img.shields.io/badge/requires-agave%20%2F%20Jito--Solana%204.4.0%2B-blue)](#requirements)
+[![mode](https://img.shields.io/badge/mode-pages%20by%20default%20%C2%B7%20armed%20take%20opt--in-blue)](docs/SAFETY.md#alpenglow-mode-v07)
+[![tested on](https://img.shields.io/badge/tested%20on-testnet%20%C2%B7%20mainnet-blue)](docs/SAFETY.md#what-has-been-tested)
+[![live](https://img.shields.io/badge/live-real%20mainnet%20failover%202026--08-blue)](docs/evidence/2026-08-production.md)
+[![roles](https://img.shields.io/badge/roles-PRIMARY%20%C2%B7%20STANDBY%20%C2%B7%20BACKUP-lightgrey)](docs/FAILOVER-OVERVIEW.md#add-a-third-server)
+[![alerts](https://img.shields.io/badge/alerts-Telegram%20%C2%B7%20ntfy%2Fwebhook%20%C2%B7%20dead--man-lightgrey)](docs/NOTIFICATIONS.md)
+[![deps](https://img.shields.io/badge/deps-bash%20%C2%B7%20systemd%20%C2%B7%20jq%20%C2%B7%20curl-lightgrey)](#requirements)
+[![status](https://img.shields.io/badge/status-pre--1.0-orange)](#roadmap)
+[![license](https://img.shields.io/github/license/zimone91/solana-validator-failover)](LICENSE)
 
 Staked-identity failover **monitor** for Solana validators. **Alpenglow mode (always on in v0.7): FO never takes the
 staked identity by itself unless you arm the spare** (`AG_ARMED_TAKE=true`, off by default - below). If your staked node dies or goes silent, the holder fences itself (drops to its own unstaked
