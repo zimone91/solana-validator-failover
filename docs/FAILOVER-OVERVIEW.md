@@ -22,6 +22,8 @@
 
 **CI · 65 suites.** The final-tag run passed on Bash 3.2 and 5.2. The suites exercise decision functions with mocked I/O; seven older controls that compare against a previous release’s file print `SKIP` instead of passing. A separate `strace` job checks for zero IPv4/IPv6 socket calls. [CI run](https://github.com/zimone91/solana-validator-failover/actions/runs/42553129969) · [Test scope and limits](https://github.com/zimone91/solana-validator-failover/blob/v0.7.0/README.md#L219-L232)
 
+**Every recorded run, including the ones that failed.** [Live runs, June to November 2026](evidence/2026-11-live-drills.md): 58 runs — 52 with an induced fault, 4 soaks and 2 planned swaps — with builds, hardware and the defects they found.
+
 <details>
 <summary>Earlier v0.6 field tests and operating evidence</summary>
 
