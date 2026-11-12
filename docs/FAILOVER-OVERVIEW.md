@@ -2,7 +2,7 @@
 
 **The holder can step down. The spare checks three RPC tiers before it can take over.**
 
-[![Failover sequence with local detection, preferred and public RPC, a final local veto, alert or takeover, verified standby votes and manual return. Independent default timers are 30 s for the holder, 60 s for standby and 120 s for optional backup.](img/fo-v07-flow.svg)](img/fo-v07-flow.svg)
+[![The holder steps down first on its own local signals, and its daemon hard-stops a hung validator. Failover sequence with local detection, preferred and public RPC, a final local veto, alert or takeover, verified standby votes and manual return. Independent default timers are 30 s for the holder, 60 s for standby and 120 s for optional backup.](img/fo-v07-flow.svg)](img/fo-v07-flow.svg)
 
 **How long?** 30/60/120 s are independent thresholds or presets. Observation and RPC checks add time. The default path then waits for the operator’s warm swap. Confirm voting from the new holder’s logs and an advancing `lastVote`. [Timing model](https://github.com/zimone91/solana-validator-failover/blob/v0.7.0/README.md#L132-L138)
 
