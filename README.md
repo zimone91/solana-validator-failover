@@ -6,18 +6,67 @@
 [![shellcheck](https://img.shields.io/badge/shellcheck-clean-brightgreen)](.github/workflows/ci.yml)
 [![strace](https://img.shields.io/badge/strace-no%20network-brightgreen)](tests/strace-hermetic.sh)
 [![claims](https://img.shields.io/badge/claims-checked%20by%20CI-brightgreen)](.github/workflows/ci.yml)
+<br>
 [![release](https://img.shields.io/github/v/release/zimone91/solana-validator-failover?label=release)](https://github.com/zimone91/solana-validator-failover/releases/latest)
 [![tags](https://img.shields.io/badge/tags-SSH--signed-blue)](SECURITY.md)
 [![install](https://img.shields.io/badge/install-SHA256SUMS%20fail--closed-blue)](install.sh)
 [![requires](https://img.shields.io/badge/requires-agave%20%2F%20Jito--Solana%204.4.0%2B-blue)](#requirements)
+[![license](https://img.shields.io/github/license/zimone91/solana-validator-failover)](LICENSE)
+<br>
 [![mode](https://img.shields.io/badge/mode-pages%20by%20default%20%C2%B7%20armed%20take%20opt--in-blue)](docs/SAFETY.md#alpenglow-mode-v07)
 [![tested on](https://img.shields.io/badge/tested%20on-testnet%20%C2%B7%20mainnet-blue)](docs/SAFETY.md#what-has-been-tested)
 [![live](https://img.shields.io/badge/live-real%20mainnet%20failover%202026--08-blue)](docs/evidence/2026-08-production.md)
+[![status](https://img.shields.io/badge/status-pre--1.0-orange)](docs/REFERENCE.md#roadmap)
+<br>
 [![roles](https://img.shields.io/badge/roles-PRIMARY%20%C2%B7%20STANDBY%20%C2%B7%20BACKUP-lightgrey)](docs/FAILOVER-OVERVIEW.md#add-a-third-server)
 [![alerts](https://img.shields.io/badge/alerts-Telegram%20%C2%B7%20ntfy%2Fwebhook%20%C2%B7%20dead--man-lightgrey)](docs/NOTIFICATIONS.md)
 [![deps](https://img.shields.io/badge/deps-bash%20%C2%B7%20systemd%20%C2%B7%20jq%20%C2%B7%20curl-lightgrey)](#requirements)
-[![status](https://img.shields.io/badge/status-pre--1.0-orange)](docs/REFERENCE.md#roadmap)
-[![license](https://img.shields.io/github/license/zimone91/solana-validator-failover)](LICENSE)
+
+**Two validators, one staked identity — and one rule: never both at once.** You run a primary and a hot spare, and either
+can vote with your staked identity. Solana Validator Failover — **FO** below — is one bash daemon per node. A primary that
+can see its own trouble steps down by itself. The spare waits out its delay, confirms on up to three RPC tiers, and then pages
+you with the swap steps — or, if you armed it, takes the identity itself.
+
+**Author:** [zim.one](https://zim.one) · **Tested on:** agave & Jito-Solana `4.4.0` — the v0.7 release-candidate gate, on the testnet pair; v0.6.x: live failover gate on `4.2.0-rc.0`, ran armed in production on `4.2.1`; earlier releases validated on `3.1.x` / `4.0.x` / `4.1.x` · **Networks:** testnet · mainnet
+
+- **It pages by default and takes only if you arm it.** In Alpenglow mode (v0.7) an unarmed spare never moves the identity: it tells you the identity is free to be moved and what to run.
+- **No channel between the nodes.** The two monitors decide independently, each from its own validator and from RPC. Keys stay on their hosts; in a warm swap you move only the vote-history file ([modes and scenarios](docs/FAILOVER-OVERVIEW.md#modes-and-failure-scenarios)).
+- **It starts in `DRY_RUN`.** A fresh install logs what it would do and changes nothing until you switch it live ([Go live and arm](#go-live-and-arm)).
+- **Bash and systemd, no build step.** One command installs it. The installer checks what it downloads against the tag's `SHA256SUMS`, and the tag is SSH-signed ([Install](#install-one-command)).
+- **Its limits are written down.** A node that has gone completely silent cannot be proven incapable of voting from the outside. What that means for you: [Safety model](#safety-model) and [docs/SAFETY.md](docs/SAFETY.md).
+
+**Two words used below.** The *holder* is the node that has the staked identity now. Where the text says *retained*, it means the automatic take of the v0.6.x releases: the code is kept, and v0.7 never runs it.
+
+## What happens when something fails
+
+Measured on a live testnet pair in November 2026, in seconds after the fault. The spare's times include its 60 s delay.
+
+[![Measured outcomes from separate fault runs on a live Alpenglow testnet pair, November 2026, in seconds after each fault. Holder loses its network: it stepped down by itself at +36 s. Holder's validator hangs: page at +8 s, hard stop at +47 s. Holder's validator is killed: it restarted on its own unstaked identity within 3 s. The spare, default: page at +65 to +72 s. The spare, armed: cold take at +66 to +71 s.](docs/img/fo-v07-timeline.svg)](docs/img/fo-v07-timeline.svg)
+
+| What fails | The failing node | The spare by default: it pages | The spare when armed: it takes |
+|---|---|---|---|
+| The holder loses its network | steps down by itself at +36 s on the shipped defaults (+15…+22 s with three connectivity rounds) | page at +72 s | took at +68…+71 s |
+| The holder's validator hangs | pages at +8 s and hard-stops the validator at +47 s | page at +71 s | took at +66…+68 s |
+| The holder's validator is killed, or its host reboots | comes back on its own unstaked identity | page at +65 s (kill) | took about 70 s after the last vote (reboot) |
+| A 20 s network blip on the holder | no demote and no page with the six default connectivity rounds | — | — |
+| The spare, the link between the nodes, the external RPC providers or a failover daemon fails | keeps the identity | no takeover page | no take |
+
+By default the spare never moves the identity: its page, `TAKEOVER WITHHELD — Alpenglow mode`, carries what you need for the warm swap.
+Every run — the builds, the hardware, and the six defects found live — is in [docs/evidence/2026-11-live-drills.md](docs/evidence/2026-11-live-drills.md).
+
+## How failover works
+
+The holder can self-fence on local signals. The spare checks local RPC, preferred external RPC and a public fallback when needed. Its own final check can veto the handoff.
+
+[![v0.7.0 failover flow. The holder steps down first on its own local signals: a stalled slot, a silent RPC, votes not landing or no network; its daemon hard-stops a hung validator. The spare goes from local detection through three RPC tiers to an operator alert or an armed take, then confirmed standby voting and manual return.](docs/img/fo-v07-flow.svg)](docs/img/fo-v07-flow.svg)
+
+**Alpenglow default:** the spare alerts and the operator performs a warm swap. An armed spare in live mode can take cold when its readiness check passes. Returning to PRIMARY is manual.
+
+**What pages you.** Four channels: **Telegram** (every event, including info), **ntfy or any webhook** (critical and warning pages — they pierce Do-Not-Disturb; Slack/Discord via a JSON template), an **external dead-man’s switch** (healthchecks.io / Uptime Kuma / cronitor — it pages when the monitor itself dies), and the **log** (everything, with the decision traces). A critical page the standby could not deliver to Telegram is re-sent. The named pages: `TAKEOVER WITHHELD — Alpenglow mode`, `STAKED IDENTITY SILENT`, `PRIMARY UNREACHABLE WHILE STAKED`, `HOLDER HUNG — HARD STOP`, `GAVE BACK — unstaked`, `SWITCHED TO UNSTAKED`, `TOOK STAKED`, `[DRY RUN] WOULD TAKE STAKED`, `VALIDATOR VERSION NOT READY`, `TAKEOVER STARVATION`. [Notification matrix](docs/NOTIFICATIONS.md)
+
+[Modes and failure scenarios](docs/FAILOVER-OVERVIEW.md#modes-and-failure-scenarios) · [Live fault tests](docs/FAILOVER-OVERVIEW.md#live-fault-tests) · [Optional third server](docs/FAILOVER-OVERVIEW.md#add-a-third-server) · [Manual return commands](docs/FAILOVER-OVERVIEW.md#manual-return-to-primary)
+
+## What it does
 
 Staked-identity failover **monitor** for Solana validators. **Alpenglow mode (always on in v0.7): FO never takes the
 staked identity by itself unless you arm the spare** (`AG_ARMED_TAKE=true`, off by default - below). If your staked node dies or goes silent, the holder fences itself (drops to its own unstaked
@@ -30,25 +79,6 @@ Built safety-first: the failing node **steps down first**, then the spare only *
 (an unarmed spare, the default; the retained path made it, and an armed spare takes it cold) — and every ambiguous state resolves toward *nobody holds the stake* rather than
 two nodes holding it.
 
-**Author:** [zim.one](https://zim.one) · **Tested on:** agave & Jito-Solana `4.4.0` — the v0.7 release-candidate gate, on the testnet pair; v0.6.x: live failover gate on `4.2.0-rc.0`, ran armed in production on `4.2.1`; earlier releases validated on `3.1.x` / `4.0.x` / `4.1.x` · **Networks:** testnet · mainnet
-
-**v0.7 needs agave / Jito-Solana `4.4.0` or newer** (`MIN_VALIDATOR_VERSION`: on an older validator the spare pages `VALIDATOR VERSION NOT READY`).
-The `4.2.1` production run above is v0.6.x's, on a validator below that floor; v0.7 itself is being exercised on the testnet pair (the Block 10 end-to-end run).
-
-## How failover works
-
-The holder can self-fence on local signals. The spare checks local RPC, preferred external RPC and a public fallback when needed. Its own final check can veto the handoff.
-
-[![v0.7.0 failover flow from local detection through three RPC tiers, operator alert or armed take, confirmed standby voting and manual return.](docs/img/fo-v07-flow.svg)](docs/img/fo-v07-flow.svg)
-
-**Alpenglow default:** the spare alerts and the operator performs a warm swap. An armed spare in live mode can take cold when its readiness check passes. Returning to PRIMARY is manual.
-
-**What pages you.** Four channels: **Telegram** (every event, including info), **ntfy or any webhook** (critical and warning pages — they pierce Do-Not-Disturb; Slack/Discord via a JSON template), an **external dead-man’s switch** (healthchecks.io / Uptime Kuma / cronitor — it pages when the monitor itself dies), and the **log** (everything, with the decision traces). A critical page the standby could not deliver to Telegram is re-sent. The named pages: `TAKEOVER WITHHELD — Alpenglow mode`, `STAKED IDENTITY SILENT`, `PRIMARY UNREACHABLE WHILE STAKED`, `HOLDER HUNG — HARD STOP`, `GAVE BACK — unstaked`, `SWITCHED TO UNSTAKED`, `TOOK STAKED`, `[DRY RUN] WOULD TAKE STAKED`, `VALIDATOR VERSION NOT READY`, `TAKEOVER STARVATION`. [Notification matrix](docs/NOTIFICATIONS.md)
-
-[Modes and failure scenarios](docs/FAILOVER-OVERVIEW.md#modes-and-failure-scenarios) · [Live fault tests](docs/FAILOVER-OVERVIEW.md#live-fault-tests) · [Optional third server](docs/FAILOVER-OVERVIEW.md#add-a-third-server) · [Manual return commands](docs/FAILOVER-OVERVIEW.md#manual-return-to-primary)
-
-## What it does
-
 - Watches the local validator. If the PRIMARY goes delinquent or isolated, it **self-fences** to its
   own unstaked identity within ~30s; a STANDBY then **pages** you after a cross-node safety delay that the staked identity is
   free to be moved — in Alpenglow mode (v0.7) it takes it itself only when armed (`AG_ARMED_TAKE=true`).
@@ -59,6 +89,17 @@ The holder can self-fence on local signals. The spare checks local RPC, preferre
   is dead, and in Alpenglow mode this node never takes the identity back, so a page is all FO can give. Monitor-only; it needs `VOTE_PUBKEY`.
 - **Fails safe by design:** ambiguity resolves toward *unstaked / stop / page the operator*, not toward
   taking the identity. (Design intent — see the residual risks below and in `docs/SAFETY.md`.)
+
+## Requirements
+
+**v0.7 needs agave / Jito-Solana `4.4.0` or newer** (`MIN_VALIDATOR_VERSION`: on an older validator the spare pages `VALIDATOR VERSION NOT READY`).
+The `4.2.1` production run above is v0.6.x's, on a validator below that floor; v0.7 itself is being exercised on the testnet pair (the Block 10 end-to-end run).
+Those runs, and the test pair's later move to `4.5.0-beta.0`, are listed in [docs/evidence/2026-11-live-drills.md](docs/evidence/2026-11-live-drills.md).
+
+- `agave-validator` (or Jito-Solana), `jq`, `curl`, `systemd`, run as root.
+- Two nodes sharing the same **staked** keypair, each with its own **unique unstaked** keypair.
+- The installer offers two validator types: `agave`, which covers Jito-Solana, and `frankendancer`, which it marks experimental. Firedancer is not offered.
+- The live drills ran on Ubuntu 22.04 and 24.04, on bare metal. CI runs the suites on bash 3.2 and 5.2.
 
 ## Install (one command)
 
@@ -84,6 +125,14 @@ sudo bash deploy-failover.sh          # deploy-failover-standby.sh on the spare
 ```
 
 ## Go live and arm
+
+Three separate switches. None of them implies the next:
+
+| Switch | Where | What it turns on | After a fresh install |
+|---|---|---|---|
+| `DRY_RUN=false` | each node | live mode: the monitor acts instead of only reporting — the holder's self-fence, and on the spare whatever the take switch below permits | `DRY_RUN=true`: it logs what it would do |
+| `failover arm` | each node, the holder first | the fence ceremony, opt-in and configured separately from the take switch. On the holder it installs a systemd watchdog fence: if the monitor fails, the validator is demoted or stopped (page-only while `DRY_RUN=true`). On a spare the same failure pages, and the arm takes the holder's pairing token | not armed |
+| `AG_ARMED_TAKE=true` | the spare | the cold take: in live mode, and once its readiness check passes, the spare takes the identity itself instead of paging | off: the spare pages |
 
 The interactive installer (on the STANDBY it asks for **Simple** or **Advanced** mode; on the PRIMARY it has no mode prompt) writes `/opt/solana-failover/*.env`, installs
 a `systemd` unit, and starts in **DRY_RUN** — it logs what it *would* do and changes nothing. Verify the
@@ -214,11 +263,6 @@ Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 
 </details>
 
-## Requirements
-
-- `agave-validator` (or Jito-Solana), `jq`, `curl`, `systemd`, run as root.
-- Two nodes sharing the same **staked** keypair, each with its own **unique unstaked** keypair.
-
 ## ⚠️ Before you point this at a mainnet identity
 
 - **Not for unattended mainnet yet** — see “How safe is it — honestly” above: the fence is opt-in (`failover arm`) and the relinquish-proof
@@ -243,6 +287,8 @@ mocked I/O, and each safety fix ships with a control that fails when the fix is 
 ordering between two live systemd services; the live runs on the test pair are in [docs/FAILOVER-OVERVIEW.md](docs/FAILOVER-OVERVIEW.md#live-fault-tests),
 and the harness in detail is in [docs/REFERENCE.md](docs/REFERENCE.md#tests).
 
+The live runs on real validators since June 2026 — 58 of them: 52 with an induced fault, 4 soaks and 2 planned swaps, including the ones that failed — are in [docs/evidence/2026-11-live-drills.md](docs/evidence/2026-11-live-drills.md).
+
 ## Notifications
 
 Telegram + [ntfy.sh](https://ntfy.sh) push + an external "dead-man's switch" watchdog
@@ -253,8 +299,13 @@ See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 
 - [SECURITY.md](SECURITY.md) — disclosure contact; what runs as root; what verification does and does not give you.
 - [docs/audits/](docs/audits/) — every audit round, including the one that made us retract a public overclaim and the NO-GO verdict. Each finding shipped with a control test that fails if the fix is reverted.
-- [docs/evidence/](docs/evidence/) — armed-production evidence: a real unplanned mainnet failover (2026-08-10, every gate logged) *and* the incident from the same fleet, because evidence cuts both ways.
+- [docs/evidence/](docs/evidence/) — armed-production evidence: a real unplanned mainnet failover (2026-08-10, every gate logged) *and* the incident from the same fleet, because evidence cuts both ways; and [every live run, June to November 2026](docs/evidence/2026-11-live-drills.md): 58 runs — 52 with an induced fault, 4 soaks and 2 planned swaps — including the ones that failed.
 - [CI](.github/workflows/ci.yml) runs the full suite on bash 3.2 **and** 5.2 on pushes to `main` and on pull requests — the 5.2 job exists because a real interpreter bug shipped and was invisible to a single-interpreter suite.
+
+## Questions and feedback
+
+A question, a setup this does not cover, a place where you think the safety model is wrong: open an [issue](https://github.com/zimone91/solana-validator-failover/issues).
+Mask identities and never paste a keypair or a bot token. A vulnerability goes the way [SECURITY.md](SECURITY.md) describes, not into a public issue.
 
 ## Full reference
 
