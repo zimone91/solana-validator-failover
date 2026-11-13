@@ -97,7 +97,7 @@ The `4.2.1` production run above is v0.6.x's, on a validator below that floor; v
 Those runs, and the test pair's later move to `4.5.0-beta.0`, are listed in [docs/evidence/2026-11-live-drills.md](docs/evidence/2026-11-live-drills.md).
 
 - `agave-validator` (or Jito-Solana), `jq`, `curl`, `systemd`, run as root.
-- Two nodes sharing the same **staked** keypair, each with its own **unique unstaked** keypair.
+- Two nodes sharing the same **staked** keypair, each with its own **unique unstaked** keypair. The staked keypair file has to be on the disk of **both** nodes, and that includes a spare that only pages: the installer stops without it, and each daemon reads the staked pubkey from that file when it starts and exits if it cannot.
 - The installer offers two validator types: `agave`, which covers Jito-Solana, and `frankendancer`, which it marks experimental. Firedancer is not offered.
 - The live drills ran on Ubuntu 22.04 and 24.04, on bare metal. CI runs the suites on bash 3.2 and 5.2.
 
@@ -270,6 +270,7 @@ Details and the residual-risk analysis: [docs/SAFETY.md](docs/SAFETY.md).
 - **Test on testnet first** — DRY_RUN soak, then a live failover on a testnet stack.
 - In v0.7 this tool never moves your staked identity between machines **by itself** unless you arm a spare (`AG_ARMED_TAKE=true`, Alpenglow mode); its retained path did, and a later
   release may. Never aim `STAKED_KEYPAIR` at an identity you can't afford to have hot-swapped.
+- **The staked private key is on the disk of both nodes** (see Requirements). In this release a daemon reads that file only at its own start, to learn the pubkey; the only FO step that hands the key to the validator is an armed spare's take. FO does not copy, move or send key files, opens no connection between the two nodes and does not check who can read those files. Guarding them is yours.
 - **Each node needs its own unique unstaked keypair** — a shared unstaked pubkey breaks the fence.
 - **Point `VOTE_PUBKEY` at *your* vote account** — the one whose `nodePubkey` is your staked identity.
   The release does not yet verify that binding; a wrong vote account silently misleads the fence.
