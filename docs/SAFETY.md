@@ -405,7 +405,7 @@ is reverted. Network clients reached through `PATH` are caught by `run_all.sh`'s
 leg; at the syscall level, `tests/strace-hermetic.sh` (CI's strace job, ubuntu-24.04) fails on any inet socket in
 the whole run.
 **Known limit:** these are function-level — they do not prove cross-process ordering between two live
-systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
+systemd services. A chaos/E2E gate on real nodes is required before unattended operation, and this release does not ship one; the live fault runs that were made are listed in [evidence/2026-11-live-drills.md](evidence/2026-11-live-drills.md).
 
 ### Rehearsing the self-fence
 

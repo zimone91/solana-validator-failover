@@ -62,7 +62,7 @@ through `PATH` are caught by `run_all.sh`'s stage (4) on every leg; at the sysca
 (CI's strace job, ubuntu-24.04) fails on any inet socket in the whole run. A suite still running at `run_all.sh`'s
 per-suite cap (`RUN_ALL_SUITE_CAP`: an hour by default; CI sizes it per job) is killed, with whatever it left in its
 process group, and fails the run, named. Note the limit: these are function-level tests — they do
-**not** prove cross-process ordering between two live systemd services. A chaos/E2E gate on real nodes is part of the v0.7 work.
+**not** prove cross-process ordering between two live systemd services. A chaos/E2E gate on real nodes is required before unattended operation, and this release does not ship one; the live fault runs that were made are listed in [evidence/2026-11-live-drills.md](evidence/2026-11-live-drills.md).
 
 ## Roadmap
 
