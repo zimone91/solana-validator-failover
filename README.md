@@ -124,6 +124,8 @@ cd solana-validator-failover
 sudo bash deploy-failover.sh          # deploy-failover-standby.sh on the spare
 ```
 
+**The wizard is long.** After the PRIMARY-or-STANDBY choice it asks 22 to 25 questions on the PRIMARY and 23 to 26 on a spare in Simple mode (one more for a BACKUP), then whether to start the unit and, unless it is already enabled, whether to enable it at boot; an answer it rejects is asked again. Eight of the questions, nine once you give a heartbeat URL, are tuning numbers (check intervals, retry counts, thresholds, the delinquency window, the heartbeat interval), and Simple mode does not hide them: it hides four expert settings. Most questions show a default that Enter accepts. Have at hand the paths of the two keypair files, your vote pubkey and, if you keep Telegram on, a bot token and a chat id; Tier 2 takes the RPC URL of a second provider and accepts an empty answer.
+
 ## Go live and arm
 
 Three separate switches. None of them implies the next:
