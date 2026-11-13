@@ -27,7 +27,7 @@ can vote with your staked identity. Solana Validator Failover — **FO** below �
 can see its own trouble steps down by itself. The spare waits out its delay, confirms on up to three RPC tiers, and then pages
 you with the swap steps — or, if you armed it, takes the identity itself.
 
-**Author:** [zim.one](https://zim.one) · **Tested on:** agave & Jito-Solana `4.4.0` — the v0.7 release-candidate gate, on the testnet pair; v0.6.x: live failover gate on `4.2.0-rc.0`, ran armed in production on `4.2.1`; earlier releases validated on `3.1.x` / `4.0.x` / `4.1.x` · **Networks:** testnet · mainnet
+**Author:** [zim.one](https://zim.one) · **Tested on:** agave & Jito-Solana `4.4.0` — the v0.7 release-candidate gate, on the testnet pair; v0.6.x: live failover gate on `4.2.0-rc.0`, ran armed in production on `4.2.1` · **Networks:** testnet · mainnet
 
 - **It pages by default and takes only if you arm it.** In Alpenglow mode (v0.7) an unarmed spare never moves the identity: it tells you the identity is free to be moved and what to run.
 - **No channel between the nodes.** The two monitors decide independently, each from its own validator and from RPC. Keys stay on their hosts; in a warm swap you move only the vote-history file ([modes and scenarios](docs/FAILOVER-OVERVIEW.md#modes-and-failure-scenarios)).
