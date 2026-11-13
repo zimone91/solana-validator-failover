@@ -66,6 +66,8 @@ process group, and fails the run, named. Note the limit: these are function-leve
 
 ## Roadmap
 
+**Status after the release.** `v0.7.0` shipped the fence (a systemd watchdog installed by `failover arm`, opt-in), the paging spare and atomic state writes. It did not ship the rest of the v0.7 entry below: the relinquish-proof gate that would condition a take on the fence, the check that the vote account belongs to the staked identity, escalation to a hard stop on every unverified demote in the daemons' own demote path (the armed fence, in live mode, already stops the validator on any failed or doubtful demote), a simpler installer, a status dashboard, or a chaos/E2E gate on real nodes. These remain open. The entries below are the text as at `v0.7.0`.
+
 - **v0.7** — the fence: a node that can no longer confirm it owns the identity is stopped by a
   watchdog, and the spare pages (an unarmed spare never takes, in Alpenglow mode) on the same gates; the retained take path needs positive proof the old holder was stopped or stepped
   down — never inference alone. Ships alongside evidence fixes (vote account ↔ identity binding,
